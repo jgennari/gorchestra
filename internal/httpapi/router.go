@@ -17,13 +17,16 @@ import (
 )
 
 const (
-	defaultEventLimit = 500
-	maxEventLimit     = 1000
+	defaultEventLimit   = 500
+	maxEventLimit       = 1000
+	defaultSessionLimit = 50
+	maxSessionLimit     = 100
 )
 
 type Store interface {
 	CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error)
 	GetSession(ctx context.Context, id string) (store.Session, error)
+	ListSessions(ctx context.Context, params store.ListSessionsParams) ([]store.Session, error)
 	UpdateSessionStatus(ctx context.Context, params store.UpdateSessionStatusParams) (store.Session, error)
 	ListEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error)
 }
@@ -103,6 +106,8 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Post("/api/sessions/{sessionId}/cancel", api.cancelSessionHandler)
 	}
 	if api.store != nil {
+		r.Get("/api/sessions", api.listSessionsHandler)
+		r.Get("/api/sessions/{sessionId}", api.getSessionHandler)
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
 	}
 	if api.store != nil && api.events != nil {

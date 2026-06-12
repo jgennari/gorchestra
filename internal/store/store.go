@@ -13,6 +13,7 @@ import (
 )
 
 const defaultEventLimit = 500
+const defaultSessionLimit = 50
 
 type Store struct {
 	db  *sql.DB
@@ -109,6 +110,40 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 	}
 
 	return session, nil
+}
+
+func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]Session, error) {
+	limit := params.Limit
+	if limit <= 0 {
+		limit = defaultSessionLimit
+	}
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT id, title, agent_type, status, created_at, updated_at, completed_at
+		 FROM sessions
+		 ORDER BY updated_at DESC, created_at DESC, id DESC
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := make([]Session, 0)
+	for rows.Next() {
+		session, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list sessions rows: %w", err)
+	}
+
+	return sessions, nil
 }
 
 func (s *Store) UpdateSessionStatus(ctx context.Context, params UpdateSessionStatusParams) (Session, error) {

@@ -8,7 +8,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jgennari/gorchestra/internal/agents"
@@ -26,6 +28,20 @@ type createSessionResponse struct {
 	SessionID string `json:"session_id"`
 }
 
+type sessionResponse struct {
+	ID          string  `json:"id"`
+	Title       string  `json:"title"`
+	AgentType   string  `json:"agent_type"`
+	Status      string  `json:"status"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+	CompletedAt *string `json:"completed_at"`
+}
+
+type listSessionsResponse struct {
+	Sessions []sessionResponse `json:"sessions"`
+}
+
 type submitMessageRequest struct {
 	Content string `json:"content"`
 }
@@ -38,6 +54,36 @@ type submitMessageResponse struct {
 type cancelSessionResponse struct {
 	SessionID string `json:"session_id"`
 	Status    string `json:"status"`
+}
+
+func (api API) listSessionsHandler(w http.ResponseWriter, r *http.Request) {
+	limit, ok := parseSessionLimit(w, r)
+	if !ok {
+		return
+	}
+
+	sessions, err := api.store.ListSessions(r.Context(), store.ListSessionsParams{Limit: limit})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list sessions")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, listSessionsResponse{Sessions: sessionResponses(sessions)})
+}
+
+func (api API) getSessionHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	session, err := api.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load session")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, sessionResponseFromStore(session))
 }
 
 func (api API) createSessionHandler(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +120,32 @@ func (api API) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, createSessionResponse{SessionID: session.ID})
+}
+
+func sessionResponses(sessions []store.Session) []sessionResponse {
+	responses := make([]sessionResponse, 0, len(sessions))
+	for _, session := range sessions {
+		responses = append(responses, sessionResponseFromStore(session))
+	}
+	return responses
+}
+
+func sessionResponseFromStore(session store.Session) sessionResponse {
+	var completedAt *string
+	if session.CompletedAt != nil {
+		formatted := session.CompletedAt.UTC().Format(time.RFC3339Nano)
+		completedAt = &formatted
+	}
+
+	return sessionResponse{
+		ID:          session.ID,
+		Title:       session.Title,
+		AgentType:   session.AgentType,
+		Status:      string(session.Status),
+		CreatedAt:   session.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:   session.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		CompletedAt: completedAt,
+	}
 }
 
 func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +460,24 @@ func (api API) agentAvailable(w http.ResponseWriter, agent agents.Agent) bool {
 		return false
 	}
 	return true
+}
+
+func parseSessionLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return defaultSessionLimit, true
+	}
+
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 0 {
+		writeError(w, http.StatusBadRequest, "limit must be a non-negative integer")
+		return 0, false
+	}
+	if limit > maxSessionLimit {
+		return maxSessionLimit, true
+	}
+
+	return limit, true
 }
 
 func isTerminalRunEvent(eventType string) bool {

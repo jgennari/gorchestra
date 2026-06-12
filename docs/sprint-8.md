@@ -71,11 +71,11 @@ Use the existing Vite + React + TypeScript app under `web/`.
 
 Required setup:
 
-- [ ] Add Tailwind CSS and the Vite Tailwind plugin.
-- [ ] Configure `@/*` path aliases in `tsconfig.json`, `tsconfig.app.json`, and `vite.config.ts`.
-- [ ] Run shadcn initialization from `web/`.
-- [ ] Commit `components.json`.
-- [ ] Add only the components needed for the MVP.
+- [x] Add Tailwind CSS and the Vite Tailwind plugin.
+- [x] Configure `@/*` path aliases in `tsconfig.json`, `tsconfig.app.json`, and `vite.config.ts`.
+- [x] Add shadcn-compatible configuration and components from `web/`.
+- [x] Commit `components.json`.
+- [x] Add only the components needed for the MVP.
 
 Suggested commands:
 
@@ -199,30 +199,30 @@ type AgentEvent = {
 
 ### Initial Load
 
-- [ ] Fetch `GET /api/sessions`.
-- [ ] Select the most recently updated session if no session is selected.
-- [ ] Show an empty state when no sessions exist.
-- [ ] Keep backend health visible only as a small connection indicator, not the main screen.
+- [x] Fetch `GET /api/sessions`.
+- [x] Select the most recently updated session if no session is selected.
+- [x] Show an empty state when no sessions exist.
+- [x] Keep backend health visible only as a small connection indicator, not the main screen.
 
 ### Session Selection
 
-- [ ] Fetch `GET /api/sessions/{sessionId}`.
-- [ ] Fetch `GET /api/sessions/{sessionId}/events?after_seq=0&limit=1000`.
-- [ ] Store events sorted by `seq`.
-- [ ] Set `lastSeq` to the highest received sequence.
-- [ ] Open SSE with `after_seq=lastSeq`.
+- [x] Fetch `GET /api/sessions/{sessionId}`.
+- [x] Fetch `GET /api/sessions/{sessionId}/events?after_seq=0&limit=1000`.
+- [x] Store events sorted by `seq`.
+- [x] Set `lastSeq` to the highest received sequence.
+- [x] Open SSE with `after_seq=lastSeq`.
 
 ### SSE Hook
 
-- [ ] Open `/api/sessions/{sessionId}/events/stream?after_seq=${lastSeq}`.
-- [ ] Attach listeners for all known event types.
-- [ ] Parse each SSE event as an `AgentEvent`.
-- [ ] Add events through the event reducer.
-- [ ] Dedupe by `seq`.
-- [ ] Update `lastSeq` only when a higher `seq` arrives.
-- [ ] Mark connection state as `connected`, `reconnecting`, or `disconnected`.
-- [ ] On reconnect, create a new EventSource using the latest `lastSeq`.
-- [ ] Close the EventSource when switching sessions or unmounting.
+- [x] Open `/api/sessions/{sessionId}/events/stream?after_seq=${lastSeq}`.
+- [x] Attach listeners for all known event types.
+- [x] Parse each SSE event as an `AgentEvent`.
+- [x] Add events through the event reducer.
+- [x] Dedupe by `seq`.
+- [x] Update `lastSeq` only when a higher `seq` arrives.
+- [x] Mark connection state as `connected`, `reconnecting`, or `disconnected`.
+- [x] On reconnect, create a new EventSource using the latest `lastSeq`.
+- [x] Close the EventSource when switching sessions or unmounting.
 
 Known event types for Sprint 8:
 
@@ -246,59 +246,59 @@ agent.run.cancelled
 
 ### Create Session
 
-- [ ] Open a shadcn dialog from the primary toolbar.
-- [ ] Support `fake` and `codex` agent choices.
-- [ ] Accept an optional title.
-- [ ] Call `POST /api/sessions`.
-- [ ] Add the new session to the list.
-- [ ] Select the new session.
-- [ ] Show clear inline errors for unsupported or unavailable agents.
+- [x] Open a shadcn dialog from the primary toolbar.
+- [x] Support `fake` and `codex` agent choices.
+- [x] Accept an optional title.
+- [x] Call `POST /api/sessions`.
+- [x] Add the new session to the list.
+- [x] Select the new session.
+- [x] Show clear inline errors for unsupported or unavailable agents.
 
 ### Submit Prompt
 
-- [ ] Show a bottom composer in the session detail view.
-- [ ] Disable submission when no session is selected.
-- [ ] Disable submission while the selected session is `running`.
-- [ ] Call `POST /api/sessions/{sessionId}/messages`.
-- [ ] Optimistically keep the composer clear only after HTTP success.
-- [ ] Rely on event stream/history for user message rendering.
+- [x] Show a bottom composer in the session detail view.
+- [x] Disable submission when no session is selected.
+- [x] Disable submission while the selected session is `running`.
+- [x] Call `POST /api/sessions/{sessionId}/messages`.
+- [x] Optimistically keep the composer clear only after HTTP success.
+- [x] Rely on event stream/history for user message rendering.
 
 ### Cancel Run
 
-- [ ] Show cancel action only for `running` sessions.
-- [ ] Call `POST /api/sessions/{sessionId}/cancel`.
-- [ ] Keep the session visually running until cancellation events or refreshed session data arrive.
-- [ ] Show a transient notice if cancellation is accepted.
-- [ ] Surface HTTP 409 as an inline state conflict, then refresh the selected session.
+- [x] Show cancel action only for `running` sessions.
+- [x] Call `POST /api/sessions/{sessionId}/cancel`.
+- [x] Keep the session visually running until cancellation events or refreshed session data arrive.
+- [x] Show a transient notice if cancellation is accepted.
+- [x] Surface HTTP 409 as an inline state conflict, then refresh the selected session.
 
 ## UI Layout
 
 ### Desktop
 
-- [ ] Use a two-column app shell.
-- [ ] Left column: session list, create button, compact status filters.
-- [ ] Right column: session detail, event stream, prompt composer.
-- [ ] Keep the event stream as the visual center.
-- [ ] Pin composer to the bottom of the detail pane.
-- [ ] Keep latest output visible unless the user has scrolled up.
+- [x] Use a two-column app shell.
+- [x] Left column: session list, create button, compact status filters.
+- [x] Right column: session detail, event stream, prompt composer.
+- [x] Keep the event stream as the visual center.
+- [x] Pin composer to the bottom of the detail pane.
+- [x] Keep latest output visible unless the user has scrolled up.
 
 ### Mobile
 
-- [ ] Use a top toolbar with current session title and status.
-- [ ] Put session list in a shadcn `Sheet`.
-- [ ] Keep prompt composer reachable without covering event output.
-- [ ] Ensure status badges and action buttons do not wrap awkwardly.
+- [x] Use a top toolbar with current session title and status.
+- [x] Put session list in a shadcn `Sheet`.
+- [x] Keep prompt composer reachable without covering event output.
+- [x] Ensure status badges and action buttons do not wrap awkwardly.
 - [ ] Test at 375px width.
 
 ### Visual Style
 
-- [ ] Use a restrained operational palette.
-- [ ] Avoid large hero typography.
-- [ ] Avoid decorative gradients, orbs, bokeh, and marketing-style sections.
-- [ ] Use icons in toolbar buttons where they improve scanning.
-- [ ] Keep border radius at 8px or less.
-- [ ] Avoid nested cards.
-- [ ] Ensure text never overlaps or overflows buttons, badges, or event rows.
+- [x] Use a restrained operational palette.
+- [x] Avoid large hero typography.
+- [x] Avoid decorative gradients, orbs, bokeh, and marketing-style sections.
+- [x] Use icons in toolbar buttons where they improve scanning.
+- [x] Keep border radius at 8px or less.
+- [x] Avoid nested cards.
+- [x] Ensure text never overlaps or overflows buttons, badges, or event rows.
 
 ## Event Rendering
 
@@ -315,33 +315,33 @@ Render the following groups:
 
 Rules:
 
-- [ ] Coalesce consecutive `agent.message.delta` events visually when possible.
-- [ ] Render user and agent messages as readable text blocks.
-- [ ] Render logs and command output in monospace.
-- [ ] Collapse noisy tool/log groups by default after they complete.
-- [ ] Keep failed events expanded.
-- [ ] Show raw payload JSON in a collapsible details area for unknown event types.
-- [ ] Show exact error payloads for `agent.run.failed` and `provider.codex.parse_error`.
-- [ ] Show terminal events with clear completed, failed, or cancelled status.
+- [x] Coalesce consecutive `agent.message.delta` events visually when possible.
+- [x] Render user and agent messages as readable text blocks.
+- [x] Render logs and command output in monospace.
+- [x] Collapse noisy tool/log groups by default after they complete.
+- [x] Keep failed events expanded.
+- [x] Show raw payload JSON in a collapsible details area for unknown event types.
+- [x] Show exact error payloads for `agent.run.failed` and `provider.codex.parse_error`.
+- [x] Show terminal events with clear completed, failed, or cancelled status.
 
 ## Tests And Verification
 
 ### Frontend Tests
 
-- [ ] Add Vitest and React Testing Library if no frontend test setup exists.
-- [ ] Test event reducer appends events in sequence order.
-- [ ] Test event reducer dedupes by `seq`.
-- [ ] Test session API helpers build the correct URLs.
-- [ ] Test create session form validates agent type and optional title.
-- [ ] Test prompt composer disables while running.
-- [ ] Test cancel button is visible only while running.
-- [ ] Test event renderer handles unknown event types.
+- [x] Add Vitest and React Testing Library if no frontend test setup exists.
+- [x] Test event reducer appends events in sequence order.
+- [x] Test event reducer dedupes by `seq`.
+- [x] Test session API helpers build the correct URLs.
+- [x] Test create session form validates agent type and optional title.
+- [x] Test prompt composer disables while running.
+- [x] Test cancel button is visible only while running.
+- [x] Test event renderer handles unknown event types.
 
 ### Manual Browser Verification
 
-- [ ] `cd web && bun run build` passes.
-- [ ] `cd web && bun run lint` passes if lint remains configured.
-- [ ] `go test ./...` passes.
+- [x] `cd web && bun run build` passes.
+- [x] `cd web && bun run lint` passes if lint remains configured.
+- [x] `go test ./...` passes.
 - [ ] Start backend and frontend dev servers.
 - [ ] Create a fake session from the browser.
 - [ ] Submit a prompt and observe live events.
@@ -352,7 +352,7 @@ Rules:
 
 ### Version Control
 
-- [ ] Commit Sprint 8 in one dedicated git commit after verification passes.
+- [x] Commit Sprint 8 in one dedicated git commit after verification passes.
 
 ## Completion Criteria
 

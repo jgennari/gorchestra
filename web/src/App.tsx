@@ -1,150 +1,253 @@
+import { Menu, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
+import type { AgentType, Session, SessionStatus } from '@/lib/api'
+import {
+  APIError,
+  cancelSession,
+  createSession,
+  fetchHealth,
+  getSession,
+  listSessions,
+  submitMessage,
+} from '@/lib/api'
+import { isTerminalEvent, statusFromEvent } from '@/lib/events'
+import { useSessionEvents } from '@/hooks/use-session-events'
+import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
+import { CreateSessionDialog } from '@/components/create-session-dialog'
+import { SessionDetail } from '@/components/session-detail'
+import { SessionList } from '@/components/session-list'
+import { StatusBadge } from '@/components/status-badge'
 
-type ServiceState = 'checking' | 'online' | 'offline'
+type HealthState = 'checking' | 'online' | 'offline'
+type SessionFilter = 'all' | SessionStatus
 
-type HealthResponse = {
-  status: string
-}
+function App() {
+  const [healthState, setHealthState] = useState<HealthState>('checking')
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [selectedSessionID, setSelectedSessionID] = useState<string | null>(null)
+  const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [mobileListOpen, setMobileListOpen] = useState(false)
+  const [loadingSessions, setLoadingSessions] = useState(true)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
 
-async function fetchHealthDetail() {
-  const response = await fetch('/api/health', {
-    headers: {
-      Accept: 'application/json',
+  const selectedSession = useMemo(
+    () => sessions.find((session) => session.id === selectedSessionID) ?? null,
+    [selectedSessionID, sessions],
+  )
+
+  const applySession = useCallback((session: Session) => {
+    setSessions((current) => sortSessions([session, ...current.filter((item) => item.id !== session.id)]))
+  }, [])
+
+  const refreshSession = useCallback(
+    async (sessionID: string) => {
+      const session = await getSession(sessionID)
+      applySession(session)
+      return session
+    },
+    [applySession],
+  )
+
+  const { events, streamState, error: streamError } = useSessionEvents(selectedSessionID, {
+    onEvent: (event) => {
+      const status = statusFromEvent(event.type)
+      if (status && selectedSessionID) {
+        setSessions((current) =>
+          current.map((session) =>
+            session.id === selectedSessionID
+              ? { ...session, status, updated_at: event.created_at, completed_at: status === 'running' ? null : event.created_at }
+              : session,
+          ),
+        )
+      }
+      if (selectedSessionID && isTerminalEvent(event.type)) {
+        window.setTimeout(() => {
+          void refreshSession(selectedSessionID)
+        }, 250)
+      }
     },
   })
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
-  }
-
-  const payload = (await response.json()) as HealthResponse
-  if (payload.status !== 'ok') {
-    throw new Error('Unexpected response')
-  }
-
-  return 'HTTP 200'
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Request failed'
-}
-
-function App() {
-  const [serviceState, setServiceState] = useState<ServiceState>('checking')
-  const [detail, setDetail] = useState('Waiting for response')
-  const [checkedAt, setCheckedAt] = useState<Date | null>(null)
-
-  const checkHealth = useCallback(async () => {
-    setServiceState('checking')
-    setDetail('Waiting for response')
-
+  const loadSessions = useCallback(async () => {
+    setLoadingSessions(true)
+    setError('')
     try {
-      const result = await fetchHealthDetail()
-      setServiceState('online')
-      setDetail(result)
-    } catch (error) {
-      setServiceState('offline')
-      setDetail(errorMessage(error))
+      const nextSessions = await listSessions()
+      setSessions(nextSessions)
+      setSelectedSessionID((current) => current ?? nextSessions[0]?.id ?? null)
+    } catch (loadError) {
+      setError(messageFromError(loadError))
     } finally {
-      setCheckedAt(new Date())
+      setLoadingSessions(false)
     }
   }, [])
 
   useEffect(() => {
+    void loadSessions()
+  }, [loadSessions])
+
+  useEffect(() => {
     let cancelled = false
-
-    async function loadHealth() {
+    async function check() {
       try {
-        const result = await fetchHealthDetail()
-        if (cancelled) {
-          return
-        }
-
-        setServiceState('online')
-        setDetail(result)
-      } catch (error) {
-        if (cancelled) {
-          return
-        }
-
-        setServiceState('offline')
-        setDetail(errorMessage(error))
-      } finally {
-        if (!cancelled) {
-          setCheckedAt(new Date())
-        }
+        await fetchHealth()
+        if (!cancelled) setHealthState('online')
+      } catch {
+        if (!cancelled) setHealthState('offline')
       }
     }
-
-    void loadHealth()
-
+    void check()
+    const timer = window.setInterval(() => void check(), 15000)
     return () => {
       cancelled = true
+      window.clearInterval(timer)
     }
   }, [])
 
-  const statusLabel = useMemo(() => {
-    switch (serviceState) {
-      case 'online':
-        return 'Online'
-      case 'offline':
-        return 'Offline'
-      default:
-        return 'Checking'
+  useEffect(() => {
+    if (!selectedSessionID) {
+      return
     }
-  }, [serviceState])
+    void refreshSession(selectedSessionID).catch((refreshError) => {
+      setError(messageFromError(refreshError))
+    })
+  }, [refreshSession, selectedSessionID])
 
-  const checkedAtLabel = checkedAt
-    ? new Intl.DateTimeFormat(undefined, {
-        hour: 'numeric',
-        minute: '2-digit',
-        second: '2-digit',
-      }).format(checkedAt)
-    : 'Pending'
+  async function handleCreate(params: { agent_type: AgentType; title?: string }) {
+    const session = await createSession(params)
+    applySession(session)
+    setSelectedSessionID(session.id)
+    setNotice('')
+    return session
+  }
+
+  async function handleSubmitPrompt(content: string) {
+    if (!selectedSessionID) {
+      throw new Error('Select a session first.')
+    }
+    const response = await submitMessage(selectedSessionID, content)
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === selectedSessionID ? { ...session, status: response.status } : session,
+      ),
+    )
+    setNotice('')
+  }
+
+  async function handleCancel() {
+    if (!selectedSessionID) {
+      return
+    }
+    try {
+      await cancelSession(selectedSessionID)
+      setNotice('Cancellation requested.')
+    } catch (cancelError) {
+      setError(messageFromError(cancelError))
+      if (cancelError instanceof APIError && cancelError.status === 409) {
+        await refreshSession(selectedSessionID)
+      }
+    }
+  }
+
+  const list = (
+    <SessionList
+      sessions={sessions}
+      selectedSessionID={selectedSessionID}
+      filter={sessionFilter}
+      onFilterChange={setSessionFilter}
+      onSelect={(sessionID) => {
+        setSelectedSessionID(sessionID)
+        setMobileListOpen(false)
+        setNotice('')
+      }}
+      onCreate={() => setCreateOpen(true)}
+    />
+  )
 
   return (
-    <main className="shell">
-      <header className="app-header">
-        <div className="brand-mark" aria-hidden="true">
-          G
-        </div>
-        <div>
-          <p className="eyebrow">Gorchestra</p>
-          <h1>Service monitor</h1>
-        </div>
-      </header>
+    <main className="app-shell">
+      <div className="hidden min-h-0 w-[360px] lg:flex">{list}</div>
 
-      <section className="status-panel" aria-label="Service status">
-        <div className="status-row">
-          <div>
-            <p className="label">Backend</p>
-            <h2>API health</h2>
+      <section className="flex min-w-0 flex-1 flex-col">
+        <header className="flex min-h-14 items-center justify-between gap-3 border-b bg-background px-3 lg:hidden">
+          <Sheet open={mobileListOpen} onOpenChange={setMobileListOpen}>
+            <SheetTrigger asChild>
+              <Button size="icon" variant="outline" aria-label="Open sessions">
+                <Menu />
+              </Button>
+            </SheetTrigger>
+            <SheetContent>
+              <SheetHeader>
+                <SheetTitle>Sessions</SheetTitle>
+              </SheetHeader>
+              <div className="min-h-0 flex-1">{list}</div>
+            </SheetContent>
+          </Sheet>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium">{selectedSession?.title || 'Gorchestra'}</p>
+            <p className="truncate text-xs text-muted-foreground">{selectedSession?.agent_type || 'No session'}</p>
           </div>
-          <span className={`status-badge ${serviceState}`}>{statusLabel}</span>
+          {selectedSession ? <StatusBadge status={selectedSession.status} /> : null}
+          <Button size="icon" onClick={() => setCreateOpen(true)} aria-label="Create session">
+            <Plus />
+          </Button>
+        </header>
+
+        {error ? (
+          <div role="alert" className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+        {loadingSessions ? (
+          <div className="border-b px-4 py-2 text-sm text-muted-foreground">Loading sessions...</div>
+        ) : null}
+
+        <div className="min-h-0 flex-1">
+          <SessionDetail
+            session={selectedSession}
+            events={events}
+            streamState={streamState}
+            streamError={streamError}
+            notice={notice || healthLabel(healthState)}
+            onSubmitPrompt={handleSubmitPrompt}
+            onCancel={handleCancel}
+            onRefresh={() => {
+              void loadSessions()
+              if (selectedSessionID) void refreshSession(selectedSessionID)
+            }}
+          />
         </div>
-
-        <dl className="status-grid">
-          <div>
-            <dt>Endpoint</dt>
-            <dd>/api/health</dd>
-          </div>
-          <div>
-            <dt>Result</dt>
-            <dd>{detail}</dd>
-          </div>
-          <div>
-            <dt>Checked</dt>
-            <dd>{checkedAtLabel}</dd>
-          </div>
-        </dl>
-
-        <button type="button" onClick={() => void checkHealth()}>
-          Refresh
-        </button>
       </section>
+
+      <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
     </main>
   )
+}
+
+function sortSessions(sessions: Session[]) {
+  return [...sessions].sort((left, right) => {
+    const byUpdated = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+    return byUpdated !== 0 ? byUpdated : right.id.localeCompare(left.id)
+  })
+}
+
+function messageFromError(error: unknown) {
+  return error instanceof Error ? error.message : 'Request failed'
+}
+
+function healthLabel(state: HealthState) {
+  switch (state) {
+    case 'online':
+      return 'Backend online.'
+    case 'offline':
+      return 'Backend offline.'
+    default:
+      return 'Checking backend.'
+  }
 }
 
 export default App

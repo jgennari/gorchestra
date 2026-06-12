@@ -91,6 +91,59 @@ func TestCreateSessionRejectsEmptyAgentType(t *testing.T) {
 	}
 }
 
+func TestListSessionsReturnsMostRecentlyUpdatedFirst(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	firstAt := time.Date(2026, 6, 12, 16, 0, 0, 0, time.UTC)
+	secondAt := firstAt.Add(time.Minute)
+	thirdAt := firstAt.Add(2 * time.Minute)
+	updatedAt := firstAt.Add(5 * time.Minute)
+
+	store.now = func() time.Time { return firstAt }
+	first := createTestSessionWithTitle(t, ctx, store, "First")
+	store.now = func() time.Time { return secondAt }
+	second := createTestSessionWithTitle(t, ctx, store, "Second")
+	store.now = func() time.Time { return thirdAt }
+	third := createTestSessionWithTitle(t, ctx, store, "Third")
+	store.now = func() time.Time { return updatedAt }
+	if _, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
+		ID:     first.ID,
+		Status: SessionStatusRunning,
+	}); err != nil {
+		t.Fatalf("update first session: %v", err)
+	}
+
+	sessions, err := store.ListSessions(ctx, ListSessionsParams{})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+
+	assertSessionIDs(t, sessions, []string{first.ID, third.ID, second.ID})
+}
+
+func TestListSessionsHonorsLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	store.now = func() time.Time { return time.Date(2026, 6, 12, 16, 0, 0, 0, time.UTC) }
+	first := createTestSessionWithTitle(t, ctx, store, "First")
+	store.now = func() time.Time { return time.Date(2026, 6, 12, 16, 1, 0, 0, time.UTC) }
+	second := createTestSessionWithTitle(t, ctx, store, "Second")
+	store.now = func() time.Time { return time.Date(2026, 6, 12, 16, 2, 0, 0, time.UTC) }
+	third := createTestSessionWithTitle(t, ctx, store, "Third")
+
+	sessions, err := store.ListSessions(ctx, ListSessionsParams{Limit: 2})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+
+	assertSessionIDs(t, sessions, []string{third.ID, second.ID})
+	if hasSessionID(sessions, first.ID) {
+		t.Fatalf("expected limited result not to include first session: %#v", sessions)
+	}
+}
+
 func TestUpdateSessionStatusSetsRunningAndUpdatedAt(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)
@@ -393,8 +446,14 @@ func newTestStore(t *testing.T, ctx context.Context) *Store {
 func createTestSession(t *testing.T, ctx context.Context, store *Store) Session {
 	t.Helper()
 
+	return createTestSessionWithTitle(t, ctx, store, "Test session")
+}
+
+func createTestSessionWithTitle(t *testing.T, ctx context.Context, store *Store, title string) Session {
+	t.Helper()
+
 	session, err := store.CreateSession(ctx, CreateSessionParams{
-		Title:     "Test session",
+		Title:     title,
 		AgentType: "codex",
 	})
 	if err != nil {
@@ -402,6 +461,28 @@ func createTestSession(t *testing.T, ctx context.Context, store *Store) Session 
 	}
 
 	return session
+}
+
+func assertSessionIDs(t *testing.T, sessions []Session, want []string) {
+	t.Helper()
+
+	if len(sessions) != len(want) {
+		t.Fatalf("expected %d sessions, got %d: %#v", len(want), len(sessions), sessions)
+	}
+	for i, session := range sessions {
+		if session.ID != want[i] {
+			t.Fatalf("expected session %d ID %q, got %q", i, want[i], session.ID)
+		}
+	}
+}
+
+func hasSessionID(sessions []Session, id string) bool {
+	for _, session := range sessions {
+		if session.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func appendTestEvent(t *testing.T, ctx context.Context, store *Store, sessionID string, payload string) Event {
