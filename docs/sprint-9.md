@@ -131,47 +131,47 @@ Required groups:
 
 Rules:
 
-- [ ] Coalesce consecutive `agent.message.delta` events from the same session into a single visible agent message segment.
-- [ ] Keep `agent.message.completed` as a clear boundary.
-- [ ] Group `tool.call.started` and `tool.call.completed` when they share an identifier in the payload.
-- [ ] If no tool identifier exists, group nearby tool events by type and sequence proximity.
-- [ ] Group consecutive `agent.log.delta` events into collapsible log blocks.
-- [ ] Render `file.change.completed` as file path rows when paths are available.
-- [ ] Render `agent.run.failed` and `provider.codex.parse_error` expanded by default.
-- [ ] Render `provider.codex.event` in a collapsed raw JSON details row.
-- [ ] Show terminal events with completed, failed, or cancelled visual treatment.
+- [x] Coalesce consecutive `agent.message.delta` events from the same session into a single visible agent message segment.
+- [x] Keep `agent.message.completed` as a clear boundary.
+- [x] Group `tool.call.started` and `tool.call.completed` when they share an identifier in the payload.
+- [x] If no tool identifier exists, group nearby tool events by type and sequence proximity.
+- [x] Group consecutive `agent.log.delta` events into collapsible log blocks.
+- [x] Render `file.change.completed` as file path rows when paths are available.
+- [x] Render `agent.run.failed` and `provider.codex.parse_error` expanded by default.
+- [x] Render `provider.codex.event` in a collapsed raw JSON details row.
+- [x] Show terminal events with completed, failed, or cancelled visual treatment.
 
 ## Scroll Behavior
 
-- [ ] Track whether the user is near the bottom of the event stream.
-- [ ] Auto-follow new events only when near bottom.
-- [ ] Stop auto-follow when the user scrolls up.
-- [ ] Show a `Jump to latest` control when new events arrive while auto-follow is paused.
-- [ ] Hide `Jump to latest` after the user returns to the bottom.
-- [ ] Preserve scroll position when older history is re-rendered.
-- [ ] Keep the prompt composer visible without covering the latest event.
-- [ ] Avoid layout shifts when event groups expand or collapse.
+- [x] Track whether the user is near the bottom of the event stream.
+- [x] Auto-follow new events only when near bottom.
+- [x] Stop auto-follow when the user scrolls up.
+- [x] Show a `Jump to latest` control when new events arrive while auto-follow is paused.
+- [x] Hide `Jump to latest` after the user returns to the bottom.
+- [x] Preserve scroll position when older history is re-rendered.
+- [x] Keep the prompt composer visible without covering the latest event.
+- [x] Avoid layout shifts when event groups expand or collapse.
 
 ## Session List UX
 
-- [ ] Add status filter controls for `All`, `Running`, `Failed`, `Completed`, and `Cancelled`.
-- [ ] Show session status badges consistently.
-- [ ] Show updated time or last event time in each session row.
-- [ ] Refresh the list when selected session reaches a terminal event.
-- [ ] Keep the selected session visible after list refresh.
-- [ ] Show an empty filtered state when no sessions match.
-- [ ] Keep mobile session list usable inside the sheet from Sprint 8.
+- [x] Add status filter controls for `All`, `Running`, `Failed`, `Completed`, and `Cancelled`.
+- [x] Show session status badges consistently.
+- [x] Show updated time or last event time in each session row.
+- [x] Refresh the list when selected session reaches a terminal event.
+- [x] Keep the selected session visible after list refresh.
+- [x] Show an empty filtered state when no sessions match.
+- [x] Keep mobile session list usable inside the sheet from Sprint 8.
 
 ## Session Detail UX
 
-- [ ] Add inline session title editing.
-- [ ] Save title changes through `PATCH /api/sessions/{sessionId}`.
-- [ ] Show optimistic title edits only while save is pending.
-- [ ] Revert and show an inline error if save fails.
-- [ ] Show agent type, status, created time, updated time, and terminal time where available.
-- [ ] Show last received event time.
-- [ ] Show reconnecting and disconnected states near the stream header.
-- [ ] Keep cancel action visually available but not dominant.
+- [x] Add inline session title editing.
+- [x] Save title changes through `PATCH /api/sessions/{sessionId}`.
+- [x] Show optimistic title edits only while save is pending.
+- [x] Revert and show an inline error if save fails.
+- [x] Show agent type, status, created time, updated time, and terminal time where available.
+- [x] Show last received event time.
+- [x] Show reconnecting and disconnected states near the stream header.
+- [x] Keep cancel action visually available but not dominant.
 
 ## State Views
 
@@ -193,54 +193,54 @@ All error states should include enough detail for debugging without exposing sec
 
 ## Accessibility
 
-- [ ] Ensure all icon-only buttons have accessible labels.
-- [ ] Ensure focus states are visible.
-- [ ] Ensure session rows are keyboard selectable.
-- [ ] Ensure dialogs and sheets trap focus correctly through shadcn primitives.
-- [ ] Mark event stream updates with an appropriate live region that does not spam screen readers.
-- [ ] Use semantic headings for session list and detail panes.
-- [ ] Ensure color is not the only signal for status.
-- [ ] Confirm all interactive controls are reachable by keyboard.
-- [ ] Keep text contrast acceptable in light and dark modes if dark mode exists.
+- [x] Ensure all icon-only buttons have accessible labels.
+- [x] Ensure focus states are visible.
+- [x] Ensure session rows are keyboard selectable.
+- [x] Ensure dialogs and sheets trap focus correctly through shadcn primitives.
+- [x] Mark event stream updates with an appropriate live region that does not spam screen readers.
+- [x] Use semantic headings for session list and detail panes.
+- [x] Ensure color is not the only signal for status.
+- [x] Confirm all interactive controls are reachable by keyboard.
+- [x] Keep text contrast acceptable in light and dark modes if dark mode exists.
 
 ## Mobile Polish
 
 - [ ] Validate the layout at 375px width.
-- [ ] Keep top toolbar controls on one or two stable rows without overlap.
-- [ ] Keep session sheet scrolling independent from the event stream.
-- [ ] Keep composer reachable when the virtual keyboard is open.
-- [ ] Ensure event rows wrap long commands and paths cleanly.
-- [ ] Avoid tiny tap targets.
+- [x] Keep top toolbar controls on one or two stable rows without overlap.
+- [x] Keep session sheet scrolling independent from the event stream.
+- [x] Keep composer reachable when the virtual keyboard is open.
+- [x] Ensure event rows wrap long commands and paths cleanly.
+- [x] Avoid tiny tap targets.
 
 ## Tests And Verification
 
 ### Frontend Tests
 
-- [ ] Test delta coalescing.
-- [ ] Test tool start/completion grouping.
-- [ ] Test log grouping.
-- [ ] Test failed events render expanded.
-- [ ] Test unknown provider events render collapsed with raw JSON available.
-- [ ] Test event reducer preserves sequence order and dedupes.
-- [ ] Test status filters.
-- [ ] Test title editing success and failure.
-- [ ] Test `Jump to latest` state transitions.
-- [ ] Test cancel button accessibility label.
-- [ ] Test session row keyboard selection.
+- [x] Test delta coalescing.
+- [x] Test tool start/completion grouping.
+- [x] Test log grouping.
+- [x] Test failed events render expanded.
+- [x] Test unknown provider events render collapsed with raw JSON available.
+- [x] Test event reducer preserves sequence order and dedupes.
+- [x] Test status filters.
+- [x] Test title editing success and failure.
+- [x] Test `Jump to latest` state transitions.
+- [x] Test cancel button accessibility label.
+- [x] Test session row keyboard selection.
 
 ### Backend Tests
 
-- [ ] Test `PATCH /api/sessions/{sessionId}` updates title if added in this sprint.
-- [ ] Test title update returns 404 for unknown sessions.
-- [ ] Test session list status filtering if added in this sprint.
-- [ ] Test invalid status filter returns HTTP 400.
+- [x] Test `PATCH /api/sessions/{sessionId}` updates title if added in this sprint.
+- [x] Test title update returns 404 for unknown sessions.
+- [x] Test session list status filtering if added in this sprint.
+- [x] Test invalid status filter returns HTTP 400.
 
 ### Manual Browser Verification
 
-- [ ] `cd web && bun run build` passes.
-- [ ] `cd web && bun run lint` passes if lint remains configured.
-- [ ] Frontend tests pass.
-- [ ] `go test ./...` passes.
+- [x] `cd web && bun run build` passes.
+- [x] `cd web && bun run lint` passes if lint remains configured.
+- [x] Frontend tests pass.
+- [x] `go test ./...` passes.
 - [ ] Start a fake session and confirm event grouping.
 - [ ] Start a Codex session and confirm logs/tools/errors remain scannable.
 - [ ] Scroll up during a run and confirm auto-follow pauses.
@@ -252,7 +252,7 @@ All error states should include enough detail for debugging without exposing sec
 
 ### Version Control
 
-- [ ] Commit Sprint 9 in one dedicated git commit after verification passes.
+- [x] Commit Sprint 9 in one dedicated git commit after verification passes.
 
 ## Completion Criteria
 

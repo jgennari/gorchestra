@@ -156,6 +156,57 @@ func TestMessageSubmissionPersistsUserMessageAndMarksSessionRunning(t *testing.T
 	assertPayloadText(t, events[0], "Inspect this repo")
 }
 
+func TestUpdateSessionTitleTrimsAndReturnsSession(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	rec := patchJSON(handler, "/api/sessions/"+session.ID, `{"title":"  New title  "}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response sessionResponse
+	decodeJSON(t, rec, &response)
+	if response.Title != "New title" {
+		t.Fatalf("expected trimmed title, got %q", response.Title)
+	}
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated.Title != "New title" {
+		t.Fatalf("expected persisted title, got %q", updated.Title)
+	}
+}
+
+func TestUpdateSessionTitleReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	_, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+
+	rec := patchJSON(handler, "/api/sessions/sess_missing", `{"title":"Missing"}`)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusNotFound, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "session not found")
+}
+
+func TestUpdateSessionTitleRejectsMalformedJSON(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	rec := patchJSON(handler, "/api/sessions/"+session.ID, `{"title"`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "invalid JSON body")
+}
+
 func TestMessageSubmissionReturnsUnavailableForRegisteredUnavailableAgent(t *testing.T) {
 	ctx := context.Background()
 	codexAgent := availabilityAgent{agentType: "codex", availableErr: agents.ErrUnavailable}
@@ -611,6 +662,14 @@ func createIntegrationSession(t *testing.T, ctx context.Context, dbStore *store.
 
 func postJSON(handler http.Handler, path string, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func patchJSON(handler http.Handler, path string, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

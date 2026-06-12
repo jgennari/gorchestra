@@ -27,6 +27,7 @@ type Store interface {
 	CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error)
 	GetSession(ctx context.Context, id string) (store.Session, error)
 	ListSessions(ctx context.Context, params store.ListSessionsParams) ([]store.Session, error)
+	UpdateSessionTitle(ctx context.Context, params store.UpdateSessionTitleParams) (store.Session, error)
 	UpdateSessionStatus(ctx context.Context, params store.UpdateSessionStatusParams) (store.Session, error)
 	ListEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error)
 }
@@ -102,6 +103,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 
 	if api.store != nil && api.events != nil && api.agents != nil && api.runs != nil {
 		r.Post("/api/sessions", api.createSessionHandler)
+		r.Patch("/api/sessions/{sessionId}", api.updateSessionHandler)
 		r.Post("/api/sessions/{sessionId}/messages", api.submitMessageHandler)
 		r.Post("/api/sessions/{sessionId}/cancel", api.cancelSessionHandler)
 	}

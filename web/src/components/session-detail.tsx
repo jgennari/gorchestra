@@ -6,7 +6,9 @@ import { Separator } from '@/components/ui/separator'
 import { StatusBadge } from '@/components/status-badge'
 import { EventStream } from '@/components/event-stream'
 import { PromptComposer } from '@/components/prompt-composer'
+import { SessionTitleEditor } from '@/components/session-title-editor'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
 
 type Props = {
   session: Session | null
@@ -17,6 +19,7 @@ type Props = {
   onSubmitPrompt: (content: string) => Promise<void>
   onCancel: () => Promise<void>
   onRefresh: () => void
+  onUpdateTitle: (title: string) => Promise<void>
 }
 
 export function SessionDetail({
@@ -28,6 +31,7 @@ export function SessionDetail({
   onSubmitPrompt,
   onCancel,
   onRefresh,
+  onUpdateTitle,
 }: Props) {
   if (!session) {
     return (
@@ -54,16 +58,13 @@ export function SessionDetail({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="truncate text-lg font-semibold">{session.title || 'Untitled session'}</h2>
+              <SessionTitleEditor title={session.title} onSave={onUpdateTitle} />
               <StatusBadge status={session.status} />
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {session.agent_type} · updated {formatDateTime(session.updated_at)}
-            </p>
+            <SessionMetadata session={session} lastEventAt={events.at(-1)?.created_at ?? ''} />
           </div>
           <TooltipProvider>
             <div className="flex shrink-0 items-center gap-2">
-              <ConnectionIndicator state={streamState} error={streamError} />
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button variant="outline" size="icon" onClick={onRefresh} aria-label="Refresh session">
@@ -73,7 +74,12 @@ export function SessionDetail({
                 <TooltipContent>Refresh session</TooltipContent>
               </Tooltip>
               {session.status === 'running' ? (
-                <Button variant="destructive" onClick={() => void onCancel()}>
+                <Button
+                  variant="outline"
+                  onClick={() => void onCancel()}
+                  aria-label="Cancel running session"
+                  className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                >
                   <Ban />
                   Cancel
                 </Button>
@@ -85,8 +91,14 @@ export function SessionDetail({
         {streamError ? <p className="mt-2 text-sm text-destructive">{streamError}</p> : null}
       </header>
 
-      <div className="min-h-0 flex-1">
-        <EventStream events={events} />
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex items-center justify-between gap-3 border-b px-4 py-2">
+          <h3 className="text-sm font-medium">Activity</h3>
+          <ConnectionIndicator state={streamState} error={streamError} />
+        </div>
+        <div className="min-h-0 flex-1">
+          <EventStream events={events} loading={streamState === 'loading'} error={streamError} />
+        </div>
       </div>
       <Separator />
       <PromptComposer
@@ -98,11 +110,44 @@ export function SessionDetail({
   )
 }
 
+function SessionMetadata({ session, lastEventAt }: { session: Session; lastEventAt: string }) {
+  const rows = [
+    ['Agent', session.agent_type],
+    ['Created', formatDateTime(session.created_at)],
+    ['Updated', formatDateTime(session.updated_at)],
+    ['Last event', lastEventAt ? formatDateTime(lastEventAt) : 'No events'],
+  ]
+  if (session.completed_at) {
+    rows.push(['Terminal', formatDateTime(session.completed_at)])
+  }
+
+  return (
+    <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2 xl:grid-cols-5">
+      {rows.map(([label, value]) => (
+        <div key={label} className="min-w-0">
+          <dt className="inline font-medium text-foreground">{label}: </dt>
+          <dd className="inline break-words">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
 function ConnectionIndicator({ state, error }: { state: StreamState; error: string }) {
   const label = error ? 'stream error' : state
+  const visibleLabel = label === 'connected' ? 'live' : label
   return (
-    <span className="inline-flex h-8 items-center rounded-md border px-2 text-xs text-muted-foreground">
-      {label}
+    <span
+      className={cn(
+        'inline-flex h-8 items-center rounded-md border px-2 text-xs',
+        error || state === 'disconnected'
+          ? 'border-destructive/40 text-destructive'
+          : state === 'reconnecting'
+            ? 'border-amber-200 bg-amber-50 text-amber-800'
+            : 'text-muted-foreground',
+      )}
+    >
+      {visibleLabel}
     </span>
   )
 }

@@ -56,8 +56,14 @@ type UpdateSessionStatusParams struct {
 	Status SessionStatus
 }
 
+type UpdateSessionTitleParams struct {
+	ID    string
+	Title string
+}
+
 type ListSessionsParams struct {
-	Limit int
+	Limit  int
+	Status SessionStatus
 }
 
 type AppendEventParams struct {

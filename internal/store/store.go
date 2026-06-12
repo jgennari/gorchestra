@@ -118,14 +118,18 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 		limit = defaultSessionLimit
 	}
 
-	rows, err := s.db.QueryContext(
-		ctx,
-		`SELECT id, title, agent_type, status, created_at, updated_at, completed_at
-		 FROM sessions
-		 ORDER BY updated_at DESC, created_at DESC, id DESC
-		 LIMIT ?`,
-		limit,
-	)
+	query := `SELECT id, title, agent_type, status, created_at, updated_at, completed_at
+		 FROM sessions`
+	args := []any{}
+	if params.Status != "" {
+		query += ` WHERE status = ?`
+		args = append(args, string(params.Status))
+	}
+	query += ` ORDER BY updated_at DESC, created_at DESC, id DESC
+		 LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -144,6 +148,37 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 	}
 
 	return sessions, nil
+}
+
+func (s *Store) UpdateSessionTitle(ctx context.Context, params UpdateSessionTitleParams) (Session, error) {
+	if strings.TrimSpace(params.ID) == "" {
+		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+
+	title := strings.TrimSpace(params.Title)
+	now := s.now()
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE sessions
+		 SET title = ?, updated_at = ?
+		 WHERE id = ?`,
+		title,
+		formatTime(now),
+		params.ID,
+	)
+	if err != nil {
+		return Session{}, fmt.Errorf("update session title: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, fmt.Errorf("check updated session title rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, params.ID)
+	}
+
+	return s.GetSession(ctx, params.ID)
 }
 
 func (s *Store) UpdateSessionStatus(ctx context.Context, params UpdateSessionStatusParams) (Session, error) {

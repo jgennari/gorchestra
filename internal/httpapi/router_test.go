@@ -129,6 +129,60 @@ func TestListSessionsRejectsInvalidLimit(t *testing.T) {
 	}
 }
 
+func TestListSessionsFiltersByStatus(t *testing.T) {
+	fakeStore := newFakeHTTPStore()
+	fakeStore.addSessionWith(store.Session{
+		ID:        "sess_running",
+		Title:     "Running session",
+		AgentType: "fake",
+		Status:    store.SessionStatusRunning,
+		CreatedAt: testCreatedAt,
+		UpdatedAt: testCreatedAt,
+	})
+	fakeStore.addSessionWith(store.Session{
+		ID:        "sess_completed",
+		Title:     "Completed session",
+		AgentType: "fake",
+		Status:    store.SessionStatusCompleted,
+		CreatedAt: testCreatedAt,
+		UpdatedAt: testCreatedAt,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions?status=running", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: fakeStore}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if got := fakeStore.lastListSessionsStatus(t); got != store.SessionStatusRunning {
+		t.Fatalf("expected status filter running, got %q", got)
+	}
+
+	var response listSessionsResponse
+	decodeJSON(t, rec, &response)
+	if len(response.Sessions) != 1 || response.Sessions[0].ID != "sess_running" {
+		t.Fatalf("expected only running session, got %#v", response.Sessions)
+	}
+}
+
+func TestListSessionsRejectsInvalidStatus(t *testing.T) {
+	fakeStore := newFakeHTTPStore()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions?status=paused", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: fakeStore}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "status is unsupported")
+	if got := fakeStore.listSessionsCallCount(); got != 0 {
+		t.Fatalf("expected no list sessions calls, got %d", got)
+	}
+}
+
 func TestGetSessionReturnsSession(t *testing.T) {
 	fakeStore := newFakeHTTPStore()
 	completedAt := testCreatedAt.Add(5 * time.Minute)
@@ -487,7 +541,7 @@ type fakeHTTPStore struct {
 	events   map[string][]store.Event
 
 	listCalls         []listCall
-	listSessionsCalls []int
+	listSessionsCalls []listSessionsCall
 	onList            func(sessionID string, afterSeq int64, limit int)
 	getErr            error
 	listErr           error
@@ -497,6 +551,11 @@ type listCall struct {
 	sessionID string
 	afterSeq  int64
 	limit     int
+}
+
+type listSessionsCall struct {
+	limit  int
+	status store.SessionStatus
 }
 
 func newFakeHTTPStore() *fakeHTTPStore {
@@ -586,10 +645,16 @@ func (s *fakeHTTPStore) ListSessions(_ context.Context, params store.ListSession
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.listSessionsCalls = append(s.listSessionsCalls, params.Limit)
+	s.listSessionsCalls = append(s.listSessionsCalls, listSessionsCall{
+		limit:  params.Limit,
+		status: params.Status,
+	})
 
 	sessions := make([]store.Session, 0, len(s.sessions))
 	for _, session := range s.sessions {
+		if params.Status != "" && session.Status != params.Status {
+			continue
+		}
 		sessions = append(sessions, session)
 	}
 	sort.Slice(sessions, func(i, j int) bool {
@@ -604,6 +669,22 @@ func (s *fakeHTTPStore) ListSessions(_ context.Context, params store.ListSession
 	}
 
 	return append([]store.Session(nil), sessions...), nil
+}
+
+func (s *fakeHTTPStore) UpdateSessionTitle(_ context.Context, params store.UpdateSessionTitleParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[params.ID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+
+	session.Title = strings.TrimSpace(params.Title)
+	session.UpdatedAt = testCreatedAt
+	s.sessions[params.ID] = session
+
+	return session, nil
 }
 
 func (s *fakeHTTPStore) UpdateSessionStatus(_ context.Context, params store.UpdateSessionStatusParams) (store.Session, error) {
@@ -689,7 +770,19 @@ func (s *fakeHTTPStore) lastListSessionsLimit(t *testing.T) int {
 	if len(s.listSessionsCalls) == 0 {
 		t.Fatal("expected at least one ListSessions call")
 	}
-	return s.listSessionsCalls[len(s.listSessionsCalls)-1]
+	return s.listSessionsCalls[len(s.listSessionsCalls)-1].limit
+}
+
+func (s *fakeHTTPStore) lastListSessionsStatus(t *testing.T) store.SessionStatus {
+	t.Helper()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.listSessionsCalls) == 0 {
+		t.Fatal("expected at least one ListSessions call")
+	}
+	return s.listSessionsCalls[len(s.listSessionsCalls)-1].status
 }
 
 func (s *fakeHTTPStore) listSessionsCallCount() int {

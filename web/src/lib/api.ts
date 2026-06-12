@@ -1,5 +1,6 @@
 export type SessionStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
 export type AgentType = 'fake' | 'codex'
+export type SessionListFilter = 'all' | Exclude<SessionStatus, 'idle'>
 
 export type Session = {
   id: string
@@ -48,6 +49,11 @@ type EventHistoryResponse = {
   events: AgentEvent[]
 }
 
+type ListSessionsOptions = {
+  limit?: number
+  status?: SessionStatus
+}
+
 export class APIError extends Error {
   status: number
 
@@ -66,8 +72,15 @@ export async function fetchHealth() {
   await requestJSON<{ status: string }>('/api/health')
 }
 
-export async function listSessions(limit = 50) {
-  const data = await requestJSON<ListSessionsResponse>(`/api/sessions?limit=${limit}`)
+export async function listSessions(options: ListSessionsOptions | number = {}) {
+  const limit = typeof options === 'number' ? options : (options.limit ?? 50)
+  const status = typeof options === 'number' ? undefined : options.status
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (status) {
+    params.set('status', status)
+  }
+
+  const data = await requestJSON<ListSessionsResponse>(`/api/sessions?${params.toString()}`)
   return data.sessions
 }
 
@@ -81,6 +94,13 @@ export async function createSession(params: { agent_type: AgentType; title?: str
     body: JSON.stringify(params),
   })
   return getSession(data.session_id)
+}
+
+export async function updateSessionTitle(sessionID: string, title: string) {
+  return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  })
 }
 
 export async function submitMessage(sessionID: string, content: string) {

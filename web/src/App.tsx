@@ -1,7 +1,7 @@
 import { Menu, Plus } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import type { AgentType, Session, SessionStatus } from '@/lib/api'
+import type { AgentType, Session, SessionListFilter } from '@/lib/api'
 import {
   APIError,
   cancelSession,
@@ -10,6 +10,7 @@ import {
   getSession,
   listSessions,
   submitMessage,
+  updateSessionTitle,
 } from '@/lib/api'
 import { isTerminalEvent, statusFromEvent } from '@/lib/events'
 import { useSessionEvents } from '@/hooks/use-session-events'
@@ -21,18 +22,18 @@ import { SessionList } from '@/components/session-list'
 import { StatusBadge } from '@/components/status-badge'
 
 type HealthState = 'checking' | 'online' | 'offline'
-type SessionFilter = 'all' | SessionStatus
 
 function App() {
   const [healthState, setHealthState] = useState<HealthState>('checking')
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedSessionID, setSelectedSessionID] = useState<string | null>(null)
-  const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all')
+  const [sessionFilter, setSessionFilter] = useState<SessionListFilter>('all')
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileListOpen, setMobileListOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const selectedSessionIDRef = useRef<string | null>(null)
 
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionID) ?? null,
@@ -51,6 +52,10 @@ function App() {
     },
     [applySession],
   )
+
+  useEffect(() => {
+    selectedSessionIDRef.current = selectedSessionID
+  }, [selectedSessionID])
 
   const { events, streamState, error: streamError } = useSessionEvents(selectedSessionID, {
     onEvent: (event) => {
@@ -76,15 +81,24 @@ function App() {
     setLoadingSessions(true)
     setError('')
     try {
-      const nextSessions = await listSessions()
-      setSessions(nextSessions)
-      setSelectedSessionID((current) => current ?? nextSessions[0]?.id ?? null)
+      const status = sessionFilter === 'all' ? undefined : sessionFilter
+      const nextSessions = await listSessions({ status })
+      const selectedID = selectedSessionIDRef.current
+      const mergedSessions = await includeSelectedSession(nextSessions, selectedID)
+
+      setSessions(sortSessions(mergedSessions))
+      setSelectedSessionID((current) => {
+        if (current && mergedSessions.some((session) => session.id === current)) {
+          return current
+        }
+        return nextSessions[0]?.id ?? mergedSessions[0]?.id ?? null
+      })
     } catch (loadError) {
       setError(messageFromError(loadError))
     } finally {
       setLoadingSessions(false)
     }
-  }, [])
+  }, [sessionFilter])
 
   useEffect(() => {
     void loadSessions()
@@ -153,6 +167,14 @@ function App() {
     }
   }
 
+  async function handleUpdateTitle(title: string) {
+    if (!selectedSessionID) {
+      return
+    }
+    const updated = await updateSessionTitle(selectedSessionID, title)
+    applySession(updated)
+  }
+
   const list = (
     <SessionList
       sessions={sessions}
@@ -215,6 +237,7 @@ function App() {
             notice={notice || healthLabel(healthState)}
             onSubmitPrompt={handleSubmitPrompt}
             onCancel={handleCancel}
+            onUpdateTitle={handleUpdateTitle}
             onRefresh={() => {
               void loadSessions()
               if (selectedSessionID) void refreshSession(selectedSessionID)
@@ -226,6 +249,19 @@ function App() {
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
     </main>
   )
+}
+
+async function includeSelectedSession(sessions: Session[], selectedSessionID: string | null) {
+  if (!selectedSessionID || sessions.some((session) => session.id === selectedSessionID)) {
+    return sessions
+  }
+
+  try {
+    const selectedSession = await getSession(selectedSessionID)
+    return [selectedSession, ...sessions]
+  } catch {
+    return sessions
+  }
 }
 
 function sortSessions(sessions: Session[]) {

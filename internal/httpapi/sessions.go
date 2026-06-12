@@ -24,6 +24,10 @@ type createSessionRequest struct {
 	Title     string `json:"title"`
 }
 
+type updateSessionRequest struct {
+	Title string `json:"title"`
+}
+
 type createSessionResponse struct {
 	SessionID string `json:"session_id"`
 }
@@ -61,8 +65,15 @@ func (api API) listSessionsHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	status, ok := parseSessionStatus(w, r)
+	if !ok {
+		return
+	}
 
-	sessions, err := api.store.ListSessions(r.Context(), store.ListSessionsParams{Limit: limit})
+	sessions, err := api.store.ListSessions(r.Context(), store.ListSessionsParams{
+		Limit:  limit,
+		Status: status,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list sessions")
 		return
@@ -120,6 +131,34 @@ func (api API) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, createSessionResponse{SessionID: session.ID})
+}
+
+func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+
+	var request updateSessionRequest
+	if !decodeJSONBody(w, r, &request) {
+		return
+	}
+
+	session, err := api.store.UpdateSessionTitle(r.Context(), store.UpdateSessionTitleParams{
+		ID:    sessionID,
+		Title: request.Title,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if errors.Is(err, store.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to update session")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, sessionResponseFromStore(session))
 }
 
 func sessionResponses(sessions []store.Session) []sessionResponse {
@@ -478,6 +517,26 @@ func parseSessionLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 	}
 
 	return limit, true
+}
+
+func parseSessionStatus(w http.ResponseWriter, r *http.Request) (store.SessionStatus, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("status"))
+	if raw == "" {
+		return "", true
+	}
+
+	status := store.SessionStatus(raw)
+	switch status {
+	case store.SessionStatusIdle,
+		store.SessionStatusRunning,
+		store.SessionStatusCompleted,
+		store.SessionStatusFailed,
+		store.SessionStatusCancelled:
+		return status, true
+	default:
+		writeError(w, http.StatusBadRequest, "status is unsupported")
+		return "", false
+	}
 }
 
 func isTerminalRunEvent(eventType string) bool {

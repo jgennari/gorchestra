@@ -23,6 +23,7 @@ test('cancel button is visible only while running', () => {
       onSubmitPrompt={async () => undefined}
       onCancel={async () => undefined}
       onRefresh={() => undefined}
+      onUpdateTitle={async () => undefined}
     />,
   )
 
@@ -38,8 +39,9 @@ test('cancel button is visible only while running', () => {
       onSubmitPrompt={async () => undefined}
       onCancel={async () => undefined}
       onRefresh={() => undefined}
+      onUpdateTitle={async () => undefined}
     />,
   )
 
-  expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /cancel running session/i })).toBeInTheDocument()
 })

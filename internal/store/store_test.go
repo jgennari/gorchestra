@@ -144,6 +144,94 @@ func TestListSessionsHonorsLimit(t *testing.T) {
 	}
 }
 
+func TestListSessionsFiltersByStatus(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	idle := createTestSessionWithTitle(t, ctx, store, "Idle")
+	running := createTestSessionWithTitle(t, ctx, store, "Running")
+	completed := createTestSessionWithTitle(t, ctx, store, "Completed")
+	if _, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
+		ID:     running.ID,
+		Status: SessionStatusRunning,
+	}); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	if _, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
+		ID:     completed.ID,
+		Status: SessionStatusCompleted,
+	}); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+
+	sessions, err := store.ListSessions(ctx, ListSessionsParams{Status: SessionStatusRunning})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+
+	assertSessionIDs(t, sessions, []string{running.ID})
+	if hasSessionID(sessions, idle.ID) || hasSessionID(sessions, completed.ID) {
+		t.Fatalf("expected only running session, got %#v", sessions)
+	}
+}
+
+func TestUpdateSessionTitleTrimsTitleAndUpdatesTimestamp(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	createdAt := time.Date(2026, 6, 12, 16, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(10 * time.Minute)
+	store.now = func() time.Time { return createdAt }
+	session := createTestSessionWithTitle(t, ctx, store, "Old title")
+
+	store.now = func() time.Time { return updatedAt }
+	updated, err := store.UpdateSessionTitle(ctx, UpdateSessionTitleParams{
+		ID:    session.ID,
+		Title: "  New title  ",
+	})
+	if err != nil {
+		t.Fatalf("update title: %v", err)
+	}
+
+	if updated.Title != "New title" {
+		t.Fatalf("expected trimmed title, got %q", updated.Title)
+	}
+	if !updated.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("expected updated_at %s, got %s", updatedAt, updated.UpdatedAt)
+	}
+}
+
+func TestUpdateSessionTitleAllowsEmptyTitle(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSessionWithTitle(t, ctx, store, "Old title")
+
+	updated, err := store.UpdateSessionTitle(ctx, UpdateSessionTitleParams{
+		ID:    session.ID,
+		Title: "   ",
+	})
+	if err != nil {
+		t.Fatalf("update title: %v", err)
+	}
+
+	if updated.Title != "" {
+		t.Fatalf("expected empty title, got %q", updated.Title)
+	}
+}
+
+func TestUpdateSessionTitleReturnsNotFoundForMissingSession(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	_, err := store.UpdateSessionTitle(ctx, UpdateSessionTitleParams{
+		ID:    "sess_missing",
+		Title: "New title",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestUpdateSessionStatusSetsRunningAndUpdatedAt(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)
