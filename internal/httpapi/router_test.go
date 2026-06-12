@@ -1,11 +1,23 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/jgennari/gorchestra/internal/store"
 )
+
+const testSessionID = "sess_test"
+
+var testCreatedAt = time.Date(2026, 6, 12, 16, 0, 0, 123456789, time.FixedZone("EDT", -4*60*60))
 
 func TestHealthRoute(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
@@ -25,3 +37,591 @@ func TestHealthRoute(t *testing.T) {
 		t.Fatalf("expected content type application/json, got %q", got)
 	}
 }
+
+func TestEventHistoryReturnsEventsAfterSeq(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEvent(1, "agent.message.delta"),
+		testEvent(2, "agent.tool.started"),
+		testEvent(3, "agent.tool.completed"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?after_seq=1&limit=10", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+
+	if got, want := len(response.Events), 2; got != want {
+		t.Fatalf("expected %d events, got %d: %#v", want, got, response.Events)
+	}
+	if response.Events[0].Seq != 2 || response.Events[1].Seq != 3 {
+		t.Fatalf("expected seqs [2 3], got [%d %d]", response.Events[0].Seq, response.Events[1].Seq)
+	}
+	if got := response.Events[0].CreatedAt; got != testCreatedAt.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("expected UTC created_at %q, got %q", testCreatedAt.UTC().Format(time.RFC3339Nano), got)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(response.Events[0].Payload, &payload); err != nil {
+		t.Fatalf("expected payload to be JSON object: %v", err)
+	}
+	if got := payload["text"]; got != "event 2" {
+		t.Fatalf("expected payload text %q, got %q", "event 2", got)
+	}
+}
+
+func TestEventHistoryAppliesDefaultLimit(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	call := store.lastListCall(t)
+	if call.afterSeq != 0 {
+		t.Fatalf("expected default after_seq 0, got %d", call.afterSeq)
+	}
+	if call.limit != defaultEventLimit {
+		t.Fatalf("expected default limit %d, got %d", defaultEventLimit, call.limit)
+	}
+}
+
+func TestEventHistoryCapsLargeLimit(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?limit=5000", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	call := store.lastListCall(t)
+	if call.limit != maxEventLimit {
+		t.Fatalf("expected capped limit %d, got %d", maxEventLimit, call.limit)
+	}
+}
+
+func TestEventHistoryRejectsInvalidAfterSeq(t *testing.T) {
+	for _, afterSeq := range []string{"-1", "nope"} {
+		t.Run(afterSeq, func(t *testing.T) {
+			store := newFakeHTTPStore()
+			store.addSession(testSessionID)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?after_seq="+afterSeq, nil)
+			rec := httptest.NewRecorder()
+
+			NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+			}
+			assertErrorResponse(t, rec, "after_seq must be a non-negative integer")
+			if got := store.listCallCount(); got != 0 {
+				t.Fatalf("expected no list calls, got %d", got)
+			}
+		})
+	}
+}
+
+func TestEventHistoryRejectsInvalidLimit(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?limit=nope", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "limit must be a non-negative integer")
+	if got := store.listCallCount(); got != 0 {
+		t.Fatalf("expected no list calls, got %d", got)
+	}
+}
+
+func TestEventHistoryReturns404ForUnknownSession(t *testing.T) {
+	store := newFakeHTTPStore()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/missing/events", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusNotFound, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "session not found")
+	if got := store.listCallCount(); got != 0 {
+		t.Fatalf("expected no list calls, got %d", got)
+	}
+}
+
+func TestSSEReplaySendsMissedEventsBeforeLiveEvents(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(testSessionID, testEvent(1, "agent.message.delta"))
+
+	subscriber := &fakeSubscriber{}
+	store.onList = func(string, int64, int) {
+		subscriber.send(testEvent(2, "agent.message.completed"))
+		subscriber.closeAll()
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events/stream?after_seq=0", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store, Events: subscriber}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("expected content type text/event-stream, got %q", got)
+	}
+
+	body := rec.Body.String()
+	assertSeqOrder(t, body, 1, 2)
+}
+
+func TestSSEUsesIDEventAndDataFields(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(testSessionID, testEvent(1, "agent.message.delta"))
+
+	subscriber := &fakeSubscriber{}
+	store.onList = func(string, int64, int) {
+		subscriber.closeAll()
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events/stream", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store, Events: subscriber}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "id: 1\n") {
+		t.Fatalf("expected SSE id field in body:\n%s", body)
+	}
+	if !strings.Contains(body, "event: agent.message.delta\n") {
+		t.Fatalf("expected SSE event field in body:\n%s", body)
+	}
+
+	response := firstSSEData(t, body)
+	if response.Seq != 1 {
+		t.Fatalf("expected data seq 1, got %d", response.Seq)
+	}
+	if response.Type != "agent.message.delta" {
+		t.Fatalf("expected data type agent.message.delta, got %q", response.Type)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(response.Payload, &payload); err != nil {
+		t.Fatalf("expected payload to be JSON object: %v", err)
+	}
+	if got := payload["text"]; got != "event 1" {
+		t.Fatalf("expected payload text %q, got %q", "event 1", got)
+	}
+}
+
+func TestSSESkipsDuplicateLiveEventsAlreadySentDuringReplay(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEvent(1, "agent.message.delta"),
+		testEvent(2, "agent.message.completed"),
+	)
+
+	subscriber := &fakeSubscriber{}
+	store.onList = func(string, int64, int) {
+		subscriber.send(testEvent(2, "agent.message.completed"))
+		subscriber.closeAll()
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events/stream", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store, Events: subscriber}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if got := strings.Count(body, `"seq":2`); got != 1 {
+		t.Fatalf("expected duplicate seq 2 to be filtered once, got %d occurrences in body:\n%s", got, body)
+	}
+}
+
+func TestSSEDoesNotLoseEventsAppendedDuringStreamSetup(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(testSessionID, testEvent(1, "agent.message.delta"))
+
+	subscriber := &fakeSubscriber{}
+	appended := false
+	store.onList = func(string, int64, int) {
+		if appended {
+			return
+		}
+		appended = true
+
+		event := testEvent(2, "agent.message.completed")
+		store.appendEvent(event)
+		subscriber.send(event)
+		subscriber.closeAll()
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events/stream?after_seq=0", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store, Events: subscriber}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	assertSeqOrder(t, body, 1, 2)
+	if got := strings.Count(body, `"seq":2`); got != 1 {
+		t.Fatalf("expected setup event seq 2 exactly once, got %d occurrences in body:\n%s", got, body)
+	}
+}
+
+func TestStreamCleanupUnsubscribesWhenRequestCancelled(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+
+	subscriber := &fakeSubscriber{}
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events/stream", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewRouter(Dependencies{Store: store, Events: subscriber}).ServeHTTP(rec, req)
+	}()
+
+	waitFor(t, func() bool {
+		return subscriber.subscribeCount() == 1
+	})
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not exit after request cancellation")
+	}
+
+	if got := subscriber.unsubscribeCount(); got != 1 {
+		t.Fatalf("expected one unsubscribe, got %d", got)
+	}
+}
+
+type fakeHTTPStore struct {
+	mu       sync.Mutex
+	sessions map[string]store.Session
+	events   map[string][]store.Event
+
+	listCalls []listCall
+	onList    func(sessionID string, afterSeq int64, limit int)
+	getErr    error
+	listErr   error
+}
+
+type listCall struct {
+	sessionID string
+	afterSeq  int64
+	limit     int
+}
+
+func newFakeHTTPStore() *fakeHTTPStore {
+	return &fakeHTTPStore{
+		sessions: make(map[string]store.Session),
+		events:   make(map[string][]store.Event),
+	}
+}
+
+func (s *fakeHTTPStore) addSession(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.sessions[id] = store.Session{
+		ID:        id,
+		Title:     "Test session",
+		AgentType: "fake",
+		Status:    store.SessionStatusIdle,
+		CreatedAt: testCreatedAt,
+		UpdatedAt: testCreatedAt,
+	}
+}
+
+func (s *fakeHTTPStore) setEvents(sessionID string, events ...store.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.events[sessionID] = append([]store.Event(nil), events...)
+	sort.Slice(s.events[sessionID], func(i, j int) bool {
+		return s.events[sessionID][i].Seq < s.events[sessionID][j].Seq
+	})
+}
+
+func (s *fakeHTTPStore) appendEvent(event store.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.events[event.SessionID] = append(s.events[event.SessionID], event)
+	sort.Slice(s.events[event.SessionID], func(i, j int) bool {
+		return s.events[event.SessionID][i].Seq < s.events[event.SessionID][j].Seq
+	})
+}
+
+func (s *fakeHTTPStore) GetSession(_ context.Context, stringID string) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.getErr != nil {
+		return store.Session{}, s.getErr
+	}
+
+	session, ok := s.sessions[stringID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+
+	return session, nil
+}
+
+func (s *fakeHTTPStore) ListEvents(_ context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error) {
+	s.mu.Lock()
+	s.listCalls = append(s.listCalls, listCall{sessionID: sessionID, afterSeq: afterSeq, limit: limit})
+	onList := s.onList
+	listErr := s.listErr
+	s.mu.Unlock()
+
+	if onList != nil {
+		onList(sessionID, afterSeq, limit)
+	}
+	if listErr != nil {
+		return nil, listErr
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	events := s.events[sessionID]
+	filtered := make([]store.Event, 0, len(events))
+	for _, event := range events {
+		if event.Seq > afterSeq {
+			filtered = append(filtered, event)
+		}
+	}
+
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+
+	return append([]store.Event(nil), filtered...), nil
+}
+
+func (s *fakeHTTPStore) lastListCall(t *testing.T) listCall {
+	t.Helper()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.listCalls) == 0 {
+		t.Fatal("expected at least one ListEvents call")
+	}
+
+	return s.listCalls[len(s.listCalls)-1]
+}
+
+func (s *fakeHTTPStore) listCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.listCalls)
+}
+
+type fakeSubscriber struct {
+	mu sync.Mutex
+
+	channels     []chan store.Event
+	subscribes   int
+	unsubscribes int
+}
+
+func (s *fakeSubscriber) Subscribe(string) (<-chan store.Event, func()) {
+	ch := make(chan store.Event, 16)
+
+	s.mu.Lock()
+	s.subscribes++
+	s.channels = append(s.channels, ch)
+	s.mu.Unlock()
+
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+
+			s.unsubscribes++
+		})
+	}
+
+	return ch, unsubscribe
+}
+
+func (s *fakeSubscriber) send(event store.Event) {
+	ch := s.lastChannel()
+	ch <- event
+}
+
+func (s *fakeSubscriber) closeAll() {
+	s.mu.Lock()
+	channels := append([]chan store.Event(nil), s.channels...)
+	s.mu.Unlock()
+
+	for _, ch := range channels {
+		close(ch)
+	}
+}
+
+func (s *fakeSubscriber) subscribeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.subscribes
+}
+
+func (s *fakeSubscriber) unsubscribeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.unsubscribes
+}
+
+func (s *fakeSubscriber) lastChannel() chan store.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.channels) == 0 {
+		panic("no subscriber channel")
+	}
+
+	return s.channels[len(s.channels)-1]
+}
+
+func testEvent(seq int64, eventType string) store.Event {
+	return store.Event{
+		ID:        fmt.Sprintf("evt_%03d", seq),
+		SessionID: testSessionID,
+		Seq:       seq,
+		Type:      eventType,
+		Role:      "assistant",
+		Status:    store.EventStatusDelta,
+		Payload:   json.RawMessage(fmt.Sprintf(`{"text":"event %d"}`, seq)),
+		CreatedAt: testCreatedAt,
+	}
+}
+
+func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder, value any) {
+	t.Helper()
+
+	if err := json.Unmarshal(rec.Body.Bytes(), value); err != nil {
+		t.Fatalf("failed to decode JSON response %q: %v", rec.Body.String(), err)
+	}
+}
+
+func assertErrorResponse(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+
+	var response errorResponse
+	decodeJSON(t, rec, &response)
+	if response.Error != want {
+		t.Fatalf("expected error %q, got %q", want, response.Error)
+	}
+}
+
+func firstSSEData(t *testing.T, body string) eventResponse {
+	t.Helper()
+
+	for _, line := range strings.Split(body, "\n") {
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+
+		var response eventResponse
+		if err := json.Unmarshal([]byte(data), &response); err != nil {
+			t.Fatalf("failed to decode SSE data %q: %v", data, err)
+		}
+		return response
+	}
+
+	t.Fatalf("expected SSE data line in body:\n%s", body)
+	return eventResponse{}
+}
+
+func assertSeqOrder(t *testing.T, body string, first int64, second int64) {
+	t.Helper()
+
+	firstIndex := strings.Index(body, fmt.Sprintf(`"seq":%d`, first))
+	if firstIndex < 0 {
+		t.Fatalf("expected seq %d in body:\n%s", first, body)
+	}
+
+	secondIndex := strings.Index(body, fmt.Sprintf(`"seq":%d`, second))
+	if secondIndex < 0 {
+		t.Fatalf("expected seq %d in body:\n%s", second, body)
+	}
+
+	if firstIndex > secondIndex {
+		t.Fatalf("expected seq %d before seq %d in body:\n%s", first, second, body)
+	}
+}
+
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("condition was not met before timeout")
+}
+
+var _ Store = (*fakeHTTPStore)(nil)
+var _ EventSubscriber = (*fakeSubscriber)(nil)

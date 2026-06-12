@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/httpapi"
 	"github.com/jgennari/gorchestra/internal/store"
 )
@@ -36,10 +37,15 @@ func main() {
 		}
 	}()
 
+	eventService, err := events.NewService(dbStore)
+	if err != nil {
+		log.Fatalf("event service startup failed: %v", err)
+	}
+
 	addr := ":" + cfg.port
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewRouter(),
+		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

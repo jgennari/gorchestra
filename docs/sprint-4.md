@@ -58,11 +58,11 @@ Out of scope:
 
 ### Event Response Shape
 
-- [ ] Add one JSON response shape for events used by both history and SSE.
-- [ ] Include `id`, `session_id`, `seq`, `type`, `role`, `status`, `payload`, and `created_at`.
-- [ ] Emit `payload` as JSON, not an escaped JSON string.
-- [ ] Use UTC timestamps.
-- [ ] Keep field names snake_case.
+- [x] Add one JSON response shape for events used by both history and SSE.
+- [x] Include `id`, `session_id`, `seq`, `type`, `role`, `status`, `payload`, and `created_at`.
+- [x] Emit `payload` as JSON, not an escaped JSON string.
+- [x] Use UTC timestamps.
+- [x] Keep field names snake_case.
 
 Example response event:
 
@@ -83,16 +83,16 @@ Example response event:
 
 ### Event History Endpoint
 
-- [ ] Add `GET /api/sessions/{sessionId}/events`.
-- [ ] Validate that the session exists.
-- [ ] Parse `after_seq`; default to `0`.
-- [ ] Reject negative `after_seq` with HTTP 400.
-- [ ] Parse `limit`; default to `500`.
-- [ ] Reject non-numeric `limit` with HTTP 400.
-- [ ] Cap `limit` at `1000`.
-- [ ] Return events where `seq > after_seq`.
-- [ ] Return events ordered by ascending `seq`.
-- [ ] Return an empty list when no events match.
+- [x] Add `GET /api/sessions/{sessionId}/events`.
+- [x] Validate that the session exists.
+- [x] Parse `after_seq`; default to `0`.
+- [x] Reject negative `after_seq` with HTTP 400.
+- [x] Parse `limit`; default to `500`.
+- [x] Reject non-numeric `limit` with HTTP 400.
+- [x] Cap `limit` at `1000`.
+- [x] Return events where `seq > after_seq`.
+- [x] Return events ordered by ascending `seq`.
+- [x] Return an empty list when no events match.
 
 Response shape:
 
@@ -104,14 +104,14 @@ Response shape:
 
 ### SSE Stream Endpoint
 
-- [ ] Add `GET /api/sessions/{sessionId}/events/stream`.
-- [ ] Validate that the session exists before starting the stream.
-- [ ] Parse `after_seq`; default to `0`.
-- [ ] Reject negative `after_seq` with HTTP 400.
-- [ ] Set SSE headers before writing event data.
-- [ ] Flush after each SSE event.
-- [ ] Stop streaming when the request context is cancelled.
-- [ ] Unsubscribe from the event service when the stream ends.
+- [x] Add `GET /api/sessions/{sessionId}/events/stream`.
+- [x] Validate that the session exists before starting the stream.
+- [x] Parse `after_seq`; default to `0`.
+- [x] Reject negative `after_seq` with HTTP 400.
+- [x] Set SSE headers before writing event data.
+- [x] Flush after each SSE event.
+- [x] Stop streaming when the request context is cancelled.
+- [x] Unsubscribe from the event service when the stream ends.
 
 SSE frame shape:
 
@@ -124,45 +124,45 @@ data: {"id":"evt_...","session_id":"sess_...","seq":124,"type":"agent.message.de
 
 ### Replay And Live Ordering
 
-- [ ] Avoid the replay/subscribe gap during stream setup.
-- [ ] Subscribe to the session's live event stream.
-- [ ] Query SQLite for events where `seq > after_seq`.
-- [ ] Send replayed events in ascending `seq`.
-- [ ] Track the highest `seq` sent.
-- [ ] Continue with live events from the subscription.
-- [ ] Skip any live event with `seq <= highestSeqSent`.
-- [ ] Send live events in the order received from the event service.
+- [x] Avoid the replay/subscribe gap during stream setup.
+- [x] Subscribe to the session's live event stream.
+- [x] Query SQLite for events where `seq > after_seq`.
+- [x] Send replayed events in ascending `seq`.
+- [x] Track the highest `seq` sent.
+- [x] Continue with live events from the subscription.
+- [x] Skip any live event with `seq <= highestSeqSent`.
+- [x] Send live events in the order received from the event service.
 
 This order prevents events appended during stream setup from being lost. Duplicates are acceptable internally during setup only if they are filtered before writing to the client.
 
 ### Error Handling
 
-- [ ] Return structured JSON errors for non-streaming failures.
-- [ ] Return HTTP 400 for invalid query parameters.
-- [ ] Return HTTP 404 for unknown sessions.
-- [ ] Return HTTP 500 for store or event service failures before streaming starts.
-- [ ] After SSE headers are written, represent recoverable stream errors as SSE `error` events only when useful.
-- [ ] Always clean up subscriptions on stream exit.
+- [x] Return structured JSON errors for non-streaming failures.
+- [x] Return HTTP 400 for invalid query parameters.
+- [x] Return HTTP 404 for unknown sessions.
+- [x] Return HTTP 500 for store or event service failures before streaming starts.
+- [x] After SSE headers are written, represent recoverable stream errors as SSE `error` events only when useful.
+- [x] Always clean up subscriptions on stream exit.
 
 ### Tests
 
-- [ ] Test event history returns events after `after_seq`.
-- [ ] Test event history applies the default limit.
-- [ ] Test event history caps large limits at `1000`.
-- [ ] Test event history rejects invalid `after_seq`.
-- [ ] Test event history returns 404 for an unknown session.
-- [ ] Test SSE replay sends missed events before live events.
-- [ ] Test SSE uses `id`, `event`, and `data` fields.
-- [ ] Test SSE skips duplicate live events already sent during replay.
-- [ ] Test events appended during stream setup are not lost.
-- [ ] Test stream cleanup unsubscribes when the request is cancelled.
-- [ ] Test `go test ./...` passes.
+- [x] Test event history returns events after `after_seq`.
+- [x] Test event history applies the default limit.
+- [x] Test event history caps large limits at `1000`.
+- [x] Test event history rejects invalid `after_seq`.
+- [x] Test event history returns 404 for an unknown session.
+- [x] Test SSE replay sends missed events before live events.
+- [x] Test SSE uses `id`, `event`, and `data` fields.
+- [x] Test SSE skips duplicate live events already sent during replay.
+- [x] Test events appended during stream setup are not lost.
+- [x] Test stream cleanup unsubscribes when the request is cancelled.
+- [x] Test `go test ./...` passes.
 
 Use HTTP handler tests with fake store/event-service dependencies where possible. Use SQLite-backed integration tests for replay ordering when fake dependencies would hide store behavior.
 
 ### Version Control
 
-- [ ] Commit Sprint 4 in one dedicated git commit after verification passes.
+- [x] Commit Sprint 4 in one dedicated git commit after verification passes.
 
 ## Public Interfaces
 
