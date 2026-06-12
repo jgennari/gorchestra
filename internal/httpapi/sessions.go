@@ -51,8 +51,12 @@ func (api API) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "agent_type is required")
 		return
 	}
-	if _, ok := api.agents.Get(agentType); !ok {
+	agent, ok := api.agents.Get(agentType)
+	if !ok {
 		writeError(w, http.StatusBadRequest, "unsupported agent_type")
+		return
+	}
+	if !api.agentAvailable(w, agent) {
 		return
 	}
 
@@ -108,6 +112,9 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 	agent, ok := api.agents.Get(session.AgentType)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "unsupported agent_type")
+		return
+	}
+	if !api.agentAvailable(w, agent) {
 		return
 	}
 
@@ -237,6 +244,7 @@ func (api API) runAgent(ctx context.Context, session store.Session, message stri
 	err := agent.Run(ctx, agents.AgentInput{
 		SessionID: session.ID,
 		Message:   message,
+		Workdir:   api.workdir,
 		Metadata: map[string]any{
 			"agent_type": agent.Type(),
 		},
@@ -368,6 +376,18 @@ func (api API) failRunningSessionWithoutActiveRun(ctx context.Context, session s
 	}); updateErr != nil {
 		log.Printf("failed to mark session failed for missing active run: session_id=%s agent_type=%s error=%v", session.ID, session.AgentType, updateErr)
 	}
+}
+
+func (api API) agentAvailable(w http.ResponseWriter, agent agents.Agent) bool {
+	availability, ok := agent.(agents.Availability)
+	if !ok {
+		return true
+	}
+	if err := availability.Available(); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "agent unavailable")
+		return false
+	}
+	return true
 }
 
 func isTerminalRunEvent(eventType string) bool {

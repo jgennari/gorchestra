@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/jgennari/gorchestra/internal/agents/codex"
 	"github.com/jgennari/gorchestra/internal/agents/fake"
 	"github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/httpapi"
@@ -20,8 +22,12 @@ import (
 )
 
 type config struct {
-	port string
-	db   string
+	port         string
+	db           string
+	workspace    string
+	codexBin     string
+	codexSandbox string
+	codexModel   string
 }
 
 func main() {
@@ -45,7 +51,19 @@ func main() {
 		log.Fatalf("event service startup failed: %v", err)
 	}
 
-	agentRegistry, err := agents.NewRegistry(fake.New())
+	codexAgent := codex.New(
+		codex.WithBinary(cfg.codexBin),
+		codex.WithSandbox(cfg.codexSandbox),
+		codex.WithModel(cfg.codexModel),
+		codex.WithWorkspace(cfg.workspace),
+	)
+	if version, err := codexAgent.CheckAvailability(ctx); err != nil {
+		log.Printf("codex unavailable: %v", err)
+	} else {
+		log.Printf("codex available: %s", version)
+	}
+
+	agentRegistry, err := agents.NewRegistry(fake.New(), codexAgent)
 	if err != nil {
 		log.Fatalf("agent registry startup failed: %v", err)
 	}
@@ -54,7 +72,7 @@ func main() {
 	addr := ":" + cfg.port
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager}),
+		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Workdir: cfg.workspace}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -86,6 +104,10 @@ func main() {
 func parseConfig() config {
 	var cfg config
 	flag.StringVar(&cfg.db, "db", "./sessions.db", "path to the SQLite database")
+	flag.StringVar(&cfg.workspace, "workspace", "", "workspace directory for agent runs")
+	flag.StringVar(&cfg.codexBin, "codex-bin", "codex", "path to the Codex CLI binary")
+	flag.StringVar(&cfg.codexSandbox, "codex-sandbox", "workspace-write", "Codex sandbox mode")
+	flag.StringVar(&cfg.codexModel, "codex-model", "", "optional Codex model override")
 	flag.Parse()
 
 	port := os.Getenv("PORT")
@@ -93,6 +115,18 @@ func parseConfig() config {
 		port = "8080"
 	}
 	cfg.port = port
+	if cfg.workspace == "" {
+		workspace, err := os.Getwd()
+		if err != nil {
+			log.Fatalf("failed to determine workspace: %v", err)
+		}
+		cfg.workspace = workspace
+	}
+	workspace, err := filepath.Abs(cfg.workspace)
+	if err != nil {
+		log.Fatalf("failed to resolve workspace %q: %v", cfg.workspace, err)
+	}
+	cfg.workspace = workspace
 
 	return cfg
 }

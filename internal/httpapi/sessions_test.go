@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jgennari/gorchestra/internal/agents"
 	"github.com/jgennari/gorchestra/internal/agents/fake"
@@ -59,6 +60,41 @@ func TestCreateSessionRejectsUnsupportedAgent(t *testing.T) {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
 	assertErrorResponse(t, rec, "unsupported agent_type")
+}
+
+func TestCreateSessionAcceptsAvailableCodexAgent(t *testing.T) {
+	ctx := context.Background()
+	codexAgent := availabilityAgent{agentType: "codex"}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, codexAgent)
+
+	rec := postJSON(handler, "/api/sessions", `{"agent_type":"codex","title":"Real run"}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	var response createSessionResponse
+	decodeJSON(t, rec, &response)
+	session, err := dbStore.GetSession(ctx, response.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.AgentType != "codex" {
+		t.Fatalf("expected codex agent type, got %q", session.AgentType)
+	}
+}
+
+func TestCreateSessionReturnsUnavailableForRegisteredUnavailableAgent(t *testing.T) {
+	ctx := context.Background()
+	codexAgent := availabilityAgent{agentType: "codex", availableErr: agents.ErrUnavailable}
+	_, _, _, handler := newIntegrationAPI(t, ctx, codexAgent)
+
+	rec := postJSON(handler, "/api/sessions", `{"agent_type":"codex"}`)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "agent unavailable")
 }
 
 func TestCreateSessionRejectsMissingAgentType(t *testing.T) {
@@ -118,6 +154,55 @@ func TestMessageSubmissionPersistsUserMessageAndMarksSessionRunning(t *testing.T
 		t.Fatalf("expected completed user event, got %q", events[0].Status)
 	}
 	assertPayloadText(t, events[0], "Inspect this repo")
+}
+
+func TestMessageSubmissionReturnsUnavailableForRegisteredUnavailableAgent(t *testing.T) {
+	ctx := context.Background()
+	codexAgent := availabilityAgent{agentType: "codex", availableErr: agents.ErrUnavailable}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, codexAgent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Codex run",
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Inspect this repo"}`)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "agent unavailable")
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	if len(events) != 0 {
+		t.Fatalf("expected no events to be appended, got %#v", events)
+	}
+}
+
+func TestMessageSubmissionPassesConfiguredWorkdirToAgent(t *testing.T) {
+	ctx := context.Background()
+	agent := newBlockingAgent()
+	workdir := filepath.Join(t.TempDir(), "workspace")
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workdir, agent)
+	session := createIntegrationSession(t, ctx, dbStore)
+	t.Cleanup(agent.release)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Inspect this repo"}`)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	select {
+	case input := <-agent.started:
+		if input.Workdir != workdir {
+			t.Fatalf("expected workdir %q, got %q", workdir, input.Workdir)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("context ended before agent started")
+	}
 }
 
 func TestSuccessfulFakeAgentRunCompletesSessionAndIsVisibleThroughHistory(t *testing.T) {
@@ -472,6 +557,11 @@ func TestWriteAPIsRejectMalformedJSON(t *testing.T) {
 
 func newIntegrationAPI(t *testing.T, ctx context.Context, agent agents.Agent) (*store.Store, *eventservice.Service, *runcontrol.Manager, http.Handler) {
 	t.Helper()
+	return newIntegrationAPIWithWorkdir(t, ctx, "", agent)
+}
+
+func newIntegrationAPIWithWorkdir(t *testing.T, ctx context.Context, workdir string, agent agents.Agent) (*store.Store, *eventservice.Service, *runcontrol.Manager, http.Handler) {
+	t.Helper()
 
 	dbStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {
@@ -495,10 +585,11 @@ func newIntegrationAPI(t *testing.T, ctx context.Context, agent agents.Agent) (*
 
 	runManager := runcontrol.NewManager()
 	handler := NewRouter(Dependencies{
-		Store:  dbStore,
-		Events: events,
-		Agents: registry,
-		Runs:   runManager,
+		Store:   dbStore,
+		Events:  events,
+		Agents:  registry,
+		Runs:    runManager,
+		Workdir: workdir,
 	})
 
 	return dbStore, events, runManager, handler
@@ -640,4 +731,21 @@ func (a *blockingAgent) release() {
 	a.once.Do(func() {
 		close(a.releasec)
 	})
+}
+
+type availabilityAgent struct {
+	agentType    string
+	availableErr error
+}
+
+func (a availabilityAgent) Type() string {
+	return a.agentType
+}
+
+func (a availabilityAgent) Available() error {
+	return a.availableErr
+}
+
+func (a availabilityAgent) Run(context.Context, agents.AgentInput, agents.EmitFunc) error {
+	return nil
 }

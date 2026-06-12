@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thread_1"}}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread_1","turnId":"turn_1","itemId":"item_1","delta":"Hello"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread_1","turnId":"turn_1","item":{"type":"agentMessage","id":"item_1","text":"Hello world","phase":null,"memoryCitation":null},"completedAtMs":1}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread_1","turn":{"id":"turn_1","status":"completed","error":null,"durationMs":12}}}

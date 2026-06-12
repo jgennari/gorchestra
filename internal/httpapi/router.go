@@ -44,17 +44,19 @@ type RunManager interface {
 }
 
 type Dependencies struct {
-	Store  Store
-	Events EventService
-	Agents AgentRegistry
-	Runs   RunManager
+	Store   Store
+	Events  EventService
+	Agents  AgentRegistry
+	Runs    RunManager
+	Workdir string
 }
 
 type API struct {
-	store  Store
-	events EventService
-	agents AgentRegistry
-	runs   RunManager
+	store   Store
+	events  EventService
+	agents  AgentRegistry
+	runs    RunManager
+	workdir string
 }
 
 var _ RunManager = (*runcontrol.Manager)(nil)
@@ -89,6 +91,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.events = deps[0].Events
 		api.agents = deps[0].Agents
 		api.runs = deps[0].Runs
+		api.workdir = deps[0].Workdir
 	}
 
 	r := chi.NewRouter()

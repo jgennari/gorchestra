@@ -1,10 +1,19 @@
 package agents
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+var ErrUnavailable = errors.New("agents: unavailable")
 
 type Agent interface {
 	Type() string
 	Run(ctx context.Context, input AgentInput, emit EmitFunc) error
+}
+
+type Availability interface {
+	Available() error
 }
 
 type AgentInput struct {
