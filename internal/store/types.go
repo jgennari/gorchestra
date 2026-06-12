@@ -51,6 +51,11 @@ type CreateSessionParams struct {
 	AgentType string
 }
 
+type UpdateSessionStatusParams struct {
+	ID     string
+	Status SessionStatus
+}
+
 type AppendEventParams struct {
 	SessionID string
 	Type      string

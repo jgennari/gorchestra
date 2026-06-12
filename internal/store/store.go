@@ -111,6 +111,45 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 	return session, nil
 }
 
+func (s *Store) UpdateSessionStatus(ctx context.Context, params UpdateSessionStatusParams) (Session, error) {
+	if strings.TrimSpace(params.ID) == "" {
+		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	if strings.TrimSpace(string(params.Status)) == "" {
+		return Session{}, fmt.Errorf("%w: status is required", ErrInvalidArgument)
+	}
+
+	now := s.now()
+	var completedAt any
+	if isTerminalSessionStatus(params.Status) {
+		completedAt = formatTime(now)
+	}
+
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE sessions
+		 SET status = ?, updated_at = ?, completed_at = ?
+		 WHERE id = ?`,
+		string(params.Status),
+		formatTime(now),
+		completedAt,
+		params.ID,
+	)
+	if err != nil {
+		return Session{}, fmt.Errorf("update session status: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, fmt.Errorf("check updated session status rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, params.ID)
+	}
+
+	return s.GetSession(ctx, params.ID)
+}
+
 func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Event, error) {
 	if strings.TrimSpace(params.SessionID) == "" {
 		return Event{}, fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
@@ -323,4 +362,13 @@ func parseTime(value string) (time.Time, error) {
 	}
 
 	return t.UTC(), nil
+}
+
+func isTerminalSessionStatus(status SessionStatus) bool {
+	switch status {
+	case SessionStatusCompleted, SessionStatusFailed, SessionStatusCancelled:
+		return true
+	default:
+		return false
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 )
 
 func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
@@ -87,6 +88,101 @@ func TestCreateSessionRejectsEmptyAgentType(t *testing.T) {
 	_, err := store.CreateSession(ctx, CreateSessionParams{Title: "Missing agent"})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestUpdateSessionStatusSetsRunningAndUpdatedAt(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	createdAt := time.Date(2026, 6, 12, 16, 0, 0, 0, time.UTC)
+	runningAt := createdAt.Add(2 * time.Minute)
+	store.now = func() time.Time { return createdAt }
+	session := createTestSession(t, ctx, store)
+
+	store.now = func() time.Time { return runningAt }
+	updated, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: SessionStatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("update session status: %v", err)
+	}
+
+	if updated.Status != SessionStatusRunning {
+		t.Fatalf("expected running status, got %q", updated.Status)
+	}
+	if !updated.UpdatedAt.Equal(runningAt) {
+		t.Fatalf("expected updated_at %s, got %s", runningAt, updated.UpdatedAt)
+	}
+	if updated.CompletedAt != nil {
+		t.Fatal("expected no completed_at for running session")
+	}
+}
+
+func TestUpdateSessionStatusSetsCompletedAtForTerminalStatuses(t *testing.T) {
+	for _, status := range []SessionStatus{
+		SessionStatusCompleted,
+		SessionStatusFailed,
+		SessionStatusCancelled,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			ctx := context.Background()
+			store := newTestStore(t, ctx)
+
+			completedAt := time.Date(2026, 6, 12, 16, 5, 0, 0, time.UTC)
+			session := createTestSession(t, ctx, store)
+
+			store.now = func() time.Time { return completedAt }
+			updated, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
+				ID:     session.ID,
+				Status: status,
+			})
+			if err != nil {
+				t.Fatalf("update session status: %v", err)
+			}
+
+			if updated.Status != status {
+				t.Fatalf("expected status %q, got %q", status, updated.Status)
+			}
+			if updated.CompletedAt == nil {
+				t.Fatal("expected completed_at")
+			}
+			if !updated.CompletedAt.Equal(completedAt) {
+				t.Fatalf("expected completed_at %s, got %s", completedAt, *updated.CompletedAt)
+			}
+			if !updated.UpdatedAt.Equal(completedAt) {
+				t.Fatalf("expected updated_at %s, got %s", completedAt, updated.UpdatedAt)
+			}
+		})
+	}
+}
+
+func TestUpdateSessionStatusFailsForMissingSession(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	_, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
+		ID:     "sess_missing",
+		Status: SessionStatusRunning,
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestUpdateSessionStatusRejectsInvalidArguments(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	for _, params := range []UpdateSessionStatusParams{
+		{Status: SessionStatusRunning},
+		{ID: "sess_test"},
+	} {
+		_, err := store.UpdateSessionStatus(ctx, params)
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("expected ErrInvalidArgument for params %#v, got %v", params, err)
+		}
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jgennari/gorchestra/internal/agents"
+	eventservice "github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/store"
 )
 
@@ -19,22 +21,31 @@ const (
 )
 
 type Store interface {
+	CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error)
 	GetSession(ctx context.Context, id string) (store.Session, error)
+	UpdateSessionStatus(ctx context.Context, params store.UpdateSessionStatusParams) (store.Session, error)
 	ListEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error)
 }
 
-type EventSubscriber interface {
+type EventService interface {
+	Append(ctx context.Context, params eventservice.AppendParams) (store.Event, error)
 	Subscribe(sessionID string) (<-chan store.Event, func())
+}
+
+type AgentRegistry interface {
+	Get(agentType string) (agents.Agent, bool)
 }
 
 type Dependencies struct {
 	Store  Store
-	Events EventSubscriber
+	Events EventService
+	Agents AgentRegistry
 }
 
 type API struct {
 	store  Store
-	events EventSubscriber
+	events EventService
+	agents AgentRegistry
 }
 
 type healthResponse struct {
@@ -65,11 +76,16 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	if len(deps) > 0 {
 		api.store = deps[0].Store
 		api.events = deps[0].Events
+		api.agents = deps[0].Agents
 	}
 
 	r := chi.NewRouter()
 	r.Get("/api/health", healthHandler)
 
+	if api.store != nil && api.events != nil && api.agents != nil {
+		r.Post("/api/sessions", api.createSessionHandler)
+		r.Post("/api/sessions/{sessionId}/messages", api.submitMessageHandler)
+	}
 	if api.store != nil {
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
 	}

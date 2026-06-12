@@ -59,20 +59,20 @@ Out of scope:
 
 ### Session Store Updates
 
-- [ ] Add store behavior to update session status and timestamps.
-- [ ] Support setting `completed_at` when a session enters `completed`, `failed`, or `cancelled`.
-- [ ] Keep `updated_at` current on every status change.
-- [ ] Ensure invalid or missing session IDs return typed errors handlers can map to HTTP status codes.
-- [ ] Add tests for status transitions and timestamp updates.
+- [x] Add store behavior to update session status and timestamps.
+- [x] Support setting `completed_at` when a session enters `completed`, `failed`, or `cancelled`.
+- [x] Keep `updated_at` current on every status change.
+- [x] Ensure invalid or missing session IDs return typed errors handlers can map to HTTP status codes.
+- [x] Add tests for status transitions and timestamp updates.
 
 ### Agent Interface
 
-- [ ] Create `internal/agents`.
-- [ ] Add a provider-neutral `Agent` interface.
-- [ ] Add `AgentInput`, `AgentEvent`, and `EmitFunc` types.
-- [ ] Keep the interface independent from HTTP and SQLite.
-- [ ] Convert `AgentEvent` payloads to JSON before appending through the event service.
-- [ ] Add a registry or lookup function for supported agents.
+- [x] Create `internal/agents`.
+- [x] Add a provider-neutral `Agent` interface.
+- [x] Add `AgentInput`, `AgentEvent`, and `EmitFunc` types.
+- [x] Keep the interface independent from HTTP and SQLite.
+- [x] Convert `AgentEvent` payloads to JSON before appending through the event service.
+- [x] Add a registry or lookup function for supported agents.
 
 Interface shape:
 
@@ -101,14 +101,14 @@ type AgentEvent struct {
 
 ### Fake Agent
 
-- [ ] Create `internal/agents/fake`.
-- [ ] Implement `Type() string` returning `fake`.
-- [ ] Emit `agent.run.started`.
-- [ ] Emit at least one `agent.message.delta`.
-- [ ] Emit `agent.message.completed`.
-- [ ] Emit `agent.run.completed` before returning nil.
-- [ ] Return an error only when configured by a test.
-- [ ] Keep output deterministic so tests can assert exact event order.
+- [x] Create `internal/agents/fake`.
+- [x] Implement `Type() string` returning `fake`.
+- [x] Emit `agent.run.started`.
+- [x] Emit at least one `agent.message.delta`.
+- [x] Emit `agent.message.completed`.
+- [x] Emit `agent.run.completed` before returning nil.
+- [x] Return an error only when configured by a test.
+- [x] Keep output deterministic so tests can assert exact event order.
 
 Required successful fake run event order:
 
@@ -130,13 +130,13 @@ Suggested fake message payloads:
 
 ### Session Creation API
 
-- [ ] Add `POST /api/sessions`.
-- [ ] Decode JSON body.
-- [ ] Require `agent_type`.
-- [ ] Accept only `agent_type: "fake"` in Sprint 5.
-- [ ] Accept optional `title`.
-- [ ] Create an `idle` session through the store.
-- [ ] Return HTTP 201 and the new session ID.
+- [x] Add `POST /api/sessions`.
+- [x] Decode JSON body.
+- [x] Require `agent_type`.
+- [x] Accept only `agent_type: "fake"` in Sprint 5.
+- [x] Accept optional `title`.
+- [x] Create an `idle` session through the store.
+- [x] Return HTTP 201 and the new session ID.
 
 Request:
 
@@ -157,15 +157,15 @@ Response:
 
 ### Message Submission API
 
-- [ ] Add `POST /api/sessions/{sessionId}/messages`.
-- [ ] Decode JSON body.
-- [ ] Require non-empty `content`.
-- [ ] Return HTTP 404 for missing sessions.
-- [ ] Return HTTP 409 when the session is already `running`.
-- [ ] Persist a `user.message.completed` event through the event service.
-- [ ] Mark the session `running`.
-- [ ] Start the selected agent asynchronously.
-- [ ] Return HTTP 202 after scheduling the run.
+- [x] Add `POST /api/sessions/{sessionId}/messages`.
+- [x] Decode JSON body.
+- [x] Require non-empty `content`.
+- [x] Return HTTP 404 for missing sessions.
+- [x] Return HTTP 409 when the session is already `running`.
+- [x] Persist a `user.message.completed` event through the event service.
+- [x] Mark the session `running`.
+- [x] Start the selected agent asynchronously.
+- [x] Return HTTP 202 after scheduling the run.
 
 Request:
 
@@ -199,45 +199,45 @@ Persisted user event:
 
 ### Agent Run Lifecycle
 
-- [ ] Load the session and selected agent before scheduling.
-- [ ] Convert each `AgentEvent` into an event service append.
-- [ ] If the agent returns nil, mark the session `completed`.
-- [ ] If the agent returns an error, append `agent.run.failed` and mark the session `failed`.
-- [ ] If event append fails during the agent run, mark the session `failed`.
-- [ ] Ensure every scheduled fake run ends with either `agent.run.completed` or `agent.run.failed`.
-- [ ] Log background run failures with session ID and agent type.
+- [x] Load the session and selected agent before scheduling.
+- [x] Convert each `AgentEvent` into an event service append.
+- [x] If the agent returns nil, mark the session `completed`.
+- [x] If the agent returns an error, append `agent.run.failed` and mark the session `failed`.
+- [x] If event append fails during the agent run, mark the session `failed`.
+- [x] Ensure every scheduled fake run ends with either `agent.run.completed` or `agent.run.failed`.
+- [x] Log background run failures with session ID and agent type.
 
 ### Error Responses
 
-- [ ] Return structured JSON errors.
-- [ ] Return HTTP 400 for malformed JSON.
-- [ ] Return HTTP 400 for missing `agent_type`.
-- [ ] Return HTTP 400 for unsupported `agent_type`.
-- [ ] Return HTTP 400 for empty message content.
-- [ ] Return HTTP 404 for unknown session IDs.
-- [ ] Return HTTP 409 for message submission while running.
-- [ ] Return HTTP 500 for unexpected store or event service failures.
+- [x] Return structured JSON errors.
+- [x] Return HTTP 400 for malformed JSON.
+- [x] Return HTTP 400 for missing `agent_type`.
+- [x] Return HTTP 400 for unsupported `agent_type`.
+- [x] Return HTTP 400 for empty message content.
+- [x] Return HTTP 404 for unknown session IDs.
+- [x] Return HTTP 409 for message submission while running.
+- [x] Return HTTP 500 for unexpected store or event service failures.
 
 ### Tests
 
-- [ ] Test `POST /api/sessions` creates an idle fake-agent session.
-- [ ] Test `POST /api/sessions` rejects unsupported agents.
-- [ ] Test `POST /api/sessions` rejects missing `agent_type`.
-- [ ] Test `POST /api/sessions/{sessionId}/messages` persists `user.message.completed`.
-- [ ] Test message submission marks the session `running`.
-- [ ] Test fake agent emits the expected event order.
-- [ ] Test successful fake run marks the session `completed`.
-- [ ] Test fake agent error emits `agent.run.failed` and marks the session `failed`.
-- [ ] Test message submission to a running session returns HTTP 409.
-- [ ] Test missing session returns HTTP 404.
-- [ ] Test events from the fake agent are visible through the Sprint 4 event history endpoint.
-- [ ] Test `go test ./...` passes.
+- [x] Test `POST /api/sessions` creates an idle fake-agent session.
+- [x] Test `POST /api/sessions` rejects unsupported agents.
+- [x] Test `POST /api/sessions` rejects missing `agent_type`.
+- [x] Test `POST /api/sessions/{sessionId}/messages` persists `user.message.completed`.
+- [x] Test message submission marks the session `running`.
+- [x] Test fake agent emits the expected event order.
+- [x] Test successful fake run marks the session `completed`.
+- [x] Test fake agent error emits `agent.run.failed` and marks the session `failed`.
+- [x] Test message submission to a running session returns HTTP 409.
+- [x] Test missing session returns HTTP 404.
+- [x] Test events from the fake agent are visible through the Sprint 4 event history endpoint.
+- [x] Test `go test ./...` passes.
 
 Use fake or controllable agents in handler tests so background run outcomes are deterministic.
 
 ### Version Control
 
-- [ ] Commit Sprint 5 in one dedicated git commit after verification passes.
+- [x] Commit Sprint 5 in one dedicated git commit after verification passes.
 
 ## Public Interfaces
 

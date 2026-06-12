@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	eventservice "github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/store"
 )
 
@@ -383,6 +384,28 @@ func (s *fakeHTTPStore) addSession(id string) {
 	}
 }
 
+func (s *fakeHTTPStore) CreateSession(_ context.Context, params store.CreateSessionParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if strings.TrimSpace(params.AgentType) == "" {
+		return store.Session{}, store.ErrInvalidArgument
+	}
+
+	id := fmt.Sprintf("sess_fake_%d", len(s.sessions)+1)
+	session := store.Session{
+		ID:        id,
+		Title:     params.Title,
+		AgentType: params.AgentType,
+		Status:    store.SessionStatusIdle,
+		CreatedAt: testCreatedAt,
+		UpdatedAt: testCreatedAt,
+	}
+	s.sessions[id] = session
+
+	return session, nil
+}
+
 func (s *fakeHTTPStore) setEvents(sessionID string, events ...store.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -415,6 +438,28 @@ func (s *fakeHTTPStore) GetSession(_ context.Context, stringID string) (store.Se
 	if !ok {
 		return store.Session{}, store.ErrNotFound
 	}
+
+	return session, nil
+}
+
+func (s *fakeHTTPStore) UpdateSessionStatus(_ context.Context, params store.UpdateSessionStatusParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[params.ID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+
+	session.Status = params.Status
+	session.UpdatedAt = testCreatedAt
+	if isTestTerminalSessionStatus(params.Status) {
+		completedAt := testCreatedAt
+		session.CompletedAt = &completedAt
+	} else {
+		session.CompletedAt = nil
+	}
+	s.sessions[params.ID] = session
 
 	return session, nil
 }
@@ -471,6 +516,15 @@ func (s *fakeHTTPStore) listCallCount() int {
 	return len(s.listCalls)
 }
 
+func isTestTerminalSessionStatus(status store.SessionStatus) bool {
+	switch status {
+	case store.SessionStatusCompleted, store.SessionStatusFailed, store.SessionStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 type fakeSubscriber struct {
 	mu sync.Mutex
 
@@ -498,6 +552,10 @@ func (s *fakeSubscriber) Subscribe(string) (<-chan store.Event, func()) {
 	}
 
 	return ch, unsubscribe
+}
+
+func (s *fakeSubscriber) Append(context.Context, eventservice.AppendParams) (store.Event, error) {
+	return store.Event{}, nil
 }
 
 func (s *fakeSubscriber) send(event store.Event) {
@@ -624,4 +682,4 @@ func waitFor(t *testing.T, condition func() bool) {
 }
 
 var _ Store = (*fakeHTTPStore)(nil)
-var _ EventSubscriber = (*fakeSubscriber)(nil)
+var _ EventService = (*fakeSubscriber)(nil)
