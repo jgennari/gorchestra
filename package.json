@@ -4,6 +4,13 @@
   "type": "module",
   "scripts": {
     "dev": "bun run scripts/dev.ts",
-    "dev:tailnet": "bun run scripts/dev.ts --tailnet"
+    "dev:tailnet": "bun run scripts/dev.ts --tailnet",
+    "dev:human": "bun run scripts/human-dev.ts start",
+    "dev:human:attach": "bun run scripts/human-dev.ts attach",
+    "dev:human:logs": "bun run scripts/human-dev.ts logs",
+    "dev:human:reset": "bun run scripts/human-dev.ts reset",
+    "dev:human:restart": "bun run scripts/human-dev.ts restart",
+    "dev:human:status": "bun run scripts/human-dev.ts status",
+    "dev:human:stop": "bun run scripts/human-dev.ts stop"
   }
 }
