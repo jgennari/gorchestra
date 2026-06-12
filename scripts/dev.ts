@@ -12,6 +12,7 @@ const webPort = process.env.WEB_PORT ?? '5173'
 const webHost = tailnetMode ? '0.0.0.0' : '127.0.0.1'
 const backendURL = process.env.BACKEND_URL ?? `http://localhost:${backendPort}`
 const tmpDir = join(repoRoot, '.tmp')
+const backendDB = process.env.GORCHESTRA_DB ?? join(tmpDir, 'sessions.db')
 const backendBinary = join(
   tmpDir,
   process.platform === 'win32' ? 'gorchestra-dev.exe' : 'gorchestra-dev',
@@ -52,6 +53,7 @@ async function main() {
 function printStartup() {
   console.log(`[dev] mode: ${tailnetMode ? 'tailnet' : 'local'}`)
   console.log(`[dev] backend: ${backendURL}`)
+  console.log(`[dev] database: ${backendDB}`)
   console.log(`[dev] frontend: http://${webHost}:${webPort}`)
 
   if (tailnetMode) {
@@ -96,7 +98,7 @@ async function startBackend() {
     return
   }
 
-  backend = Bun.spawn([backendBinary], {
+  backend = Bun.spawn([backendBinary, '--db', backendDB], {
     cwd: repoRoot,
     env: {
       ...process.env,
