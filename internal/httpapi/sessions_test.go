@@ -14,12 +14,13 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents"
 	"github.com/jgennari/gorchestra/internal/agents/fake"
 	eventservice "github.com/jgennari/gorchestra/internal/events"
+	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 )
 
 func TestCreateSessionCreatesIdleFakeAgentSession(t *testing.T) {
 	ctx := context.Background()
-	dbStore, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 
 	rec := postJSON(handler, "/api/sessions", `{"agent_type":"fake","title":"Inspect repository"}`)
 
@@ -50,7 +51,7 @@ func TestCreateSessionCreatesIdleFakeAgentSession(t *testing.T) {
 
 func TestCreateSessionRejectsUnsupportedAgent(t *testing.T) {
 	ctx := context.Background()
-	_, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	_, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 
 	rec := postJSON(handler, "/api/sessions", `{"agent_type":"codex"}`)
 
@@ -62,7 +63,7 @@ func TestCreateSessionRejectsUnsupportedAgent(t *testing.T) {
 
 func TestCreateSessionRejectsMissingAgentType(t *testing.T) {
 	ctx := context.Background()
-	_, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	_, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 
 	rec := postJSON(handler, "/api/sessions", `{"title":"No agent"}`)
 
@@ -75,7 +76,7 @@ func TestCreateSessionRejectsMissingAgentType(t *testing.T) {
 func TestMessageSubmissionPersistsUserMessageAndMarksSessionRunning(t *testing.T) {
 	ctx := context.Background()
 	agent := newBlockingAgent()
-	dbStore, _, handler := newIntegrationAPI(t, ctx, agent)
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
 	session := createIntegrationSession(t, ctx, dbStore)
 	t.Cleanup(func() {
 		agent.release()
@@ -121,7 +122,7 @@ func TestMessageSubmissionPersistsUserMessageAndMarksSessionRunning(t *testing.T
 
 func TestSuccessfulFakeAgentRunCompletesSessionAndIsVisibleThroughHistory(t *testing.T) {
 	ctx := context.Background()
-	dbStore, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	dbStore, _, runManager, handler := newIntegrationAPI(t, ctx, fake.New())
 
 	createRec := postJSON(handler, "/api/sessions", `{"agent_type":"fake","title":"Fake run"}`)
 	if createRec.Code != http.StatusCreated {
@@ -140,6 +141,9 @@ func TestSuccessfulFakeAgentRunCompletesSessionAndIsVisibleThroughHistory(t *tes
 		session, err := dbStore.GetSession(ctx, createResponse.SessionID)
 		return err == nil && session.Status == store.SessionStatusCompleted
 	})
+	waitFor(t, func() bool {
+		return !runManager.Active(createResponse.SessionID)
+	})
 
 	events := listIntegrationEvents(t, ctx, dbStore, createResponse.SessionID)
 	assertEventTypes(t, events, []string{
@@ -149,6 +153,7 @@ func TestSuccessfulFakeAgentRunCompletesSessionAndIsVisibleThroughHistory(t *tes
 		"agent.message.completed",
 		"agent.run.completed",
 	})
+	assertTerminalRunEventCount(t, events, 1)
 	assertPayloadText(t, events[2], "Received task: Inspect this repo")
 
 	historyReq := httptest.NewRequest(http.MethodGet, "/api/sessions/"+createResponse.SessionID+"/events?after_seq=0", nil)
@@ -171,7 +176,7 @@ func TestSuccessfulFakeAgentRunCompletesSessionAndIsVisibleThroughHistory(t *tes
 
 func TestFakeAgentErrorEmitsFailedEventAndMarksSessionFailed(t *testing.T) {
 	ctx := context.Background()
-	dbStore, _, handler := newIntegrationAPI(t, ctx, fake.New(fake.WithError(errors.New("planned failure"))))
+	dbStore, _, runManager, handler := newIntegrationAPI(t, ctx, fake.New(fake.WithError(errors.New("planned failure"))))
 	session := createIntegrationSession(t, ctx, dbStore)
 
 	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Fail this task"}`)
@@ -183,6 +188,9 @@ func TestFakeAgentErrorEmitsFailedEventAndMarksSessionFailed(t *testing.T) {
 		session, err := dbStore.GetSession(ctx, session.ID)
 		return err == nil && session.Status == store.SessionStatusFailed
 	})
+	waitFor(t, func() bool {
+		return !runManager.Active(session.ID)
+	})
 
 	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
 	assertEventTypes(t, events, []string{
@@ -190,15 +198,189 @@ func TestFakeAgentErrorEmitsFailedEventAndMarksSessionFailed(t *testing.T) {
 		"agent.run.started",
 		"agent.run.failed",
 	})
+	assertTerminalRunEventCount(t, events, 1)
 	if events[2].Status != store.EventStatusFailed {
 		t.Fatalf("expected failed status, got %q", events[2].Status)
 	}
 	assertPayloadError(t, events[2], "planned failure")
 }
 
+func TestCancelRunningFakeAgentMarksSessionCancelledAndCleansUpRun(t *testing.T) {
+	ctx := context.Background()
+	stepBarrier := make(chan struct{})
+	dbStore, _, runManager, handler := newIntegrationAPI(t, ctx, fake.New(fake.WithStepBarrier(stepBarrier)))
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	messageRec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Cancel this task"}`)
+	if messageRec.Code != http.StatusAccepted {
+		t.Fatalf("expected message status %d, got %d with body %s", http.StatusAccepted, messageRec.Code, messageRec.Body.String())
+	}
+
+	waitFor(t, func() bool {
+		return runManager.Active(session.ID) && hasEventType(t, ctx, dbStore, session.ID, "agent.run.started")
+	})
+
+	cancelRec := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", ``)
+	if cancelRec.Code != http.StatusAccepted {
+		t.Fatalf("expected cancel status %d, got %d with body %s", http.StatusAccepted, cancelRec.Code, cancelRec.Body.String())
+	}
+
+	var cancelResponse cancelSessionResponse
+	decodeJSON(t, cancelRec, &cancelResponse)
+	if cancelResponse.SessionID != session.ID {
+		t.Fatalf("expected session_id %q, got %q", session.ID, cancelResponse.SessionID)
+	}
+	if cancelResponse.Status != "cancelling" {
+		t.Fatalf("expected cancelling status, got %q", cancelResponse.Status)
+	}
+
+	waitFor(t, func() bool {
+		session, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && session.Status == store.SessionStatusCancelled
+	})
+	waitFor(t, func() bool {
+		return !runManager.Active(session.ID)
+	})
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{
+		"user.message.completed",
+		"agent.run.started",
+		"agent.run.cancelled",
+	})
+	assertTerminalRunEventCount(t, events, 1)
+	if hasEvent(events, "agent.run.completed") {
+		t.Fatal("expected cancelled run not to emit agent.run.completed")
+	}
+}
+
+func TestCancelUnknownSessionReturnsNotFound(t *testing.T) {
+	ctx := context.Background()
+	_, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+
+	rec := postJSON(handler, "/api/sessions/sess_missing/cancel", ``)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusNotFound, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "session not found")
+}
+
+func TestCancelIdleSessionReturnsConflict(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", ``)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "session is not running")
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	if len(events) != 0 {
+		t.Fatalf("expected no events, got %#v", events)
+	}
+}
+
+func TestCancelCompletedSessionReturnsConflict(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: store.SessionStatusCompleted,
+	}); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", ``)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "session is not running")
+}
+
+func TestDuplicateCancelReturnsConflictAfterTerminalState(t *testing.T) {
+	ctx := context.Background()
+	stepBarrier := make(chan struct{})
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New(fake.WithStepBarrier(stepBarrier)))
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	messageRec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Cancel twice"}`)
+	if messageRec.Code != http.StatusAccepted {
+		t.Fatalf("expected message status %d, got %d with body %s", http.StatusAccepted, messageRec.Code, messageRec.Body.String())
+	}
+
+	waitFor(t, func() bool {
+		return hasEventType(t, ctx, dbStore, session.ID, "agent.run.started")
+	})
+
+	firstCancel := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", ``)
+	if firstCancel.Code != http.StatusAccepted {
+		t.Fatalf("expected first cancel status %d, got %d with body %s", http.StatusAccepted, firstCancel.Code, firstCancel.Body.String())
+	}
+
+	waitFor(t, func() bool {
+		session, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && session.Status == store.SessionStatusCancelled
+	})
+
+	secondCancel := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", ``)
+	if secondCancel.Code != http.StatusConflict {
+		t.Fatalf("expected second cancel status %d, got %d with body %s", http.StatusConflict, secondCancel.Code, secondCancel.Body.String())
+	}
+	assertErrorResponse(t, secondCancel, "session is not running")
+}
+
+func TestCancelRunningSessionWithoutActiveRunFailsSession(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: store.SessionStatusRunning,
+	}); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", ``)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "session has no active run")
+
+	updatedSession, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updatedSession.Status != store.SessionStatusFailed {
+		t.Fatalf("expected failed status, got %q", updatedSession.Status)
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"agent.run.failed"})
+	assertTerminalRunEventCount(t, events, 1)
+}
+
+func TestCancelRejectsMalformedJSONBody(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", `{"unterminated"`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "invalid JSON body")
+}
+
 func TestMessageSubmissionToRunningSessionReturnsConflict(t *testing.T) {
 	ctx := context.Background()
-	dbStore, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 	session := createIntegrationSession(t, ctx, dbStore)
 
 	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
@@ -221,9 +403,29 @@ func TestMessageSubmissionToRunningSessionReturnsConflict(t *testing.T) {
 	}
 }
 
+func TestMessageSubmissionToTerminalSessionReturnsConflict(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: store.SessionStatusCompleted,
+	}); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Another message"}`)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "session is not idle")
+}
+
 func TestMessageSubmissionToMissingSessionReturnsNotFound(t *testing.T) {
 	ctx := context.Background()
-	_, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	_, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 
 	rec := postJSON(handler, "/api/sessions/sess_missing/messages", `{"content":"Hello"}`)
 
@@ -235,7 +437,7 @@ func TestMessageSubmissionToMissingSessionReturnsNotFound(t *testing.T) {
 
 func TestMessageSubmissionRejectsEmptyContent(t *testing.T) {
 	ctx := context.Background()
-	dbStore, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 	session := createIntegrationSession(t, ctx, dbStore)
 
 	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"   "}`)
@@ -248,7 +450,7 @@ func TestMessageSubmissionRejectsEmptyContent(t *testing.T) {
 
 func TestWriteAPIsRejectMalformedJSON(t *testing.T) {
 	ctx := context.Background()
-	dbStore, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 	session := createIntegrationSession(t, ctx, dbStore)
 
 	for _, test := range []struct {
@@ -268,7 +470,7 @@ func TestWriteAPIsRejectMalformedJSON(t *testing.T) {
 	}
 }
 
-func newIntegrationAPI(t *testing.T, ctx context.Context, agent agents.Agent) (*store.Store, *eventservice.Service, http.Handler) {
+func newIntegrationAPI(t *testing.T, ctx context.Context, agent agents.Agent) (*store.Store, *eventservice.Service, *runcontrol.Manager, http.Handler) {
 	t.Helper()
 
 	dbStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "sessions.db"))
@@ -291,13 +493,15 @@ func newIntegrationAPI(t *testing.T, ctx context.Context, agent agents.Agent) (*
 		t.Fatalf("new agent registry: %v", err)
 	}
 
+	runManager := runcontrol.NewManager()
 	handler := NewRouter(Dependencies{
 		Store:  dbStore,
 		Events: events,
 		Agents: registry,
+		Runs:   runManager,
 	})
 
-	return dbStore, events, handler
+	return dbStore, events, runManager, handler
 }
 
 func createIntegrationSession(t *testing.T, ctx context.Context, dbStore *store.Store) store.Session {
@@ -343,6 +547,36 @@ func assertEventTypes(t *testing.T, events []store.Event, want []string) {
 		if event.Type != want[i] {
 			t.Fatalf("expected event %d type %q, got %q", i, want[i], event.Type)
 		}
+	}
+}
+
+func hasEventType(t *testing.T, ctx context.Context, dbStore *store.Store, sessionID string, eventType string) bool {
+	t.Helper()
+
+	events := listIntegrationEvents(t, ctx, dbStore, sessionID)
+	return hasEvent(events, eventType)
+}
+
+func hasEvent(events []store.Event, eventType string) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func assertTerminalRunEventCount(t *testing.T, events []store.Event, want int) {
+	t.Helper()
+
+	count := 0
+	for _, event := range events {
+		if isTerminalRunEvent(event.Type) {
+			count++
+		}
+	}
+	if count != want {
+		t.Fatalf("expected %d terminal run events, got %d in %#v", want, count, events)
 	}
 }
 

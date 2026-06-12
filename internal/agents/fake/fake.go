@@ -9,7 +9,8 @@ import (
 const Type = "fake"
 
 type Agent struct {
-	err error
+	err         error
+	stepBarrier <-chan struct{}
 }
 
 type Option func(*Agent)
@@ -28,11 +29,21 @@ func WithError(err error) Option {
 	}
 }
 
+func WithStepBarrier(stepBarrier <-chan struct{}) Option {
+	return func(agent *Agent) {
+		agent.stepBarrier = stepBarrier
+	}
+}
+
 func (a *Agent) Type() string {
 	return Type
 }
 
 func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if err := emit(ctx, agents.AgentEvent{
 		Type:   "agent.run.started",
 		Role:   "assistant",
@@ -46,6 +57,14 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 
 	if a.err != nil {
 		return a.err
+	}
+
+	if err := a.waitForStep(ctx); err != nil {
+		return err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	if err := emit(ctx, agents.AgentEvent{
@@ -82,4 +101,17 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 	}
 
 	return nil
+}
+
+func (a *Agent) waitForStep(ctx context.Context) error {
+	if a.stepBarrier == nil {
+		return nil
+	}
+
+	select {
+	case <-a.stepBarrier:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jgennari/gorchestra/internal/agents"
 	eventservice "github.com/jgennari/gorchestra/internal/events"
+	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 )
 
@@ -30,6 +31,11 @@ type submitMessageRequest struct {
 }
 
 type submitMessageResponse struct {
+	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
+}
+
+type cancelSessionResponse struct {
 	SessionID string `json:"session_id"`
 	Status    string `json:"status"`
 }
@@ -105,7 +111,18 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	runCtx, cleanup, err := api.runs.Register(context.Background(), session.ID)
+	if err != nil {
+		if errors.Is(err, runcontrol.ErrRunAlreadyActive) {
+			writeError(w, http.StatusConflict, "session is already running")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to register run")
+		return
+	}
+
 	if err := api.appendUserMessage(r.Context(), session.ID, content); err != nil {
+		cleanup()
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "session not found")
 			return
@@ -123,6 +140,7 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		Status: store.SessionStatusRunning,
 	})
 	if err != nil {
+		cleanup()
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "session not found")
 			return
@@ -131,11 +149,55 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go api.runAgent(context.Background(), updatedSession, content, agent)
+	go func() {
+		defer cleanup()
+		api.runAgent(runCtx, updatedSession, content, agent)
+	}()
 
 	writeJSON(w, http.StatusAccepted, submitMessageResponse{
 		SessionID: updatedSession.ID,
 		Status:    string(updatedSession.Status),
+	})
+}
+
+func (api API) cancelSessionHandler(w http.ResponseWriter, r *http.Request) {
+	if !validateCancelBody(w, r) {
+		return
+	}
+
+	sessionID := chi.URLParam(r, "sessionId")
+	session, err := api.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load session")
+		return
+	}
+
+	if session.Status != store.SessionStatusRunning {
+		writeError(w, http.StatusConflict, "session is not running")
+		return
+	}
+
+	if err := api.runs.Cancel(session.ID); err != nil {
+		if errors.Is(err, runcontrol.ErrRunAlreadyCanceled) {
+			writeError(w, http.StatusConflict, "session cancellation already requested")
+			return
+		}
+		if errors.Is(err, runcontrol.ErrRunNotActive) {
+			api.failRunningSessionWithoutActiveRun(r.Context(), session)
+			writeError(w, http.StatusConflict, "session has no active run")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to cancel session")
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, cancelSessionResponse{
+		SessionID: session.ID,
+		Status:    "cancelling",
 	})
 }
 
@@ -156,8 +218,20 @@ func (api API) appendUserMessage(ctx context.Context, sessionID string, content 
 }
 
 func (api API) runAgent(ctx context.Context, session store.Session, message string, agent agents.Agent) {
+	terminalEventEmitted := false
 	emit := func(ctx context.Context, event agents.AgentEvent) error {
-		return api.appendAgentEvent(ctx, session.ID, event)
+		terminalEvent := isTerminalRunEvent(event.Type)
+		if terminalEvent && terminalEventEmitted {
+			return fmt.Errorf("terminal run event already emitted for session %s", session.ID)
+		}
+
+		if err := api.appendAgentEvent(ctx, session.ID, event); err != nil {
+			return err
+		}
+		if terminalEvent {
+			terminalEventEmitted = true
+		}
+		return nil
 	}
 
 	err := agent.Run(ctx, agents.AgentInput{
@@ -167,13 +241,33 @@ func (api API) runAgent(ctx context.Context, session store.Session, message stri
 			"agent_type": agent.Type(),
 		},
 	}, emit)
+	if errors.Is(err, context.Canceled) {
+		if !terminalEventEmitted {
+			if appendErr := api.appendAgentRunCancelled(context.Background(), session.ID, agent.Type()); appendErr != nil {
+				log.Printf("failed to append agent.run.cancelled: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), appendErr)
+			} else {
+				terminalEventEmitted = true
+			}
+		}
+		if _, updateErr := api.store.UpdateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
+			ID:     session.ID,
+			Status: store.SessionStatusCancelled,
+		}); updateErr != nil {
+			log.Printf("failed to mark session cancelled: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), updateErr)
+		}
+		return
+	}
 	if err != nil {
 		log.Printf("agent run failed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), err)
 
-		if appendErr := api.appendAgentRunFailed(ctx, session.ID, agent.Type(), err); appendErr != nil {
-			log.Printf("failed to append agent.run.failed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), appendErr)
+		if !terminalEventEmitted {
+			if appendErr := api.appendAgentRunFailed(context.Background(), session.ID, agent.Type(), err); appendErr != nil {
+				log.Printf("failed to append agent.run.failed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), appendErr)
+			} else {
+				terminalEventEmitted = true
+			}
 		}
-		if _, updateErr := api.store.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+		if _, updateErr := api.store.UpdateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
 			ID:     session.ID,
 			Status: store.SessionStatusFailed,
 		}); updateErr != nil {
@@ -182,7 +276,20 @@ func (api API) runAgent(ctx context.Context, session store.Session, message stri
 		return
 	}
 
-	if _, err := api.store.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+	if !terminalEventEmitted {
+		if appendErr := api.appendAgentRunCompleted(context.Background(), session.ID, agent.Type()); appendErr != nil {
+			log.Printf("failed to append agent.run.completed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), appendErr)
+			if _, updateErr := api.store.UpdateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
+				ID:     session.ID,
+				Status: store.SessionStatusFailed,
+			}); updateErr != nil {
+				log.Printf("failed to mark session failed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), updateErr)
+			}
+			return
+		}
+	}
+
+	if _, err := api.store.UpdateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
 		ID:     session.ID,
 		Status: store.SessionStatusCompleted,
 	}); err != nil {
@@ -228,6 +335,50 @@ func (api API) appendAgentRunFailed(ctx context.Context, sessionID string, agent
 	})
 }
 
+func (api API) appendAgentRunCompleted(ctx context.Context, sessionID string, agentType string) error {
+	return api.appendAgentEvent(ctx, sessionID, agents.AgentEvent{
+		Type:   "agent.run.completed",
+		Role:   "assistant",
+		Status: string(store.EventStatusCompleted),
+		Payload: map[string]any{
+			"agent_type": agentType,
+		},
+	})
+}
+
+func (api API) appendAgentRunCancelled(ctx context.Context, sessionID string, agentType string) error {
+	return api.appendAgentEvent(ctx, sessionID, agents.AgentEvent{
+		Type:   "agent.run.cancelled",
+		Role:   "assistant",
+		Status: string(store.EventStatusCancelled),
+		Payload: map[string]any{
+			"agent_type": agentType,
+		},
+	})
+}
+
+func (api API) failRunningSessionWithoutActiveRun(ctx context.Context, session store.Session) {
+	err := fmt.Errorf("running session has no active run")
+	if appendErr := api.appendAgentRunFailed(ctx, session.ID, session.AgentType, err); appendErr != nil {
+		log.Printf("failed to append agent.run.failed for missing active run: session_id=%s agent_type=%s error=%v", session.ID, session.AgentType, appendErr)
+	}
+	if _, updateErr := api.store.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: store.SessionStatusFailed,
+	}); updateErr != nil {
+		log.Printf("failed to mark session failed for missing active run: session_id=%s agent_type=%s error=%v", session.ID, session.AgentType, updateErr)
+	}
+}
+
+func isTerminalRunEvent(eventType string) bool {
+	switch eventType {
+	case "agent.run.completed", "agent.run.failed", "agent.run.cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, value any) bool {
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(value); err != nil {
@@ -246,4 +397,21 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, value any) bool {
 
 	writeError(w, http.StatusBadRequest, "invalid JSON body")
 	return false
+}
+
+func validateCancelBody(w http.ResponseWriter, r *http.Request) bool {
+	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
+		return true
+	}
+
+	var body map[string]any
+	if !decodeJSONBody(w, r, &body) {
+		return false
+	}
+	if len(body) > 0 {
+		writeError(w, http.StatusBadRequest, "cancel request body must be empty")
+		return false
+	}
+
+	return true
 }

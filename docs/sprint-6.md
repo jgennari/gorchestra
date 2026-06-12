@@ -59,33 +59,33 @@ Out of scope:
 
 ### Active Run Manager
 
-- [ ] Add a run manager that tracks active runs by session ID.
-- [ ] Register a run before starting the agent goroutine.
-- [ ] Reject registration when a run already exists for the session.
-- [ ] Store the cancellation function for each active run.
-- [ ] Expose cancel behavior by session ID.
-- [ ] Remove active run state when the run exits.
-- [ ] Make cleanup idempotent.
-- [ ] Protect active run state with synchronization.
-- [ ] Do not hold run manager locks while calling agents, store methods, or event service methods.
+- [x] Add a run manager that tracks active runs by session ID.
+- [x] Register a run before starting the agent goroutine.
+- [x] Reject registration when a run already exists for the session.
+- [x] Store the cancellation function for each active run.
+- [x] Expose cancel behavior by session ID.
+- [x] Remove active run state when the run exits.
+- [x] Make cleanup idempotent.
+- [x] Protect active run state with synchronization.
+- [x] Do not hold run manager locks while calling agents, store methods, or event service methods.
 
 ### Fake Agent Cancellation
 
-- [ ] Make the fake agent observe `ctx.Done()`.
-- [ ] Add a test-controlled delay or step barrier so cancellation can be tested deterministically.
-- [ ] Return `context.Canceled` when cancelled.
-- [ ] Avoid emitting successful completion events after cancellation.
-- [ ] Keep the normal successful fake run behavior from Sprint 5 unchanged.
+- [x] Make the fake agent observe `ctx.Done()`.
+- [x] Add a test-controlled delay or step barrier so cancellation can be tested deterministically.
+- [x] Return `context.Canceled` when cancelled.
+- [x] Avoid emitting successful completion events after cancellation.
+- [x] Keep the normal successful fake run behavior from Sprint 5 unchanged.
 
 ### Cancel API
 
-- [ ] Add `POST /api/sessions/{sessionId}/cancel`.
-- [ ] Load the session before attempting cancellation.
-- [ ] Return HTTP 404 for unknown session IDs.
-- [ ] Return HTTP 409 for `idle`, `completed`, `failed`, or `cancelled` sessions.
-- [ ] Return HTTP 202 when cancellation is accepted for a running session.
-- [ ] Cancel the run context through the run manager.
-- [ ] Return structured JSON responses.
+- [x] Add `POST /api/sessions/{sessionId}/cancel`.
+- [x] Load the session before attempting cancellation.
+- [x] Return HTTP 404 for unknown session IDs.
+- [x] Return HTTP 409 for `idle`, `completed`, `failed`, or `cancelled` sessions.
+- [x] Return HTTP 202 when cancellation is accepted for a running session.
+- [x] Cancel the run context through the run manager.
+- [x] Return structured JSON responses.
 
 Success response:
 
@@ -98,57 +98,57 @@ Success response:
 
 ### Run Lifecycle
 
-- [ ] Ensure every scheduled run emits exactly one terminal run event.
-- [ ] On successful agent return, emit `agent.run.completed` if the agent did not already emit it.
-- [ ] On agent error, emit `agent.run.failed` unless the error is cancellation.
-- [ ] On context cancellation, emit `agent.run.cancelled`.
-- [ ] Mark session `completed` after successful completion.
-- [ ] Mark session `failed` after failure.
-- [ ] Mark session `cancelled` after cancellation.
-- [ ] Set `completed_at` for all terminal session statuses.
-- [ ] Ensure cleanup runs after all terminal event and session status updates.
-- [ ] Log lifecycle failures with session ID and agent type.
+- [x] Ensure every scheduled run emits exactly one terminal run event.
+- [x] On successful agent return, emit `agent.run.completed` if the agent did not already emit it.
+- [x] On agent error, emit `agent.run.failed` unless the error is cancellation.
+- [x] On context cancellation, emit `agent.run.cancelled`.
+- [x] Mark session `completed` after successful completion.
+- [x] Mark session `failed` after failure.
+- [x] Mark session `cancelled` after cancellation.
+- [x] Set `completed_at` for all terminal session statuses.
+- [x] Ensure cleanup runs after all terminal event and session status updates.
+- [x] Log lifecycle failures with session ID and agent type.
 
 ### State Rules
 
-- [ ] Only `idle` sessions can accept a new message in this sprint.
-- [ ] `running` sessions reject new messages with HTTP 409.
-- [ ] Terminal sessions reject new messages with HTTP 409.
-- [ ] Running sessions can be cancelled once.
-- [ ] Terminal sessions cannot be cancelled.
-- [ ] No run manager entry should remain after a terminal state is reached.
+- [x] Only `idle` sessions can accept a new message in this sprint.
+- [x] `running` sessions reject new messages with HTTP 409.
+- [x] Terminal sessions reject new messages with HTTP 409.
+- [x] Running sessions can be cancelled once.
+- [x] Terminal sessions cannot be cancelled.
+- [x] No run manager entry should remain after a terminal state is reached.
 
 ### Error Handling
 
-- [ ] Return HTTP 400 for malformed cancel requests if a body is ever accepted.
-- [ ] Return HTTP 404 for unknown session IDs.
-- [ ] Return HTTP 409 for invalid session state.
-- [ ] Return HTTP 500 for unexpected store, event service, or run manager failures.
-- [ ] Do not emit cancellation events for sessions that were never running.
+- [x] Return HTTP 400 for malformed cancel requests if a body is ever accepted.
+- [x] Return HTTP 404 for unknown session IDs.
+- [x] Return HTTP 409 for invalid session state.
+- [x] Return HTTP 500 for unexpected store, event service, or run manager failures.
+- [x] Do not emit cancellation events for sessions that were never running.
 
 ### Tests
 
-- [ ] Test cancelling a running fake-agent session returns HTTP 202.
-- [ ] Test cancellation emits `agent.run.cancelled`.
-- [ ] Test cancellation marks the session `cancelled`.
-- [ ] Test cancelled fake runs do not emit `agent.run.completed`.
-- [ ] Test active run state is cleaned up after cancellation.
-- [ ] Test cancelling an unknown session returns HTTP 404.
-- [ ] Test cancelling an idle session returns HTTP 409.
-- [ ] Test cancelling a completed session returns HTTP 409.
-- [ ] Test duplicate cancellation returns HTTP 409 after the session becomes terminal.
-- [ ] Test duplicate message submission while running returns HTTP 409.
-- [ ] Test successful runs emit exactly one terminal event.
-- [ ] Test failed runs emit exactly one terminal event.
-- [ ] Test cancelled runs emit exactly one terminal event.
-- [ ] Test `go test ./...` passes.
-- [ ] Test `go test -race ./...` passes or document any race-test limitation.
+- [x] Test cancelling a running fake-agent session returns HTTP 202.
+- [x] Test cancellation emits `agent.run.cancelled`.
+- [x] Test cancellation marks the session `cancelled`.
+- [x] Test cancelled fake runs do not emit `agent.run.completed`.
+- [x] Test active run state is cleaned up after cancellation.
+- [x] Test cancelling an unknown session returns HTTP 404.
+- [x] Test cancelling an idle session returns HTTP 409.
+- [x] Test cancelling a completed session returns HTTP 409.
+- [x] Test duplicate cancellation returns HTTP 409 after the session becomes terminal.
+- [x] Test duplicate message submission while running returns HTTP 409.
+- [x] Test successful runs emit exactly one terminal event.
+- [x] Test failed runs emit exactly one terminal event.
+- [x] Test cancelled runs emit exactly one terminal event.
+- [x] Test `go test ./...` passes.
+- [x] Test `go test -race ./...` passes or document any race-test limitation.
 
 Use deterministic fake-agent synchronization in tests. Do not rely on sleep timing when a channel or barrier would make the test exact.
 
 ### Version Control
 
-- [ ] Commit Sprint 6 in one dedicated git commit after verification passes.
+- [x] Commit Sprint 6 in one dedicated git commit after verification passes.
 
 ## Public Interfaces
 

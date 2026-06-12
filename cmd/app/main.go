@@ -15,6 +15,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents/fake"
 	"github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/httpapi"
+	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 )
 
@@ -48,11 +49,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("agent registry startup failed: %v", err)
 	}
+	runManager := runcontrol.NewManager()
 
 	addr := ":" + cfg.port
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry}),
+		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

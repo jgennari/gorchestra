@@ -52,6 +52,34 @@ func TestAgentReturnsConfiguredError(t *testing.T) {
 	assertEventTypes(t, events, []string{"agent.run.started"})
 }
 
+func TestAgentReturnsContextCanceledWithoutCompletionEvents(t *testing.T) {
+	stepBarrier := make(chan struct{})
+	agent := New(WithStepBarrier(stepBarrier))
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var events []agents.AgentEvent
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- agent.Run(ctx, agents.AgentInput{}, func(_ context.Context, event agents.AgentEvent) error {
+			events = append(events, event)
+			if event.Type == "agent.run.started" {
+				close(started)
+			}
+			return nil
+		})
+	}()
+
+	<-started
+	cancel()
+
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	assertEventTypes(t, events, []string{"agent.run.started"})
+}
+
 func assertEventTypes(t *testing.T, events []agents.AgentEvent, want []string) {
 	t.Helper()
 

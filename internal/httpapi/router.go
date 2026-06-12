@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jgennari/gorchestra/internal/agents"
 	eventservice "github.com/jgennari/gorchestra/internal/events"
+	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 )
 
@@ -36,17 +37,27 @@ type AgentRegistry interface {
 	Get(agentType string) (agents.Agent, bool)
 }
 
+type RunManager interface {
+	Register(parent context.Context, sessionID string) (context.Context, func(), error)
+	Cancel(sessionID string) error
+	Active(sessionID string) bool
+}
+
 type Dependencies struct {
 	Store  Store
 	Events EventService
 	Agents AgentRegistry
+	Runs   RunManager
 }
 
 type API struct {
 	store  Store
 	events EventService
 	agents AgentRegistry
+	runs   RunManager
 }
+
+var _ RunManager = (*runcontrol.Manager)(nil)
 
 type healthResponse struct {
 	Status string `json:"status"`
@@ -77,14 +88,16 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.store = deps[0].Store
 		api.events = deps[0].Events
 		api.agents = deps[0].Agents
+		api.runs = deps[0].Runs
 	}
 
 	r := chi.NewRouter()
 	r.Get("/api/health", healthHandler)
 
-	if api.store != nil && api.events != nil && api.agents != nil {
+	if api.store != nil && api.events != nil && api.agents != nil && api.runs != nil {
 		r.Post("/api/sessions", api.createSessionHandler)
 		r.Post("/api/sessions/{sessionId}/messages", api.submitMessageHandler)
+		r.Post("/api/sessions/{sessionId}/cancel", api.cancelSessionHandler)
 	}
 	if api.store != nil {
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
