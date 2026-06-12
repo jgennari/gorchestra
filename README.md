@@ -136,6 +136,125 @@ The frontend should provide:
 
 The interface should prioritize visibility into agent activity rather than mimicking a traditional chatbot experience.
 
+## Documentation
+
+- [Roadmap](docs/roadmap.md) - target architecture, milestones, API shape, event model, and build order.
+- [Sprint 1](docs/sprint-1.md) - project skeleton checklist and completion criteria.
+- [Sprint 2](docs/sprint-2.md) - SQLite session and event store checklist and completion criteria.
+- [Sprint 3](docs/sprint-3.md) - internal event pipeline checklist and completion criteria.
+
+## Local Development
+
+Prerequisites:
+
+- Go 1.23 or newer
+- Bun 1.3 or newer
+
+Install frontend dependencies:
+
+```sh
+cd web
+bun install
+```
+
+Run the backend and frontend together with hot reload:
+
+```sh
+bun run dev
+```
+
+This starts:
+
+- Go backend on `http://localhost:8080`
+- Vite frontend on `http://127.0.0.1:5173`
+- Backend restart on Go source changes
+- React HMR through Vite
+
+Set `PORT`, `WEB_PORT`, or `GORCHESTRA_DB` to override the default ports and development database path.
+
+Run the same development stack for tailnet access:
+
+```sh
+bun run dev:tailnet
+```
+
+Tailnet mode binds Vite to `0.0.0.0` while keeping API requests proxied to the local Go backend. From another tailnet machine, open:
+
+```txt
+http://<tailscale-ip>:5173
+```
+
+The script prints the detected Tailscale IPv4 address when `tailscale` is available. For MagicDNS hostnames, allow the hostname explicitly:
+
+```sh
+VITE_ALLOWED_HOSTS=your-machine.your-tailnet.ts.net bun run dev:tailnet
+```
+
+Run a persistent human dev server in tmux:
+
+```sh
+bun run dev:human
+```
+
+This starts the tailnet dev stack in a `gorchestra-human` tmux session with stable defaults:
+
+- Backend: `http://localhost:18080`
+- Frontend: `http://127.0.0.1:15173`
+- Database: `.tmp/human/sessions.db`
+
+Useful commands:
+
+```sh
+bun run dev:human:status
+bun run dev:human:logs
+bun run dev:human:attach
+bun run dev:human:restart
+bun run dev:human:reset
+bun run dev:human:stop
+```
+
+Override defaults with `GORCHESTRA_HUMAN_PORT`, `GORCHESTRA_HUMAN_WEB_PORT`, `GORCHESTRA_HUMAN_DB`, or `GORCHESTRA_HUMAN_TMUX`.
+
+Backend:
+
+```sh
+go run ./cmd/app
+```
+
+The backend listens on port `8080` and uses `./sessions.db` by default. Set `PORT` or pass `--db` to override them:
+
+```sh
+PORT=8081 go run ./cmd/app --db .tmp/sessions.db
+```
+
+Health check:
+
+```sh
+curl http://localhost:8080/api/health
+```
+
+Backend tests:
+
+```sh
+go test ./...
+```
+
+Frontend:
+
+```sh
+cd web
+bun dev
+```
+
+The Vite dev server proxies `/api` requests to `http://localhost:8080`.
+
+Frontend build:
+
+```sh
+cd web
+bun run build
+```
+
 ## Initial Success Criteria
 
 The first version of Gorchestra is successful when:
@@ -151,4 +270,4 @@ The first version of Gorchestra is successful when:
 
 ## Status
 
-This repository is in initial setup. The implementation has not been scaffolded yet.
+Sprint 1 project skeleton is scaffolded with a Go backend health endpoint and a Vite React frontend service monitor.
