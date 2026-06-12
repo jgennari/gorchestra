@@ -8,14 +8,21 @@
 # Go
 bin/
 dist/
+.tmp/
 coverage.out
 *.test
+*.out
+gorchestra
 
 # Frontend
 node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/build/
+web/node_modules/
+web/dist/
+web/build/
+web/.vite/
 
 # Local runtime state
 *.db

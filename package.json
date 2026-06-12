@@ -1,0 +1,9 @@
+{
+  "name": "gorchestra",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run scripts/dev.ts",
+    "dev:tailnet": "bun run scripts/dev.ts --tailnet"
+  }
+}
