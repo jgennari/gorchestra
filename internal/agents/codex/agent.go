@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	Type                  = "codex"
-	defaultBinary         = "codex"
-	defaultSandbox        = "workspace-write"
-	defaultApprovalPolicy = "never"
-	defaultInterruptGrace = 2 * time.Second
+	Type                   = "codex"
+	defaultBinary          = "codex"
+	defaultSandbox         = "workspace-write"
+	defaultApprovalPolicy  = "never"
+	defaultInterruptGrace  = 2 * time.Second
+	defaultFastServiceTier = "priority"
 )
 
 type VersionChecker func(ctx context.Context, binary string) (string, error)
@@ -148,6 +149,60 @@ func defaultVersionChecker(ctx context.Context, binary string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+func (a *Agent) Options(ctx context.Context) (agents.Options, error) {
+	if err := ctx.Err(); err != nil {
+		return agents.Options{}, err
+	}
+	if err := a.Available(); err != nil {
+		return agents.Options{}, err
+	}
+
+	workdir, err := a.workdirForRun("")
+	if err != nil {
+		return agents.Options{}, err
+	}
+
+	cmd := a.command(workdir)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return agents.Options{}, fmt.Errorf("create codex options stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return agents.Options{}, fmt.Errorf("create codex options stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return agents.Options{}, fmt.Errorf("create codex options stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return agents.Options{}, fmt.Errorf("start codex options app-server: %w", err)
+	}
+
+	probe := &appServerProbe{
+		rpc:            newRPCClient(stdin),
+		incoming:       readAppServer(stdout, stderr),
+		process:        waitProcess(cmd),
+		interruptGrace: a.interruptGrace,
+	}
+	defer probe.stop()
+
+	if err := probe.initialize(ctx); err != nil {
+		return agents.Options{}, err
+	}
+
+	models, err := probe.listModels(ctx)
+	if err != nil {
+		return agents.Options{}, err
+	}
+	modes, err := probe.listCollaborationModes(ctx)
+	if err != nil {
+		return agents.Options{}, err
+	}
+
+	return normalizeOptions(models, modes), nil
+}
+
 func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -185,6 +240,7 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 		process:    waitProcess(cmd),
 		emit:       emit,
 		normalizer: newNormalizer(),
+		options:    runOptionsFromMetadata(input.Metadata),
 	}
 	return run.execute(ctx, input, workdir)
 }
@@ -217,6 +273,270 @@ func (a *Agent) command(workdir string) *exec.Cmd {
 	return cmd
 }
 
+type codexRunOptions struct {
+	Model           string
+	ReasoningEffort string
+	ServiceTier     string
+	PlanningMode    bool
+}
+
+func runOptionsFromMetadata(metadata map[string]any) codexRunOptions {
+	rawOptions, ok := metadata["codex_options"].(map[string]any)
+	if !ok {
+		return codexRunOptions{}
+	}
+
+	options := codexRunOptions{
+		Model:           stringMetadataValue(rawOptions, "model"),
+		ReasoningEffort: stringMetadataValue(rawOptions, "reasoning_effort"),
+		ServiceTier:     stringMetadataValue(rawOptions, "service_tier"),
+		PlanningMode:    boolMetadataValue(rawOptions, "planning_mode"),
+	}
+	if options.ServiceTier == "" && boolMetadataValue(rawOptions, "fast_mode") {
+		options.ServiceTier = defaultFastServiceTier
+	}
+	return options
+}
+
+func stringMetadataValue(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func boolMetadataValue(values map[string]any, key string) bool {
+	value, _ := values[key].(bool)
+	return value
+}
+
+type appServerProbe struct {
+	rpc            *rpcClient
+	incoming       <-chan incomingMessage
+	process        *processState
+	interruptGrace time.Duration
+}
+
+type codexModelListResponse struct {
+	Data       []codexModel `json:"data"`
+	NextCursor string       `json:"nextCursor"`
+}
+
+type codexModel struct {
+	ID                        string                  `json:"id"`
+	Model                     string                  `json:"model"`
+	DisplayName               string                  `json:"displayName"`
+	Description               string                  `json:"description"`
+	Hidden                    bool                    `json:"hidden"`
+	SupportedReasoningEfforts []codexReasoningEffort  `json:"supportedReasoningEfforts"`
+	DefaultReasoningEffort    string                  `json:"defaultReasoningEffort"`
+	ServiceTiers              []codexModelServiceTier `json:"serviceTiers"`
+	DefaultServiceTier        string                  `json:"defaultServiceTier"`
+	IsDefault                 bool                    `json:"isDefault"`
+}
+
+type codexReasoningEffort struct {
+	ReasoningEffort string `json:"reasoningEffort"`
+	Description     string `json:"description"`
+}
+
+type codexModelServiceTier struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type codexCollaborationModeListResponse struct {
+	Data []codexCollaborationMode `json:"data"`
+}
+
+type codexCollaborationMode struct {
+	Name            string `json:"name"`
+	Mode            string `json:"mode"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+}
+
+func (p *appServerProbe) initialize(ctx context.Context) error {
+	id, err := p.rpc.sendRequest("initialize", map[string]any{
+		"clientInfo": map[string]any{
+			"name":    "gorchestra",
+			"title":   "Gorchestra",
+			"version": "0.0.0",
+		},
+		"capabilities": map[string]any{
+			"experimentalApi":    true,
+			"requestAttestation": false,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	response, err := p.awaitResponse(ctx, id)
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return fmt.Errorf("codex initialize failed: %s", response.Error.Message)
+	}
+	return p.rpc.sendNotification("initialized", nil)
+}
+
+func (p *appServerProbe) listModels(ctx context.Context) ([]codexModel, error) {
+	var models []codexModel
+	cursor := ""
+	for {
+		params := map[string]any{
+			"limit":         100,
+			"includeHidden": false,
+		}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+
+		result, err := p.request(ctx, "model/list", params)
+		if err != nil {
+			return nil, err
+		}
+
+		var response codexModelListResponse
+		if err := json.Unmarshal(result, &response); err != nil {
+			return nil, fmt.Errorf("decode codex model/list response: %w", err)
+		}
+		models = append(models, response.Data...)
+		if response.NextCursor == "" {
+			return models, nil
+		}
+		cursor = response.NextCursor
+	}
+}
+
+func (p *appServerProbe) listCollaborationModes(ctx context.Context) ([]codexCollaborationMode, error) {
+	result, err := p.request(ctx, "collaborationMode/list", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+
+	var response codexCollaborationModeListResponse
+	if err := json.Unmarshal(result, &response); err != nil {
+		return nil, fmt.Errorf("decode codex collaborationMode/list response: %w", err)
+	}
+	return response.Data, nil
+}
+
+func (p *appServerProbe) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	id, err := p.rpc.sendRequest(method, params)
+	if err != nil {
+		return nil, err
+	}
+	response, err := p.awaitResponse(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if response.Error != nil {
+		return nil, fmt.Errorf("codex %s failed: %s", method, response.Error.Message)
+	}
+	return response.Result, nil
+}
+
+func (p *appServerProbe) awaitResponse(ctx context.Context, requestID string) (*rpcMessage, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-p.process.done:
+			return nil, p.processExitBeforeResponse(requestID)
+		case incoming, ok := <-p.incoming:
+			if !ok {
+				return nil, fmt.Errorf("codex app-server closed before response %s", requestID)
+			}
+			if incoming.ParseErr != nil {
+				return nil, incoming.ParseErr
+			}
+			if incoming.ReadErr != nil {
+				return nil, incoming.ReadErr
+			}
+			if incoming.Message == nil {
+				continue
+			}
+			if len(incoming.Message.ID) == 0 {
+				continue
+			}
+			if incoming.Message.idKey() == requestID {
+				return incoming.Message, nil
+			}
+		}
+	}
+}
+
+func (p *appServerProbe) processExitBeforeResponse(requestID string) error {
+	if err := p.process.err(); err != nil {
+		return fmt.Errorf("codex app-server exited before response %s: %w", requestID, err)
+	}
+	return fmt.Errorf("codex app-server exited before response %s", requestID)
+}
+
+func (p *appServerProbe) stop() {
+	_ = p.rpc.Close()
+	if _, ok := p.process.waitTimeout(p.interruptGrace); ok {
+		return
+	}
+	p.process.kill()
+	_, _ = p.process.waitTimeout(p.interruptGrace)
+}
+
+func normalizeOptions(models []codexModel, modes []codexCollaborationMode) agents.Options {
+	options := agents.Options{
+		Models:             make([]agents.ModelOption, 0, len(models)),
+		CollaborationModes: make([]agents.CollaborationModeOption, 0, len(modes)),
+	}
+	for _, model := range models {
+		modelOption := agents.ModelOption{
+			ID:                        model.ID,
+			Model:                     model.Model,
+			DisplayName:               model.DisplayName,
+			Description:               model.Description,
+			Hidden:                    model.Hidden,
+			SupportedReasoningEfforts: make([]agents.ReasoningEffortOption, 0, len(model.SupportedReasoningEfforts)),
+			DefaultReasoningEffort:    model.DefaultReasoningEffort,
+			ServiceTiers:              make([]agents.ModelServiceTier, 0, len(model.ServiceTiers)),
+			DefaultServiceTier:        model.DefaultServiceTier,
+			IsDefault:                 model.IsDefault,
+		}
+		for _, effort := range model.SupportedReasoningEfforts {
+			modelOption.SupportedReasoningEfforts = append(modelOption.SupportedReasoningEfforts, agents.ReasoningEffortOption{
+				ReasoningEffort: effort.ReasoningEffort,
+				Description:     effort.Description,
+			})
+		}
+		for _, tier := range model.ServiceTiers {
+			modelOption.ServiceTiers = append(modelOption.ServiceTiers, agents.ModelServiceTier{
+				ID:          tier.ID,
+				Name:        tier.Name,
+				Description: tier.Description,
+			})
+		}
+		if modelOption.IsDefault {
+			options.DefaultModel = modelOption.Model
+		}
+		options.Models = append(options.Models, modelOption)
+	}
+	if options.DefaultModel == "" && len(options.Models) > 0 {
+		options.DefaultModel = options.Models[0].Model
+	}
+	for _, mode := range modes {
+		if mode.Name == "" && mode.Mode == "" {
+			continue
+		}
+		options.CollaborationModes = append(options.CollaborationModes, agents.CollaborationModeOption{
+			Name:            mode.Name,
+			Mode:            mode.Mode,
+			Model:           mode.Model,
+			ReasoningEffort: mode.ReasoningEffort,
+		})
+	}
+	return options
+}
+
 type appServerRun struct {
 	agent      *Agent
 	rpc        *rpcClient
@@ -224,6 +544,7 @@ type appServerRun struct {
 	process    *processState
 	emit       agents.EmitFunc
 	normalizer *normalizer
+	options    codexRunOptions
 
 	stateMu  sync.Mutex
 	threadID string
@@ -323,6 +644,35 @@ func (r *appServerRun) startTurn(ctx context.Context, message string, workdir st
 	}
 	if r.agent.model != "" {
 		params["model"] = r.agent.model
+	}
+	if r.options.Model != "" {
+		params["model"] = r.options.Model
+	}
+	if r.options.ServiceTier != "" {
+		params["serviceTier"] = r.options.ServiceTier
+	}
+	if r.options.ReasoningEffort != "" {
+		params["effort"] = r.options.ReasoningEffort
+	}
+	if r.options.PlanningMode {
+		model := r.options.Model
+		if model == "" {
+			model = r.agent.model
+		}
+		if model != "" {
+			settings := map[string]any{
+				"model":                  model,
+				"reasoning_effort":       nil,
+				"developer_instructions": nil,
+			}
+			if r.options.ReasoningEffort != "" {
+				settings["reasoning_effort"] = r.options.ReasoningEffort
+			}
+			params["collaborationMode"] = map[string]any{
+				"mode":     "plan",
+				"settings": settings,
+			}
+		}
 	}
 
 	id, err := r.rpc.sendRequest("turn/start", params)

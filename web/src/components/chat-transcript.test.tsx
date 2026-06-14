@@ -54,7 +54,7 @@ test('groups tool calls under assistant messages with expandable output', async 
   )
 
   expect(screen.getByText('Tests passed.')).toBeInTheDocument()
-  expect(screen.getByText('Tool Calls (1)')).toBeInTheDocument()
+  expect(screen.queryByText('Tool Calls (1)')).not.toBeInTheDocument()
   expect(screen.getByText('go test ./...')).toBeInTheDocument()
   expect(screen.getByText('completed')).toBeInTheDocument()
   expect(screen.queryByText(/go test \.\/\.\.\.\s+ok/)).not.toBeInTheDocument()
@@ -84,12 +84,13 @@ test('shows three tool calls by default and expands to more', async () => {
 
   render(<ChatTranscript events={events} />)
 
-  expect(screen.getByText('Tool Calls (5)')).toBeInTheDocument()
+  expect(screen.queryByText('Tool Calls (5)')).not.toBeInTheDocument()
   expect(screen.getByText('tool-1')).toBeInTheDocument()
   expect(screen.getByText('tool-3')).toBeInTheDocument()
   expect(screen.queryByText('tool-4')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /show 2 more/i })).toBeInTheDocument()
 
-  await user.click(screen.getByRole('button', { name: /show more/i }))
+  await user.click(screen.getByRole('button', { name: /show 2 more/i }))
 
   expect(screen.getByText('tool-4')).toBeInTheDocument()
   expect(screen.getByText('tool-5')).toBeInTheDocument()

@@ -103,6 +103,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	r.Get("/api/health", healthHandler)
 
 	if api.store != nil && api.events != nil && api.agents != nil && api.runs != nil {
+		r.Get("/api/agents/{agentType}/options", api.agentOptionsHandler)
 		r.Post("/api/sessions", api.createSessionHandler)
 		r.Patch("/api/sessions/{sessionId}", api.updateSessionHandler)
 		r.Post("/api/sessions/{sessionId}/messages", api.submitMessageHandler)

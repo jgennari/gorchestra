@@ -4,21 +4,83 @@
   min-height: 100vh;
   display: flex;
   overflow: hidden;
-  background: hsl(var(--background));
+  background:
+    linear-gradient(135deg, hsl(var(--background)), hsl(var(--surface)));
   color: hsl(var(--foreground));
 }
 
+.command-sidebar {
+  background:
+    linear-gradient(180deg, hsl(var(--sidebar)), hsl(var(--surface)));
+}
+
+.command-rail {
+  background:
+    linear-gradient(180deg, hsl(var(--rail)), hsl(var(--surface-muted)));
+  box-shadow:
+    inset -1px 0 0 hsl(var(--border) / 0.72),
+    inset 1px 0 0 hsl(var(--foreground) / 0.04);
+}
+
+.command-workspace {
+  background:
+    linear-gradient(180deg, hsl(var(--background) / 0.88), hsl(var(--surface) / 0.94));
+}
+
+.command-card {
+  background:
+    linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--surface) / 0.96));
+  border-color: hsl(var(--border) / 0.72);
+}
+
+.command-composer {
+  background:
+    linear-gradient(180deg, hsl(var(--surface) / 0.84), hsl(var(--background) / 0.96));
+}
+
+.codex-plan-composer {
+  background: hsl(48 100% 93% / 0.96);
+  border-color: hsl(43 92% 68% / 0.72);
+  color: hsl(36 46% 18%);
+}
+
+:root[data-theme="dark"] .codex-plan-composer {
+  background: hsl(42 38% 18% / 0.96);
+  border-color: hsl(43 56% 34% / 0.74);
+  color: hsl(47 62% 86%);
+}
+
+.chat-canvas {
+  background:
+    linear-gradient(hsl(var(--border) / 0.20) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--border) / 0.16) 1px, transparent 1px),
+    linear-gradient(180deg, hsl(var(--background) / 0.56), hsl(var(--surface) / 0.42));
+  background-size: 28px 28px, 28px 28px, 100% 100%;
+}
+
 .thinking-indicator {
+  color: hsl(var(--muted-foreground));
+}
+
+.thinking-indicator__text {
   background:
     linear-gradient(
-      45deg,
-      hsl(var(--background)) 0%,
-      hsl(var(--muted)) 34%,
-      hsl(var(--background)) 68%,
-      hsl(var(--muted)) 100%
+      90deg,
+      hsl(var(--muted-foreground)) 0%,
+      hsl(var(--primary)) 42%,
+      hsl(var(--glow)) 58%,
+      hsl(var(--muted-foreground)) 100%
     );
   background-size: 240% 240%;
+  background-clip: text;
+  color: transparent;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
   animation: thinking-gradient 2.4s ease-in-out infinite;
+}
+
+.thinking-indicator__icon {
+  overflow: visible;
 }
 
 @keyframes thinking-gradient {

@@ -7,7 +7,7 @@ const Tabs = TabsPrimitive.Root
 function TabsList({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.List>) {
   return (
     <TabsPrimitive.List
-      className={cn('inline-flex h-9 items-center rounded-md bg-muted p-1 text-muted-foreground', className)}
+      className={cn('inline-flex h-9 items-center rounded-md border border-border/60 bg-surface-muted/72 p-1 text-muted-foreground', className)}
       {...props}
     />
   )

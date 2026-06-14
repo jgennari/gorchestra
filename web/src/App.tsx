@@ -1,7 +1,7 @@
 import { Menu, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import type { AgentEvent, AgentType, Session, SessionListFilter, SessionStatus } from '@/lib/api'
+import type { AgentEvent, AgentType, Session, SessionListFilter, SessionStatus, SubmitAgentOptions } from '@/lib/api'
 import {
   APIError,
   cancelSession,
@@ -14,12 +14,15 @@ import {
 } from '@/lib/api'
 import { isTerminalEvent, statusFromEvent } from '@/lib/events'
 import { useSessionEvents } from '@/hooks/use-session-events'
+import { useTheme } from '@/hooks/use-theme'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
+import { RunHealthRail, type MessageView } from '@/components/run-health-rail'
 import { SessionDetail } from '@/components/session-detail'
 import { SessionList } from '@/components/session-list'
 import { StatusBadge } from '@/components/status-badge'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 type HealthState = 'checking' | 'online' | 'offline'
 
@@ -33,12 +36,14 @@ function App() {
   const [loadingSessions, setLoadingSessions] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [messageView, setMessageView] = useState<MessageView>('chat')
   const selectedSessionIDRef = useRef<string | null>(null)
 
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionID) ?? null,
     [selectedSessionID, sessions],
   )
+  const theme = useTheme()
 
   const applySession = useCallback((session: Session) => {
     setSessions((current) => sortSessions([session, ...current.filter((item) => item.id !== session.id)]))
@@ -142,11 +147,11 @@ function App() {
     return session
   }
 
-  async function handleSubmitPrompt(content: string) {
+  async function handleSubmitPrompt(content: string, agentOptions?: SubmitAgentOptions) {
     if (!selectedSessionID) {
       throw new Error('Select a session first.')
     }
-    const response = await submitMessage(selectedSessionID, content)
+    const response = await submitMessage(selectedSessionID, content, agentOptions)
     setSessions((current) =>
       current.map((session) =>
         session.id === selectedSessionID
@@ -180,6 +185,11 @@ function App() {
     applySession(updated)
   }
 
+  function handleRefresh() {
+    void loadSessions()
+    if (selectedSessionID) void refreshSession(selectedSessionID)
+  }
+
   const list = (
     <SessionList
       sessions={sessions}
@@ -197,10 +207,22 @@ function App() {
 
   return (
     <main className="app-shell">
-      <div className="hidden min-h-0 w-[360px] lg:flex">{list}</div>
+      <div className="hidden min-h-0 w-[348px] lg:flex">{list}</div>
+      <div className="hidden min-h-0 lg:flex">
+        <RunHealthRail
+          session={selectedSession}
+          events={events}
+          streamState={streamState}
+          streamError={streamError}
+          notice={notice || healthLabel(healthState)}
+          messageView={messageView}
+          onMessageViewChange={setMessageView}
+          onUpdateTitle={handleUpdateTitle}
+        />
+      </div>
 
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b bg-background px-3 lg:hidden">
+      <section className="command-workspace flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b bg-background/84 px-3 lg:hidden">
           <Sheet open={mobileListOpen} onOpenChange={setMobileListOpen}>
             <SheetTrigger asChild>
               <Button size="icon" variant="outline" aria-label="Open sessions">
@@ -221,6 +243,11 @@ function App() {
               <p className="truncate text-xs text-muted-foreground">{selectedSession?.agent_type || 'No session'}</p>
             </div>
           </div>
+          <ThemeToggle
+            preference={theme.preference}
+            resolvedTheme={theme.resolvedTheme}
+            onToggle={theme.nextPreference}
+          />
           <Button size="icon" onClick={() => setCreateOpen(true)} aria-label="Create session">
             <Plus />
           </Button>
@@ -235,20 +262,26 @@ function App() {
           <div className="shrink-0 border-b px-4 py-2 text-sm text-muted-foreground">Loading sessions...</div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <div className="absolute right-3 top-3 z-30 hidden lg:block">
+            <ThemeToggle
+              preference={theme.preference}
+              resolvedTheme={theme.resolvedTheme}
+              onToggle={theme.nextPreference}
+            />
+          </div>
           <SessionDetail
             session={selectedSession}
             events={events}
             streamState={streamState}
             streamError={streamError}
             notice={notice || healthLabel(healthState)}
+            messageView={messageView}
+            onMessageViewChange={setMessageView}
             onSubmitPrompt={handleSubmitPrompt}
             onCancel={handleCancel}
             onUpdateTitle={handleUpdateTitle}
-            onRefresh={() => {
-              void loadSessions()
-              if (selectedSessionID) void refreshSession(selectedSessionID)
-            }}
+            onRefresh={handleRefresh}
           />
         </div>
       </section>

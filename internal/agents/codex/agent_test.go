@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -168,6 +169,97 @@ func TestAgentRunsFakeAppServerSuccess(t *testing.T) {
 		"agent.message.completed",
 		"agent.run.completed",
 	})
+}
+
+func TestAgentOptionsProbeNormalizesCodexOptions(t *testing.T) {
+	agent := fakeAppServerAgent(t, "options")
+
+	options, err := agent.Options(context.Background())
+	if err != nil {
+		t.Fatalf("load options: %v", err)
+	}
+
+	if options.DefaultModel != "gpt-5.5" {
+		t.Fatalf("expected default model gpt-5.5, got %q", options.DefaultModel)
+	}
+	if len(options.Models) != 1 {
+		t.Fatalf("expected one model, got %#v", options.Models)
+	}
+	model := options.Models[0]
+	if model.DisplayName != "GPT-5.5" || model.DefaultReasoningEffort != "medium" {
+		t.Fatalf("unexpected model option %#v", model)
+	}
+	if len(model.ServiceTiers) != 1 || model.ServiceTiers[0].ID != "priority" {
+		t.Fatalf("expected priority service tier, got %#v", model.ServiceTiers)
+	}
+	if len(options.CollaborationModes) != 2 || options.CollaborationModes[0].Mode != "plan" {
+		t.Fatalf("expected collaboration modes, got %#v", options.CollaborationModes)
+	}
+}
+
+func TestStartTurnAppliesRunOptions(t *testing.T) {
+	var written bytes.Buffer
+	incoming := make(chan incomingMessage, 1)
+	incoming <- incomingMessage{Message: &rpcMessage{
+		ID:     json.RawMessage(`1`),
+		Result: json.RawMessage(`{"turn":{"id":"turn_fake","status":"inProgress"}}`),
+	}}
+
+	run := &appServerRun{
+		agent:    New(WithModel("gpt-default")),
+		rpc:      newRPCClient(bufferWriteCloser{Buffer: &written}),
+		incoming: incoming,
+		process:  &processState{done: make(chan struct{})},
+		emit: func(context.Context, agents.AgentEvent) error {
+			return nil
+		},
+		normalizer: newNormalizer(),
+		options: codexRunOptions{
+			Model:           "gpt-5.5",
+			ReasoningEffort: "xhigh",
+			ServiceTier:     "priority",
+			PlanningMode:    true,
+		},
+	}
+	run.setThreadID("thread_fake")
+
+	if err := run.startTurn(context.Background(), "Hello", "/tmp/workspace"); err != nil {
+		t.Fatalf("start turn: %v", err)
+	}
+
+	var request struct {
+		Method string         `json:"method"`
+		Params map[string]any `json:"params"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(written.Bytes()), &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if request.Method != "turn/start" {
+		t.Fatalf("expected turn/start request, got %q", request.Method)
+	}
+	if request.Params["model"] != "gpt-5.5" {
+		t.Fatalf("expected model override, got %#v", request.Params["model"])
+	}
+	if request.Params["effort"] != "xhigh" {
+		t.Fatalf("expected effort override, got %#v", request.Params["effort"])
+	}
+	if request.Params["serviceTier"] != "priority" {
+		t.Fatalf("expected service tier override, got %#v", request.Params["serviceTier"])
+	}
+	collaborationMode, ok := request.Params["collaborationMode"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected collaboration mode, got %#v", request.Params["collaborationMode"])
+	}
+	if collaborationMode["mode"] != "plan" {
+		t.Fatalf("expected plan collaboration mode, got %#v", collaborationMode["mode"])
+	}
+	settings, ok := collaborationMode["settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected collaboration settings, got %#v", collaborationMode["settings"])
+	}
+	if settings["model"] != "gpt-5.5" || settings["reasoning_effort"] != "xhigh" {
+		t.Fatalf("unexpected collaboration settings %#v", settings)
+	}
 }
 
 func TestAgentEmitsFailedEventWhenAppServerExitsNonZero(t *testing.T) {
@@ -358,6 +450,14 @@ func (r *eventRecorder) waitFor(t *testing.T, eventType string) {
 	}
 }
 
+type bufferWriteCloser struct {
+	*bytes.Buffer
+}
+
+func (w bufferWriteCloser) Close() error {
+	return nil
+}
+
 func runFakeAppServer(mode string) {
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -374,6 +474,36 @@ func runFakeAppServer(mode string) {
 			}
 			fakeRespond(request.ID, map[string]any{"serverInfo": map[string]any{"name": "fake-codex"}})
 		case "initialized":
+		case "model/list":
+			fakeRespond(request.ID, map[string]any{
+				"data": []map[string]any{
+					{
+						"id":                     "gpt-5.5",
+						"model":                  "gpt-5.5",
+						"displayName":            "GPT-5.5",
+						"description":            "Default Codex model",
+						"hidden":                 false,
+						"defaultReasoningEffort": "medium",
+						"isDefault":              true,
+						"supportedReasoningEfforts": []map[string]any{
+							{"reasoningEffort": "low", "description": "Low"},
+							{"reasoningEffort": "medium", "description": "Medium"},
+							{"reasoningEffort": "xhigh", "description": "Extra high"},
+						},
+						"serviceTiers": []map[string]any{
+							{"id": "priority", "name": "Fast", "description": "1.5x speed"},
+						},
+					},
+				},
+				"nextCursor": nil,
+			})
+		case "collaborationMode/list":
+			fakeRespond(request.ID, map[string]any{
+				"data": []map[string]any{
+					{"name": "Plan", "mode": "plan", "model": nil, "reasoning_effort": "medium"},
+					{"name": "Default", "mode": "default", "model": nil, "reasoning_effort": nil},
+				},
+			})
 		case "thread/start":
 			fakeRespond(request.ID, map[string]any{
 				"thread": map[string]any{

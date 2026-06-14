@@ -1,9 +1,11 @@
 import {
   createSession,
   eventStreamURL,
+  fetchAgentOptions,
   isAgentType,
   listEvents,
   listSessions,
+  submitMessage,
   updateSessionTitle,
 } from '@/lib/api'
 
@@ -82,6 +84,45 @@ test('create session posts agent type and optional title', async () => {
   const session = await createSession({ agent_type: 'fake', title: 'Inspect repo' })
 
   expect(session.id).toBe('sess_1')
+})
+
+test('agent options helper fetches codex options', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    expect(String(url)).toBe('/api/agents/codex/options')
+    return jsonResponse({
+      default_model: 'gpt-5.5',
+      models: [],
+      collaboration_modes: [],
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const options = await fetchAgentOptions('codex')
+
+  expect(options.default_model).toBe('gpt-5.5')
+})
+
+test('submit message posts codex agent options when provided', async () => {
+  const agentOptions = {
+    codex: {
+      model: 'gpt-5.5',
+      reasoning_effort: 'xhigh',
+      fast_mode: true,
+      planning_mode: true,
+      service_tier: 'priority',
+    },
+  }
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1/messages')
+    expect(init?.method).toBe('POST')
+    expect(init?.body).toBe(JSON.stringify({ content: 'Hello', agent_options: agentOptions }))
+    return jsonResponse({ session_id: 'sess_1', status: 'running' })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const response = await submitMessage('sess_1', 'Hello', agentOptions)
+
+  expect(response.status).toBe('running')
 })
 
 test('agent type validation only accepts known agents', () => {

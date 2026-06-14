@@ -47,7 +47,20 @@ type listSessionsResponse struct {
 }
 
 type submitMessageRequest struct {
-	Content string `json:"content"`
+	Content      string              `json:"content"`
+	AgentOptions *submitAgentOptions `json:"agent_options,omitempty"`
+}
+
+type submitAgentOptions struct {
+	Codex *submitCodexOptions `json:"codex,omitempty"`
+}
+
+type submitCodexOptions struct {
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	FastMode        bool   `json:"fast_mode,omitempty"`
+	PlanningMode    bool   `json:"planning_mode,omitempty"`
+	ServiceTier     string `json:"service_tier,omitempty"`
 }
 
 type submitMessageResponse struct {
@@ -187,6 +200,28 @@ func sessionResponseFromStore(session store.Session) sessionResponse {
 	}
 }
 
+func submitOptionsMetadata(agentType string, options *submitAgentOptions) (map[string]any, map[string]any, error) {
+	metadata := map[string]any{
+		"agent_type": agentType,
+	}
+	if options == nil || options.Codex == nil {
+		return metadata, nil, nil
+	}
+	if agentType != "codex" {
+		return nil, nil, fmt.Errorf("codex options require a codex session")
+	}
+
+	codexOptions := map[string]any{
+		"model":            strings.TrimSpace(options.Codex.Model),
+		"reasoning_effort": strings.TrimSpace(options.Codex.ReasoningEffort),
+		"fast_mode":        options.Codex.FastMode,
+		"planning_mode":    options.Codex.PlanningMode,
+		"service_tier":     strings.TrimSpace(options.Codex.ServiceTier),
+	}
+	metadata["codex_options"] = codexOptions
+	return metadata, map[string]any{"codex": codexOptions}, nil
+}
+
 func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 
@@ -216,6 +251,12 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	metadata, eventOptions, err := submitOptionsMetadata(session.AgentType, request.AgentOptions)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	agent, ok := api.agents.Get(session.AgentType)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "unsupported agent_type")
@@ -235,7 +276,7 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := api.appendUserMessage(r.Context(), session.ID, content); err != nil {
+	if err := api.appendUserMessage(r.Context(), session.ID, content, eventOptions); err != nil {
 		cleanup()
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "session not found")
@@ -270,7 +311,7 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer cleanup()
-		api.runAgent(runCtx, updatedSession, content, agent)
+		api.runAgent(runCtx, updatedSession, content, agent, metadata)
 	}()
 
 	writeJSON(w, http.StatusAccepted, submitMessageResponse{
@@ -320,8 +361,13 @@ func (api API) cancelSessionHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (api API) appendUserMessage(ctx context.Context, sessionID string, content string) error {
-	payload, err := json.Marshal(map[string]string{"text": content})
+func (api API) appendUserMessage(ctx context.Context, sessionID string, content string, agentOptions map[string]any) error {
+	payloadValue := map[string]any{"text": content}
+	if len(agentOptions) > 0 {
+		payloadValue["agent_options"] = agentOptions
+	}
+
+	payload, err := json.Marshal(payloadValue)
 	if err != nil {
 		return fmt.Errorf("marshal user message payload: %w", err)
 	}
@@ -336,7 +382,7 @@ func (api API) appendUserMessage(ctx context.Context, sessionID string, content 
 	return err
 }
 
-func (api API) runAgent(ctx context.Context, session store.Session, message string, agent agents.Agent) {
+func (api API) runAgent(ctx context.Context, session store.Session, message string, agent agents.Agent, metadata map[string]any) {
 	terminalEventEmitted := false
 	emit := func(ctx context.Context, event agents.AgentEvent) error {
 		terminalEvent := isTerminalRunEvent(event.Type)
@@ -357,9 +403,7 @@ func (api API) runAgent(ctx context.Context, session store.Session, message stri
 		SessionID: session.ID,
 		Message:   message,
 		Workdir:   api.workdir,
-		Metadata: map[string]any{
-			"agent_type": agent.Type(),
-		},
+		Metadata:  metadata,
 	}, emit)
 	if errors.Is(err, context.Canceled) {
 		if !terminalEventEmitted {

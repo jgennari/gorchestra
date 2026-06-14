@@ -14,7 +14,7 @@ export function StatusBadge({ status, className }: Props) {
       title={`Session status: ${status}`}
       className={cn(
         'inline-block size-2.5 shrink-0 rounded-full',
-        status === 'running' && 'animate-pulse bg-yellow-400',
+        status === 'running' && 'animate-pulse bg-[hsl(var(--warning))]',
         status === 'failed' && 'bg-destructive',
         status === 'idle' && 'bg-muted-foreground',
         className,

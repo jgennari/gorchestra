@@ -26,18 +26,18 @@ export function SessionList({
   onCreate,
 }: Props) {
   return (
-    <aside className="flex h-full w-full min-h-0 flex-col border-r bg-sidebar">
-      <div className="flex items-center justify-between gap-3 border-b p-4">
+    <aside className="command-sidebar flex h-full w-full min-h-0 flex-col border-r border-border/70">
+      <div className="flex items-center justify-between gap-3 border-b border-border/70 p-4">
         <div className="min-w-0">
-          <p className="text-xs font-medium uppercase text-muted-foreground">Gorchestra</p>
-          <h1 className="truncate text-lg font-semibold">Sessions</h1>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Gorchestra</p>
+          <h1 className="truncate text-xl font-semibold">Sessions</h1>
         </div>
-        <Button aria-label="Create session" size="icon" onClick={onCreate}>
+        <Button aria-label="Create session" size="icon" onClick={onCreate} className="shadow-sm">
           <Plus />
         </Button>
       </div>
 
-      <div className="border-b p-3">
+      <div className="border-b border-border/70 p-3">
         <Tabs value={filter} onValueChange={(value) => onFilterChange(value as SessionListFilter)}>
           <TabsList className="grid h-auto w-full grid-cols-3 gap-1 sm:grid-cols-2 lg:grid-cols-3">
             {filters.map((item) => (
@@ -55,7 +55,7 @@ export function SessionList({
             {filter === 'all' ? 'No sessions yet.' : 'No sessions match this view.'}
           </div>
         ) : (
-          <div className="space-y-1 p-2">
+          <div className="space-y-1.5 p-2.5">
             {sessions.map((session) => (
               <button
                 key={session.id}
@@ -63,16 +63,16 @@ export function SessionList({
                 onClick={() => onSelect(session.id)}
                 aria-current={selectedSessionID === session.id ? 'true' : undefined}
                 className={cn(
-                  'grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-                  selectedSessionID === session.id && 'bg-accent',
+                  'grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                  selectedSessionID === session.id && 'border-primary/30 bg-background/80 shadow-sm',
                 )}
               >
                 <StatusBadge status={session.status} />
                 <span className="min-w-0 truncate text-sm font-medium">
                   {session.title || 'Untitled session'}
                 </span>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {session.agent_type} · {formatShortTime(session.updated_at)}
+                <span className="shrink-0 rounded bg-surface-muted/72 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                  {session.agent_type} / {formatShortTime(session.updated_at)}
                 </span>
               </button>
             ))}

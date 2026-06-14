@@ -59,7 +59,7 @@ export function SessionTitleEditor({ title, onSave }: Props) {
             onChange={(event) => setDraft(event.target.value)}
             autoFocus
             aria-invalid={error ? 'true' : undefined}
-            className="h-8 min-w-0 max-w-xl"
+            className="h-8 min-w-0 max-w-xl bg-background/70"
           />
           <Button type="submit" size="icon" aria-label="Save session title" disabled={saving}>
             <Check />
@@ -92,7 +92,7 @@ export function SessionTitleEditor({ title, onSave }: Props) {
     <TooltipProvider>
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <h2 className="truncate text-lg font-semibold">{displayTitle || 'Untitled session'}</h2>
+          <h2 className="truncate text-base font-semibold tracking-tight">{displayTitle || 'Untitled session'}</h2>
           {saving ? <Badge variant="outline">Saving</Badge> : null}
           <Tooltip>
             <TooltipTrigger asChild>

@@ -53,7 +53,7 @@ export function ChatTranscript({ events, loading = false, error = '' }: Props) {
   }
 
   return (
-    <div className="relative h-full min-h-0 overflow-hidden">
+    <div className="chat-canvas relative h-full min-h-0 overflow-hidden">
       <ScrollArea
         ref={scrollRef}
         className="h-full min-h-0"
@@ -62,7 +62,7 @@ export function ChatTranscript({ events, loading = false, error = '' }: Props) {
         aria-live="polite"
         aria-relevant="additions text"
       >
-        <div className="space-y-4 p-3 pb-16">
+        <div className="space-y-5 p-4 pb-44">
           {messages.map((message) => (
             <ChatMessageRow key={message.id} message={message} />
           ))}
@@ -81,13 +81,13 @@ function ChatMessageRow({ message }: { message: ChatTranscriptMessage }) {
 
   return (
     <article className={cn('flex', user ? 'justify-end' : 'justify-start')}>
-      <div className="max-w-[min(44rem,88%)]">
+      <div className="max-w-[min(48rem,90%)]">
         <div
           className={cn(
-            'rounded-lg px-3 py-2 text-sm shadow-sm',
+            'rounded-lg px-3.5 py-3 text-sm shadow-sm',
             user
-              ? 'bg-primary text-primary-foreground'
-              : 'border bg-card text-card-foreground',
+              ? 'border border-primary/30 bg-primary text-primary-foreground shadow-[0_12px_30px_hsl(var(--primary)/0.16)]'
+              : 'command-card border text-card-foreground',
           )}
         >
           <div
@@ -115,28 +115,20 @@ function ChatMessageRow({ message }: { message: ChatTranscriptMessage }) {
         </div>
 
         {message.tools.length > 0 ? (
-          <div className="mt-2 space-y-1 px-1">
-            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">Tool Calls ({message.tools.length})</span>
-              {message.tools.length > 3 ? (
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 rounded px-1 py-0.5 font-medium text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-expanded={showAllTools}
-                  onClick={() => setShowAllTools((current) => !current)}
-                >
-                  {showAllTools ? 'Show Less' : 'Show More'}
-                  {showAllTools ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-                </button>
-              ) : null}
-            </div>
+          <div className="mt-2 space-y-1 border-l border-border/80 pl-3">
             {visibleTools.map((tool) => (
               <ToolCallRow key={tool.id} tool={tool} />
             ))}
-            {hasHiddenTools ? (
-              <p className="text-xs text-muted-foreground">
-                {message.tools.length - visibleTools.length} more hidden
-              </p>
+            {message.tools.length > 3 ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-0.5 rounded py-0 text-[10px] font-normal leading-none text-muted-foreground/65 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-expanded={showAllTools}
+                onClick={() => setShowAllTools((current) => !current)}
+              >
+                {hasHiddenTools ? <ChevronRight className="size-2.5" aria-hidden="true" /> : <ChevronDown className="size-2.5" aria-hidden="true" />}
+                {hasHiddenTools ? `Show ${message.tools.length - visibleTools.length} More` : 'Show Less'}
+              </button>
             ) : null}
           </div>
         ) : null}
@@ -231,7 +223,7 @@ function ToolCallRow({ tool }: { tool: ChatTranscriptTool }) {
     <div className="text-xs">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1 rounded py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full min-w-0 items-center gap-1 rounded py-0.5 text-left font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-expanded={output ? outputOpen : undefined}
         aria-label={`${outputOpen ? 'Collapse' : 'Expand'} ${name}`}
         onClick={() => {
@@ -252,7 +244,7 @@ function ToolCallRow({ tool }: { tool: ChatTranscriptTool }) {
         outputOpen ? (
           <pre
             className={cn(
-              'ml-5 mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words leading-relaxed text-muted-foreground',
+              'ml-5 mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-surface-muted/70 p-2 font-mono leading-relaxed text-muted-foreground',
               tool.error && 'text-destructive',
             )}
           >

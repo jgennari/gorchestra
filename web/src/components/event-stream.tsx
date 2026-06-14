@@ -108,7 +108,7 @@ export function EventStream({ events, loading = false, error = '' }: Props) {
   }
 
   return (
-    <div className="relative h-full min-h-0 overflow-hidden">
+    <div className="chat-canvas relative h-full min-h-0 overflow-hidden">
       <ScrollArea
         ref={scrollRef}
         className="h-full min-h-0"
@@ -124,7 +124,7 @@ export function EventStream({ events, loading = false, error = '' }: Props) {
           }
         }}
       >
-        <div className="space-y-2 p-3 pb-16">
+        <div className="space-y-2.5 p-4 pb-44">
           {groups.map((group) => (
             <EventGroupRow key={group.id} group={group} />
           ))}
@@ -135,7 +135,7 @@ export function EventStream({ events, loading = false, error = '' }: Props) {
         <Button
           type="button"
           size="sm"
-          className="absolute bottom-4 right-4 shadow-md"
+          className="absolute bottom-36 right-4 shadow-md"
           onClick={scrollToLatest}
           aria-label="Jump to latest event"
         >
@@ -156,13 +156,13 @@ function EventGroupRow({ group }: { group: EventGroup }) {
     <Collapsible defaultOpen={group.defaultOpen}>
       <article
         className={cn(
-          'rounded-lg border bg-card text-card-foreground shadow-sm',
+          'command-card rounded-lg border text-card-foreground shadow-sm',
           error && 'border-destructive/60',
-          group.terminal && !error && 'border-emerald-300',
+          group.terminal && !error && 'border-[hsl(var(--success)/0.44)]',
         )}
       >
         <div className="flex items-start gap-3 p-3">
-          <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border bg-background">
+          <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/70">
             <EventIcon kind={group.kind} error={error} terminal={group.terminal} />
           </div>
 
@@ -205,7 +205,7 @@ function EventGroupRow({ group }: { group: EventGroup }) {
         </div>
 
         <CollapsibleContent>
-          <pre className="max-h-64 overflow-auto border-t bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+          <pre className="max-h-64 overflow-auto border-t border-border/70 bg-surface-muted/70 p-3 text-xs leading-relaxed text-muted-foreground">
             {JSON.stringify(rawPayload, null, 2)}
           </pre>
         </CollapsibleContent>
@@ -216,9 +216,9 @@ function EventGroupRow({ group }: { group: EventGroup }) {
 
 function EventIcon({ kind, error, terminal }: { kind: EventGroupKind; error: boolean; terminal: boolean }) {
   if (error) return <CircleX className="size-4 text-destructive" />
-  if (terminal) return <CircleCheck className="size-4 text-emerald-700" />
-  if (kind === 'tool-call') return <Wrench className="size-4 text-sky-700" />
-  if (kind === 'file-change') return <FileText className="size-4 text-violet-700" />
+  if (terminal) return <CircleCheck className="size-4 text-[hsl(var(--success))]" />
+  if (kind === 'tool-call') return <Wrench className="size-4 text-primary" />
+  if (kind === 'file-change') return <FileText className="size-4 text-[hsl(var(--warning))]" />
   if (kind === 'log') return <Terminal className="size-4 text-muted-foreground" />
   return <ListTree className="size-4 text-primary" />
 }

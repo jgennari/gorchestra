@@ -23,6 +23,55 @@ export type AgentEvent = {
   created_at: string
 }
 
+export type CodexReasoningEffortOption = {
+  reasoning_effort: string
+  description: string
+}
+
+export type CodexServiceTierOption = {
+  id: string
+  name: string
+  description: string
+}
+
+export type CodexModelOption = {
+  id: string
+  model: string
+  display_name: string
+  description: string
+  hidden: boolean
+  supported_reasoning_efforts: CodexReasoningEffortOption[]
+  default_reasoning_effort: string
+  service_tiers: CodexServiceTierOption[]
+  default_service_tier: string
+  is_default: boolean
+}
+
+export type CodexCollaborationModeOption = {
+  name: string
+  mode: string
+  model?: string
+  reasoning_effort?: string
+}
+
+export type CodexAgentOptions = {
+  default_model: string
+  models: CodexModelOption[]
+  collaboration_modes: CodexCollaborationModeOption[]
+}
+
+export type CodexSubmitOptions = {
+  model?: string
+  reasoning_effort?: string
+  fast_mode?: boolean
+  planning_mode?: boolean
+  service_tier?: string
+}
+
+export type SubmitAgentOptions = {
+  codex?: CodexSubmitOptions
+}
+
 type ErrorResponse = {
   error?: string
 }
@@ -103,10 +152,22 @@ export async function updateSessionTitle(sessionID: string, title: string) {
   })
 }
 
-export async function submitMessage(sessionID: string, content: string) {
+export async function fetchAgentOptions(agentType: AgentType) {
+  if (agentType !== 'codex') {
+    throw new Error(`No options API for ${agentType}`)
+  }
+  return requestJSON<CodexAgentOptions>(`/api/agents/${encodeURIComponent(agentType)}/options`)
+}
+
+export async function submitMessage(sessionID: string, content: string, agentOptions?: SubmitAgentOptions) {
+  const body: { content: string; agent_options?: SubmitAgentOptions } = { content }
+  if (agentOptions) {
+    body.agent_options = agentOptions
+  }
+
   return requestJSON<SubmitMessageResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(body),
   })
 }
 

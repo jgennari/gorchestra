@@ -1,9 +1,9 @@
-import { Brain, RefreshCcw } from 'lucide-react'
-import type { AgentEvent, Session } from '@/lib/api'
+import { RefreshCcw } from 'lucide-react'
+import type { AgentEvent, Session, SubmitAgentOptions } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
+import type { MessageView } from '@/components/run-health-rail'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Separator } from '@/components/ui/separator'
 import { StatusBadge } from '@/components/status-badge'
 import { ChatTranscript } from '@/components/chat-transcript'
 import { EventStream } from '@/components/event-stream'
@@ -19,7 +19,9 @@ type Props = {
   streamState: StreamState
   streamError: string
   notice: string
-  onSubmitPrompt: (content: string) => Promise<void>
+  messageView: MessageView
+  onMessageViewChange: (view: MessageView) => void
+  onSubmitPrompt: (content: string, agentOptions?: SubmitAgentOptions) => Promise<void>
   onCancel: () => Promise<void>
   onRefresh: () => void
   onUpdateTitle: (title: string) => Promise<void>
@@ -31,6 +33,8 @@ export function SessionDetail({
   streamState,
   streamError,
   notice,
+  messageView,
+  onMessageViewChange,
   onSubmitPrompt,
   onCancel,
   onRefresh,
@@ -38,7 +42,7 @@ export function SessionDetail({
 }: Props) {
   if (!session) {
     return (
-      <section className="flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
+      <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
         <h2 className="text-lg font-semibold">No session selected</h2>
         <p className="mt-2 max-w-sm text-sm text-muted-foreground">
           Create or select a session to monitor agent work.
@@ -51,8 +55,8 @@ export function SessionDetail({
   const disabledReason = session.status === 'running' ? 'This session is running.' : ''
 
   return (
-    <section className="flex h-full w-full min-h-0 flex-col overflow-hidden bg-background">
-      <header className="shrink-0 border-b px-4 py-2">
+    <section className="relative flex h-full w-full min-h-0 flex-col overflow-hidden bg-transparent">
+      <header className="shrink-0 border-b border-border/70 bg-background/62 px-4 py-2 backdrop-blur lg:hidden">
         <div className="flex min-h-10 items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <StatusBadge status={session.status} />
@@ -60,11 +64,11 @@ export function SessionDetail({
             <Badge variant="outline" className="shrink-0 capitalize" aria-label={`Agent: ${session.agent_type}`}>
               {session.agent_type}
             </Badge>
-            {notice ? <span className="truncate text-sm text-muted-foreground">{notice}</span> : null}
-            {streamError ? <span className="truncate text-sm text-destructive">{streamError}</span> : null}
+            {notice ? <span className="truncate text-sm text-muted-foreground lg:hidden">{notice}</span> : null}
+            {streamError ? <span className="truncate text-sm text-destructive lg:hidden">{streamError}</span> : null}
           </div>
           <TooltipProvider>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2 lg:hidden">
               <ConnectionIndicator state={streamState} error={streamError} />
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -79,8 +83,12 @@ export function SessionDetail({
         </div>
       </header>
 
-      <Tabs defaultValue="chat" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="shrink-0 border-b px-4 py-2">
+      <Tabs
+        value={messageView}
+        onValueChange={(value) => onMessageViewChange(value as MessageView)}
+        className="flex min-h-0 flex-1 flex-col overflow-hidden"
+      >
+        <div className="shrink-0 border-b border-border/70 bg-surface/58 px-4 py-2 lg:hidden">
           <TabsList aria-label="Message views">
             <TabsTrigger value="chat">Chat</TabsTrigger>
             <TabsTrigger value="debug">Debug</TabsTrigger>
@@ -93,31 +101,23 @@ export function SessionDetail({
           <EventStream events={events} loading={streamState === 'loading'} error={streamError} />
         </TabsContent>
       </Tabs>
-      {session.status === 'running' ? <ThinkingIndicator /> : null}
-      <Separator className="shrink-0" />
-      <PromptComposer
-        disabled={composerDisabled}
-        disabledReason={disabledReason}
-        onSubmit={onSubmitPrompt}
-        onCancel={session.status === 'running' ? onCancel : undefined}
-      />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
+        <div
+          aria-hidden="true"
+          className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-background/98 via-background/82 to-transparent backdrop-blur-[2px] [mask-image:linear-gradient(to_top,black_0%,black_68%,transparent_100%)]"
+        />
+        <div className="pointer-events-auto relative">
+          <PromptComposer
+            agentType={session.agent_type}
+            disabled={composerDisabled}
+            disabledReason={disabledReason}
+            thinking={session.status === 'running'}
+            onSubmit={onSubmitPrompt}
+            onCancel={session.status === 'running' ? onCancel : undefined}
+          />
+        </div>
+      </div>
     </section>
-  )
-}
-
-function ThinkingIndicator() {
-  return (
-    <div
-      role="status"
-      aria-label="Thinking"
-      aria-live="polite"
-      className="thinking-indicator shrink-0 border-t px-4 py-2 text-sm text-muted-foreground"
-    >
-      <span className="inline-flex items-center gap-2">
-        <Brain className="size-4" aria-hidden="true" />
-        <span>Thinking</span>
-      </span>
-    </div>
   )
 }
 

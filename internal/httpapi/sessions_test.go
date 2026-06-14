@@ -97,6 +97,46 @@ func TestCreateSessionReturnsUnavailableForRegisteredUnavailableAgent(t *testing
 	assertErrorResponse(t, rec, "agent unavailable")
 }
 
+func TestAgentOptionsReturnsProviderOptions(t *testing.T) {
+	ctx := context.Background()
+	codexAgent := optionsAgent{
+		agentType: "codex",
+		options: agents.Options{
+			DefaultModel: "gpt-5.5",
+			Models: []agents.ModelOption{
+				{
+					Model:                  "gpt-5.5",
+					DisplayName:            "GPT-5.5",
+					DefaultReasoningEffort: "medium",
+					IsDefault:              true,
+				},
+			},
+			CollaborationModes: []agents.CollaborationModeOption{{Name: "Plan", Mode: "plan"}},
+		},
+	}
+	_, _, _, handler := newIntegrationAPI(t, ctx, codexAgent)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/codex/options", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response agents.Options
+	decodeJSON(t, rec, &response)
+	if response.DefaultModel != "gpt-5.5" {
+		t.Fatalf("expected default model gpt-5.5, got %q", response.DefaultModel)
+	}
+	if len(response.Models) != 1 || response.Models[0].DisplayName != "GPT-5.5" {
+		t.Fatalf("expected model options, got %#v", response.Models)
+	}
+	if len(response.CollaborationModes) != 1 || response.CollaborationModes[0].Mode != "plan" {
+		t.Fatalf("expected plan collaboration mode, got %#v", response.CollaborationModes)
+	}
+}
+
 func TestCreateSessionRejectsMissingAgentType(t *testing.T) {
 	ctx := context.Background()
 	_, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
@@ -254,6 +294,77 @@ func TestMessageSubmissionPassesConfiguredWorkdirToAgent(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("context ended before agent started")
+	}
+}
+
+func TestMessageSubmissionPassesCodexOptionsToAgentMetadata(t *testing.T) {
+	ctx := context.Background()
+	agent := newBlockingAgent()
+	agent.agentType = "codex"
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Codex run",
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(agent.release)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{
+		"content":"Inspect this repo",
+		"agent_options":{
+			"codex":{
+				"model":"gpt-5.5",
+				"reasoning_effort":"xhigh",
+				"fast_mode":true,
+				"planning_mode":true,
+				"service_tier":"priority"
+			}
+		}
+	}`)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	select {
+	case input := <-agent.started:
+		if input.Metadata["agent_type"] != "codex" {
+			t.Fatalf("expected codex agent metadata, got %#v", input.Metadata)
+		}
+		options, ok := input.Metadata["codex_options"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected codex options metadata, got %#v", input.Metadata["codex_options"])
+		}
+		assertMetadataValue(t, options, "model", "gpt-5.5")
+		assertMetadataValue(t, options, "reasoning_effort", "xhigh")
+		assertMetadataValue(t, options, "service_tier", "priority")
+		assertMetadataValue(t, options, "fast_mode", true)
+		assertMetadataValue(t, options, "planning_mode", true)
+	case <-time.After(2 * time.Second):
+		t.Fatal("context ended before agent started")
+	}
+}
+
+func TestMessageSubmissionRejectsCodexOptionsForNonCodexSession(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{
+		"content":"Inspect this repo",
+		"agent_options":{"codex":{"model":"gpt-5.5"}}
+	}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "codex options require a codex session")
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	if len(events) != 0 {
+		t.Fatalf("expected no events to be appended, got %#v", events)
 	}
 }
 
@@ -789,6 +900,14 @@ func assertPayloadStatus(t *testing.T, event store.Event, want store.SessionStat
 	}
 }
 
+func assertMetadataValue(t *testing.T, metadata map[string]any, key string, want any) {
+	t.Helper()
+
+	if got := metadata[key]; got != want {
+		t.Fatalf("expected metadata %s %#v, got %#v", key, want, got)
+	}
+}
+
 func assertPayloadError(t *testing.T, event store.Event, want string) {
 	t.Helper()
 
@@ -810,20 +929,22 @@ func decodeEventPayload(t *testing.T, event store.Event) map[string]any {
 }
 
 type blockingAgent struct {
-	started  chan agents.AgentInput
-	releasec chan struct{}
-	once     sync.Once
+	agentType string
+	started   chan agents.AgentInput
+	releasec  chan struct{}
+	once      sync.Once
 }
 
 func newBlockingAgent() *blockingAgent {
 	return &blockingAgent{
-		started:  make(chan agents.AgentInput, 1),
-		releasec: make(chan struct{}),
+		agentType: "fake",
+		started:   make(chan agents.AgentInput, 1),
+		releasec:  make(chan struct{}),
 	}
 }
 
 func (a *blockingAgent) Type() string {
-	return "fake"
+	return a.agentType
 }
 
 func (a *blockingAgent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
@@ -856,5 +977,28 @@ func (a availabilityAgent) Available() error {
 }
 
 func (a availabilityAgent) Run(context.Context, agents.AgentInput, agents.EmitFunc) error {
+	return nil
+}
+
+type optionsAgent struct {
+	agentType    string
+	availableErr error
+	options      agents.Options
+	optionsErr   error
+}
+
+func (a optionsAgent) Type() string {
+	return a.agentType
+}
+
+func (a optionsAgent) Available() error {
+	return a.availableErr
+}
+
+func (a optionsAgent) Options(context.Context) (agents.Options, error) {
+	return a.options, a.optionsErr
+}
+
+func (a optionsAgent) Run(context.Context, agents.AgentInput, agents.EmitFunc) error {
 	return nil
 }

@@ -21,32 +21,42 @@
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
   --color-sidebar: hsl(var(--sidebar));
+  --color-surface: hsl(var(--surface));
+  --color-surface-muted: hsl(var(--surface-muted));
+  --color-rail: hsl(var(--rail));
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
 }
 
 :root {
-  --background: 210 24% 98%;
-  --foreground: 220 20% 12%;
+  --background: 216 33% 97%;
+  --foreground: 219 31% 13%;
   --card: 0 0% 100%;
-  --card-foreground: 220 20% 12%;
+  --card-foreground: 219 31% 13%;
   --popover: 0 0% 100%;
-  --popover-foreground: 220 20% 12%;
-  --primary: 164 48% 27%;
+  --popover-foreground: 219 31% 13%;
+  --primary: 166 64% 25%;
   --primary-foreground: 0 0% 100%;
-  --secondary: 216 16% 94%;
-  --secondary-foreground: 220 20% 12%;
-  --muted: 216 16% 94%;
-  --muted-foreground: 218 10% 42%;
-  --accent: 202 35% 92%;
-  --accent-foreground: 220 20% 12%;
-  --destructive: 2 69% 45%;
+  --secondary: 219 28% 92%;
+  --secondary-foreground: 219 31% 13%;
+  --muted: 216 24% 92%;
+  --muted-foreground: 218 12% 40%;
+  --accent: 168 48% 89%;
+  --accent-foreground: 178 52% 16%;
+  --destructive: 2 70% 45%;
   --destructive-foreground: 0 0% 100%;
-  --border: 214 18% 84%;
-  --input: 214 18% 80%;
-  --ring: 164 48% 35%;
-  --sidebar: 220 22% 96%;
+  --border: 218 22% 80%;
+  --input: 218 22% 76%;
+  --ring: 166 64% 34%;
+  --sidebar: 220 28% 94%;
+  --surface: 220 33% 96%;
+  --surface-muted: 219 26% 90%;
+  --rail: 219 28% 91%;
+  --success: 158 64% 34%;
+  --warning: 39 90% 48%;
+  --danger: 2 70% 45%;
+  --glow: 166 64% 45%;
 
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -59,6 +69,36 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+:root[data-theme="dark"] {
+  --background: 220 30% 7%;
+  --foreground: 215 28% 92%;
+  --card: 220 26% 10%;
+  --card-foreground: 215 28% 92%;
+  --popover: 220 26% 10%;
+  --popover-foreground: 215 28% 92%;
+  --primary: 166 76% 42%;
+  --primary-foreground: 220 30% 7%;
+  --secondary: 220 20% 15%;
+  --secondary-foreground: 215 28% 92%;
+  --muted: 220 18% 16%;
+  --muted-foreground: 217 12% 64%;
+  --accent: 170 48% 18%;
+  --accent-foreground: 166 74% 79%;
+  --destructive: 4 82% 62%;
+  --destructive-foreground: 220 30% 7%;
+  --border: 220 18% 22%;
+  --input: 220 18% 28%;
+  --ring: 166 76% 42%;
+  --sidebar: 220 28% 9%;
+  --surface: 220 24% 11%;
+  --surface-muted: 220 19% 15%;
+  --rail: 220 26% 8%;
+  --success: 156 71% 45%;
+  --warning: 40 96% 58%;
+  --danger: 4 82% 62%;
+  --glow: 166 76% 50%;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -69,12 +109,14 @@ body {
   margin: 0;
 }
 
-button,
-input,
-textarea,
-select {
-  font: inherit;
-  letter-spacing: 0;
+@layer base {
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    letter-spacing: 0;
+  }
 }
 
 #root {
