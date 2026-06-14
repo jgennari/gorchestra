@@ -239,10 +239,14 @@ gorchestra \
   --workspace /path/to/repo \
   --codex-bin codex \
   --codex-sandbox workspace-write \
+  --codex-network-access=true \
+  --codex-web-search=live \
   --codex-model gpt-5.4
 ```
 
 `--codex-model` is optional. If it is omitted, Codex uses its configured default model.
+`--codex-network-access` defaults to `true` so Codex shell commands can reach the network; set it to `false` for locked-down local runs.
+`--codex-web-search` defaults to `live` so Codex's native web search tool can fetch current results; set it to `cached` or `disabled` for stricter local runs.
 
 The message submission, event history, SSE, and cancellation endpoints keep the same HTTP shapes introduced in earlier sprints.
 

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,13 +34,15 @@ type createSessionResponse struct {
 }
 
 type sessionResponse struct {
-	ID          string  `json:"id"`
-	Title       string  `json:"title"`
-	AgentType   string  `json:"agent_type"`
-	Status      string  `json:"status"`
-	CreatedAt   string  `json:"created_at"`
-	UpdatedAt   string  `json:"updated_at"`
-	CompletedAt *string `json:"completed_at"`
+	ID                string  `json:"id"`
+	Title             string  `json:"title"`
+	AgentType         string  `json:"agent_type"`
+	Status            string  `json:"status"`
+	ProviderSessionID string  `json:"provider_session_id,omitempty"`
+	CreatedAt         string  `json:"created_at"`
+	UpdatedAt         string  `json:"updated_at"`
+	CompletedAt       *string `json:"completed_at"`
+	ArchivedAt        *string `json:"archived_at"`
 }
 
 type listSessionsResponse struct {
@@ -49,6 +52,7 @@ type listSessionsResponse struct {
 type submitMessageRequest struct {
 	Content      string              `json:"content"`
 	AgentOptions *submitAgentOptions `json:"agent_options,omitempty"`
+	Attachments  []submitAttachment  `json:"attachments,omitempty"`
 }
 
 type submitAgentOptions struct {
@@ -63,13 +67,35 @@ type submitCodexOptions struct {
 	ServiceTier     string `json:"service_tier,omitempty"`
 }
 
+type submitAttachment struct {
+	Name      string `json:"name"`
+	MediaType string `json:"media_type"`
+	DataURL   string `json:"data_url"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
 type submitMessageResponse struct {
 	SessionID string `json:"session_id"`
 	Status    string `json:"status"`
 }
 
+const (
+	maxSubmitAttachments     = 8
+	maxSubmitAttachmentBytes = 5 * 1024 * 1024
+)
+
 type cancelSessionResponse struct {
 	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
+}
+
+type answerUserInputRequest struct {
+	Answers map[string]agents.UserInputQuestionAnswer `json:"answers"`
+}
+
+type answerUserInputResponse struct {
+	SessionID string `json:"session_id"`
+	RequestID string `json:"request_id"`
 	Status    string `json:"status"`
 }
 
@@ -174,6 +200,40 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sessionResponseFromStore(session))
 }
 
+func (api API) archiveSessionHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+
+	session, err := api.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load session")
+		return
+	}
+	if session.Status == store.SessionStatusRunning {
+		writeError(w, http.StatusConflict, "running session cannot be archived")
+		return
+	}
+
+	archived, err := api.store.ArchiveSession(r.Context(), store.ArchiveSessionParams{ID: session.ID})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if errors.Is(err, store.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to archive session")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, sessionResponseFromStore(archived))
+}
+
 func sessionResponses(sessions []store.Session) []sessionResponse {
 	responses := make([]sessionResponse, 0, len(sessions))
 	for _, session := range sessions {
@@ -188,15 +248,22 @@ func sessionResponseFromStore(session store.Session) sessionResponse {
 		formatted := session.CompletedAt.UTC().Format(time.RFC3339Nano)
 		completedAt = &formatted
 	}
+	var archivedAt *string
+	if session.ArchivedAt != nil {
+		formatted := session.ArchivedAt.UTC().Format(time.RFC3339Nano)
+		archivedAt = &formatted
+	}
 
 	return sessionResponse{
-		ID:          session.ID,
-		Title:       session.Title,
-		AgentType:   session.AgentType,
-		Status:      string(session.Status),
-		CreatedAt:   session.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:   session.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		CompletedAt: completedAt,
+		ID:                session.ID,
+		Title:             session.Title,
+		AgentType:         session.AgentType,
+		Status:            string(session.Status),
+		ProviderSessionID: session.ProviderSessionID,
+		CreatedAt:         session.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         session.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		CompletedAt:       completedAt,
+		ArchivedAt:        archivedAt,
 	}
 }
 
@@ -222,6 +289,86 @@ func submitOptionsMetadata(agentType string, options *submitAgentOptions) (map[s
 	return metadata, map[string]any{"codex": codexOptions}, nil
 }
 
+func validateSubmitAttachments(attachments []submitAttachment) ([]agents.Attachment, error) {
+	if len(attachments) > maxSubmitAttachments {
+		return nil, fmt.Errorf("too many attachments: maximum is %d", maxSubmitAttachments)
+	}
+
+	normalized := make([]agents.Attachment, 0, len(attachments))
+	for index, attachment := range attachments {
+		name := strings.TrimSpace(attachment.Name)
+		if name == "" {
+			name = fmt.Sprintf("image-%d", index+1)
+		}
+		mediaType := strings.TrimSpace(attachment.MediaType)
+		dataURL := strings.TrimSpace(attachment.DataURL)
+		if mediaType == "" {
+			return nil, fmt.Errorf("attachment %d media_type is required", index+1)
+		}
+		if !strings.HasPrefix(mediaType, "image/") {
+			return nil, fmt.Errorf("attachment %d must be an image", index+1)
+		}
+		if dataURL == "" {
+			return nil, fmt.Errorf("attachment %d data_url is required", index+1)
+		}
+		if err := validateImageDataURL(dataURL, mediaType); err != nil {
+			return nil, fmt.Errorf("attachment %d %v", index+1, err)
+		}
+
+		sizeBytes := attachment.SizeBytes
+		if sizeBytes <= 0 {
+			sizeBytes = dataURLDecodedBytes(dataURL)
+		}
+		if sizeBytes <= 0 {
+			return nil, fmt.Errorf("attachment %d size is required", index+1)
+		}
+		if sizeBytes > maxSubmitAttachmentBytes {
+			return nil, fmt.Errorf("attachment %d exceeds %d MB", index+1, maxSubmitAttachmentBytes/(1024*1024))
+		}
+
+		normalized = append(normalized, agents.Attachment{
+			Name:      name,
+			MediaType: mediaType,
+			DataURL:   dataURL,
+			SizeBytes: sizeBytes,
+		})
+	}
+	return normalized, nil
+}
+
+func validateImageDataURL(dataURL string, mediaType string) error {
+	header, payload, ok := strings.Cut(dataURL, ",")
+	if !ok || !strings.HasPrefix(header, "data:") {
+		return errors.New("must be a data URL")
+	}
+	headerMediaType := strings.TrimPrefix(strings.SplitN(header, ";", 2)[0], "data:")
+	if headerMediaType != mediaType {
+		return fmt.Errorf("data URL media type %q does not match %q", headerMediaType, mediaType)
+	}
+	if !strings.Contains(header, ";base64") {
+		return errors.New("must be base64 encoded")
+	}
+	if payload == "" {
+		return errors.New("has empty data")
+	}
+	if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
+		return errors.New("has invalid base64 data")
+	}
+	return nil
+}
+
+func dataURLDecodedBytes(dataURL string) int64 {
+	_, payload, ok := strings.Cut(dataURL, ",")
+	if !ok {
+		return 0
+	}
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return 0
+	}
+	return int64(len(decoded))
+}
+
 func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 
@@ -231,8 +378,13 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	content := strings.TrimSpace(request.Content)
-	if content == "" {
-		writeError(w, http.StatusBadRequest, "content is required")
+	attachments, err := validateSubmitAttachments(request.Attachments)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if content == "" && len(attachments) == 0 {
+		writeError(w, http.StatusBadRequest, "content or attachments are required")
 		return
 	}
 
@@ -248,6 +400,10 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 
 	if session.Status == store.SessionStatusRunning {
 		writeError(w, http.StatusConflict, "session is already running")
+		return
+	}
+	if session.ArchivedAt != nil {
+		writeError(w, http.StatusConflict, "session is archived")
 		return
 	}
 
@@ -276,7 +432,7 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := api.appendUserMessage(r.Context(), session.ID, content, eventOptions); err != nil {
+	if err := api.appendUserMessage(r.Context(), session.ID, content, attachments, eventOptions); err != nil {
 		cleanup()
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "session not found")
@@ -311,7 +467,7 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer cleanup()
-		api.runAgent(runCtx, updatedSession, content, agent, metadata)
+		api.runAgent(runCtx, updatedSession, content, attachments, agent, metadata)
 	}()
 
 	writeJSON(w, http.StatusAccepted, submitMessageResponse{
@@ -361,8 +517,78 @@ func (api API) cancelSessionHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (api API) appendUserMessage(ctx context.Context, sessionID string, content string, agentOptions map[string]any) error {
+func (api API) answerUserInputHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	requestID := chi.URLParam(r, "requestId")
+
+	var request answerUserInputRequest
+	if !decodeJSONBody(w, r, &request) {
+		return
+	}
+	if len(request.Answers) == 0 {
+		writeError(w, http.StatusBadRequest, "answers are required")
+		return
+	}
+
+	session, err := api.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load session")
+		return
+	}
+	if session.Status != store.SessionStatusRunning {
+		writeError(w, http.StatusConflict, "session is not running")
+		return
+	}
+
+	pending, err := api.runs.PendingUserInput(session.ID, requestID)
+	if err != nil {
+		if errors.Is(err, runcontrol.ErrRunNotActive) || errors.Is(err, runcontrol.ErrUserInputNotActive) {
+			writeError(w, http.StatusConflict, "user input request is not active")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load user input request")
+		return
+	}
+	if err := validateUserInputAnswers(pending, request.Answers); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := api.appendUserInputAnswered(r.Context(), session.ID, pending, request.Answers); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist user input answer")
+		return
+	}
+	if err := api.runs.AnswerUserInput(session.ID, pending.RequestID, agents.UserInputResponse{Answers: request.Answers}); err != nil {
+		if errors.Is(err, runcontrol.ErrRunNotActive) || errors.Is(err, runcontrol.ErrUserInputNotActive) {
+			writeError(w, http.StatusConflict, "user input request is not active")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to answer user input request")
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, answerUserInputResponse{
+		SessionID: session.ID,
+		RequestID: pending.RequestID,
+		Status:    "answered",
+	})
+}
+
+func (api API) appendUserMessage(
+	ctx context.Context,
+	sessionID string,
+	content string,
+	attachments []agents.Attachment,
+	agentOptions map[string]any,
+) error {
 	payloadValue := map[string]any{"text": content}
+	if len(attachments) > 0 {
+		payloadValue["attachments"] = attachments
+	}
 	if len(agentOptions) > 0 {
 		payloadValue["agent_options"] = agentOptions
 	}
@@ -382,13 +608,49 @@ func (api API) appendUserMessage(ctx context.Context, sessionID string, content 
 	return err
 }
 
-func (api API) runAgent(ctx context.Context, session store.Session, message string, agent agents.Agent, metadata map[string]any) {
+func (api API) appendUserInputAnswered(
+	ctx context.Context,
+	sessionID string,
+	request agents.UserInputRequest,
+	answers map[string]agents.UserInputQuestionAnswer,
+) error {
+	return api.appendAgentEvent(ctx, sessionID, agents.AgentEvent{
+		Type:   "agent.input.answered",
+		Role:   "user",
+		Status: string(store.EventStatusCompleted),
+		Payload: map[string]any{
+			"provider":            request.Provider,
+			"provider_event_type": request.ProviderEventType,
+			"provider_request_id": request.ProviderRequestID,
+			"request_id":          request.RequestID,
+			"thread_id":           request.ThreadID,
+			"turn_id":             request.TurnID,
+			"item_id":             request.ItemID,
+			"answers":             userInputAnsweredPayload(request, answers),
+		},
+	})
+}
+
+func (api API) runAgent(
+	ctx context.Context,
+	session store.Session,
+	message string,
+	attachments []agents.Attachment,
+	agent agents.Agent,
+	metadata map[string]any,
+) {
 	terminalEventEmitted := false
 	emit := func(ctx context.Context, event agents.AgentEvent) error {
 		terminalEvent := isTerminalRunEvent(event.Type)
 		if terminalEvent && terminalEventEmitted {
 			return fmt.Errorf("terminal run event already emitted for session %s", session.ID)
 		}
+
+		updatedSession, err := api.persistProviderSessionIDFromEvent(ctx, session, event)
+		if err != nil {
+			return err
+		}
+		session = updatedSession
 
 		if err := api.appendAgentEvent(ctx, session.ID, event); err != nil {
 			return err
@@ -400,10 +662,13 @@ func (api API) runAgent(ctx context.Context, session store.Session, message stri
 	}
 
 	err := agent.Run(ctx, agents.AgentInput{
-		SessionID: session.ID,
-		Message:   message,
-		Workdir:   api.workdir,
-		Metadata:  metadata,
+		SessionID:         session.ID,
+		ProviderSessionID: session.ProviderSessionID,
+		Message:           message,
+		Workdir:           api.workdir,
+		Metadata:          metadata,
+		Attachments:       attachments,
+		UserInput:         api.runs,
 	}, emit)
 	if errors.Is(err, context.Canceled) {
 		if !terminalEventEmitted {
@@ -459,6 +724,51 @@ func (api API) runAgent(ctx context.Context, session store.Session, message stri
 	}); err != nil {
 		log.Printf("failed to mark session idle after completion: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), err)
 	}
+}
+
+func (api API) persistProviderSessionIDFromEvent(
+	ctx context.Context,
+	session store.Session,
+	event agents.AgentEvent,
+) (store.Session, error) {
+	providerSessionID := providerSessionIDFromAgentEvent(session.AgentType, event)
+	if providerSessionID == "" {
+		return session, nil
+	}
+	if session.ProviderSessionID != "" {
+		if session.ProviderSessionID != providerSessionID {
+			return store.Session{}, fmt.Errorf("provider session mismatch for session %s: existing %q, event %q", session.ID, session.ProviderSessionID, providerSessionID)
+		}
+		return session, nil
+	}
+	return api.store.SetSessionProviderSessionID(ctx, store.SetSessionProviderSessionIDParams{
+		ID:                session.ID,
+		ProviderSessionID: providerSessionID,
+	})
+}
+
+func providerSessionIDFromAgentEvent(agentType string, event agents.AgentEvent) string {
+	if agentType != "codex" || event.Type != "agent.run.started" {
+		return ""
+	}
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if payloadString(payload, "provider") != "codex" {
+		return ""
+	}
+	switch payloadString(payload, "provider_event_type") {
+	case "thread/start", "thread/resume", "thread/started", "thread/resumed":
+	default:
+		return ""
+	}
+	return payloadString(payload, "thread_id")
+}
+
+func payloadString(payload map[string]any, key string) string {
+	value, _ := payload[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func (api API) updateSessionStatus(ctx context.Context, params store.UpdateSessionStatusParams) (store.Session, error) {
@@ -674,4 +984,67 @@ func validateCancelBody(w http.ResponseWriter, r *http.Request) bool {
 	}
 
 	return true
+}
+
+func validateUserInputAnswers(request agents.UserInputRequest, answers map[string]agents.UserInputQuestionAnswer) error {
+	questionsByID := make(map[string]agents.UserInputQuestion, len(request.Questions))
+	for _, question := range request.Questions {
+		questionsByID[question.ID] = question
+	}
+
+	for id := range answers {
+		if _, ok := questionsByID[id]; !ok {
+			return fmt.Errorf("answer %q does not match a pending question", id)
+		}
+	}
+	for _, question := range request.Questions {
+		answer, ok := answers[question.ID]
+		if !ok {
+			return fmt.Errorf("answer %q is required", question.ID)
+		}
+		if len(answer.Answers) != 1 {
+			return fmt.Errorf("answer %q must include exactly one selection", question.ID)
+		}
+		value := strings.TrimSpace(answer.Answers[0])
+		if value == "" {
+			return fmt.Errorf("answer %q cannot be empty", question.ID)
+		}
+		if questionAllowsAnswer(question, value) {
+			continue
+		}
+		return fmt.Errorf("answer %q is not a valid option", question.ID)
+	}
+	return nil
+}
+
+func questionAllowsAnswer(question agents.UserInputQuestion, value string) bool {
+	for _, option := range question.Options {
+		if value == option.Label {
+			return true
+		}
+	}
+	return question.IsOther
+}
+
+func userInputAnsweredPayload(
+	request agents.UserInputRequest,
+	answers map[string]agents.UserInputQuestionAnswer,
+) map[string]any {
+	secretQuestions := make(map[string]bool, len(request.Questions))
+	for _, question := range request.Questions {
+		secretQuestions[question.ID] = question.IsSecret
+	}
+
+	payload := make(map[string]any, len(answers))
+	for id, answer := range answers {
+		if secretQuestions[id] {
+			payload[id] = map[string]any{
+				"answers":  []string{"[redacted]"},
+				"redacted": true,
+			}
+			continue
+		}
+		payload[id] = answer
+	}
+	return payload
 }

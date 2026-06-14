@@ -1,4 +1,6 @@
 import {
+  answerUserInput,
+  archiveSession,
   createSession,
   eventStreamURL,
   fetchAgentOptions,
@@ -50,6 +52,7 @@ test('title update helper patches the session title', async () => {
       created_at: '2026-06-12T16:00:00Z',
       updated_at: '2026-06-12T16:01:00Z',
       completed_at: null,
+      archived_at: null,
     })
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -75,6 +78,7 @@ test('create session posts agent type and optional title', async () => {
         created_at: '2026-06-12T16:00:00Z',
         updated_at: '2026-06-12T16:00:00Z',
         completed_at: null,
+        archived_at: null,
       })
     }
     throw new Error(`unexpected URL ${String(url)}`)
@@ -84,6 +88,28 @@ test('create session posts agent type and optional title', async () => {
   const session = await createSession({ agent_type: 'fake', title: 'Inspect repo' })
 
   expect(session.id).toBe('sess_1')
+})
+
+test('archive session posts to the archive endpoint', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1/archive')
+    expect(init?.method).toBe('POST')
+    return jsonResponse({
+      id: 'sess_1',
+      title: 'Inspect repo',
+      agent_type: 'fake',
+      status: 'idle',
+      created_at: '2026-06-12T16:00:00Z',
+      updated_at: '2026-06-12T16:05:00Z',
+      completed_at: null,
+      archived_at: '2026-06-12T16:05:00Z',
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const session = await archiveSession('sess_1')
+
+  expect(session.archived_at).toBe('2026-06-12T16:05:00Z')
 })
 
 test('agent options helper fetches codex options', async () => {
@@ -123,6 +149,47 @@ test('submit message posts codex agent options when provided', async () => {
   const response = await submitMessage('sess_1', 'Hello', agentOptions)
 
   expect(response.status).toBe('running')
+})
+
+test('submit message posts image attachments when provided', async () => {
+  const attachments = [
+    {
+      name: 'diagram.png',
+      media_type: 'image/png',
+      data_url: 'data:image/png;base64,aGVsbG8=',
+      size_bytes: 5,
+    },
+  ]
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1/messages')
+    expect(init?.method).toBe('POST')
+    expect(init?.body).toBe(JSON.stringify({ content: '', attachments }))
+    return jsonResponse({ session_id: 'sess_1', status: 'running' })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const response = await submitMessage('sess_1', '', undefined, attachments)
+
+  expect(response.status).toBe('running')
+})
+
+test('answer user input posts selected answers', async () => {
+  const answers = {
+    question_test: {
+      answers: ['Beta'],
+    },
+  }
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1/requests/call_test/answer')
+    expect(init?.method).toBe('POST')
+    expect(init?.body).toBe(JSON.stringify({ answers }))
+    return jsonResponse({ session_id: 'sess_1', request_id: 'call_test', status: 'answered' })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const response = await answerUserInput('sess_1', 'call_test', answers)
+
+  expect(response.status).toBe('answered')
 })
 
 test('agent type validation only accepts known agents', () => {

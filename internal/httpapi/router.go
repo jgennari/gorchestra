@@ -28,8 +28,10 @@ type Store interface {
 	CreateSession(ctx context.Context, params store.CreateSessionParams) (store.Session, error)
 	GetSession(ctx context.Context, id string) (store.Session, error)
 	ListSessions(ctx context.Context, params store.ListSessionsParams) ([]store.Session, error)
+	ArchiveSession(ctx context.Context, params store.ArchiveSessionParams) (store.Session, error)
 	UpdateSessionTitle(ctx context.Context, params store.UpdateSessionTitleParams) (store.Session, error)
 	UpdateSessionStatus(ctx context.Context, params store.UpdateSessionStatusParams) (store.Session, error)
+	SetSessionProviderSessionID(ctx context.Context, params store.SetSessionProviderSessionIDParams) (store.Session, error)
 	ListEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error)
 }
 
@@ -46,6 +48,9 @@ type RunManager interface {
 	Register(parent context.Context, sessionID string) (context.Context, func(), error)
 	Cancel(sessionID string) error
 	Active(sessionID string) bool
+	OpenUserInput(ctx context.Context, request agents.UserInputRequest) (agents.UserInputWaiter, error)
+	PendingUserInput(sessionID string, requestID string) (agents.UserInputRequest, error)
+	AnswerUserInput(sessionID string, requestID string, response agents.UserInputResponse) error
 }
 
 type Dependencies struct {
@@ -106,8 +111,10 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Get("/api/agents/{agentType}/options", api.agentOptionsHandler)
 		r.Post("/api/sessions", api.createSessionHandler)
 		r.Patch("/api/sessions/{sessionId}", api.updateSessionHandler)
+		r.Post("/api/sessions/{sessionId}/archive", api.archiveSessionHandler)
 		r.Post("/api/sessions/{sessionId}/messages", api.submitMessageHandler)
 		r.Post("/api/sessions/{sessionId}/cancel", api.cancelSessionHandler)
+		r.Post("/api/sessions/{sessionId}/requests/{requestId}/answer", api.answerUserInputHandler)
 	}
 	if api.store != nil {
 		r.Get("/api/sessions", api.listSessionsHandler)

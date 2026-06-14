@@ -227,6 +227,8 @@ The backend listens on port `8080` and uses `./sessions.db` by default. Set `POR
 PORT=8081 go run ./cmd/app --db .tmp/sessions.db
 ```
 
+Codex shell commands run with network access enabled by default. Use `--codex-network-access=false` to disable command-line network access for Codex turns. Codex native web search runs in live mode by default; use `--codex-web-search=cached` or `--codex-web-search=disabled` to change it.
+
 Health check:
 
 ```sh

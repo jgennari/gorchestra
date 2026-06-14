@@ -679,6 +679,9 @@ func (s *fakeHTTPStore) ListSessions(_ context.Context, params store.ListSession
 
 	sessions := make([]store.Session, 0, len(s.sessions))
 	for _, session := range s.sessions {
+		if session.ArchivedAt != nil {
+			continue
+		}
 		if params.Status != "" && session.Status != params.Status {
 			continue
 		}
@@ -714,6 +717,23 @@ func (s *fakeHTTPStore) UpdateSessionTitle(_ context.Context, params store.Updat
 	return session, nil
 }
 
+func (s *fakeHTTPStore) ArchiveSession(_ context.Context, params store.ArchiveSessionParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[params.ID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+
+	archivedAt := testCreatedAt
+	session.ArchivedAt = &archivedAt
+	session.UpdatedAt = archivedAt
+	s.sessions[params.ID] = session
+
+	return session, nil
+}
+
 func (s *fakeHTTPStore) UpdateSessionStatus(_ context.Context, params store.UpdateSessionStatusParams) (store.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -733,6 +753,23 @@ func (s *fakeHTTPStore) UpdateSessionStatus(_ context.Context, params store.Upda
 	}
 	s.sessions[params.ID] = session
 
+	return session, nil
+}
+
+func (s *fakeHTTPStore) SetSessionProviderSessionID(_ context.Context, params store.SetSessionProviderSessionIDParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[params.ID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+	if session.ProviderSessionID != "" && session.ProviderSessionID != params.ProviderSessionID {
+		return store.Session{}, store.ErrInvalidArgument
+	}
+	session.ProviderSessionID = params.ProviderSessionID
+	session.UpdatedAt = testCreatedAt
+	s.sessions[params.ID] = session
 	return session, nil
 }
 

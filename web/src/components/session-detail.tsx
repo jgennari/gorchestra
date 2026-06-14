@@ -1,16 +1,16 @@
-import { RefreshCcw } from 'lucide-react'
-import type { AgentEvent, Session, SubmitAgentOptions } from '@/lib/api'
+import { Check, Copy, RefreshCcw } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import type { AgentEvent, MessageAttachment, Session, SubmitAgentOptions, UserInputAnswers } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
-import type { MessageView } from '@/components/run-health-rail'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
 import { ChatTranscript } from '@/components/chat-transcript'
-import { EventStream } from '@/components/event-stream'
 import { PromptComposer } from '@/components/prompt-composer'
 import { SessionTitleEditor } from '@/components/session-title-editor'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { UserInputCard } from '@/components/user-input-card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { pendingUserInputRequest } from '@/lib/events'
 import { cn } from '@/lib/utils'
 
 type Props = {
@@ -19,9 +19,10 @@ type Props = {
   streamState: StreamState
   streamError: string
   notice: string
-  messageView: MessageView
-  onMessageViewChange: (view: MessageView) => void
-  onSubmitPrompt: (content: string, agentOptions?: SubmitAgentOptions) => Promise<void>
+  showDebugEvents: boolean
+  onShowDebugEventsChange: (showDebugEvents: boolean) => void
+  onSubmitPrompt: (content: string, agentOptions?: SubmitAgentOptions, attachments?: MessageAttachment[]) => Promise<void>
+  onAnswerUserInput: (requestID: string, answers: UserInputAnswers) => Promise<void>
   onCancel: () => Promise<void>
   onRefresh: () => void
   onUpdateTitle: (title: string) => Promise<void>
@@ -33,13 +34,19 @@ export function SessionDetail({
   streamState,
   streamError,
   notice,
-  messageView,
-  onMessageViewChange,
+  showDebugEvents,
+  onShowDebugEventsChange,
   onSubmitPrompt,
+  onAnswerUserInput,
   onCancel,
   onRefresh,
   onUpdateTitle,
 }: Props) {
+  const userInputRequest = useMemo(
+    () => (session?.status === 'running' ? pendingUserInputRequest(events) : null),
+    [events, session?.status],
+  )
+
   if (!session) {
     return (
       <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
@@ -83,41 +90,92 @@ export function SessionDetail({
         </div>
       </header>
 
-      <Tabs
-        value={messageView}
-        onValueChange={(value) => onMessageViewChange(value as MessageView)}
-        className="flex min-h-0 flex-1 flex-col overflow-hidden"
-      >
-        <div className="shrink-0 border-b border-border/70 bg-surface/58 px-4 py-2 lg:hidden">
-          <TabsList aria-label="Message views">
-            <TabsTrigger value="chat">Chat</TabsTrigger>
-            <TabsTrigger value="debug">Debug</TabsTrigger>
-          </TabsList>
-        </div>
-        <TabsContent value="chat" className="m-0 min-h-0 flex-1 overflow-hidden">
-          <ChatTranscript events={events} loading={streamState === 'loading'} error={streamError} />
-        </TabsContent>
-        <TabsContent value="debug" className="m-0 min-h-0 flex-1 overflow-hidden">
-          <EventStream events={events} loading={streamState === 'loading'} error={streamError} />
-        </TabsContent>
-      </Tabs>
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
-        <div
-          aria-hidden="true"
-          className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-background/98 via-background/82 to-transparent backdrop-blur-[2px] [mask-image:linear-gradient(to_top,black_0%,black_68%,transparent_100%)]"
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <ChatTranscript
+          events={events}
+          loading={streamState === 'loading'}
+          error={streamError}
+          topInset="sessionHeader"
+          bottomInset={userInputRequest ? 'question' : 'composer'}
+          showDebugEvents={showDebugEvents}
         />
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 p-3">
+          <ChatSessionHeader
+            sessionID={session.id}
+            title={session.title}
+            onUpdateTitle={onUpdateTitle}
+          />
+        </div>
+      </div>
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
         <div className="pointer-events-auto relative">
+          <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
           <PromptComposer
+            key={session.id}
+            sessionID={session.id}
             agentType={session.agent_type}
             disabled={composerDisabled}
             disabledReason={disabledReason}
-            thinking={session.status === 'running'}
+            thinking={session.status === 'running' && !userInputRequest}
+            showDebugEvents={showDebugEvents}
             onSubmit={onSubmitPrompt}
+            onShowDebugEventsChange={onShowDebugEventsChange}
             onCancel={session.status === 'running' ? onCancel : undefined}
           />
         </div>
       </div>
     </section>
+  )
+}
+
+function ChatSessionHeader({
+  sessionID,
+  title,
+  onUpdateTitle,
+}: {
+  sessionID: string
+  title: string
+  onUpdateTitle: (title: string) => Promise<void>
+}) {
+  return (
+    <div className="command-chat-header pointer-events-auto flex min-h-14 items-center justify-between gap-3 rounded-xl border border-border/90 px-3 py-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]">
+      <div className="min-w-0 flex-1">
+        <SessionTitleEditor title={title} onSave={onUpdateTitle} />
+      </div>
+      <SessionIDCopy sessionID={sessionID} />
+    </div>
+  )
+}
+
+function SessionIDCopy({ sessionID }: { sessionID: string }) {
+  const [copied, setCopied] = useState(false)
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(sessionID)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <div className="flex min-w-0 max-w-[45%] shrink items-center gap-1.5 rounded-md bg-background/30 px-2 py-1">
+      <code className="min-w-0 truncate font-mono text-[11px] text-muted-foreground/90">
+        {sessionID}
+      </code>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground [&_svg]:size-3.5"
+        aria-label="Copy session id"
+        onClick={() => void handleCopy()}
+      >
+        {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+      </Button>
+    </div>
   )
 }
 

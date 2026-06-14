@@ -197,6 +197,87 @@ func TestMessageSubmissionPersistsUserMessageAndMarksSessionRunning(t *testing.T
 	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
 }
 
+func TestMessageSubmissionAcceptsImageAttachments(t *testing.T) {
+	ctx := context.Background()
+	agent := newBlockingAgent()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session := createIntegrationSession(t, ctx, dbStore)
+	t.Cleanup(func() {
+		agent.release()
+		waitFor(t, func() bool {
+			session, err := dbStore.GetSession(ctx, session.ID)
+			return err == nil && session.Status == store.SessionStatusIdle
+		})
+	})
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{
+		"content":"Describe this image",
+		"attachments":[
+			{
+				"name":"diagram.png",
+				"media_type":"image/png",
+				"data_url":"data:image/png;base64,aGVsbG8=",
+				"size_bytes":5
+			}
+		]
+	}`)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	var input agents.AgentInput
+	select {
+	case input = <-agent.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for agent input")
+	}
+	if len(input.Attachments) != 1 {
+		t.Fatalf("expected one attachment, got %#v", input.Attachments)
+	}
+	if input.Attachments[0].Name != "diagram.png" || input.Attachments[0].DataURL != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("unexpected attachment %#v", input.Attachments[0])
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"user.message.completed", "session.status.updated"})
+	payload := decodeEventPayload(t, events[0])
+	attachments, ok := payload["attachments"].([]any)
+	if !ok || len(attachments) != 1 {
+		t.Fatalf("expected attachment payload, got %#v", payload["attachments"])
+	}
+	attachment, ok := attachments[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected attachment object, got %#v", attachments[0])
+	}
+	if attachment["name"] != "diagram.png" || attachment["media_type"] != "image/png" {
+		t.Fatalf("unexpected attachment payload %#v", attachment)
+	}
+}
+
+func TestMessageSubmissionRejectsNonImageAttachments(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{
+		"content":"Read this",
+		"attachments":[
+			{
+				"name":"notes.txt",
+				"media_type":"text/plain",
+				"data_url":"data:text/plain;base64,aGVsbG8=",
+				"size_bytes":5
+			}
+		]
+	}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "attachment 1 must be an image")
+}
+
 func TestUpdateSessionTitleTrimsAndReturnsSession(t *testing.T) {
 	ctx := context.Background()
 	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
@@ -246,6 +327,70 @@ func TestUpdateSessionTitleRejectsMalformedJSON(t *testing.T) {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
 	assertErrorResponse(t, rec, "invalid JSON body")
+}
+
+func TestArchiveSessionSetsArchivedAtAndHidesFromList(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/archive", ``)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response sessionResponse
+	decodeJSON(t, rec, &response)
+	if response.ID != session.ID {
+		t.Fatalf("expected archived session id %q, got %q", session.ID, response.ID)
+	}
+	if response.ArchivedAt == nil {
+		t.Fatal("expected archived_at in response")
+	}
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated.ArchivedAt == nil {
+		t.Fatal("expected persisted archived_at")
+	}
+
+	sessions, err := dbStore.ListSessions(ctx, store.ListSessionsParams{})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("expected archived session to be hidden from list, got %#v", sessions)
+	}
+}
+
+func TestArchiveRunningSessionReturnsConflict(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: store.SessionStatusRunning,
+	}); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/archive", ``)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "running session cannot be archived")
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated.ArchivedAt != nil {
+		t.Fatalf("expected running session not to be archived, got %s", updated.ArchivedAt)
+	}
 }
 
 func TestMessageSubmissionReturnsUnavailableForRegisteredUnavailableAgent(t *testing.T) {
@@ -344,6 +489,72 @@ func TestMessageSubmissionPassesCodexOptionsToAgentMetadata(t *testing.T) {
 		assertMetadataValue(t, options, "planning_mode", true)
 	case <-time.After(2 * time.Second):
 		t.Fatal("context ended before agent started")
+	}
+}
+
+func TestMessageSubmissionPassesProviderSessionIDToCodexAgent(t *testing.T) {
+	ctx := context.Background()
+	agent := newBlockingAgent()
+	agent.agentType = "codex"
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Codex run",
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := dbStore.SetSessionProviderSessionID(ctx, store.SetSessionProviderSessionIDParams{
+		ID:                session.ID,
+		ProviderSessionID: "thread_existing",
+	}); err != nil {
+		t.Fatalf("set provider session id: %v", err)
+	}
+	t.Cleanup(agent.release)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Continue"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	select {
+	case input := <-agent.started:
+		if input.ProviderSessionID != "thread_existing" {
+			t.Fatalf("expected provider session id thread_existing, got %q", input.ProviderSessionID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("context ended before agent started")
+	}
+}
+
+func TestCodexRunStartedPersistsProviderSessionID(t *testing.T) {
+	ctx := context.Background()
+	agent := codexThreadAgent{threadID: "thread_created"}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Codex run",
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Start"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	waitFor(t, func() bool {
+		session, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && session.Status == store.SessionStatusIdle
+	})
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated.ProviderSessionID != "thread_created" {
+		t.Fatalf("expected provider session id thread_created, got %q", updated.ProviderSessionID)
 	}
 }
 
@@ -512,6 +723,95 @@ func TestCancelRunningFakeAgentMarksSessionCancelledAndCleansUpRun(t *testing.T)
 	if hasEvent(events, "agent.run.completed") {
 		t.Fatal("expected cancelled run not to emit agent.run.completed")
 	}
+}
+
+func TestAnswerUserInputRequestPersistsAnswerAndCompletesRun(t *testing.T) {
+	ctx := context.Background()
+	agent := userInputAgent{}
+	dbStore, _, runManager, handler := newIntegrationAPI(t, ctx, agent)
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	messageRec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Ask me"}`)
+	if messageRec.Code != http.StatusAccepted {
+		t.Fatalf("expected message status %d, got %d with body %s", http.StatusAccepted, messageRec.Code, messageRec.Body.String())
+	}
+	waitFor(t, func() bool {
+		return hasEventType(t, ctx, dbStore, session.ID, "agent.input.requested")
+	})
+
+	answerRec := postJSON(handler, "/api/sessions/"+session.ID+"/requests/call_test/answer", `{
+		"answers": {
+			"question_test": {
+				"answers": ["Beta"]
+			}
+		}
+	}`)
+	if answerRec.Code != http.StatusAccepted {
+		t.Fatalf("expected answer status %d, got %d with body %s", http.StatusAccepted, answerRec.Code, answerRec.Body.String())
+	}
+
+	waitFor(t, func() bool {
+		session, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && session.Status == store.SessionStatusIdle
+	})
+	waitFor(t, func() bool {
+		return !runManager.Active(session.ID)
+	})
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{
+		"user.message.completed",
+		"session.status.updated",
+		"agent.run.started",
+		"agent.input.requested",
+		"agent.input.answered",
+		"agent.message.completed",
+		"agent.run.completed",
+		"session.status.updated",
+	})
+	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
+	assertPayloadStatus(t, events[7], store.SessionStatusIdle)
+	answerPayload := decodeEventPayload(t, events[4])
+	if answerPayload["request_id"] != "call_test" {
+		t.Fatalf("expected answered request id call_test, got %#v", answerPayload["request_id"])
+	}
+	assertPayloadText(t, events[5], "Answer: Beta")
+}
+
+func TestAnswerUserInputRejectsInvalidOption(t *testing.T) {
+	ctx := context.Background()
+	agent := userInputAgent{}
+	dbStore, _, runManager, handler := newIntegrationAPI(t, ctx, agent)
+	session := createIntegrationSession(t, ctx, dbStore)
+	t.Cleanup(func() {
+		if runManager.Active(session.ID) {
+			_ = runManager.Cancel(session.ID)
+			waitFor(t, func() bool {
+				session, err := dbStore.GetSession(ctx, session.ID)
+				return err == nil && session.Status == store.SessionStatusIdle
+			})
+		}
+	})
+
+	messageRec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Ask me"}`)
+	if messageRec.Code != http.StatusAccepted {
+		t.Fatalf("expected message status %d, got %d with body %s", http.StatusAccepted, messageRec.Code, messageRec.Body.String())
+	}
+	waitFor(t, func() bool {
+		return hasEventType(t, ctx, dbStore, session.ID, "agent.input.requested")
+	})
+
+	answerRec := postJSON(handler, "/api/sessions/"+session.ID+"/requests/call_test/answer", `{
+		"answers": {
+			"question_test": {
+				"answers": ["Delta"]
+			}
+		}
+	}`)
+	if answerRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected answer status %d, got %d with body %s", http.StatusBadRequest, answerRec.Code, answerRec.Body.String())
+	}
+	assertErrorResponse(t, answerRec, `answer "question_test" is not a valid option`)
 }
 
 func TestCancelUnknownSessionReturnsNotFound(t *testing.T) {
@@ -733,7 +1033,7 @@ func TestMessageSubmissionRejectsEmptyContent(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
-	assertErrorResponse(t, rec, "content is required")
+	assertErrorResponse(t, rec, "content or attachments are required")
 }
 
 func TestWriteAPIsRejectMalformedJSON(t *testing.T) {
@@ -960,6 +1260,107 @@ func (a *blockingAgent) Run(ctx context.Context, input agents.AgentInput, emit a
 func (a *blockingAgent) release() {
 	a.once.Do(func() {
 		close(a.releasec)
+	})
+}
+
+type userInputAgent struct{}
+
+func (a userInputAgent) Type() string {
+	return "fake"
+}
+
+func (a userInputAgent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
+	if err := emit(ctx, agents.AgentEvent{
+		Type:   "agent.run.started",
+		Role:   "assistant",
+		Status: string(store.EventStatusStarted),
+		Payload: map[string]any{
+			"agent_type": "fake",
+		},
+	}); err != nil {
+		return err
+	}
+
+	request := agents.UserInputRequest{
+		SessionID:         input.SessionID,
+		RequestID:         "call_test",
+		Provider:          "fake",
+		ProviderEventType: "item/tool/requestUserInput",
+		ProviderRequestID: "99",
+		ThreadID:          "thread_test",
+		TurnID:            "turn_test",
+		ItemID:            "call_test",
+		Questions: []agents.UserInputQuestion{
+			{
+				ID:       "question_test",
+				Header:   "Pick",
+				Question: "Pick one",
+				IsOther:  false,
+				Options: []agents.UserInputOption{
+					{Label: "Alpha", Description: "First"},
+					{Label: "Beta", Description: "Second"},
+					{Label: "Gamma", Description: "Third"},
+				},
+			},
+		},
+	}
+	waiter, err := input.UserInput.OpenUserInput(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer waiter.Close()
+
+	if err := emit(ctx, agents.AgentEvent{
+		Type:   "agent.input.requested",
+		Role:   "assistant",
+		Status: string(store.EventStatusStarted),
+		Payload: map[string]any{
+			"provider":            request.Provider,
+			"provider_event_type": request.ProviderEventType,
+			"provider_request_id": request.ProviderRequestID,
+			"request_id":          request.RequestID,
+			"thread_id":           request.ThreadID,
+			"turn_id":             request.TurnID,
+			"item_id":             request.ItemID,
+			"questions":           request.Questions,
+		},
+	}); err != nil {
+		return err
+	}
+
+	response, err := waiter.Wait(ctx)
+	if err != nil {
+		return err
+	}
+	answer := response.Answers["question_test"].Answers[0]
+	return emit(ctx, agents.AgentEvent{
+		Type:   "agent.message.completed",
+		Role:   "assistant",
+		Status: string(store.EventStatusCompleted),
+		Payload: map[string]any{
+			"text": "Answer: " + answer,
+		},
+	})
+}
+
+type codexThreadAgent struct {
+	threadID string
+}
+
+func (a codexThreadAgent) Type() string {
+	return "codex"
+}
+
+func (a codexThreadAgent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
+	return emit(ctx, agents.AgentEvent{
+		Type:   "agent.run.started",
+		Role:   "assistant",
+		Status: string(store.EventStatusStarted),
+		Payload: map[string]any{
+			"provider":            "codex",
+			"provider_event_type": "thread/start",
+			"thread_id":           a.threadID,
+		},
 	})
 }
 

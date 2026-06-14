@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/jgennari/gorchestra/internal/agents"
 )
 
 func TestManagerRegistersAndCleansUpRun(t *testing.T) {
@@ -72,5 +74,78 @@ func TestManagerCancelMissingRun(t *testing.T) {
 	err := manager.Cancel("sess_missing")
 	if !errors.Is(err, ErrRunNotActive) {
 		t.Fatalf("expected ErrRunNotActive, got %v", err)
+	}
+}
+
+func TestManagerAnswersUserInputRequest(t *testing.T) {
+	manager := NewManager()
+	ctx, cleanup, err := manager.Register(context.Background(), "sess_test")
+	if err != nil {
+		t.Fatalf("register run: %v", err)
+	}
+	defer cleanup()
+
+	waiter, err := manager.OpenUserInput(ctx, agents.UserInputRequest{
+		SessionID: "sess_test",
+		RequestID: "call_test",
+		Questions: []agents.UserInputQuestion{
+			{ID: "question_test", Question: "Pick one"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("open user input: %v", err)
+	}
+	defer waiter.Close()
+
+	pending, err := manager.PendingUserInput("sess_test", "call_test")
+	if err != nil {
+		t.Fatalf("pending user input: %v", err)
+	}
+	if pending.Questions[0].ID != "question_test" {
+		t.Fatalf("unexpected pending request %#v", pending)
+	}
+
+	response := agents.UserInputResponse{
+		Answers: map[string]agents.UserInputQuestionAnswer{
+			"question_test": {Answers: []string{"A"}},
+		},
+	}
+	if err := manager.AnswerUserInput("sess_test", "call_test", response); err != nil {
+		t.Fatalf("answer user input: %v", err)
+	}
+
+	got, err := waiter.Wait(ctx)
+	if err != nil {
+		t.Fatalf("wait user input: %v", err)
+	}
+	if got.Answers["question_test"].Answers[0] != "A" {
+		t.Fatalf("unexpected answer %#v", got)
+	}
+	if _, err := manager.PendingUserInput("sess_test", "call_test"); !errors.Is(err, ErrUserInputNotActive) {
+		t.Fatalf("expected ErrUserInputNotActive after answer, got %v", err)
+	}
+}
+
+func TestManagerUserInputWaitReturnsContextError(t *testing.T) {
+	manager := NewManager()
+	ctx, cleanup, err := manager.Register(context.Background(), "sess_test")
+	if err != nil {
+		t.Fatalf("register run: %v", err)
+	}
+	defer cleanup()
+
+	waiter, err := manager.OpenUserInput(ctx, agents.UserInputRequest{
+		SessionID: "sess_test",
+		RequestID: "call_test",
+	})
+	if err != nil {
+		t.Fatalf("open user input: %v", err)
+	}
+	defer waiter.Close()
+
+	waitCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := waiter.Wait(waitCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }

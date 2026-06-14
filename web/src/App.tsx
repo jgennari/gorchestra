@@ -1,9 +1,19 @@
 import { Menu, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import type { AgentEvent, AgentType, Session, SessionListFilter, SessionStatus, SubmitAgentOptions } from '@/lib/api'
+import type {
+  AgentEvent,
+  AgentType,
+  MessageAttachment,
+  Session,
+  SessionStatus,
+  SubmitAgentOptions,
+  UserInputAnswers,
+} from '@/lib/api'
 import {
   APIError,
+  answerUserInput,
+  archiveSession,
   cancelSession,
   createSession,
   fetchHealth,
@@ -13,31 +23,34 @@ import {
   updateSessionTitle,
 } from '@/lib/api'
 import { isTerminalEvent, statusFromEvent } from '@/lib/events'
+import { nextSessionIDAfterArchive } from '@/lib/sessions'
 import { useSessionEvents } from '@/hooks/use-session-events'
 import { useTheme } from '@/hooks/use-theme'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
-import { RunHealthRail, type MessageView } from '@/components/run-health-rail'
+import { RunHealthRail } from '@/components/run-health-rail'
 import { SessionDetail } from '@/components/session-detail'
 import { SessionList } from '@/components/session-list'
 import { StatusBadge } from '@/components/status-badge'
-import { ThemeToggle } from '@/components/theme-toggle'
+import { sessionIDFromPathname, sessionPath } from '@/lib/routes'
 
 type HealthState = 'checking' | 'online' | 'offline'
+type SessionRouteHistoryMode = 'push' | 'replace' | 'none'
+const debugStorageKeyPrefix = 'gorchestra.session-debug.'
 
 function App() {
   const [healthState, setHealthState] = useState<HealthState>('checking')
   const [sessions, setSessions] = useState<Session[]>([])
-  const [selectedSessionID, setSelectedSessionID] = useState<string | null>(null)
-  const [sessionFilter, setSessionFilter] = useState<SessionListFilter>('all')
+  const [selectedSessionID, setSelectedSessionID] = useState<string | null>(() => selectedSessionIDFromLocation())
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileListOpen, setMobileListOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [messageView, setMessageView] = useState<MessageView>('chat')
-  const selectedSessionIDRef = useRef<string | null>(null)
+  const [showDebugEvents, setShowDebugEvents] = useState(false)
+  const [archivingSessionID, setArchivingSessionID] = useState<string | null>(null)
+  const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
 
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionID) ?? null,
@@ -46,7 +59,20 @@ function App() {
   const theme = useTheme()
 
   const applySession = useCallback((session: Session) => {
-    setSessions((current) => sortSessions([session, ...current.filter((item) => item.id !== session.id)]))
+    setSessions((current) => {
+      if (session.archived_at) {
+        return current.filter((item) => item.id !== session.id)
+      }
+      return sortSessions([session, ...current.filter((item) => item.id !== session.id)])
+    })
+  }, [])
+
+  const selectSession = useCallback((sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
+    selectedSessionIDRef.current = sessionID
+    setSelectedSessionID(sessionID)
+    if (historyMode !== 'none') {
+      writeSelectedSessionRoute(sessionID, historyMode)
+    }
   }, [])
 
   const refreshSession = useCallback(
@@ -60,6 +86,21 @@ function App() {
 
   useEffect(() => {
     selectedSessionIDRef.current = selectedSessionID
+  }, [selectedSessionID])
+
+  useEffect(() => {
+    function handlePopState() {
+      selectSession(selectedSessionIDFromLocation(), 'none')
+      setMobileListOpen(false)
+      setNotice('')
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [selectSession])
+
+  useEffect(() => {
+    setShowDebugEvents(loadSessionDebugPreference(selectedSessionID))
   }, [selectedSessionID])
 
   const handleSessionEvent = useCallback(
@@ -89,24 +130,21 @@ function App() {
     setLoadingSessions(true)
     setError('')
     try {
-      const status = sessionFilter === 'all' ? undefined : sessionFilter
-      const nextSessions = await listSessions({ status })
+      const nextSessions = await listSessions()
       const selectedID = selectedSessionIDRef.current
       const mergedSessions = await includeSelectedSession(nextSessions, selectedID)
+      const nextSelectedID = selectedID && mergedSessions.some((session) => session.id === selectedID)
+        ? selectedID
+        : (nextSessions[0]?.id ?? mergedSessions[0]?.id ?? null)
 
       setSessions(sortSessions(mergedSessions))
-      setSelectedSessionID((current) => {
-        if (current && mergedSessions.some((session) => session.id === current)) {
-          return current
-        }
-        return nextSessions[0]?.id ?? mergedSessions[0]?.id ?? null
-      })
+      selectSession(nextSelectedID, 'replace')
     } catch (loadError) {
       setError(messageFromError(loadError))
     } finally {
       setLoadingSessions(false)
     }
-  }, [sessionFilter])
+  }, [selectSession])
 
   useEffect(() => {
     void loadSessions()
@@ -142,16 +180,20 @@ function App() {
   async function handleCreate(params: { agent_type: AgentType; title?: string }) {
     const session = await createSession(params)
     applySession(session)
-    setSelectedSessionID(session.id)
+    selectSession(session.id, 'push')
     setNotice('')
     return session
   }
 
-  async function handleSubmitPrompt(content: string, agentOptions?: SubmitAgentOptions) {
+  async function handleSubmitPrompt(
+    content: string,
+    agentOptions?: SubmitAgentOptions,
+    attachments: MessageAttachment[] = [],
+  ) {
     if (!selectedSessionID) {
       throw new Error('Select a session first.')
     }
-    const response = await submitMessage(selectedSessionID, content, agentOptions)
+    const response = await submitMessage(selectedSessionID, content, agentOptions, attachments)
     setSessions((current) =>
       current.map((session) =>
         session.id === selectedSessionID
@@ -177,12 +219,49 @@ function App() {
     }
   }
 
+  async function handleAnswerUserInput(requestID: string, answers: UserInputAnswers) {
+    if (!selectedSessionID) {
+      throw new Error('Select a session first.')
+    }
+    await answerUserInput(selectedSessionID, requestID, answers)
+    setNotice('')
+  }
+
+  function handleShowDebugEventsChange(nextShowDebugEvents: boolean) {
+    setShowDebugEvents(nextShowDebugEvents)
+    saveSessionDebugPreference(selectedSessionID, nextShowDebugEvents)
+  }
+
   async function handleUpdateTitle(title: string) {
     if (!selectedSessionID) {
       return
     }
     const updated = await updateSessionTitle(selectedSessionID, title)
     applySession(updated)
+  }
+
+  async function handleArchiveSession() {
+    if (!selectedSessionID) {
+      return
+    }
+
+    const sessionID = selectedSessionID
+    const nextSelectedID = nextSessionIDAfterArchive(sessions, sessionID, selectedSessionID)
+    setArchivingSessionID(sessionID)
+    setError('')
+    try {
+      await archiveSession(sessionID)
+      setSessions((current) => current.filter((session) => session.id !== sessionID))
+      selectSession(nextSelectedID, 'replace')
+      setNotice('')
+    } catch (archiveError) {
+      setError(messageFromError(archiveError))
+      if (archiveError instanceof APIError && archiveError.status === 409) {
+        await refreshSession(sessionID)
+      }
+    } finally {
+      setArchivingSessionID((current) => (current === sessionID ? null : current))
+    }
   }
 
   function handleRefresh() {
@@ -194,32 +273,22 @@ function App() {
     <SessionList
       sessions={sessions}
       selectedSessionID={selectedSessionID}
-      filter={sessionFilter}
-      onFilterChange={setSessionFilter}
+      connectedSessionID={streamState === 'connected' && !streamError ? selectedSessionID : null}
       onSelect={(sessionID) => {
-        setSelectedSessionID(sessionID)
+        selectSession(sessionID, 'push')
         setMobileListOpen(false)
         setNotice('')
       }}
       onCreate={() => setCreateOpen(true)}
+      themePreference={theme.preference}
+      resolvedTheme={theme.resolvedTheme}
+      onThemeToggle={theme.nextPreference}
     />
   )
 
   return (
     <main className="app-shell">
       <div className="hidden min-h-0 w-[348px] lg:flex">{list}</div>
-      <div className="hidden min-h-0 lg:flex">
-        <RunHealthRail
-          session={selectedSession}
-          events={events}
-          streamState={streamState}
-          streamError={streamError}
-          notice={notice || healthLabel(healthState)}
-          messageView={messageView}
-          onMessageViewChange={setMessageView}
-          onUpdateTitle={handleUpdateTitle}
-        />
-      </div>
 
       <section className="command-workspace flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b bg-background/84 px-3 lg:hidden">
@@ -243,11 +312,6 @@ function App() {
               <p className="truncate text-xs text-muted-foreground">{selectedSession?.agent_type || 'No session'}</p>
             </div>
           </div>
-          <ThemeToggle
-            preference={theme.preference}
-            resolvedTheme={theme.resolvedTheme}
-            onToggle={theme.nextPreference}
-          />
           <Button size="icon" onClick={() => setCreateOpen(true)} aria-label="Create session">
             <Plus />
           </Button>
@@ -263,28 +327,33 @@ function App() {
         ) : null}
 
         <div className="relative min-h-0 flex-1 overflow-hidden">
-          <div className="absolute right-3 top-3 z-30 hidden lg:block">
-            <ThemeToggle
-              preference={theme.preference}
-              resolvedTheme={theme.resolvedTheme}
-              onToggle={theme.nextPreference}
-            />
-          </div>
           <SessionDetail
             session={selectedSession}
             events={events}
             streamState={streamState}
             streamError={streamError}
             notice={notice || healthLabel(healthState)}
-            messageView={messageView}
-            onMessageViewChange={setMessageView}
+            showDebugEvents={showDebugEvents}
+            onShowDebugEventsChange={handleShowDebugEventsChange}
             onSubmitPrompt={handleSubmitPrompt}
+            onAnswerUserInput={handleAnswerUserInput}
             onCancel={handleCancel}
             onUpdateTitle={handleUpdateTitle}
             onRefresh={handleRefresh}
           />
         </div>
       </section>
+
+      <div className="hidden min-h-0 lg:flex">
+        <RunHealthRail
+          session={selectedSession}
+          events={events}
+          streamState={streamState}
+          streamError={streamError}
+          onArchive={handleArchiveSession}
+          archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+        />
+      </div>
 
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
     </main>
@@ -298,6 +367,9 @@ async function includeSelectedSession(sessions: Session[], selectedSessionID: st
 
   try {
     const selectedSession = await getSession(selectedSessionID)
+    if (selectedSession.archived_at) {
+      return sessions
+    }
     return [selectedSession, ...sessions]
   } catch {
     return sessions
@@ -328,7 +400,7 @@ function payloadString(payload: unknown, key: string) {
 }
 
 function sortSessions(sessions: Session[]) {
-  return [...sessions].sort((left, right) => {
+  return [...sessions].filter((session) => !session.archived_at).sort((left, right) => {
     const byUpdated = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
     return byUpdated !== 0 ? byUpdated : right.id.localeCompare(left.id)
   })
@@ -347,6 +419,56 @@ function healthLabel(state: HealthState) {
     default:
       return ''
   }
+}
+
+function loadSessionDebugPreference(sessionID: string | null) {
+  if (!sessionID) {
+    return false
+  }
+  try {
+    return window.localStorage.getItem(debugStorageKey(sessionID)) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function saveSessionDebugPreference(sessionID: string | null, showDebugEvents: boolean) {
+  if (!sessionID) {
+    return
+  }
+  try {
+    window.localStorage.setItem(debugStorageKey(sessionID), String(showDebugEvents))
+  } catch {
+    // Keep the UI functional when storage is unavailable.
+  }
+}
+
+function debugStorageKey(sessionID: string) {
+  return `${debugStorageKeyPrefix}${sessionID}`
+}
+
+function selectedSessionIDFromLocation() {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  return sessionIDFromPathname(window.location.pathname)
+}
+
+function writeSelectedSessionRoute(sessionID: string | null, historyMode: Exclude<SessionRouteHistoryMode, 'none'>) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const path = sessionPath(sessionID)
+  if (window.location.pathname === path) {
+    return
+  }
+
+  if (historyMode === 'replace') {
+    window.history.replaceState({}, '', path)
+    return
+  }
+  window.history.pushState({}, '', path)
 }
 
 export default App

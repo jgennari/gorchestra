@@ -27,6 +27,8 @@ type config struct {
 	workspace    string
 	codexBin     string
 	codexSandbox string
+	codexNetwork bool
+	codexSearch  string
 	codexModel   string
 }
 
@@ -54,6 +56,8 @@ func main() {
 	codexAgent := codex.New(
 		codex.WithBinary(cfg.codexBin),
 		codex.WithSandbox(cfg.codexSandbox),
+		codex.WithNetworkAccess(cfg.codexNetwork),
+		codex.WithWebSearchMode(cfg.codexSearch),
 		codex.WithModel(cfg.codexModel),
 		codex.WithWorkspace(cfg.workspace),
 	)
@@ -107,6 +111,8 @@ func parseConfig() config {
 	flag.StringVar(&cfg.workspace, "workspace", "", "workspace directory for agent runs")
 	flag.StringVar(&cfg.codexBin, "codex-bin", "codex", "path to the Codex CLI binary")
 	flag.StringVar(&cfg.codexSandbox, "codex-sandbox", "workspace-write", "Codex sandbox mode")
+	flag.BoolVar(&cfg.codexNetwork, "codex-network-access", true, "allow network access for Codex shell commands")
+	flag.StringVar(&cfg.codexSearch, "codex-web-search", "live", "Codex web search mode: disabled, cached, or live")
 	flag.StringVar(&cfg.codexModel, "codex-model", "", "optional Codex model override")
 	flag.Parse()
 

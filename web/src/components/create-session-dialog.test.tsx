@@ -12,6 +12,7 @@ test('create session form submits default fake agent and optional title', async 
     created_at: '2026-06-12T16:00:00Z',
     updated_at: '2026-06-12T16:00:00Z',
     completed_at: null,
+    archived_at: null,
   }))
 
   render(<CreateSessionDialog open onOpenChange={() => undefined} onCreate={onCreate} />)

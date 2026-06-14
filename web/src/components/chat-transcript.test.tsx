@@ -39,8 +39,44 @@ test('renders markdown in chat messages', () => {
   expect(screen.getByText('First item')).toBeInTheDocument()
 })
 
+test('copies fenced code blocks from user and assistant messages', async () => {
+  const user = userEvent.setup()
+  const writeText = vi.fn(async () => undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  })
+
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'user.message.completed', 'user', 'completed', {
+          text: 'Run this:\n\n```\nbun test\n```',
+        }),
+        event(2, 'agent.message.completed', 'assistant', 'completed', {
+          text: 'Use this:\n\n```ts\nconst answer = 42\n```',
+        }),
+      ]}
+    />,
+  )
+
+  const copyButtons = screen.getAllByRole('button', { name: 'Copy code' })
+  expect(copyButtons).toHaveLength(2)
+
+  await user.click(copyButtons[0])
+  await user.click(copyButtons[1])
+
+  expect(writeText).toHaveBeenNthCalledWith(1, expect.stringContaining('bun test'))
+  expect(writeText).toHaveBeenNthCalledWith(2, expect.stringContaining('const answer = 42'))
+})
+
 test('groups tool calls under assistant messages with expandable output', async () => {
   const user = userEvent.setup()
+  const writeText = vi.fn(async () => undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  })
 
   render(
     <ChatTranscript
@@ -56,12 +92,81 @@ test('groups tool calls under assistant messages with expandable output', async 
   expect(screen.getByText('Tests passed.')).toBeInTheDocument()
   expect(screen.queryByText('Tool Calls (1)')).not.toBeInTheDocument()
   expect(screen.getByText('go test ./...')).toBeInTheDocument()
-  expect(screen.getByText('completed')).toBeInTheDocument()
+  expect(screen.queryByText('completed')).not.toBeInTheDocument()
   expect(screen.queryByText(/go test \.\/\.\.\.\s+ok/)).not.toBeInTheDocument()
 
   await user.click(screen.getByRole('button', { name: /expand go test \.\/\.\.\./i }))
 
   expect(screen.getByText(/go test \.\/\.\.\.\s+ok/)).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Copy tool output' }))
+
+  expect(writeText).toHaveBeenCalledWith('go test ./...\nok')
+})
+
+test('shows codex command aggregated output in expandable tool output', async () => {
+  const user = userEvent.setup()
+
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Listing files.' }),
+        event(2, 'tool.call.started', 'assistant', 'started', {
+          item_id: 'tool_1',
+          command: "/bin/zsh -lc 'ls -la'",
+        }),
+        event(3, 'tool.call.completed', 'assistant', 'completed', {
+          item_id: 'tool_1',
+          command: "/bin/zsh -lc 'ls -la'",
+          aggregated_output: 'total 56\nREADME.md\nweb\n',
+          exit_code: 0,
+        }),
+      ]}
+    />,
+  )
+
+  expect(screen.getByText('ls -la')).toBeInTheDocument()
+  expect(screen.queryByText(/README\.md/)).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: /expand ls -la/i }))
+
+  expect(screen.getByText(/ls -la\s+total 56\s+README\.md\s+web/)).toBeInTheDocument()
+})
+
+test('shows web search query details in expandable tool output', async () => {
+  const user = userEvent.setup()
+
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Checking weather.' }),
+        event(2, 'tool.call.started', 'assistant', 'started', {
+          item_id: 'web_1',
+          item_type: 'webSearch',
+          action: { type: 'other' },
+          query: '',
+        }),
+        event(3, 'tool.call.completed', 'assistant', 'completed', {
+          item_id: 'web_1',
+          item_type: 'webSearch',
+          action: {
+            type: 'search',
+            query: 'weather: 33445, United States',
+            queries: ['weather: 33445, United States'],
+          },
+          query: 'weather: 33445, United States',
+        }),
+      ]}
+    />,
+  )
+
+  expect(screen.getByText('Web search: weather: 33445, United States')).toBeInTheDocument()
+  expect(screen.queryByText('Query: weather: 33445, United States')).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: /expand web search: weather: 33445/i }))
+
+  expect(screen.getByText(/Query: weather: 33445, United States/)).toBeInTheDocument()
+  expect(screen.getByText(/- weather: 33445, United States/)).toBeInTheDocument()
 })
 
 test('shows three tool calls by default and expands to more', async () => {
@@ -121,7 +226,7 @@ test('renders separate assistant items with sequential tools', () => {
   expect(screen.getAllByText('Assistant')).toHaveLength(2)
 })
 
-test('marks streaming assistant messages', () => {
+test('renders streaming assistant messages without a badge', () => {
   render(
     <ChatTranscript
       events={[
@@ -132,7 +237,63 @@ test('marks streaming assistant messages', () => {
   )
 
   expect(screen.getByText('Thinking')).toBeInTheDocument()
-  expect(screen.getByText('Streaming')).toBeInTheDocument()
+  expect(screen.queryByText('Streaming')).not.toBeInTheDocument()
+})
+
+test('hides debug-only events unless enabled', () => {
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'user.message.completed', 'user', 'completed', { text: 'Hello' }),
+        event(2, 'session.status.updated', 'system', 'started', { status: 'running' }),
+        event(3, 'agent.log.delta', 'system', 'delta', { text: 'debug line' }),
+        event(4, 'agent.message.completed', 'assistant', 'completed', { text: 'Done' }),
+      ]}
+    />,
+  )
+
+  expect(screen.getByText('Hello')).toBeInTheDocument()
+  expect(screen.getByText('Done')).toBeInTheDocument()
+  expect(screen.queryByText('Session status')).not.toBeInTheDocument()
+  expect(screen.queryByText('debug line')).not.toBeInTheDocument()
+})
+
+test('renders compact debug rows with expandable payloads', async () => {
+  const user = userEvent.setup()
+
+  render(
+    <ChatTranscript
+      showDebugEvents
+      events={[
+        event(1, 'user.message.completed', 'user', 'completed', { text: 'Hello' }),
+        event(2, 'session.status.updated', 'system', 'started', { status: 'running' }),
+        event(3, 'agent.log.delta', 'system', 'delta', { text: 'debug line' }),
+        event(4, 'agent.message.completed', 'assistant', 'completed', { text: 'Done' }),
+      ]}
+    />,
+  )
+
+  expect(screen.getByText('Session status')).toBeInTheDocument()
+  expect(screen.getByText('Log')).toBeInTheDocument()
+  expect(screen.getByText('debug line')).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: /expand session status/i }))
+
+  expect(screen.getByText(/"status": "running"/)).toBeInTheDocument()
+})
+
+test('labels provider debug rows with provider event type', () => {
+  render(
+    <ChatTranscript
+      showDebugEvents
+      events={[
+        event(1, 'provider.codex.event', 'system', 'completed', { provider_event_type: 'turn/completed' }),
+      ]}
+    />,
+  )
+
+  expect(screen.getByText('turn/completed')).toBeInTheDocument()
+  expect(screen.queryByText('provider.codex.event')).not.toBeInTheDocument()
 })
 
 function event(

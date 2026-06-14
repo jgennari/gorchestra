@@ -98,7 +98,7 @@ func (s *Store) CreateSession(ctx context.Context, params CreateSessionParams) (
 func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT id, title, agent_type, status, created_at, updated_at, completed_at
+		`SELECT id, title, agent_type, status, provider_session_id, created_at, updated_at, completed_at, archived_at
 		 FROM sessions
 		 WHERE id = ?`,
 		id,
@@ -118,13 +118,15 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 		limit = defaultSessionLimit
 	}
 
-	query := `SELECT id, title, agent_type, status, created_at, updated_at, completed_at
+	query := `SELECT id, title, agent_type, status, provider_session_id, created_at, updated_at, completed_at, archived_at
 		 FROM sessions`
 	args := []any{}
+	filters := []string{`archived_at IS NULL`}
 	if params.Status != "" {
-		query += ` WHERE status = ?`
+		filters = append(filters, `status = ?`)
 		args = append(args, string(params.Status))
 	}
+	query += ` WHERE ` + strings.Join(filters, ` AND `)
 	query += ` ORDER BY updated_at DESC, created_at DESC, id DESC
 		 LIMIT ?`
 	args = append(args, limit)
@@ -179,6 +181,82 @@ func (s *Store) UpdateSessionTitle(ctx context.Context, params UpdateSessionTitl
 	}
 
 	return s.GetSession(ctx, params.ID)
+}
+
+func (s *Store) ArchiveSession(ctx context.Context, params ArchiveSessionParams) (Session, error) {
+	if strings.TrimSpace(params.ID) == "" {
+		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+
+	now := s.now()
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE sessions
+		 SET archived_at = COALESCE(archived_at, ?), updated_at = ?
+		 WHERE id = ?`,
+		formatTime(now),
+		formatTime(now),
+		params.ID,
+	)
+	if err != nil {
+		return Session{}, fmt.Errorf("archive session: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, fmt.Errorf("check archived session rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, params.ID)
+	}
+
+	return s.GetSession(ctx, params.ID)
+}
+
+func (s *Store) SetSessionProviderSessionID(ctx context.Context, params SetSessionProviderSessionIDParams) (Session, error) {
+	sessionID := strings.TrimSpace(params.ID)
+	providerSessionID := strings.TrimSpace(params.ProviderSessionID)
+	if sessionID == "" {
+		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	if providerSessionID == "" {
+		return Session{}, fmt.Errorf("%w: provider_session_id is required", ErrInvalidArgument)
+	}
+
+	session, err := s.GetSession(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	if session.ProviderSessionID != "" {
+		if session.ProviderSessionID != providerSessionID {
+			return Session{}, fmt.Errorf("%w: provider_session_id already set for session %s", ErrInvalidArgument, sessionID)
+		}
+		return session, nil
+	}
+
+	now := s.now()
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE sessions
+		 SET provider_session_id = ?, updated_at = ?
+		 WHERE id = ?`,
+		providerSessionID,
+		formatTime(now),
+		sessionID,
+	)
+	if err != nil {
+		return Session{}, fmt.Errorf("set session provider_session_id: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, fmt.Errorf("check session provider_session_id rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, sessionID)
+	}
+
+	return s.GetSession(ctx, sessionID)
 }
 
 func (s *Store) UpdateSessionStatus(ctx context.Context, params UpdateSessionStatusParams) (Session, error) {
@@ -346,18 +424,22 @@ type rowScanner interface {
 func scanSession(row rowScanner) (Session, error) {
 	var session Session
 	var status string
+	var providerSessionID sql.NullString
 	var createdAt string
 	var updatedAt string
 	var completedAt sql.NullString
+	var archivedAt sql.NullString
 
 	if err := row.Scan(
 		&session.ID,
 		&session.Title,
 		&session.AgentType,
 		&status,
+		&providerSessionID,
 		&createdAt,
 		&updatedAt,
 		&completedAt,
+		&archivedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
@@ -375,6 +457,9 @@ func scanSession(row rowScanner) (Session, error) {
 	}
 
 	session.Status = SessionStatus(status)
+	if providerSessionID.Valid {
+		session.ProviderSessionID = providerSessionID.String
+	}
 	session.CreatedAt = parsedCreatedAt
 	session.UpdatedAt = parsedUpdatedAt
 
@@ -384,6 +469,13 @@ func scanSession(row rowScanner) (Session, error) {
 			return Session{}, fmt.Errorf("parse session completed_at: %w", err)
 		}
 		session.CompletedAt = &parsedCompletedAt
+	}
+	if archivedAt.Valid {
+		parsedArchivedAt, err := parseTime(archivedAt.String)
+		if err != nil {
+			return Session{}, fmt.Errorf("parse session archived_at: %w", err)
+		}
+		session.ArchivedAt = &parsedArchivedAt
 	}
 
 	return session, nil

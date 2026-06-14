@@ -71,12 +71,22 @@ func TestCommandConstructionUsesExplicitArgsAndWorkdir(t *testing.T) {
 	if cmd.Path != "/opt/bin/codex" {
 		t.Fatalf("expected path /opt/bin/codex, got %q", cmd.Path)
 	}
-	wantArgs := []string{"/opt/bin/codex", "app-server", "--stdio"}
+	wantArgs := []string{"/opt/bin/codex", "app-server", "--stdio", "-c", `web_search="live"`}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("expected args %#v, got %#v", wantArgs, cmd.Args)
 	}
 	if cmd.Dir != "/tmp/workspace" {
 		t.Fatalf("expected dir /tmp/workspace, got %q", cmd.Dir)
+	}
+}
+
+func TestCommandConstructionCanOverrideWebSearchMode(t *testing.T) {
+	agent := New(WithBinary("/opt/bin/codex"), WithWebSearchMode("cached"))
+	cmd := agent.command("/tmp/workspace")
+
+	wantArgs := []string{"/opt/bin/codex", "app-server", "--stdio", "-c", `web_search="cached"`}
+	if !reflect.DeepEqual(cmd.Args, wantArgs) {
+		t.Fatalf("expected args %#v, got %#v", wantArgs, cmd.Args)
 	}
 }
 
@@ -171,6 +181,37 @@ func TestAgentRunsFakeAppServerSuccess(t *testing.T) {
 	})
 }
 
+func TestAgentResumesExistingProviderSession(t *testing.T) {
+	agent := fakeAppServerAgent(t, "success")
+	recorder := newEventRecorder()
+
+	err := agent.Run(context.Background(), agents.AgentInput{
+		SessionID:         "sess_test",
+		ProviderSessionID: "thread_fake",
+		Message:           "Continue",
+		Workdir:           t.TempDir(),
+	}, recorder.emit)
+	if err != nil {
+		t.Fatalf("run agent: %v", err)
+	}
+
+	events := recorder.snapshot()
+	assertAgentEventTypes(t, events, []string{
+		"agent.run.started",
+		"agent.status.started",
+		"agent.message.delta",
+		"agent.message.completed",
+		"agent.run.completed",
+	})
+	payload, ok := events[0].Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected run started payload, got %#v", events[0].Payload)
+	}
+	if payload["provider_event_type"] != "thread/resume" {
+		t.Fatalf("expected thread/resume provider event, got %#v", payload["provider_event_type"])
+	}
+}
+
 func TestAgentOptionsProbeNormalizesCodexOptions(t *testing.T) {
 	agent := fakeAppServerAgent(t, "options")
 
@@ -246,6 +287,13 @@ func TestStartTurnAppliesRunOptions(t *testing.T) {
 	if request.Params["serviceTier"] != "priority" {
 		t.Fatalf("expected service tier override, got %#v", request.Params["serviceTier"])
 	}
+	sandboxPolicy, ok := request.Params["sandboxPolicy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected sandbox policy, got %#v", request.Params["sandboxPolicy"])
+	}
+	if sandboxPolicy["type"] != "workspaceWrite" || sandboxPolicy["networkAccess"] != true {
+		t.Fatalf("expected workspaceWrite sandbox with network access, got %#v", sandboxPolicy)
+	}
 	collaborationMode, ok := request.Params["collaborationMode"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected collaboration mode, got %#v", request.Params["collaborationMode"])
@@ -259,6 +307,144 @@ func TestStartTurnAppliesRunOptions(t *testing.T) {
 	}
 	if settings["model"] != "gpt-5.5" || settings["reasoning_effort"] != "xhigh" {
 		t.Fatalf("unexpected collaboration settings %#v", settings)
+	}
+}
+
+func TestStartTurnCanDisableSandboxNetworkAccess(t *testing.T) {
+	var written bytes.Buffer
+	incoming := make(chan incomingMessage, 1)
+	incoming <- incomingMessage{Message: &rpcMessage{
+		ID:     json.RawMessage(`1`),
+		Result: json.RawMessage(`{"turn":{"id":"turn_fake","status":"inProgress"}}`),
+	}}
+
+	run := &appServerRun{
+		agent:      New(WithSandbox("read-only"), WithNetworkAccess(false)),
+		rpc:        newRPCClient(bufferWriteCloser{Buffer: &written}),
+		incoming:   incoming,
+		process:    &processState{done: make(chan struct{})},
+		emit:       func(context.Context, agents.AgentEvent) error { return nil },
+		normalizer: newNormalizer(),
+	}
+	run.setThreadID("thread_fake")
+
+	if err := run.startTurn(context.Background(), "Hello", "/tmp/workspace"); err != nil {
+		t.Fatalf("start turn: %v", err)
+	}
+
+	var request struct {
+		Params map[string]any `json:"params"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(written.Bytes()), &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	sandboxPolicy, ok := request.Params["sandboxPolicy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected sandbox policy, got %#v", request.Params["sandboxPolicy"])
+	}
+	if sandboxPolicy["type"] != "readOnly" || sandboxPolicy["networkAccess"] != false {
+		t.Fatalf("expected readOnly sandbox without network access, got %#v", sandboxPolicy)
+	}
+}
+
+func TestStartTurnAddsImageAttachments(t *testing.T) {
+	var written bytes.Buffer
+	incoming := make(chan incomingMessage, 1)
+	incoming <- incomingMessage{Message: &rpcMessage{
+		ID:     json.RawMessage(`1`),
+		Result: json.RawMessage(`{"turn":{"id":"turn_fake","status":"inProgress"}}`),
+	}}
+
+	run := &appServerRun{
+		agent:      New(),
+		rpc:        newRPCClient(bufferWriteCloser{Buffer: &written}),
+		incoming:   incoming,
+		process:    &processState{done: make(chan struct{})},
+		emit:       func(context.Context, agents.AgentEvent) error { return nil },
+		normalizer: newNormalizer(),
+		attachments: []agents.Attachment{
+			{
+				Name:      "diagram.png",
+				MediaType: "image/png",
+				DataURL:   "data:image/png;base64,aGVsbG8=",
+				SizeBytes: 5,
+			},
+		},
+	}
+	run.setThreadID("thread_fake")
+
+	if err := run.startTurn(context.Background(), "Describe this", "/tmp/workspace"); err != nil {
+		t.Fatalf("start turn: %v", err)
+	}
+
+	var request struct {
+		Params struct {
+			Input []map[string]any `json:"input"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(written.Bytes()), &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if len(request.Params.Input) != 2 {
+		t.Fatalf("expected text and image inputs, got %#v", request.Params.Input)
+	}
+	if request.Params.Input[0]["type"] != "text" || request.Params.Input[0]["text"] != "Describe this" {
+		t.Fatalf("expected text input, got %#v", request.Params.Input[0])
+	}
+	if request.Params.Input[1]["type"] != "image" || request.Params.Input[1]["url"] != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("expected image input, got %#v", request.Params.Input[1])
+	}
+	if request.Params.Input[1]["detail"] != "auto" {
+		t.Fatalf("expected auto image detail, got %#v", request.Params.Input[1]["detail"])
+	}
+}
+
+func TestResumeThreadUsesExistingProviderSessionID(t *testing.T) {
+	var written bytes.Buffer
+	incoming := make(chan incomingMessage, 1)
+	incoming <- incomingMessage{Message: &rpcMessage{
+		ID:     json.RawMessage(`1`),
+		Result: json.RawMessage(`{"thread":{"id":"thread_existing"}}`),
+	}}
+
+	run := &appServerRun{
+		agent:      New(WithModel("gpt-default")),
+		rpc:        newRPCClient(bufferWriteCloser{Buffer: &written}),
+		incoming:   incoming,
+		process:    &processState{done: make(chan struct{})},
+		emit:       func(context.Context, agents.AgentEvent) error { return nil },
+		normalizer: newNormalizer(),
+		options: codexRunOptions{
+			Model:       "gpt-5.5",
+			ServiceTier: "priority",
+		},
+	}
+
+	if err := run.resumeThread(context.Background(), "thread_existing", "/tmp/workspace"); err != nil {
+		t.Fatalf("resume thread: %v", err)
+	}
+
+	var request struct {
+		Method string         `json:"method"`
+		Params map[string]any `json:"params"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(written.Bytes()), &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if request.Method != "thread/resume" {
+		t.Fatalf("expected thread/resume request, got %q", request.Method)
+	}
+	if request.Params["threadId"] != "thread_existing" {
+		t.Fatalf("expected thread id, got %#v", request.Params["threadId"])
+	}
+	if request.Params["model"] != "gpt-5.5" {
+		t.Fatalf("expected model override, got %#v", request.Params["model"])
+	}
+	if request.Params["serviceTier"] != "priority" {
+		t.Fatalf("expected service tier override, got %#v", request.Params["serviceTier"])
+	}
+	if got := run.getThreadID(); got != "thread_existing" {
+		t.Fatalf("expected stored thread id thread_existing, got %q", got)
 	}
 }
 
@@ -330,6 +516,45 @@ func TestAgentEmitsStderrAsLogEvent(t *testing.T) {
 	if !hasAgentEvent(recorder.snapshot(), "agent.log.delta") {
 		t.Fatalf("expected agent.log.delta in %#v", recorder.snapshot())
 	}
+}
+
+func TestAgentAnswersUserInputServerRequest(t *testing.T) {
+	agent := fakeAppServerAgent(t, "user-input")
+	recorder := newEventRecorder()
+
+	err := agent.Run(context.Background(), agents.AgentInput{
+		SessionID: "sess_test",
+		Message:   "Ask",
+		Workdir:   t.TempDir(),
+		UserInput: autoAnswerBroker{
+			response: agents.UserInputResponse{
+				Answers: map[string]agents.UserInputQuestionAnswer{
+					"fake_question": {Answers: []string{"Beta"}},
+				},
+			},
+		},
+	}, recorder.emit)
+	if err != nil {
+		t.Fatalf("run agent: %v", err)
+	}
+
+	events := recorder.snapshot()
+	assertAgentEventTypes(t, events, []string{
+		"agent.run.started",
+		"agent.status.started",
+		"agent.input.requested",
+		"agent.message.delta",
+		"agent.message.completed",
+		"agent.run.completed",
+	})
+	payload, ok := events[2].Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected request payload, got %#v", events[2].Payload)
+	}
+	if payload["request_id"] != "call_fake_question" {
+		t.Fatalf("expected request id call_fake_question, got %#v", payload["request_id"])
+	}
+	assertTerminalCount(t, events, 1)
 }
 
 func fakeAppServerAgent(t *testing.T, mode string) *Agent {
@@ -416,6 +641,24 @@ type eventRecorder struct {
 	events []agents.AgentEvent
 }
 
+type autoAnswerBroker struct {
+	response agents.UserInputResponse
+}
+
+func (b autoAnswerBroker) OpenUserInput(context.Context, agents.UserInputRequest) (agents.UserInputWaiter, error) {
+	return autoAnswerWaiter{response: b.response}, nil
+}
+
+type autoAnswerWaiter struct {
+	response agents.UserInputResponse
+}
+
+func (w autoAnswerWaiter) Wait(context.Context) (agents.UserInputResponse, error) {
+	return w.response, nil
+}
+
+func (w autoAnswerWaiter) Close() {}
+
 func newEventRecorder() *eventRecorder {
 	return &eventRecorder{}
 }
@@ -466,6 +709,39 @@ func runFakeAppServer(mode string) {
 		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
 			os.Exit(2)
 		}
+		if mode == "user-input" && request.Method == "" && request.idKey() == "99" {
+			var response agents.UserInputResponse
+			if err := json.Unmarshal(request.Result, &response); err != nil {
+				os.Exit(5)
+			}
+			answer := ""
+			if questionAnswer := response.Answers["fake_question"]; len(questionAnswer.Answers) > 0 {
+				answer = questionAnswer.Answers[0]
+			}
+			fakeNotify("item/agentMessage/delta", map[string]any{
+				"threadId": "thread_fake",
+				"turnId":   "turn_fake",
+				"itemId":   "message_fake",
+				"delta":    "Selected " + answer,
+			})
+			fakeNotify("item/completed", map[string]any{
+				"threadId": "thread_fake",
+				"turnId":   "turn_fake",
+				"item": map[string]any{
+					"type": "agentMessage",
+					"id":   "message_fake",
+					"text": "Selected " + answer,
+				},
+			})
+			fakeNotify("turn/completed", map[string]any{
+				"threadId": "thread_fake",
+				"turn": map[string]any{
+					"id":     "turn_fake",
+					"status": "completed",
+				},
+			})
+			return
+		}
 
 		switch request.Method {
 		case "initialize":
@@ -510,7 +786,16 @@ func runFakeAppServer(mode string) {
 					"id":        "thread_fake",
 					"sessionId": "session_fake",
 					"preview":   "",
-					"ephemeral": true,
+					"ephemeral": false,
+				},
+			})
+		case "thread/resume":
+			fakeRespond(request.ID, map[string]any{
+				"thread": map[string]any{
+					"id":        "thread_fake",
+					"sessionId": "session_fake",
+					"preview":   "",
+					"ephemeral": false,
 				},
 			})
 		case "turn/start":
@@ -552,6 +837,31 @@ func runFakeAppServer(mode string) {
 					},
 				})
 				return
+			case "user-input":
+				fakeWrite(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      99,
+					"method":  "item/tool/requestUserInput",
+					"params": map[string]any{
+						"threadId": "thread_fake",
+						"turnId":   "turn_fake",
+						"itemId":   "call_fake_question",
+						"questions": []map[string]any{
+							{
+								"id":       "fake_question",
+								"header":   "Choose",
+								"question": "Pick one",
+								"isOther":  true,
+								"isSecret": false,
+								"options": []map[string]any{
+									{"label": "Alpha", "description": "First"},
+									{"label": "Beta", "description": "Second"},
+									{"label": "Gamma", "description": "Third"},
+								},
+							},
+						},
+					},
+				})
 			case "nonzero":
 				os.Exit(42)
 			case "cancel":

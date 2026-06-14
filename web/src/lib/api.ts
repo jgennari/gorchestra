@@ -1,15 +1,16 @@
 export type SessionStatus = 'idle' | 'running' | 'failed'
 export type AgentType = 'fake' | 'codex'
-export type SessionListFilter = 'all' | Exclude<SessionStatus, 'idle'>
 
 export type Session = {
   id: string
   title: string
   agent_type: AgentType
   status: SessionStatus
+  provider_session_id?: string
   created_at: string
   updated_at: string
   completed_at: string | null
+  archived_at: string | null
 }
 
 export type AgentEvent = {
@@ -72,6 +73,33 @@ export type SubmitAgentOptions = {
   codex?: CodexSubmitOptions
 }
 
+export type MessageAttachment = {
+  name: string
+  media_type: string
+  data_url: string
+  size_bytes: number
+}
+
+export type UserInputOption = {
+  label: string
+  description: string
+}
+
+export type UserInputQuestion = {
+  id: string
+  header: string
+  question: string
+  is_other: boolean
+  is_secret: boolean
+  options: UserInputOption[]
+}
+
+export type UserInputQuestionAnswer = {
+  answers: string[]
+}
+
+export type UserInputAnswers = Record<string, UserInputQuestionAnswer>
+
 type ErrorResponse = {
   error?: string
 }
@@ -92,6 +120,12 @@ type SubmitMessageResponse = {
 type CancelSessionResponse = {
   session_id: string
   status: 'cancelling'
+}
+
+type AnswerUserInputResponse = {
+  session_id: string
+  request_id: string
+  status: 'answered'
 }
 
 type EventHistoryResponse = {
@@ -152,6 +186,12 @@ export async function updateSessionTitle(sessionID: string, title: string) {
   })
 }
 
+export async function archiveSession(sessionID: string) {
+  return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}/archive`, {
+    method: 'POST',
+  })
+}
+
 export async function fetchAgentOptions(agentType: AgentType) {
   if (agentType !== 'codex') {
     throw new Error(`No options API for ${agentType}`)
@@ -159,10 +199,18 @@ export async function fetchAgentOptions(agentType: AgentType) {
   return requestJSON<CodexAgentOptions>(`/api/agents/${encodeURIComponent(agentType)}/options`)
 }
 
-export async function submitMessage(sessionID: string, content: string, agentOptions?: SubmitAgentOptions) {
-  const body: { content: string; agent_options?: SubmitAgentOptions } = { content }
+export async function submitMessage(
+  sessionID: string,
+  content: string,
+  agentOptions?: SubmitAgentOptions,
+  attachments: MessageAttachment[] = [],
+) {
+  const body: { content: string; agent_options?: SubmitAgentOptions; attachments?: MessageAttachment[] } = { content }
   if (agentOptions) {
     body.agent_options = agentOptions
+  }
+  if (attachments.length > 0) {
+    body.attachments = attachments
   }
 
   return requestJSON<SubmitMessageResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/messages`, {
@@ -175,6 +223,16 @@ export async function cancelSession(sessionID: string) {
   return requestJSON<CancelSessionResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/cancel`, {
     method: 'POST',
   })
+}
+
+export async function answerUserInput(sessionID: string, requestID: string, answers: UserInputAnswers) {
+  return requestJSON<AnswerUserInputResponse>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/requests/${encodeURIComponent(requestID)}/answer`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ answers }),
+    },
+  )
 }
 
 export async function listEvents(sessionID: string, afterSeq = 0, limit = 1000) {

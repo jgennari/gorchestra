@@ -12,6 +12,7 @@ const baseSession: Session = {
   created_at: '2026-06-12T16:00:00Z',
   updated_at: '2026-06-12T16:00:00Z',
   completed_at: null,
+  archived_at: null,
 }
 
 test('cancel button is visible only while running', () => {
@@ -57,18 +58,36 @@ test('mobile header shows the agent chip without date metadata', () => {
   expect(screen.queryByText(/Last event:/)).not.toBeInTheDocument()
 })
 
-test('message section opens chat first and switches to debug view', async () => {
+test('floating chat header shows and copies the session id', async () => {
   const user = userEvent.setup()
-  const onMessageViewChange = vi.fn()
+  const writeText = vi.fn(async () => undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  })
 
-  renderDetail({ onMessageViewChange })
+  renderDetail()
 
-  expect(screen.getByRole('tab', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByText('sess_1')).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Copy session id' }))
+
+  expect(writeText).toHaveBeenCalledWith('sess_1')
+  expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
+})
+
+test('message section renders chat with a bottom debug toggle', async () => {
+  const user = userEvent.setup()
+  const onShowDebugEventsChange = vi.fn()
+
+  renderDetail({ onShowDebugEventsChange })
+
   expect(screen.getByText('No messages yet. Submit a prompt to start the chat.')).toBeInTheDocument()
+  expect(screen.queryByRole('tab', { name: 'Debug' })).not.toBeInTheDocument()
 
-  await user.click(screen.getByRole('tab', { name: 'Debug' }))
+  await user.click(screen.getByRole('button', { name: 'Debug' }))
 
-  expect(onMessageViewChange).toHaveBeenCalledWith('debug')
+  expect(onShowDebugEventsChange).toHaveBeenCalledWith(true)
 })
 
 type SessionDetailProps = ComponentProps<typeof SessionDetail>
@@ -91,9 +110,10 @@ function props(overrides: Partial<SessionDetailProps>): SessionDetailProps {
     streamState: 'connected',
     streamError: '',
     notice: '',
-    messageView: 'chat',
-    onMessageViewChange: () => undefined,
+    showDebugEvents: false,
+    onShowDebugEventsChange: () => undefined,
     onSubmitPrompt: async () => undefined,
+    onAnswerUserInput: async () => undefined,
     onCancel: async () => undefined,
     onRefresh: () => undefined,
     onUpdateTitle: async () => undefined,

@@ -1,5 +1,15 @@
 import type { AgentEvent } from '@/lib/api'
-import { appendEvent, appendEvents, buildChatTranscript, groupEvents, lastSeq, statusFromEvent } from '@/lib/events'
+import {
+  appendEvent,
+  appendEvents,
+  buildChatTranscript,
+  buildChatTimeline,
+  groupEvents,
+  lastSeq,
+  latestTokenUsage,
+  pendingUserInputRequest,
+  statusFromEvent,
+} from '@/lib/events'
 
 function event(
   seq: number,
@@ -89,12 +99,96 @@ test('failed and unknown provider event groups use the expected default disclosu
   expect(groups[0].kind).toBe('error')
   expect(groups[0].defaultOpen).toBe(true)
   expect(groups[1].kind).toBe('unknown')
+  expect(groups[1].label).toBe('thread/compacted')
   expect(groups[1].defaultOpen).toBe(false)
 })
 
 test('session status update events expose their payload status', () => {
   expect(statusFromEvent(event(1, 'session.status.updated', { status: 'idle' }))).toBe('idle')
   expect(statusFromEvent(event(2, 'session.status.updated', { status: 'bogus' }))).toBeNull()
+})
+
+test('pending user input request is derived from replayed events', () => {
+  const requested = event(2, 'agent.input.requested', {
+    request_id: 'call_test',
+    provider: 'codex',
+    provider_event_type: 'item/tool/requestUserInput',
+    thread_id: 'thread_test',
+    turn_id: 'turn_test',
+    item_id: 'call_test',
+    questions: [
+      {
+        id: 'question_test',
+        header: 'Pick',
+        question: 'Pick one',
+        is_other: false,
+        is_secret: false,
+        options: [{ label: 'Beta', description: 'Second' }],
+      },
+    ],
+  })
+
+  expect(pendingUserInputRequest([requested])).toMatchObject({
+    requestID: 'call_test',
+    questions: [{ id: 'question_test', question: 'Pick one' }],
+  })
+
+  expect(pendingUserInputRequest([
+    requested,
+    event(3, 'agent.input.answered', { request_id: 'call_test' }),
+  ])).toBeNull()
+})
+
+test('chat timeline only includes hidden debug events when enabled', () => {
+  const events = [
+    event(1, 'user.message.completed', { text: 'Hello' }),
+    event(2, 'session.status.updated', { status: 'running' }),
+    event(3, 'agent.log.delta', { text: 'debug line' }),
+    event(4, 'tool.call.started', { item_id: 'tool_1', command: 'go test ./...' }),
+    event(5, 'tool.call.completed', { item_id: 'tool_1', output: 'ok' }),
+    event(6, 'agent.message.completed', { text: 'Done' }),
+  ]
+
+  expect(buildChatTimeline(events, false).map((item) => item.kind)).toEqual(['message', 'message'])
+
+  const debugItems = buildChatTimeline(events, true).filter((item) => item.kind === 'debug')
+
+  expect(debugItems.map((item) => item.event.label)).toEqual(['Session status', 'Log'])
+})
+
+test('chat timeline labels provider debug events with provider event type', () => {
+  const debugItems = buildChatTimeline([
+    event(1, 'provider.codex.event', { provider_event_type: 'turn/completed' }),
+  ], true).filter((item) => item.kind === 'debug')
+
+  expect(debugItems.map((item) => item.event.label)).toEqual(['turn/completed'])
+})
+
+test('latest token usage is derived from codex provider events', () => {
+  const usage = latestTokenUsage([
+    event(1, 'provider.codex.event', { provider_event_type: 'thread/tokenUsage/updated', raw: tokenUsageRaw(1000, 500) }),
+    event(2, 'provider.codex.event', { provider_event_type: 'turn/completed' }),
+    event(3, 'provider.codex.event', { provider_event_type: 'thread/tokenUsage/updated', raw: tokenUsageRaw(13903, 19) }),
+  ])
+
+  expect(usage).toMatchObject({
+    total: {
+      totalTokens: 13903,
+      inputTokens: 13884,
+      cachedInputTokens: 4480,
+      outputTokens: 19,
+      reasoningOutputTokens: 0,
+    },
+    last: {
+      totalTokens: 13903,
+      inputTokens: 13884,
+      cachedInputTokens: 4480,
+      outputTokens: 19,
+      reasoningOutputTokens: 0,
+    },
+    modelContextWindow: 258400,
+    seq: 3,
+  })
 })
 
 test('chat transcript merges streaming assistant deltas with completion text', () => {
@@ -153,6 +247,28 @@ test('chat transcript separates assistant message items and keeps tools in event
   expect(transcript[3].tools).toHaveLength(0)
 })
 
+function tokenUsageRaw(totalTokens: number, outputTokens: number) {
+  return {
+    tokenUsage: {
+      total: {
+        totalTokens,
+        inputTokens: totalTokens - outputTokens,
+        cachedInputTokens: 4480,
+        outputTokens,
+        reasoningOutputTokens: 0,
+      },
+      last: {
+        totalTokens,
+        inputTokens: totalTokens - outputTokens,
+        cachedInputTokens: 4480,
+        outputTokens,
+        reasoningOutputTokens: 0,
+      },
+      modelContextWindow: 258400,
+    },
+  }
+}
+
 test('chat transcript dedupes repeated shell command text in tool output', () => {
   const transcript = buildChatTranscript([
     event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Checking.' }),
@@ -163,5 +279,55 @@ test('chat transcript dedupes repeated shell command text in tool output', () =>
   expect(transcript[0].tools[0]).toMatchObject({
     label: 'Tool: pwd',
     text: 'pwd',
+  })
+})
+
+test('chat transcript includes codex command aggregated output in tool details', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Listing files.' }),
+    event(2, 'tool.call.started', { item_id: 'tool_1', command: "/bin/zsh -lc 'ls -la'" }),
+    event(3, 'tool.call.completed', {
+      item_id: 'tool_1',
+      command: "/bin/zsh -lc 'ls -la'",
+      aggregated_output: 'total 56\nREADME.md\nweb\n',
+      exit_code: 0,
+    }),
+  ])
+
+  expect(transcript[0].tools[0]).toMatchObject({
+    label: 'Tool: ls -la',
+    status: 'completed',
+    text: 'ls -la\ntotal 56\nREADME.md\nweb\n',
+  })
+})
+
+test('chat transcript labels web search tools from completed query metadata', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Checking weather.' }),
+    event(2, 'tool.call.started', {
+      item_id: 'web_1',
+      item_type: 'webSearch',
+      action: { type: 'other' },
+      query: '',
+    }),
+    event(3, 'tool.call.completed', {
+      item_id: 'web_1',
+      item_type: 'webSearch',
+      action: {
+        type: 'search',
+        query: 'weather: 33445, United States',
+        queries: ['weather: 33445, United States'],
+      },
+      query: 'weather: 33445, United States',
+    }),
+  ])
+
+  expect(transcript[0].tools[0]).toMatchObject({
+    label: 'Tool: Web search: weather: 33445, United States',
+    text: [
+      'Query: weather: 33445, United States',
+      'Queries:',
+      '- weather: 33445, United States',
+    ].join('\n'),
   })
 })

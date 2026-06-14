@@ -1,13 +1,18 @@
 import {
   Brain,
+  Bug,
   ChevronDown,
   ClipboardList,
+  Paperclip,
   Send,
   SlidersHorizontal,
   Square,
+  X,
   Zap,
 } from 'lucide-react'
 import {
+  type DragEvent,
+  type ChangeEvent,
   useEffect,
   useId,
   useLayoutEffect,
@@ -26,20 +31,27 @@ import {
   type CodexAgentOptions,
   type CodexModelOption,
   type CodexServiceTierOption,
+  type MessageAttachment,
   type SubmitAgentOptions,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 const maxPromptRows = 5
 const fallbackLineHeight = 20
-const codexSelectionStorageKey = 'gorchestra.codex.composer-options'
+const composerStorageKeyPrefix = 'gorchestra.session-composer.'
+const defaultComposerStorageID = '__default__'
+const maxImageAttachmentBytes = 5 * 1024 * 1024
+const maxImageAttachmentCount = 8
 
 type Props = {
+  sessionID?: string
   agentType?: AgentType
   disabled: boolean
   disabledReason: string
   thinking?: boolean
-  onSubmit: (content: string, agentOptions?: SubmitAgentOptions) => Promise<void>
+  showDebugEvents?: boolean
+  onSubmit: (content: string, agentOptions?: SubmitAgentOptions, attachments?: MessageAttachment[]) => Promise<void>
+  onShowDebugEventsChange?: (showDebugEvents: boolean) => void
   onCancel?: () => Promise<void>
 }
 
@@ -50,25 +62,47 @@ type CodexSelection = {
   planning_mode: boolean
 }
 
+type ComposerStorageValue = {
+  draft?: string
+  codexSelection?: Partial<CodexSelection>
+}
+
+type ComposerAttachment = MessageAttachment & {
+  id: string
+}
+
 export function PromptComposer({
+  sessionID,
   agentType = 'fake',
   disabled,
   disabledReason,
   thinking = false,
+  showDebugEvents = false,
   onSubmit,
+  onShowDebugEventsChange,
   onCancel,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const [content, setContent] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [content, setContent] = useState(() => loadDraft(sessionID))
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const [dragActive, setDragActive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [error, setError] = useState('')
   const [codexOptions, setCodexOptions] = useState<CodexAgentOptions | null>(null)
   const [codexOptionsLoading, setCodexOptionsLoading] = useState(false)
   const [codexOptionsError, setCodexOptionsError] = useState('')
-  const [codexSelection, setCodexSelection] = useState<CodexSelection>(loadCodexSelection)
-  const canSubmit = !disabled && !submitting && content.trim().length > 0
+  const [codexSelection, setCodexSelection] = useState<CodexSelection>(() => loadCodexSelection(sessionID))
+  const hasAttachments = attachments.length > 0
+  const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments)
   const canCancel = disabled && Boolean(onCancel)
+  const inputDisabled = submitting
+  const promptPlaceholder = disabled && canCancel
+    ? 'Prepare your next message...'
+    : disabled
+      ? disabledReason
+      : 'Ask the agent to work on this repository...'
   const codexToolbarVisible = agentType === 'codex'
   const selectedCodexModel = useMemo(
     () => selectedModel(codexOptions, codexSelection.model),
@@ -109,8 +143,12 @@ export function PromptComposer({
   }, [agentType])
 
   useEffect(() => {
-    saveCodexSelection(codexSelection)
-  }, [codexSelection])
+    saveDraft(sessionID, content)
+  }, [content, sessionID])
+
+  useEffect(() => {
+    saveCodexSelection(sessionID, codexSelection)
+  }, [codexSelection, sessionID])
 
   async function submitPrompt() {
     if (!canSubmit) {
@@ -120,12 +158,20 @@ export function PromptComposer({
     setSubmitting(true)
     setError('')
     try {
+      const submitAttachments = attachments.map(({ id: _id, ...attachment }) => attachment)
       if (codexToolbarVisible) {
-        await onSubmit(content.trim(), submitOptionsForCodex(codexSelection, selectedFastTier))
+        if (submitAttachments.length > 0) {
+          await onSubmit(content.trim(), submitOptionsForCodex(codexSelection, selectedFastTier), submitAttachments)
+        } else {
+          await onSubmit(content.trim(), submitOptionsForCodex(codexSelection, selectedFastTier))
+        }
+      } else if (submitAttachments.length > 0) {
+        await onSubmit(content.trim(), undefined, submitAttachments)
       } else {
         await onSubmit(content.trim())
       }
       setContent('')
+      setAttachments([])
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Failed to submit prompt')
     } finally {
@@ -167,23 +213,101 @@ export function PromptComposer({
     }
   }
 
+  async function handleFiles(files: FileList | File[]) {
+    const selectedFiles = Array.from(files)
+    if (selectedFiles.length === 0) {
+      return
+    }
+    if (attachments.length + selectedFiles.length > maxImageAttachmentCount) {
+      setError(`Attach up to ${maxImageAttachmentCount} images.`)
+      return
+    }
+
+    const imageFiles: File[] = []
+    for (const file of selectedFiles) {
+      if (!file.type.startsWith('image/')) {
+        setError('Only image attachments are supported.')
+        return
+      }
+      if (file.size > maxImageAttachmentBytes) {
+        setError(`${file.name} is larger than 5 MB.`)
+        return
+      }
+      imageFiles.push(file)
+    }
+
+    try {
+      const nextAttachments = await Promise.all(imageFiles.map(fileToAttachment))
+      setAttachments((current) => [...current, ...nextAttachments])
+      setError('')
+    } catch (attachmentError) {
+      setError(attachmentError instanceof Error ? attachmentError.message : 'Failed to attach image')
+    }
+  }
+
+  function handleFileInputChange(event: ChangeEvent<HTMLInputElement>) {
+    void handleFiles(event.currentTarget.files ?? [])
+    event.currentTarget.value = ''
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    if (inputDisabled || !hasDraggedFiles(event)) {
+      return
+    }
+    event.preventDefault()
+    setDragActive(true)
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setDragActive(false)
+    }
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    if (inputDisabled || !hasDraggedFiles(event)) {
+      return
+    }
+    event.preventDefault()
+    setDragActive(false)
+    void handleFiles(event.dataTransfer.files)
+  }
+
   return (
     <form onSubmit={(event) => void handleSubmit(event)} className="relative shrink-0 p-3">
       {thinking ? <ThinkingIndicator /> : null}
       <div
+        data-testid="prompt-composer-dropzone"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
         className={cn(
-          'rounded-xl border border-border/90 bg-background/90 p-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)] transition-colors',
+          'command-composer rounded-xl border border-border/90 p-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)] transition-colors',
           codexToolbarVisible && codexSelection.planning_mode && 'codex-plan-composer',
+          dragActive && 'border-primary/70 bg-primary/5 ring-2 ring-primary/20',
         )}
       >
+        {attachments.length > 0 ? (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {attachments.map((attachment) => (
+              <ImageAttachmentPreview
+                key={attachment.id}
+                attachment={attachment}
+                onRemove={() =>
+                  setAttachments((current) => current.filter((item) => item.id !== attachment.id))
+                }
+              />
+            ))}
+          </div>
+        ) : null}
         <Textarea
           ref={textareaRef}
           aria-label="Prompt"
-          placeholder={disabled ? disabledReason : 'Ask the agent to work on this repository...'}
+          placeholder={promptPlaceholder}
           value={content}
           onChange={(event) => setContent(event.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={disabled || submitting}
+          disabled={inputDisabled}
           rows={1}
           className="h-9 min-h-9 resize-none border-transparent bg-transparent px-1 py-2 shadow-none focus-visible:ring-0"
         />
@@ -199,6 +323,37 @@ export function PromptComposer({
             />
           ) : null}
           <div className="ml-auto flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="sr-only"
+              aria-label="Image attachments"
+              onChange={handleFileInputChange}
+            />
+            {onShowDebugEventsChange ? (
+              <ToggleControl
+                label="Debug"
+                icon={<Bug className="size-4" aria-hidden="true" />}
+                active={showDebugEvents}
+                disabled={false}
+                iconOnly
+                activeClassName="bg-orange-100 text-orange-800 dark:bg-orange-400/18 dark:text-orange-200"
+                onClick={() => onShowDebugEventsChange(!showDebugEvents)}
+              />
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              disabled={inputDisabled}
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="Attach images"
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <Paperclip />
+            </Button>
             {canCancel ? (
               <Button
                 type="button"
@@ -223,6 +378,73 @@ export function PromptComposer({
       {error ? <p className="mt-2 text-sm text-destructive">{error}</p> : null}
     </form>
   )
+}
+
+function ImageAttachmentPreview({
+  attachment,
+  onRemove,
+}: {
+  attachment: ComposerAttachment
+  onRemove: () => void
+}) {
+  return (
+    <figure className="group relative grid w-24 gap-1 rounded-lg border border-border/80 bg-surface-muted/70 p-1.5 shadow-sm">
+      <div className="aspect-square overflow-hidden rounded-md bg-background">
+        <img
+          src={attachment.data_url}
+          alt={attachment.name}
+          className="h-full w-full object-cover"
+        />
+      </div>
+      <figcaption className="min-w-0 truncate px-0.5 text-[10px] text-muted-foreground">
+        {attachment.name}
+      </figcaption>
+      <button
+        type="button"
+        aria-label={`Remove ${attachment.name}`}
+        onClick={onRemove}
+        className="absolute right-0.5 top-0.5 inline-flex size-6 items-center justify-center rounded-full border border-border/80 bg-background/95 text-muted-foreground shadow-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <X className="size-3.5" aria-hidden="true" />
+      </button>
+    </figure>
+  )
+}
+
+function hasDraggedFiles(event: DragEvent<HTMLDivElement>) {
+  return Array.from(event.dataTransfer.types).includes('Files')
+}
+
+async function fileToAttachment(file: File): Promise<ComposerAttachment> {
+  const dataURL = await readFileAsDataURL(file)
+  return {
+    id: createAttachmentID(),
+    name: file.name || 'image',
+    media_type: file.type,
+    data_url: dataURL,
+    size_bytes: file.size,
+  }
+}
+
+function readFileAsDataURL(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result)
+      } else {
+        reject(new Error('Failed to read image attachment'))
+      }
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read image attachment'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function createAttachmentID() {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `attachment-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 function CodexToolbar({
@@ -294,6 +516,7 @@ function CodexToolbar({
         icon={<ClipboardList className="size-4" aria-hidden="true" />}
         active={selection.planning_mode && planAvailable}
         disabled={disabled || !planAvailable}
+        activeClassName="bg-amber-100 text-amber-800 dark:bg-amber-400/18 dark:text-amber-200"
         onClick={() => onChange({ ...selection, planning_mode: planAvailable ? !selection.planning_mode : false })}
       />
     </div>
@@ -364,12 +587,16 @@ function ToggleControl({
   icon,
   active,
   disabled,
+  iconOnly = false,
+  activeClassName,
   onClick,
 }: {
   label: string
   icon: ReactNode
   active: boolean
   disabled: boolean
+  iconOnly?: boolean
+  activeClassName?: string
   onClick: () => void
 }) {
   return (
@@ -380,12 +607,13 @@ function ToggleControl({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        'inline-flex h-8 items-center gap-1.5 rounded-full px-2 text-sm font-semibold transition-colors disabled:pointer-events-none disabled:opacity-50',
-        active ? 'bg-primary/12 text-primary' : 'text-foreground/72 hover:text-foreground',
+        'inline-flex h-8 items-center gap-1.5 text-sm font-semibold transition-colors disabled:pointer-events-none disabled:opacity-50',
+        iconOnly ? 'w-8 justify-center rounded-md px-0' : 'rounded-full px-2',
+        active ? (activeClassName ?? 'bg-primary/12 text-primary') : 'text-foreground/72 hover:text-foreground',
       )}
     >
       {icon}
-      <span>{label}</span>
+      {iconOnly ? null : <span>{label}</span>}
     </button>
   )
 }
@@ -398,7 +626,7 @@ function ThinkingIndicator() {
       role="status"
       aria-label="Thinking"
       aria-live="polite"
-      className="thinking-indicator pointer-events-none absolute bottom-[calc(100%+0.25rem)] left-4 z-10 inline-flex items-center gap-2 text-sm font-medium"
+      className="thinking-indicator pointer-events-none absolute bottom-[calc(100%-0.625rem)] left-4 z-10 inline-flex items-center gap-2 text-sm font-medium"
     >
       <Brain className="thinking-indicator__icon size-4" aria-hidden="true" stroke={`url(#${gradientId})`}>
         <defs>
@@ -478,39 +706,58 @@ function fastTierForModel(model: CodexModelOption | null): CodexServiceTierOptio
   return model?.service_tiers.find((tier) => tier.name.toLowerCase() === 'fast') ?? null
 }
 
-function loadCodexSelection(): CodexSelection {
+function composerStorageKey(sessionID: string | undefined) {
+  return `${composerStorageKeyPrefix}${sessionID || defaultComposerStorageID}`
+}
+
+function loadComposerStorage(sessionID: string | undefined): ComposerStorageValue {
   try {
-    const stored = window.localStorage.getItem(codexSelectionStorageKey)
+    const stored = window.localStorage.getItem(composerStorageKey(sessionID))
     if (!stored) {
-      return emptyCodexSelection()
+      return {}
     }
-    const parsed = JSON.parse(stored) as Partial<CodexSelection>
-    return {
-      model: typeof parsed.model === 'string' ? parsed.model : '',
-      reasoning_effort: typeof parsed.reasoning_effort === 'string' ? parsed.reasoning_effort : '',
-      fast_mode: Boolean(parsed.fast_mode),
-      planning_mode: Boolean(parsed.planning_mode),
-    }
+    const parsed = JSON.parse(stored) as ComposerStorageValue
+    return typeof parsed === 'object' && parsed !== null ? parsed : {}
   } catch {
-    return emptyCodexSelection()
+    return {}
   }
 }
 
-function saveCodexSelection(selection: CodexSelection) {
+function saveComposerStorage(sessionID: string | undefined, value: ComposerStorageValue) {
   try {
-    window.localStorage.setItem(codexSelectionStorageKey, JSON.stringify(selection))
+    window.localStorage.setItem(composerStorageKey(sessionID), JSON.stringify(value))
   } catch {
     // Keep the composer functional if storage is unavailable.
   }
 }
 
-function emptyCodexSelection(): CodexSelection {
+function loadDraft(sessionID: string | undefined) {
+  const stored = loadComposerStorage(sessionID)
+  return typeof stored.draft === 'string' ? stored.draft : ''
+}
+
+function saveDraft(sessionID: string | undefined, draft: string) {
+  saveComposerStorage(sessionID, {
+    ...loadComposerStorage(sessionID),
+    draft,
+  })
+}
+
+function loadCodexSelection(sessionID: string | undefined): CodexSelection {
+  const stored = loadComposerStorage(sessionID).codexSelection ?? {}
   return {
-    model: '',
-    reasoning_effort: '',
-    fast_mode: false,
-    planning_mode: false,
+    model: typeof stored.model === 'string' ? stored.model : '',
+    reasoning_effort: typeof stored.reasoning_effort === 'string' ? stored.reasoning_effort : '',
+    fast_mode: Boolean(stored.fast_mode),
+    planning_mode: Boolean(stored.planning_mode),
   }
+}
+
+function saveCodexSelection(sessionID: string | undefined, selection: CodexSelection) {
+  saveComposerStorage(sessionID, {
+    ...loadComposerStorage(sessionID),
+    codexSelection: selection,
+  })
 }
 
 function resizePromptTextarea(textarea: HTMLTextAreaElement | null) {

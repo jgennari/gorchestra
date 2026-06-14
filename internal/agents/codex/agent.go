@@ -22,6 +22,8 @@ const (
 	defaultBinary          = "codex"
 	defaultSandbox         = "workspace-write"
 	defaultApprovalPolicy  = "never"
+	defaultNetworkAccess   = true
+	defaultWebSearchMode   = "live"
 	defaultInterruptGrace  = 2 * time.Second
 	defaultFastServiceTier = "priority"
 )
@@ -34,6 +36,8 @@ type Agent struct {
 	binary          string
 	sandbox         string
 	approvalPolicy  string
+	networkAccess   bool
+	webSearchMode   string
 	model           string
 	workspace       string
 	interruptGrace  time.Duration
@@ -49,6 +53,8 @@ func New(options ...Option) *Agent {
 		binary:         defaultBinary,
 		sandbox:        defaultSandbox,
 		approvalPolicy: defaultApprovalPolicy,
+		networkAccess:  defaultNetworkAccess,
+		webSearchMode:  defaultWebSearchMode,
 		interruptGrace: defaultInterruptGrace,
 		versionChecker: defaultVersionChecker,
 	}
@@ -70,6 +76,20 @@ func WithSandbox(sandbox string) Option {
 	return func(agent *Agent) {
 		if strings.TrimSpace(sandbox) != "" {
 			agent.sandbox = strings.TrimSpace(sandbox)
+		}
+	}
+}
+
+func WithNetworkAccess(enabled bool) Option {
+	return func(agent *Agent) {
+		agent.networkAccess = enabled
+	}
+}
+
+func WithWebSearchMode(mode string) Option {
+	return func(agent *Agent) {
+		if strings.TrimSpace(mode) != "" {
+			agent.webSearchMode = strings.TrimSpace(mode)
 		}
 	}
 }
@@ -234,13 +254,17 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 	}
 
 	run := &appServerRun{
-		agent:      a,
-		rpc:        newRPCClient(stdin),
-		incoming:   readAppServer(stdout, stderr),
-		process:    waitProcess(cmd),
-		emit:       emit,
-		normalizer: newNormalizer(),
-		options:    runOptionsFromMetadata(input.Metadata),
+		agent:             a,
+		rpc:               newRPCClient(stdin),
+		incoming:          readAppServer(stdout, stderr),
+		process:           waitProcess(cmd),
+		emit:              emit,
+		normalizer:        newNormalizer(),
+		options:           runOptionsFromMetadata(input.Metadata),
+		attachments:       input.Attachments,
+		sessionID:         input.SessionID,
+		providerSessionID: strings.TrimSpace(input.ProviderSessionID),
+		userInput:         input.UserInput,
 	}
 	return run.execute(ctx, input, workdir)
 }
@@ -268,7 +292,11 @@ func (a *Agent) workdirForRun(inputWorkdir string) (string, error) {
 }
 
 func (a *Agent) command(workdir string) *exec.Cmd {
-	cmd := exec.Command(a.binary, "app-server", "--stdio")
+	args := []string{"app-server", "--stdio"}
+	if a.webSearchMode != "" {
+		args = append(args, "-c", fmt.Sprintf("web_search=%q", a.webSearchMode))
+	}
+	cmd := exec.Command(a.binary, args...)
 	cmd.Dir = workdir
 	return cmd
 }
@@ -538,13 +566,17 @@ func normalizeOptions(models []codexModel, modes []codexCollaborationMode) agent
 }
 
 type appServerRun struct {
-	agent      *Agent
-	rpc        *rpcClient
-	incoming   <-chan incomingMessage
-	process    *processState
-	emit       agents.EmitFunc
-	normalizer *normalizer
-	options    codexRunOptions
+	agent             *Agent
+	rpc               *rpcClient
+	incoming          <-chan incomingMessage
+	process           *processState
+	emit              agents.EmitFunc
+	normalizer        *normalizer
+	options           codexRunOptions
+	attachments       []agents.Attachment
+	sessionID         string
+	providerSessionID string
+	userInput         agents.UserInputBroker
 
 	stateMu  sync.Mutex
 	threadID string
@@ -559,8 +591,14 @@ func (r *appServerRun) execute(ctx context.Context, input agents.AgentInput, wor
 	if err := r.initialize(ctx); err != nil {
 		return err
 	}
-	if err := r.startThread(ctx, workdir); err != nil {
-		return err
+	if r.providerSessionID != "" {
+		if err := r.resumeThread(ctx, r.providerSessionID, workdir); err != nil {
+			return err
+		}
+	} else {
+		if err := r.startThread(ctx, workdir); err != nil {
+			return err
+		}
 	}
 	if err := r.startTurn(ctx, input.Message, workdir); err != nil {
 		return err
@@ -600,7 +638,7 @@ func (r *appServerRun) startThread(ctx context.Context, workdir string) error {
 		"runtimeWorkspaceRoots": []string{workdir},
 		"approvalPolicy":        r.agent.approvalPolicy,
 		"sandbox":               r.agent.sandbox,
-		"ephemeral":             true,
+		"ephemeral":             false,
 	}
 	if r.agent.model != "" {
 		params["model"] = r.agent.model
@@ -627,20 +665,63 @@ func (r *appServerRun) startThread(ctx context.Context, workdir string) error {
 	return r.emitSyntheticRunStarted(ctx, "thread/start", threadID)
 }
 
+func (r *appServerRun) resumeThread(ctx context.Context, providerSessionID string, workdir string) error {
+	threadID := strings.TrimSpace(providerSessionID)
+	if threadID == "" {
+		return fmt.Errorf("codex thread/resume requires threadId")
+	}
+
+	params := map[string]any{
+		"threadId":       threadID,
+		"cwd":            workdir,
+		"approvalPolicy": r.agent.approvalPolicy,
+		"sandbox":        r.agent.sandbox,
+	}
+	if r.agent.model != "" {
+		params["model"] = r.agent.model
+	}
+	if r.options.Model != "" {
+		params["model"] = r.options.Model
+	}
+	if r.options.ServiceTier != "" {
+		params["serviceTier"] = r.options.ServiceTier
+	}
+
+	id, err := r.rpc.sendRequest("thread/resume", params)
+	if err != nil {
+		return err
+	}
+
+	response, err := r.awaitResponse(ctx, id)
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return fmt.Errorf("codex thread/resume failed: %s", response.Error.Message)
+	}
+
+	resumedThreadID := stringAt(response.Result, "thread", "id")
+	if resumedThreadID == "" {
+		return fmt.Errorf("codex thread/resume response missing thread.id")
+	}
+	if resumedThreadID != threadID {
+		return fmt.Errorf("codex thread/resume returned different thread.id %q for requested %q", resumedThreadID, threadID)
+	}
+	r.setThreadID(resumedThreadID)
+	return r.emitSyntheticRunStarted(ctx, "thread/resume", resumedThreadID)
+}
+
 func (r *appServerRun) startTurn(ctx context.Context, message string, workdir string) error {
 	threadID := r.getThreadID()
 	params := map[string]any{
-		"threadId": threadID,
-		"input": []map[string]any{
-			{
-				"type":          "text",
-				"text":          message,
-				"text_elements": []any{},
-			},
-		},
+		"threadId":              threadID,
+		"input":                 userInputItems(message, r.attachments),
 		"cwd":                   workdir,
 		"runtimeWorkspaceRoots": []string{workdir},
 		"approvalPolicy":        r.agent.approvalPolicy,
+	}
+	if sandboxPolicy := sandboxPolicyForMode(r.agent.sandbox, r.agent.networkAccess); sandboxPolicy != nil {
+		params["sandboxPolicy"] = sandboxPolicy
 	}
 	if r.agent.model != "" {
 		params["model"] = r.agent.model
@@ -694,6 +775,53 @@ func (r *appServerRun) startTurn(ctx context.Context, message string, workdir st
 	}
 	r.setTurnID(turnID)
 	return r.emitSyntheticTurnStarted(ctx, "turn/start", threadID, turnID)
+}
+
+func userInputItems(message string, attachments []agents.Attachment) []map[string]any {
+	items := make([]map[string]any, 0, 1+len(attachments))
+	if strings.TrimSpace(message) != "" {
+		items = append(items, map[string]any{
+			"type":          "text",
+			"text":          message,
+			"text_elements": []any{},
+		})
+	}
+	for _, attachment := range attachments {
+		dataURL := strings.TrimSpace(attachment.DataURL)
+		if dataURL == "" {
+			continue
+		}
+		items = append(items, map[string]any{
+			"type":   "image",
+			"url":    dataURL,
+			"detail": "auto",
+		})
+	}
+	return items
+}
+
+func sandboxPolicyForMode(mode string, networkAccess bool) map[string]any {
+	switch strings.TrimSpace(mode) {
+	case "workspace-write", "workspaceWrite":
+		return map[string]any{
+			"type":                "workspaceWrite",
+			"writableRoots":       []string{},
+			"networkAccess":       networkAccess,
+			"excludeTmpdirEnvVar": false,
+			"excludeSlashTmp":     false,
+		}
+	case "read-only", "readOnly":
+		return map[string]any{
+			"type":          "readOnly",
+			"networkAccess": networkAccess,
+		}
+	case "danger-full-access", "dangerFullAccess":
+		return map[string]any{
+			"type": "dangerFullAccess",
+		}
+	default:
+		return nil
+	}
 }
 
 func (r *appServerRun) awaitResponse(ctx context.Context, requestID string) (*rpcMessage, error) {
@@ -832,6 +960,10 @@ func (r *appServerRun) handleIncoming(ctx context.Context, incoming incomingMess
 }
 
 func (r *appServerRun) handleServerRequest(ctx context.Context, message *rpcMessage) error {
+	if message.Method == "item/tool/requestUserInput" {
+		return r.handleUserInputRequest(ctx, message)
+	}
+
 	event := agents.AgentEvent{
 		Type:   "provider.codex.request",
 		Role:   "system",
@@ -846,6 +978,94 @@ func (r *appServerRun) handleServerRequest(ctx context.Context, message *rpcMess
 		return err
 	}
 	return r.rpc.sendErrorResponse(message.ID, -32601, "Gorchestra does not handle Codex server requests yet")
+}
+
+func (r *appServerRun) handleUserInputRequest(ctx context.Context, message *rpcMessage) error {
+	var params codexUserInputParams
+	if err := json.Unmarshal(message.Params, &params); err != nil {
+		if emitErr := r.emitProviderRequest(ctx, message, "failed"); emitErr != nil {
+			return emitErr
+		}
+		return r.rpc.sendErrorResponse(message.ID, -32602, "invalid Codex user input request params")
+	}
+
+	request := agents.UserInputRequest{
+		SessionID:         r.sessionID,
+		RequestID:         codexUserInputRequestID(params, message.ID),
+		Provider:          "codex",
+		ProviderEventType: message.Method,
+		ProviderRequestID: message.idKey(),
+		ThreadID:          params.ThreadID,
+		TurnID:            params.TurnID,
+		ItemID:            params.ItemID,
+		Questions:         codexUserInputQuestions(params.Questions),
+	}
+	if request.RequestID == "" || len(request.Questions) == 0 {
+		if emitErr := r.emitProviderRequest(ctx, message, "failed"); emitErr != nil {
+			return emitErr
+		}
+		return r.rpc.sendErrorResponse(message.ID, -32602, "invalid Codex user input request")
+	}
+	if r.userInput == nil {
+		if err := r.emitUserInputRequested(ctx, request, message.Raw); err != nil {
+			return err
+		}
+		return r.rpc.sendErrorResponse(message.ID, -32601, "Gorchestra cannot answer Codex user input requests")
+	}
+
+	waiter, err := r.userInput.OpenUserInput(ctx, request)
+	if err != nil {
+		if emitErr := r.emitUserInputRequested(ctx, request, message.Raw); emitErr != nil {
+			return emitErr
+		}
+		return r.rpc.sendErrorResponse(message.ID, -32000, "Gorchestra could not open a user input request")
+	}
+	defer waiter.Close()
+
+	if err := r.emitUserInputRequested(ctx, request, message.Raw); err != nil {
+		return err
+	}
+
+	response, err := waiter.Wait(ctx)
+	if err != nil {
+		_ = r.rpc.sendErrorResponse(message.ID, -32800, "Gorchestra user input request was cancelled")
+		return err
+	}
+	return r.rpc.sendResponse(message.ID, response)
+}
+
+func (r *appServerRun) emitProviderRequest(ctx context.Context, message *rpcMessage, status string) error {
+	event := agents.AgentEvent{
+		Type:   "provider.codex.request",
+		Role:   "system",
+		Status: status,
+		Payload: map[string]any{
+			"provider":            "codex",
+			"provider_event_type": message.Method,
+			"raw":                 json.RawMessage(message.Raw),
+		},
+	}
+	return r.emitEvent(ctx, normalizedEvent{Event: event})
+}
+
+func (r *appServerRun) emitUserInputRequested(ctx context.Context, request agents.UserInputRequest, raw json.RawMessage) error {
+	event := agents.AgentEvent{
+		Type:   "agent.input.requested",
+		Role:   "assistant",
+		Status: "started",
+		Payload: map[string]any{
+			"provider":            request.Provider,
+			"provider_event_type": request.ProviderEventType,
+			"provider_request_id": request.ProviderRequestID,
+			"request_id":          request.RequestID,
+			"thread_id":           request.ThreadID,
+			"turn_id":             request.TurnID,
+			"item_id":             request.ItemID,
+			"questions":           request.Questions,
+			"raw":                 json.RawMessage(raw),
+		},
+	}
+	return r.emitEvent(ctx, normalizedEvent{Event: event})
 }
 
 func (r *appServerRun) handleNotification(ctx context.Context, message *rpcMessage) (bool, error) {
@@ -1111,6 +1331,70 @@ type rpcError struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
+type codexUserInputParams struct {
+	ThreadID  string                   `json:"threadId"`
+	TurnID    string                   `json:"turnId"`
+	ItemID    string                   `json:"itemId"`
+	Questions []codexUserInputQuestion `json:"questions"`
+}
+
+type codexUserInputQuestion struct {
+	ID       string                 `json:"id"`
+	Header   string                 `json:"header"`
+	Question string                 `json:"question"`
+	IsOther  bool                   `json:"isOther"`
+	IsSecret bool                   `json:"isSecret"`
+	Options  []codexUserInputOption `json:"options"`
+}
+
+type codexUserInputOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+func codexUserInputRequestID(params codexUserInputParams, rpcID json.RawMessage) string {
+	if itemID := strings.TrimSpace(params.ItemID); itemID != "" {
+		return itemID
+	}
+	if turnID := strings.TrimSpace(params.TurnID); turnID != "" {
+		if id := rawIDKey(rpcID); id != "" {
+			return turnID + "-" + id
+		}
+		return turnID
+	}
+	return rawIDKey(rpcID)
+}
+
+func codexUserInputQuestions(questions []codexUserInputQuestion) []agents.UserInputQuestion {
+	normalized := make([]agents.UserInputQuestion, 0, len(questions))
+	for _, question := range questions {
+		id := strings.TrimSpace(question.ID)
+		if id == "" {
+			continue
+		}
+		options := make([]agents.UserInputOption, 0, len(question.Options))
+		for _, option := range question.Options {
+			label := strings.TrimSpace(option.Label)
+			if label == "" {
+				continue
+			}
+			options = append(options, agents.UserInputOption{
+				Label:       label,
+				Description: strings.TrimSpace(option.Description),
+			})
+		}
+		normalized = append(normalized, agents.UserInputQuestion{
+			ID:       id,
+			Header:   strings.TrimSpace(question.Header),
+			Question: strings.TrimSpace(question.Question),
+			IsOther:  question.IsOther,
+			IsSecret: question.IsSecret,
+			Options:  options,
+		})
+	}
+	return normalized
+}
+
 type rpcClient struct {
 	mu     sync.Mutex
 	nextID int64
@@ -1166,19 +1450,27 @@ func (c *rpcClient) sendErrorResponse(id json.RawMessage, code int, messageText 
 	if c.closed {
 		return io.ErrClosedPipe
 	}
-	var idValue any
-	if len(id) > 0 {
-		if err := json.Unmarshal(id, &idValue); err != nil {
-			idValue = string(id)
-		}
-	}
 	message := map[string]any{
 		"jsonrpc": "2.0",
-		"id":      idValue,
+		"id":      rpcIDValue(id),
 		"error": map[string]any{
 			"code":    code,
 			"message": messageText,
 		},
+	}
+	return writeRPC(c.writer, message)
+}
+
+func (c *rpcClient) sendResponse(id json.RawMessage, result any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return io.ErrClosedPipe
+	}
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      rpcIDValue(id),
+		"result":  result,
 	}
 	return writeRPC(c.writer, message)
 }
@@ -1213,6 +1505,18 @@ func rawIDKey(raw json.RawMessage) string {
 		return text
 	}
 	return string(raw)
+}
+
+func rpcIDValue(raw json.RawMessage) any {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return string(raw)
+	}
+	return value
 }
 
 type processState struct {

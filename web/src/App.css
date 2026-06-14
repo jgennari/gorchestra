@@ -35,19 +35,34 @@
 
 .command-composer {
   background:
-    linear-gradient(180deg, hsl(var(--surface) / 0.84), hsl(var(--background) / 0.96));
+    linear-gradient(180deg, hsl(var(--surface) / 0.58), hsl(var(--background) / 0.70));
+  backdrop-filter: blur(22px) saturate(1.25);
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+}
+
+.command-chat-header {
+  background:
+    linear-gradient(180deg, hsl(var(--surface) / 0.58), hsl(var(--background) / 0.70));
+  backdrop-filter: blur(22px) saturate(1.25);
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+}
+
+:root[data-theme="dark"] .command-composer {
+  background:
+    linear-gradient(180deg, hsl(var(--surface) / 0.52), hsl(var(--background) / 0.66));
+}
+
+:root[data-theme="dark"] .command-chat-header {
+  background:
+    linear-gradient(180deg, hsl(var(--surface) / 0.52), hsl(var(--background) / 0.66));
 }
 
 .codex-plan-composer {
-  background: hsl(48 100% 93% / 0.96);
   border-color: hsl(43 92% 68% / 0.72);
-  color: hsl(36 46% 18%);
 }
 
 :root[data-theme="dark"] .codex-plan-composer {
-  background: hsl(42 38% 18% / 0.96);
-  border-color: hsl(43 56% 34% / 0.74);
-  color: hsl(47 62% 86%);
+  border-color: hsl(50 82% 43% / 0.76);
 }
 
 .chat-canvas {

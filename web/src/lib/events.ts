@@ -1,4 +1,4 @@
-import type { AgentEvent, SessionStatus } from '@/lib/api'
+import type { AgentEvent, SessionStatus, UserInputQuestion } from '@/lib/api'
 
 export const knownEventTypes = [
   'user.message.completed',
@@ -10,6 +10,8 @@ export const knownEventTypes = [
   'agent.thinking.delta',
   'agent.thinking.completed',
   'agent.log.delta',
+  'agent.input.requested',
+  'agent.input.answered',
   'tool.call.started',
   'tool.call.delta',
   'tool.call.completed',
@@ -65,16 +67,81 @@ export type ChatTranscriptTool = {
   endSeq: number
 }
 
+export type ChatTranscriptAttachment = {
+  name: string
+  mediaType: string
+  dataURL: string
+  sizeBytes: number
+}
+
 export type ChatTranscriptMessage = {
   id: string
   role: 'user' | 'assistant'
   text: string
+  attachments: ChatTranscriptAttachment[]
   status: string
   createdAt: string
   tools: ChatTranscriptTool[]
   streaming: boolean
   startSeq: number
   endSeq: number
+}
+
+export type ChatDebugEvent = {
+  id: string
+  label: string
+  status: string
+  startSeq: number
+  endSeq: number
+  eventCount: number
+  text: string
+  error: string
+  payload: unknown
+  createdAt: string
+}
+
+export type ChatTimelineItem =
+  | {
+      kind: 'message'
+      id: string
+      startSeq: number
+      endSeq: number
+      message: ChatTranscriptMessage
+    }
+  | {
+      kind: 'debug'
+      id: string
+      startSeq: number
+      endSeq: number
+      event: ChatDebugEvent
+    }
+
+export type PendingUserInputRequest = {
+  requestID: string
+  provider: string
+  providerEventType: string
+  threadID: string
+  turnID: string
+  itemID: string
+  questions: UserInputQuestion[]
+  createdAt: string
+  seq: number
+}
+
+export type TokenUsageSnapshot = {
+  totalTokens: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  reasoningOutputTokens: number
+}
+
+export type TokenUsageSummary = {
+  total: TokenUsageSnapshot
+  last: TokenUsageSnapshot
+  modelContextWindow: number
+  updatedAt: string
+  seq: number
 }
 
 export function appendEvent(events: AgentEvent[], event: AgentEvent) {
@@ -171,6 +238,11 @@ export function groupEvents(events: AgentEvent[]) {
 }
 
 export function buildChatTranscript(events: AgentEvent[]) {
+  return buildChatTimeline(events, false).flatMap((item) => (item.kind === 'message' ? [item.message] : []))
+}
+
+export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: boolean) {
+  const items: ChatTimelineItem[] = []
   const messages: ChatTranscriptMessage[] = []
   let currentAssistant: ChatTranscriptMessage | null = null
   const assistantMessagesByItemID = new Map<string, ChatTranscriptMessage>()
@@ -179,6 +251,7 @@ export function buildChatTranscript(events: AgentEvent[]) {
     if (group.kind === 'user-message') {
       const message = chatMessageFromGroup('user', group)
       messages.push(message)
+      syncMessageTimelineItem(items, message)
       currentAssistant = null
       continue
     }
@@ -186,6 +259,7 @@ export function buildChatTranscript(events: AgentEvent[]) {
     if (group.kind === 'agent-message') {
       currentAssistant = assistantMessageForGroup(messages, currentAssistant, assistantMessagesByItemID, group)
       mergeAssistantMessage(currentAssistant, group)
+      syncMessageTimelineItem(items, currentAssistant)
       continue
     }
 
@@ -194,6 +268,7 @@ export function buildChatTranscript(events: AgentEvent[]) {
       currentAssistant.tools.push(chatToolFromGroup(group))
       currentAssistant.streaming = group.status !== 'completed'
       updateMessageRange(currentAssistant, group)
+      syncMessageTimelineItem(items, currentAssistant)
       continue
     }
 
@@ -203,13 +278,67 @@ export function buildChatTranscript(events: AgentEvent[]) {
       currentAssistant.status = 'failed'
       currentAssistant.streaming = false
       updateMessageRange(currentAssistant, group)
+      syncMessageTimelineItem(items, currentAssistant)
+      continue
+    }
+
+    if (includeDebugEvents && isHiddenDebugGroup(group)) {
+      items.push({
+        kind: 'debug',
+        id: `debug-${group.id}`,
+        startSeq: group.startSeq,
+        endSeq: group.endSeq,
+        event: chatDebugEventFromGroup(group),
+      })
     }
   }
 
-  return messages.filter((message) => message.text.trim() || message.tools.length > 0)
+  return items.filter((item) => item.kind === 'debug' || item.message.text.trim() || item.message.tools.length > 0)
 }
 
-export function eventLabel(type: string) {
+export function pendingUserInputRequest(events: AgentEvent[]) {
+  const requests = new Map<string, PendingUserInputRequest>()
+  const answered = new Set<string>()
+  let latestTerminalSeq = 0
+
+  for (const event of sortedUniqueEvents(events)) {
+    if (isTerminalEvent(event.type)) {
+      latestTerminalSeq = event.seq
+    }
+    if (event.type === 'agent.input.requested') {
+      const request = userInputRequestFromEvent(event)
+      if (request) {
+        requests.set(request.requestID, request)
+      }
+    }
+    if (event.type === 'agent.input.answered') {
+      const requestID = payloadString(event.payload, ['request_id'])
+      if (requestID) {
+        answered.add(requestID)
+      }
+    }
+  }
+
+  return [...requests.values()]
+    .filter((request) => request.seq > latestTerminalSeq && !answered.has(request.requestID))
+    .sort((left, right) => right.seq - left.seq)[0] ?? null
+}
+
+export function latestTokenUsage(events: AgentEvent[]) {
+  let latest: TokenUsageSummary | null = null
+  for (const event of sortedUniqueEvents(events)) {
+    const summary = tokenUsageFromEvent(event)
+    if (summary) {
+      latest = summary
+    }
+  }
+  return latest
+}
+
+export function eventLabel(eventOrType: AgentEvent | string) {
+  const type = typeof eventOrType === 'string' ? eventOrType : eventOrType.type
+  const providerEventType = typeof eventOrType === 'string' ? '' : payloadString(eventOrType.payload, ['provider_event_type'])
+  if (providerEventType && type.startsWith('provider.')) return providerEventType
   if (type === 'session.status.updated') return 'Session status'
   if (type.startsWith('user.message')) return 'User message'
   if (type.startsWith('agent.message')) return 'Agent message'
@@ -229,6 +358,7 @@ export function payloadText(payload: unknown) {
       payload.text ??
       payload.delta ??
       payload.output ??
+      payload.aggregated_output ??
       payload.command ??
       payload.error ??
       payload.summary ??
@@ -332,6 +462,9 @@ function appendToGroup(group: EventGroup, event: AgentEvent) {
   group.text = joinGroupText(group.text, payloadText(event.payload))
   group.error = group.error || payloadError(event.payload)
   group.paths = uniqueStrings([...group.paths, ...payloadPaths(event.payload)])
+  if (group.kind === 'tool-call') {
+    group.label = toolLabelFromEvents(group.events)
+  }
   group.defaultOpen = group.events.some((item) => isErrorEvent(item.type, item.status)) || defaultOpen(group.kind, event)
   group.terminal = group.terminal || isTerminalEvent(event.type)
 }
@@ -350,13 +483,12 @@ function groupKind(event: AgentEvent): EventGroupKind {
 
 function groupLabel(event: AgentEvent, kind: EventGroupKind) {
   if (kind === 'tool-call') {
-    const name = payloadString(event.payload, ['tool', 'name', 'command'])
-    return name ? `Tool: ${name}` : 'Tool call'
+    return toolLabelFromEvents([event])
   }
   if (kind === 'file-change') {
     return 'File change'
   }
-  return eventLabel(event.type)
+  return eventLabel(event)
 }
 
 function groupID(event: AgentEvent) {
@@ -396,6 +528,7 @@ function chatMessageFromGroup(role: ChatTranscriptMessage['role'], group: EventG
     id: `chat-${role}-${group.startSeq}`,
     role,
     text: group.text,
+    attachments: chatAttachmentsFromGroup(group),
     status: group.status,
     createdAt: group.events[0]?.created_at ?? '',
     tools: [],
@@ -403,6 +536,29 @@ function chatMessageFromGroup(role: ChatTranscriptMessage['role'], group: EventG
     startSeq: group.startSeq,
     endSeq: group.endSeq,
   }
+}
+
+function chatAttachmentsFromGroup(group: EventGroup): ChatTranscriptAttachment[] {
+  if (group.kind !== 'user-message') {
+    return []
+  }
+  const payload = group.events[0]?.payload
+  if (!isRecord(payload) || !Array.isArray(payload.attachments)) {
+    return []
+  }
+  return payload.attachments.flatMap((attachment): ChatTranscriptAttachment[] => {
+    if (!isRecord(attachment)) {
+      return []
+    }
+    const name = typeof attachment.name === 'string' ? attachment.name : 'image'
+    const mediaType = typeof attachment.media_type === 'string' ? attachment.media_type : ''
+    const dataURL = typeof attachment.data_url === 'string' ? attachment.data_url : ''
+    const sizeBytes = typeof attachment.size_bytes === 'number' ? attachment.size_bytes : 0
+    if (!mediaType.startsWith('image/') || !dataURL) {
+      return []
+    }
+    return [{ name, mediaType, dataURL, sizeBytes }]
+  })
 }
 
 function ensureAssistantMessage(
@@ -471,16 +627,104 @@ function chatToolFromGroup(group: EventGroup): ChatTranscriptTool {
 function chatToolText(group: EventGroup) {
   const lines: string[] = []
   for (const event of group.events) {
-    const line = cleanShellCommand(payloadText(event.payload))
-    if (!line || lines[lines.length - 1] === line) {
-      continue
+    for (const line of toolTextLines(event.payload)) {
+      if (!line || lines[lines.length - 1] === line) {
+        continue
+      }
+      lines.push(line)
     }
-    lines.push(line)
   }
   if (lines.length > 0) {
     return lines.join('\n')
   }
   return group.paths.join('\n')
+}
+
+function toolLabelFromEvents(events: AgentEvent[]) {
+  for (const event of [...events].reverse()) {
+    const label = toolLabelFromPayload(event.payload)
+    if (label) {
+      return `Tool: ${label}`
+    }
+  }
+  return 'Tool call'
+}
+
+function toolLabelFromPayload(payload: unknown) {
+  if (!isRecord(payload)) {
+    return ''
+  }
+
+  const itemType = payloadString(payload, ['item_type'])
+  if (itemType === 'webSearch') {
+    const query = toolQueryFromPayload(payload)
+    return query ? `Web search: ${query}` : 'Web search'
+  }
+
+  const command = payloadString(payload, ['command'])
+  if (command) {
+    return cleanShellCommand(command)
+  }
+
+  const query = toolQueryFromPayload(payload)
+  if (query) {
+    return query
+  }
+
+  const name = payloadString(payload, ['name', 'tool', 'server', 'namespace', 'item_type'])
+  return name
+}
+
+function toolTextLines(payload: unknown) {
+  const text = cleanShellCommand(payloadText(payload))
+  if (text) {
+    return [text]
+  }
+  if (!isRecord(payload)) {
+    return []
+  }
+
+  const itemType = payloadString(payload, ['item_type'])
+  const queries = toolQueriesFromPayload(payload)
+  const query = toolQueryFromPayload(payload)
+  if (itemType === 'webSearch' || query || queries.length > 0) {
+    const lines: string[] = []
+    if (query) {
+      lines.push(`Query: ${query}`)
+    }
+    if (queries.length > 0) {
+      lines.push('Queries:')
+      lines.push(...queries.map((value) => `- ${value}`))
+    }
+    return lines
+  }
+
+  return []
+}
+
+function toolQueryFromPayload(payload: unknown) {
+  if (!isRecord(payload)) {
+    return ''
+  }
+  const direct = payloadString(payload, ['query'])
+  if (direct) {
+    return direct
+  }
+  if (isRecord(payload.action)) {
+    return payloadString(payload.action, ['query'])
+  }
+  return ''
+}
+
+function toolQueriesFromPayload(payload: unknown) {
+  if (!isRecord(payload)) {
+    return []
+  }
+  const values = isRecord(payload.action) ? payload.action.queries : payload.queries
+  if (!Array.isArray(values)) {
+    return []
+  }
+  return uniqueStrings(values.flatMap((value) => (typeof value === 'string' && value.trim() ? [value.trim()] : [])))
 }
 
 function cleanToolLabel(label: string) {
@@ -489,6 +733,60 @@ function cleanToolLabel(label: string) {
     return label
   }
   return `${prefix}${cleanShellCommand(label.slice(prefix.length))}`
+}
+
+function syncMessageTimelineItem(items: ChatTimelineItem[], message: ChatTranscriptMessage) {
+  const existing = items.find((item) => item.kind === 'message' && item.message === message)
+  if (existing) {
+    existing.startSeq = message.startSeq
+    existing.endSeq = message.endSeq
+    return
+  }
+  items.push({
+    kind: 'message',
+    id: message.id,
+    startSeq: message.startSeq,
+    endSeq: message.endSeq,
+    message,
+  })
+}
+
+function isHiddenDebugGroup(group: EventGroup) {
+  switch (group.kind) {
+    case 'user-message':
+    case 'agent-message':
+    case 'tool-call':
+    case 'file-change':
+    case 'error':
+      return false
+    default:
+      return true
+  }
+}
+
+function chatDebugEventFromGroup(group: EventGroup): ChatDebugEvent {
+  return {
+    id: `debug-${group.id}`,
+    label: group.label,
+    status: group.status,
+    startSeq: group.startSeq,
+    endSeq: group.endSeq,
+    eventCount: group.events.length,
+    text: group.text,
+    error: group.error,
+    payload: group.events.length === 1 ? group.events[0]?.payload : group.events.map(rawEventSummary),
+    createdAt: group.events[0]?.created_at ?? '',
+  }
+}
+
+function rawEventSummary(event: AgentEvent) {
+  return {
+    seq: event.seq,
+    type: event.type,
+    status: event.status,
+    payload: event.payload,
+    created_at: event.created_at,
+  }
 }
 
 function cleanShellCommand(value: string) {
@@ -556,6 +854,131 @@ function addPathValue(paths: Set<string>, value: unknown) {
       }
     }
   }
+}
+
+function userInputRequestFromEvent(event: AgentEvent): PendingUserInputRequest | null {
+  if (!isRecord(event.payload)) {
+    return null
+  }
+
+  const requestID = payloadString(event.payload, ['request_id'])
+  if (!requestID) {
+    return null
+  }
+  const questions = payloadQuestions(event.payload.questions)
+  if (questions.length === 0) {
+    return null
+  }
+
+  return {
+    requestID,
+    provider: payloadString(event.payload, ['provider']),
+    providerEventType: payloadString(event.payload, ['provider_event_type']),
+    threadID: payloadString(event.payload, ['thread_id']),
+    turnID: payloadString(event.payload, ['turn_id']),
+    itemID: payloadString(event.payload, ['item_id']),
+    questions,
+    createdAt: event.created_at,
+    seq: event.seq,
+  }
+}
+
+function tokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
+  if (event.type !== 'provider.codex.event' || payloadString(event.payload, ['provider_event_type']) !== 'thread/tokenUsage/updated') {
+    return null
+  }
+  if (!isRecord(event.payload) || !isRecord(event.payload.raw)) {
+    return null
+  }
+
+  const tokenUsage = event.payload.raw.tokenUsage
+  if (!isRecord(tokenUsage)) {
+    return null
+  }
+
+  const total = tokenUsageSnapshot(tokenUsage.total)
+  const last = tokenUsageSnapshot(tokenUsage.last)
+  const modelContextWindow = payloadNumber(tokenUsage, ['modelContextWindow'])
+  if (!total || !last || modelContextWindow <= 0) {
+    return null
+  }
+
+  return {
+    total,
+    last,
+    modelContextWindow,
+    updatedAt: event.created_at,
+    seq: event.seq,
+  }
+}
+
+function tokenUsageSnapshot(value: unknown): TokenUsageSnapshot | null {
+  if (!isRecord(value)) {
+    return null
+  }
+  return {
+    totalTokens: payloadNumber(value, ['totalTokens']),
+    inputTokens: payloadNumber(value, ['inputTokens']),
+    cachedInputTokens: payloadNumber(value, ['cachedInputTokens']),
+    outputTokens: payloadNumber(value, ['outputTokens']),
+    reasoningOutputTokens: payloadNumber(value, ['reasoningOutputTokens']),
+  }
+}
+
+function payloadQuestions(value: unknown): UserInputQuestion[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return []
+    }
+    const id = payloadString(item, ['id'])
+    const question = payloadString(item, ['question'])
+    if (!id || !question) {
+      return []
+    }
+    return [{
+      id,
+      header: payloadString(item, ['header']),
+      question,
+      is_other: item.is_other === true,
+      is_secret: item.is_secret === true,
+      options: payloadOptions(item.options),
+    }]
+  })
+}
+
+function payloadOptions(value: unknown) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return []
+    }
+    const label = payloadString(item, ['label'])
+    if (!label) {
+      return []
+    }
+    return [{
+      label,
+      description: payloadString(item, ['description']),
+    }]
+  })
+}
+
+function payloadNumber(payload: unknown, keys: string[]) {
+  if (!isRecord(payload)) {
+    return 0
+  }
+  for (const key of keys) {
+    const value = payload[key]
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value
+    }
+  }
+  return 0
 }
 
 function payloadString(payload: unknown, keys: string[]) {

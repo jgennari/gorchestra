@@ -58,10 +58,20 @@ type CollaborationModeOption struct {
 }
 
 type AgentInput struct {
-	SessionID string
-	Message   string
-	Workdir   string
-	Metadata  map[string]any
+	SessionID         string
+	ProviderSessionID string
+	Message           string
+	Workdir           string
+	Metadata          map[string]any
+	Attachments       []Attachment
+	UserInput         UserInputBroker
+}
+
+type Attachment struct {
+	Name      string `json:"name"`
+	MediaType string `json:"media_type"`
+	DataURL   string `json:"data_url"`
+	SizeBytes int64  `json:"size_bytes"`
 }
 
 type EmitFunc func(ctx context.Context, event AgentEvent) error
@@ -71,4 +81,47 @@ type AgentEvent struct {
 	Role    string
 	Status  string
 	Payload any
+}
+
+type UserInputBroker interface {
+	OpenUserInput(ctx context.Context, request UserInputRequest) (UserInputWaiter, error)
+}
+
+type UserInputWaiter interface {
+	Wait(ctx context.Context) (UserInputResponse, error)
+	Close()
+}
+
+type UserInputRequest struct {
+	SessionID         string
+	RequestID         string
+	Provider          string
+	ProviderEventType string
+	ProviderRequestID string
+	ThreadID          string
+	TurnID            string
+	ItemID            string
+	Questions         []UserInputQuestion
+}
+
+type UserInputQuestion struct {
+	ID       string            `json:"id"`
+	Header   string            `json:"header"`
+	Question string            `json:"question"`
+	IsOther  bool              `json:"is_other"`
+	IsSecret bool              `json:"is_secret"`
+	Options  []UserInputOption `json:"options"`
+}
+
+type UserInputOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+type UserInputResponse struct {
+	Answers map[string]UserInputQuestionAnswer `json:"answers"`
+}
+
+type UserInputQuestionAnswer struct {
+	Answers []string `json:"answers"`
 }

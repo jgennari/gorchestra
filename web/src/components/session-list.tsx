@@ -1,30 +1,38 @@
-import { Plus } from 'lucide-react'
-import type { Session, SessionListFilter } from '@/lib/api'
+import { Plus, Search } from 'lucide-react'
+import { useState } from 'react'
+import type { Session } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { StatusBadge } from '@/components/status-badge'
+import { ThemeToggle } from '@/components/theme-toggle'
+import type { ResolvedTheme, ThemePreference } from '@/hooks/use-theme'
 import { cn } from '@/lib/utils'
 
 type Props = {
   sessions: Session[]
   selectedSessionID: string | null
-  filter: SessionListFilter
-  onFilterChange: (filter: SessionListFilter) => void
+  connectedSessionID?: string | null
   onSelect: (sessionID: string) => void
   onCreate: () => void
+  themePreference: ThemePreference
+  resolvedTheme: ResolvedTheme
+  onThemeToggle: () => void
 }
-
-const filters: SessionListFilter[] = ['all', 'running', 'failed']
 
 export function SessionList({
   sessions,
   selectedSessionID,
-  filter,
-  onFilterChange,
+  connectedSessionID = null,
   onSelect,
   onCreate,
+  themePreference,
+  resolvedTheme,
+  onThemeToggle,
 }: Props) {
+  const [query, setQuery] = useState('')
+  const visibleSessions = filterSessions(sessions, query)
+
   return (
     <aside className="command-sidebar flex h-full w-full min-h-0 flex-col border-r border-border/70">
       <div className="flex items-center justify-between gap-3 border-b border-border/70 p-4">
@@ -32,31 +40,39 @@ export function SessionList({
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Gorchestra</p>
           <h1 className="truncate text-xl font-semibold">Sessions</h1>
         </div>
-        <Button aria-label="Create session" size="icon" onClick={onCreate} className="shadow-sm">
-          <Plus />
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <ThemeToggle
+            preference={themePreference}
+            resolvedTheme={resolvedTheme}
+            onToggle={onThemeToggle}
+          />
+          <Button aria-label="Create session" size="icon" onClick={onCreate} className="shadow-sm">
+            <Plus />
+          </Button>
+        </div>
       </div>
 
       <div className="border-b border-border/70 p-3">
-        <Tabs value={filter} onValueChange={(value) => onFilterChange(value as SessionListFilter)}>
-          <TabsList className="grid h-auto w-full grid-cols-3 gap-1 sm:grid-cols-2 lg:grid-cols-3">
-            {filters.map((item) => (
-              <TabsTrigger key={item} value={item} className="min-w-0">
-                {filterLabel(item)}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <Input
+            aria-label="Search sessions"
+            placeholder="Search sessions..."
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="h-9 bg-background/60 pl-8"
+          />
+        </div>
       </div>
 
       <ScrollArea className="flex-1">
-        {sessions.length === 0 ? (
+        {visibleSessions.length === 0 ? (
           <div className="p-4 text-sm text-muted-foreground">
-            {filter === 'all' ? 'No sessions yet.' : 'No sessions match this view.'}
+            {sessions.length === 0 ? 'No sessions yet.' : 'No sessions match your search.'}
           </div>
         ) : (
           <div className="space-y-1.5 p-2.5">
-            {sessions.map((session) => (
+            {visibleSessions.map((session) => (
               <button
                 key={session.id}
                 type="button"
@@ -67,7 +83,7 @@ export function SessionList({
                   selectedSessionID === session.id && 'border-primary/30 bg-background/80 shadow-sm',
                 )}
               >
-                <StatusBadge status={session.status} />
+                <StatusBadge status={session.status} connected={connectedSessionID === session.id} />
                 <span className="min-w-0 truncate text-sm font-medium">
                   {session.title || 'Untitled session'}
                 </span>
@@ -83,13 +99,27 @@ export function SessionList({
   )
 }
 
+function filterSessions(sessions: Session[], query: string) {
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) {
+    return sessions
+  }
+
+  return sessions.filter((session) => sessionSearchText(session).includes(normalizedQuery))
+}
+
+function sessionSearchText(session: Session) {
+  return [
+    session.id,
+    session.title,
+    session.agent_type,
+    session.status,
+  ].join(' ').toLowerCase()
+}
+
 function formatShortTime(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(value))
-}
-
-function filterLabel(filter: SessionListFilter) {
-  return filter === 'all' ? 'All' : filter[0].toUpperCase() + filter.slice(1)
 }

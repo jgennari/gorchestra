@@ -18,6 +18,7 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "schema_migrations")
 	assertTableExists(t, ctx, store, "sessions")
 	assertTableExists(t, ctx, store, "events")
+	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
 }
 
 func TestMigrationsAreIdempotent(t *testing.T) {
@@ -32,8 +33,170 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 2 {
-		t.Fatalf("expected two recorded migrations, got %d", count)
+	if count != 4 {
+		t.Fatalf("expected four recorded migrations, got %d", count)
+	}
+}
+
+func TestProviderSessionIDMigrationBackfillsFromCodexRunStartedEvents(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	now := formatTime(time.Date(2026, 6, 12, 16, 0, 0, 0, time.UTC))
+	_, err = db.ExecContext(ctx, `
+CREATE TABLE schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at DATETIME NOT NULL
+);
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  title TEXT,
+  agent_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  completed_at DATETIME,
+  archived_at DATETIME
+);
+CREATE TABLE events (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  role TEXT,
+  status TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at DATETIME NOT NULL,
+  UNIQUE(session_id, seq),
+  FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+CREATE INDEX idx_events_session_seq ON events(session_id, seq);
+INSERT INTO schema_migrations (version, name, applied_at)
+  VALUES (1, '001_initial.sql', ?), (2, '002_collapse_terminal_session_statuses.sql', ?), (3, '003_archive_sessions.sql', ?);
+INSERT INTO sessions (id, title, agent_type, status, created_at, updated_at)
+  VALUES ('sess_codex', 'Codex', 'codex', 'idle', ?, ?);
+INSERT INTO events (id, session_id, seq, type, role, status, payload_json, created_at)
+  VALUES
+    ('evt_1', 'sess_codex', 1, 'agent.run.started', 'assistant', 'started', '{"provider":"codex","thread_id":"thread_first"}', ?),
+    ('evt_2', 'sess_codex', 2, 'agent.run.started', 'assistant', 'started', '{"provider":"codex","thread_id":"thread_second"}', ?);
+`, now, now, now, now, now, now, now)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("seed legacy db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	session, err := store.GetSession(ctx, "sess_codex")
+	if err != nil {
+		t.Fatalf("get migrated session: %v", err)
+	}
+	if session.ProviderSessionID != "thread_first" {
+		t.Fatalf("expected provider session id thread_first, got %q", session.ProviderSessionID)
+	}
+}
+
+func TestProviderSessionIDMigrationRepairsAbandonedProviderStateMigration(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-provider-state.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	now := formatTime(time.Date(2026, 6, 12, 16, 0, 0, 0, time.UTC))
+	_, err = db.ExecContext(ctx, `
+CREATE TABLE schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at DATETIME NOT NULL
+);
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  title TEXT,
+  agent_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  completed_at DATETIME,
+  archived_at DATETIME
+);
+CREATE TABLE events (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  role TEXT,
+  status TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at DATETIME NOT NULL,
+  UNIQUE(session_id, seq),
+  FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+CREATE TABLE session_provider_state (
+  session_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  provider_session_id TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY(session_id, provider)
+);
+CREATE INDEX idx_events_session_seq ON events(session_id, seq);
+INSERT INTO schema_migrations (version, name, applied_at)
+  VALUES
+    (1, '001_initial.sql', ?),
+    (2, '002_collapse_terminal_session_statuses.sql', ?),
+    (3, '003_archive_sessions.sql', ?),
+    (4, '004_session_provider_state.sql', ?);
+INSERT INTO sessions (id, title, agent_type, status, created_at, updated_at)
+  VALUES ('sess_codex', 'Codex', 'codex', 'idle', ?, ?);
+INSERT INTO events (id, session_id, seq, type, role, status, payload_json, created_at)
+  VALUES ('evt_1', 'sess_codex', 1, 'agent.run.started', 'assistant', 'started', '{"provider":"codex","thread_id":"thread_first"}', ?);
+INSERT INTO session_provider_state (session_id, provider, provider_session_id, created_at, updated_at)
+  VALUES ('sess_codex', 'codex', 'thread_old_table', ?, ?);
+`, now, now, now, now, now, now, now, now, now)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("seed legacy db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
+	assertTableNotExists(t, ctx, store, "session_provider_state")
+
+	session, err := store.GetSession(ctx, "sess_codex")
+	if err != nil {
+		t.Fatalf("get migrated session: %v", err)
+	}
+	if session.ProviderSessionID != "thread_first" {
+		t.Fatalf("expected provider session id thread_first, got %q", session.ProviderSessionID)
 	}
 }
 
@@ -172,6 +335,100 @@ func TestListSessionsFiltersByStatus(t *testing.T) {
 	assertSessionIDs(t, sessions, []string{running.ID})
 	if hasSessionID(sessions, idle.ID) || hasSessionID(sessions, failed.ID) {
 		t.Fatalf("expected only running session, got %#v", sessions)
+	}
+}
+
+func TestArchiveSessionHidesSessionFromLists(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	archiveAt := time.Date(2026, 6, 12, 16, 5, 0, 0, time.UTC)
+	visible := createTestSessionWithTitle(t, ctx, store, "Visible")
+	archived := createTestSessionWithTitle(t, ctx, store, "Archived")
+
+	store.now = func() time.Time { return archiveAt }
+	updated, err := store.ArchiveSession(ctx, ArchiveSessionParams{ID: archived.ID})
+	if err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	if updated.ArchivedAt == nil {
+		t.Fatal("expected archived_at")
+	}
+	if !updated.ArchivedAt.Equal(archiveAt) {
+		t.Fatalf("expected archived_at %s, got %s", archiveAt, *updated.ArchivedAt)
+	}
+	if !updated.UpdatedAt.Equal(archiveAt) {
+		t.Fatalf("expected updated_at %s, got %s", archiveAt, updated.UpdatedAt)
+	}
+
+	sessions, err := store.ListSessions(ctx, ListSessionsParams{})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	assertSessionIDs(t, sessions, []string{visible.ID})
+
+	persisted, err := store.GetSession(ctx, archived.ID)
+	if err != nil {
+		t.Fatalf("get archived session: %v", err)
+	}
+	if persisted.ArchivedAt == nil {
+		t.Fatal("expected get session to return archived_at")
+	}
+}
+
+func TestArchiveSessionReturnsNotFoundForMissingSession(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	_, err := store.ArchiveSession(ctx, ArchiveSessionParams{ID: "sess_missing"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestSetSessionProviderSessionIDPersistsThreadID(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	updated, err := store.SetSessionProviderSessionID(ctx, SetSessionProviderSessionIDParams{
+		ID:                session.ID,
+		ProviderSessionID: "thread_1",
+	})
+	if err != nil {
+		t.Fatalf("set provider session id: %v", err)
+	}
+	if updated.ProviderSessionID != "thread_1" {
+		t.Fatalf("expected provider session id thread_1, got %q", updated.ProviderSessionID)
+	}
+
+	persisted, err := store.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if persisted.ProviderSessionID != "thread_1" {
+		t.Fatalf("expected persisted provider session id thread_1, got %q", persisted.ProviderSessionID)
+	}
+}
+
+func TestSetSessionProviderSessionIDRejectsDifferentExistingID(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	if _, err := store.SetSessionProviderSessionID(ctx, SetSessionProviderSessionIDParams{
+		ID:                session.ID,
+		ProviderSessionID: "thread_1",
+	}); err != nil {
+		t.Fatalf("set provider session id: %v", err)
+	}
+
+	_, err := store.SetSessionProviderSessionID(ctx, SetSessionProviderSessionIDParams{
+		ID:                session.ID,
+		ProviderSessionID: "thread_2",
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
 }
 
@@ -631,6 +888,53 @@ func assertTableExists(t *testing.T, ctx context.Context, store *Store, name str
 	if err != nil {
 		t.Fatalf("query table %s: %v", name, err)
 	}
+}
+
+func assertTableNotExists(t *testing.T, ctx context.Context, store *Store, name string) {
+	t.Helper()
+
+	var tableName string
+	err := store.db.QueryRowContext(
+		ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+		name,
+	).Scan(&tableName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return
+	}
+	if err != nil {
+		t.Fatalf("query table %s: %v", name, err)
+	}
+	t.Fatalf("expected table %s not to exist", name)
+}
+
+func assertColumnExists(t *testing.T, ctx context.Context, store *Store, table string, column string) {
+	t.Helper()
+
+	rows, err := store.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		t.Fatalf("query columns for %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan column for %s: %v", table, err)
+		}
+		if name == column {
+			return
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("columns rows for %s: %v", table, err)
+	}
+	t.Fatalf("expected column %s.%s to exist", table, column)
 }
 
 func assertSeqs(t *testing.T, events []Event, want []int64) {

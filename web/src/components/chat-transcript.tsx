@@ -1,11 +1,16 @@
-import { ChevronDown, ChevronRight } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
+import { isValidElement, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AgentEvent } from '@/lib/api'
-import type { ChatTranscriptMessage, ChatTranscriptTool } from '@/lib/events'
-import { buildChatTranscript } from '@/lib/events'
-import { Badge } from '@/components/ui/badge'
+import type {
+  ChatDebugEvent,
+  ChatTimelineItem,
+  ChatTranscriptAttachment,
+  ChatTranscriptMessage,
+  ChatTranscriptTool,
+} from '@/lib/events'
+import { buildChatTimeline } from '@/lib/events'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 
@@ -13,12 +18,22 @@ type Props = {
   events: AgentEvent[]
   loading?: boolean
   error?: string
+  topInset?: 'none' | 'sessionHeader'
+  bottomInset?: 'composer' | 'question'
+  showDebugEvents?: boolean
 }
 
-export function ChatTranscript({ events, loading = false, error = '' }: Props) {
-  const messages = useMemo(() => buildChatTranscript(events), [events])
+export function ChatTranscript({
+  events,
+  loading = false,
+  error = '',
+  topInset = 'none',
+  bottomInset = 'composer',
+  showDebugEvents = false,
+}: Props) {
+  const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
   const scrollRef = useRef<HTMLDivElement>(null)
-  const lastSeq = messages.at(-1)?.endSeq ?? 0
+  const lastSeq = timeline.at(-1)?.endSeq ?? 0
 
   useEffect(() => {
     const element = scrollRef.current
@@ -28,7 +43,7 @@ export function ChatTranscript({ events, loading = false, error = '' }: Props) {
     element.scrollTop = element.scrollHeight
   }, [lastSeq])
 
-  if (error && messages.length === 0) {
+  if (error && timeline.length === 0) {
     return (
       <div role="alert" className="flex h-full items-center justify-center p-8 text-center text-sm text-destructive">
         Failed to load chat history: {error}
@@ -36,7 +51,7 @@ export function ChatTranscript({ events, loading = false, error = '' }: Props) {
     )
   }
 
-  if (loading && messages.length === 0) {
+  if (loading && timeline.length === 0) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
         Loading chat history...
@@ -44,7 +59,7 @@ export function ChatTranscript({ events, loading = false, error = '' }: Props) {
     )
   }
 
-  if (messages.length === 0) {
+  if (timeline.length === 0) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
         No messages yet. Submit a prompt to start the chat.
@@ -62,14 +77,27 @@ export function ChatTranscript({ events, loading = false, error = '' }: Props) {
         aria-live="polite"
         aria-relevant="additions text"
       >
-        <div className="space-y-5 p-4 pb-44">
-          {messages.map((message) => (
-            <ChatMessageRow key={message.id} message={message} />
+        <div
+          className={cn(
+            'space-y-5 p-4',
+            topInset === 'sessionHeader' && 'pt-24',
+            bottomInset === 'question' ? 'pb-80' : 'pb-44',
+          )}
+        >
+          {timeline.map((item) => (
+            <ChatTimelineRow key={item.id} item={item} />
           ))}
         </div>
       </ScrollArea>
     </div>
   )
+}
+
+function ChatTimelineRow({ item }: { item: ChatTimelineItem }) {
+  if (item.kind === 'debug') {
+    return <DebugEventRow event={item.event} />
+  }
+  return <ChatMessageRow message={item.message} />
 }
 
 function ChatMessageRow({ message }: { message: ChatTranscriptMessage }) {
@@ -98,7 +126,6 @@ function ChatMessageRow({ message }: { message: ChatTranscriptMessage }) {
           >
             <span className="flex min-w-0 items-center gap-2">
               <span>{user ? 'You' : 'Assistant'}</span>
-              {message.streaming ? <Badge variant="warning">Streaming</Badge> : null}
             </span>
             {timestamp ? (
               <time className="shrink-0 text-right font-normal tabular-nums" dateTime={message.createdAt}>
@@ -107,9 +134,13 @@ function ChatMessageRow({ message }: { message: ChatTranscriptMessage }) {
             ) : null}
           </div>
 
+          {message.attachments.length > 0 ? (
+            <MessageAttachments attachments={message.attachments} />
+          ) : null}
+
           {message.text ? (
             <MarkdownContent content={message.text} inverted={user} />
-          ) : (
+          ) : user && message.attachments.length > 0 ? null : (
             <p className="text-muted-foreground">Working...</p>
           )}
         </div>
@@ -134,6 +165,29 @@ function ChatMessageRow({ message }: { message: ChatTranscriptMessage }) {
         ) : null}
       </div>
     </article>
+  )
+}
+
+function MessageAttachments({ attachments }: { attachments: ChatTranscriptAttachment[] }) {
+  return (
+    <div className="mb-2 flex flex-wrap gap-2">
+      {attachments.map((attachment, index) => (
+        <a
+          key={`${attachment.name}-${index}`}
+          href={attachment.dataURL}
+          target="_blank"
+          rel="noreferrer"
+          className="block overflow-hidden rounded-md border border-border/70 bg-background/80"
+          aria-label={`Open ${attachment.name}`}
+        >
+          <img
+            src={attachment.dataURL}
+            alt={attachment.name}
+            className="h-24 w-24 object-cover"
+          />
+        </a>
+      ))}
+    </div>
   )
 }
 
@@ -181,13 +235,15 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
           </blockquote>
         ),
         code: ({ children, className }) => {
-          const block = className?.startsWith('language-')
+          const code = childrenToString(children)
+          const block = className?.startsWith('language-') || code.endsWith('\n')
+          if (block) {
+            return <CodeBlock code={code} className={className} inverted={inverted}>{children}</CodeBlock>
+          }
           return (
             <code
               className={cn(
-                block
-                  ? 'block overflow-auto whitespace-pre rounded-md p-3 font-mono text-xs'
-                  : 'rounded px-1 py-0.5 font-mono text-[0.85em]',
+                'rounded px-1 py-0.5 font-mono text-[0.85em]',
                 inverted ? 'bg-primary-foreground/15' : 'bg-muted',
               )}
             >
@@ -195,7 +251,7 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
             </code>
           )
         },
-        pre: ({ children }) => <pre className="my-2 overflow-auto">{children}</pre>,
+        pre: ({ children }) => <>{children}</>,
         h1: ({ children }) => <h3 className="mb-2 mt-3 text-base font-semibold first:mt-0">{children}</h3>,
         h2: ({ children }) => <h3 className="mb-2 mt-3 text-base font-semibold first:mt-0">{children}</h3>,
         h3: ({ children }) => <h3 className="mb-2 mt-3 text-sm font-semibold first:mt-0">{children}</h3>,
@@ -214,10 +270,91 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
   )
 }
 
+function CodeBlock({
+  code,
+  className,
+  inverted,
+  children,
+}: {
+  code: string
+  className?: string
+  inverted: boolean
+  children: ReactNode
+}) {
+  return (
+    <div className="group/code relative my-2">
+      <FloatingCopyButton label="Copy code" value={code} inverted={inverted} />
+      <pre className="overflow-auto rounded-md">
+        <code
+          className={cn(
+            'block min-w-full whitespace-pre p-3 pr-12 font-mono text-xs',
+            inverted ? 'bg-primary-foreground/15' : 'bg-muted',
+            className,
+          )}
+        >
+          {children}
+        </code>
+      </pre>
+    </div>
+  )
+}
+
+function FloatingCopyButton({
+  label,
+  value,
+  inverted = false,
+}: {
+  label: string
+  value: string
+  inverted?: boolean
+}) {
+  const [copied, setCopied] = useState(false)
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={() => void handleCopy()}
+      className={cn(
+        'absolute right-2 top-2 z-10 inline-flex size-7 items-center justify-center rounded-md border text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        inverted
+          ? 'border-primary-foreground/20 bg-primary-foreground/12 text-primary-foreground hover:bg-primary-foreground/20'
+          : 'border-border/70 bg-background/90 text-muted-foreground hover:bg-background hover:text-foreground',
+      )}
+    >
+      {copied ? <Check className="size-3.5" aria-hidden="true" /> : <Copy className="size-3.5" aria-hidden="true" />}
+    </button>
+  )
+}
+
+function childrenToString(children: ReactNode): string {
+  if (typeof children === 'string' || typeof children === 'number') {
+    return String(children)
+  }
+  if (Array.isArray(children)) {
+    return children.map(childrenToString).join('')
+  }
+  if (isValidElement<{ children?: ReactNode }>(children)) {
+    return childrenToString(children.props.children)
+  }
+  return ''
+}
+
 function ToolCallRow({ tool }: { tool: ChatTranscriptTool }) {
   const output = tool.error || tool.text
   const [outputOpen, setOutputOpen] = useState(false)
   const name = tool.label.replace(/^Tool:\s*/, '')
+  const statusDotClassName = toolStatusDotClassName(tool)
 
   return (
     <div className="text-xs">
@@ -237,27 +374,79 @@ function ToolCallRow({ tool }: { tool: ChatTranscriptTool }) {
         ) : (
           <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
         )}
+        {statusDotClassName ? (
+          <span className={cn('size-2 shrink-0 rounded-full', statusDotClassName)} aria-hidden="true" />
+        ) : null}
         <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
-        <span className={cn('shrink-0 text-[11px] capitalize', toolStatusClassName(tool))}>{tool.status}</span>
       </button>
       {output ? (
         outputOpen ? (
-          <pre
-            className={cn(
-              'ml-5 mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-surface-muted/70 p-2 font-mono leading-relaxed text-muted-foreground',
-              tool.error && 'text-destructive',
-            )}
-          >
-            {output}
-          </pre>
+          <div className="relative ml-5 mt-1">
+            <FloatingCopyButton label="Copy tool output" value={output} />
+            <pre
+              className={cn(
+                'max-h-44 overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-surface-muted/70 p-2 pr-12 font-mono leading-relaxed text-muted-foreground',
+                tool.error && 'text-destructive',
+              )}
+            >
+              {output}
+            </pre>
+          </div>
         ) : null
       ) : null}
     </div>
   )
 }
 
-function toolStatusClassName(tool: ChatTranscriptTool) {
-  if (tool.error || tool.status === 'failed') return 'text-destructive'
-  if (tool.status === 'completed') return 'text-emerald-700 dark:text-emerald-400'
-  return 'text-amber-700 dark:text-amber-400'
+function DebugEventRow({ event }: { event: ChatDebugEvent }) {
+  const [open, setOpen] = useState(false)
+  const sequence = event.startSeq === event.endSeq ? `#${event.startSeq}` : `#${event.startSeq}-${event.endSeq}`
+  const payload = JSON.stringify(event.payload, null, 2)
+
+  return (
+    <article className="flex justify-start">
+      <div className="max-w-[min(48rem,90%)] border-l border-border/70 pl-3 text-xs">
+        <button
+          type="button"
+          className="flex w-full min-w-0 items-center gap-1 rounded py-0.5 text-left font-mono text-muted-foreground/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-expanded={open}
+          aria-label={`${open ? 'Collapse' : 'Expand'} ${event.label}`}
+          onClick={() => setOpen((current) => !current)}
+        >
+          {open ? (
+            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
+          )}
+          <span className="min-w-0 flex-1 truncate">{event.label}</span>
+          <span className="shrink-0 text-[11px] capitalize text-muted-foreground/70">{event.status}</span>
+          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/55">{sequence}</span>
+          {event.eventCount > 1 ? (
+            <span className="shrink-0 text-[11px] text-muted-foreground/55">{event.eventCount} events</span>
+          ) : null}
+        </button>
+        {event.text || event.error ? (
+          <p
+            className={cn(
+              'ml-5 mt-0.5 whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground/70',
+              event.error && 'text-destructive/85',
+            )}
+          >
+            {event.error || event.text}
+          </p>
+        ) : null}
+        {open ? (
+          <pre className="ml-5 mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-surface-muted/70 p-2 font-mono leading-relaxed text-muted-foreground">
+            {payload}
+          </pre>
+        ) : null}
+      </div>
+    </article>
+  )
+}
+
+function toolStatusDotClassName(tool: ChatTranscriptTool) {
+  if (tool.error || tool.status === 'failed') return 'bg-destructive'
+  if (tool.status !== 'completed') return 'animate-pulse bg-muted-foreground/45'
+  return ''
 }

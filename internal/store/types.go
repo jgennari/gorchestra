@@ -24,13 +24,15 @@ const (
 )
 
 type Session struct {
-	ID          string
-	Title       string
-	AgentType   string
-	Status      SessionStatus
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	CompletedAt *time.Time
+	ID                string
+	Title             string
+	AgentType         string
+	Status            SessionStatus
+	ProviderSessionID string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	CompletedAt       *time.Time
+	ArchivedAt        *time.Time
 }
 
 type Event struct {
@@ -57,6 +59,15 @@ type UpdateSessionStatusParams struct {
 type UpdateSessionTitleParams struct {
 	ID    string
 	Title string
+}
+
+type ArchiveSessionParams struct {
+	ID string
+}
+
+type SetSessionProviderSessionIDParams struct {
+	ID                string
+	ProviderSessionID string
 }
 
 type ListSessionsParams struct {
