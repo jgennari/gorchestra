@@ -15,7 +15,7 @@ type Props = {
   onCreate: () => void
 }
 
-const filters: SessionListFilter[] = ['all', 'running', 'failed', 'completed', 'cancelled']
+const filters: SessionListFilter[] = ['all', 'running', 'failed']
 
 export function SessionList({
   sessions,
@@ -26,7 +26,7 @@ export function SessionList({
   onCreate,
 }: Props) {
   return (
-    <aside className="flex min-h-0 flex-col border-r bg-sidebar">
+    <aside className="flex h-full w-full min-h-0 flex-col border-r bg-sidebar">
       <div className="flex items-center justify-between gap-3 border-b p-4">
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase text-muted-foreground">Gorchestra</p>
@@ -55,7 +55,7 @@ export function SessionList({
             {filter === 'all' ? 'No sessions yet.' : 'No sessions match this view.'}
           </div>
         ) : (
-          <div className="space-y-2 p-3">
+          <div className="space-y-1 p-2">
             {sessions.map((session) => (
               <button
                 key={session.id}
@@ -63,20 +63,16 @@ export function SessionList({
                 onClick={() => onSelect(session.id)}
                 aria-current={selectedSessionID === session.id ? 'true' : undefined}
                 className={cn(
-                  'w-full rounded-lg border bg-card p-3 text-left shadow-sm transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  selectedSessionID === session.id && 'border-primary bg-accent',
+                  'grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                  selectedSessionID === session.id && 'bg-accent',
                 )}
               >
-                <span className="flex items-start justify-between gap-2">
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium">
-                      {session.title || 'Untitled session'}
-                    </span>
-                    <span className="mt-1 block truncate text-xs text-muted-foreground">
-                      {session.agent_type} · {formatShortTime(session.updated_at)}
-                    </span>
-                  </span>
-                  <StatusBadge status={session.status} />
+                <StatusBadge status={session.status} />
+                <span className="min-w-0 truncate text-sm font-medium">
+                  {session.title || 'Untitled session'}
+                </span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {session.agent_type} · {formatShortTime(session.updated_at)}
                 </span>
               </button>
             ))}

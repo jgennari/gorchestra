@@ -32,8 +32,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("expected one recorded migration, got %d", count)
+	if count != 2 {
+		t.Fatalf("expected two recorded migrations, got %d", count)
 	}
 }
 
@@ -150,7 +150,7 @@ func TestListSessionsFiltersByStatus(t *testing.T) {
 
 	idle := createTestSessionWithTitle(t, ctx, store, "Idle")
 	running := createTestSessionWithTitle(t, ctx, store, "Running")
-	completed := createTestSessionWithTitle(t, ctx, store, "Completed")
+	failed := createTestSessionWithTitle(t, ctx, store, "Failed")
 	if _, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
 		ID:     running.ID,
 		Status: SessionStatusRunning,
@@ -158,10 +158,10 @@ func TestListSessionsFiltersByStatus(t *testing.T) {
 		t.Fatalf("mark running: %v", err)
 	}
 	if _, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
-		ID:     completed.ID,
-		Status: SessionStatusCompleted,
+		ID:     failed.ID,
+		Status: SessionStatusFailed,
 	}); err != nil {
-		t.Fatalf("mark completed: %v", err)
+		t.Fatalf("mark failed: %v", err)
 	}
 
 	sessions, err := store.ListSessions(ctx, ListSessionsParams{Status: SessionStatusRunning})
@@ -170,7 +170,7 @@ func TestListSessionsFiltersByStatus(t *testing.T) {
 	}
 
 	assertSessionIDs(t, sessions, []string{running.ID})
-	if hasSessionID(sessions, idle.ID) || hasSessionID(sessions, completed.ID) {
+	if hasSessionID(sessions, idle.ID) || hasSessionID(sessions, failed.ID) {
 		t.Fatalf("expected only running session, got %#v", sessions)
 	}
 }
@@ -261,41 +261,66 @@ func TestUpdateSessionStatusSetsRunningAndUpdatedAt(t *testing.T) {
 	}
 }
 
-func TestUpdateSessionStatusSetsCompletedAtForTerminalStatuses(t *testing.T) {
-	for _, status := range []SessionStatus{
-		SessionStatusCompleted,
-		SessionStatusFailed,
-		SessionStatusCancelled,
-	} {
-		t.Run(string(status), func(t *testing.T) {
-			ctx := context.Background()
-			store := newTestStore(t, ctx)
+func TestUpdateSessionStatusSetsCompletedAtForFailedStatus(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
 
-			completedAt := time.Date(2026, 6, 12, 16, 5, 0, 0, time.UTC)
-			session := createTestSession(t, ctx, store)
+	failedAt := time.Date(2026, 6, 12, 16, 5, 0, 0, time.UTC)
+	session := createTestSession(t, ctx, store)
 
-			store.now = func() time.Time { return completedAt }
-			updated, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
-				ID:     session.ID,
-				Status: status,
-			})
-			if err != nil {
-				t.Fatalf("update session status: %v", err)
-			}
+	store.now = func() time.Time { return failedAt }
+	updated, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: SessionStatusFailed,
+	})
+	if err != nil {
+		t.Fatalf("update session status: %v", err)
+	}
 
-			if updated.Status != status {
-				t.Fatalf("expected status %q, got %q", status, updated.Status)
-			}
-			if updated.CompletedAt == nil {
-				t.Fatal("expected completed_at")
-			}
-			if !updated.CompletedAt.Equal(completedAt) {
-				t.Fatalf("expected completed_at %s, got %s", completedAt, *updated.CompletedAt)
-			}
-			if !updated.UpdatedAt.Equal(completedAt) {
-				t.Fatalf("expected updated_at %s, got %s", completedAt, updated.UpdatedAt)
-			}
-		})
+	if updated.Status != SessionStatusFailed {
+		t.Fatalf("expected failed status, got %q", updated.Status)
+	}
+	if updated.CompletedAt == nil {
+		t.Fatal("expected completed_at")
+	}
+	if !updated.CompletedAt.Equal(failedAt) {
+		t.Fatalf("expected completed_at %s, got %s", failedAt, *updated.CompletedAt)
+	}
+	if !updated.UpdatedAt.Equal(failedAt) {
+		t.Fatalf("expected updated_at %s, got %s", failedAt, updated.UpdatedAt)
+	}
+}
+
+func TestUpdateSessionStatusClearsCompletedAtForIdleStatus(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	failedAt := time.Date(2026, 6, 12, 16, 5, 0, 0, time.UTC)
+	idleAt := failedAt.Add(time.Minute)
+	session := createTestSession(t, ctx, store)
+
+	store.now = func() time.Time { return failedAt }
+	if _, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: SessionStatusFailed,
+	}); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+
+	store.now = func() time.Time { return idleAt }
+	updated, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: SessionStatusIdle,
+	})
+	if err != nil {
+		t.Fatalf("mark idle: %v", err)
+	}
+
+	if updated.Status != SessionStatusIdle {
+		t.Fatalf("expected idle status, got %q", updated.Status)
+	}
+	if updated.CompletedAt != nil {
+		t.Fatalf("expected completed_at to be cleared, got %s", updated.CompletedAt)
 	}
 }
 
@@ -319,6 +344,7 @@ func TestUpdateSessionStatusRejectsInvalidArguments(t *testing.T) {
 	for _, params := range []UpdateSessionStatusParams{
 		{Status: SessionStatusRunning},
 		{ID: "sess_test"},
+		{ID: "sess_test", Status: "completed"},
 	} {
 		_, err := store.UpdateSessionStatus(ctx, params)
 		if !errors.Is(err, ErrInvalidArgument) {

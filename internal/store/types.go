@@ -8,11 +8,9 @@ import (
 type SessionStatus string
 
 const (
-	SessionStatusIdle      SessionStatus = "idle"
-	SessionStatusRunning   SessionStatus = "running"
-	SessionStatusCompleted SessionStatus = "completed"
-	SessionStatusFailed    SessionStatus = "failed"
-	SessionStatusCancelled SessionStatus = "cancelled"
+	SessionStatusIdle    SessionStatus = "idle"
+	SessionStatusRunning SessionStatus = "running"
+	SessionStatusFailed  SessionStatus = "failed"
 )
 
 type EventStatus string

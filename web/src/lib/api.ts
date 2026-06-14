@@ -1,4 +1,4 @@
-export type SessionStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type SessionStatus = 'idle' | 'running' | 'failed'
 export type AgentType = 'fake' | 'codex'
 export type SessionListFilter = 'all' | Exclude<SessionStatus, 'idle'>
 

@@ -1,7 +1,7 @@
 import { Menu, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import type { AgentType, Session, SessionListFilter } from '@/lib/api'
+import type { AgentEvent, AgentType, Session, SessionListFilter, SessionStatus } from '@/lib/api'
 import {
   APIError,
   cancelSession,
@@ -57,24 +57,27 @@ function App() {
     selectedSessionIDRef.current = selectedSessionID
   }, [selectedSessionID])
 
-  const { events, streamState, error: streamError } = useSessionEvents(selectedSessionID, {
-    onEvent: (event) => {
-      const status = statusFromEvent(event.type)
-      if (status && selectedSessionID) {
+  const handleSessionEvent = useCallback(
+    (event: AgentEvent) => {
+      const status = statusFromEvent(event)
+      if (status) {
         setSessions((current) =>
           current.map((session) =>
-            session.id === selectedSessionID
-              ? { ...session, status, updated_at: event.created_at, completed_at: status === 'running' ? null : event.created_at }
-              : session,
+            session.id === event.session_id ? applyStatusEvent(session, event, status) : session,
           ),
         )
       }
-      if (selectedSessionID && isTerminalEvent(event.type)) {
+      if (isTerminalEvent(event.type)) {
         window.setTimeout(() => {
-          void refreshSession(selectedSessionID)
+          void refreshSession(event.session_id)
         }, 250)
       }
     },
+    [refreshSession],
+  )
+
+  const { events, streamState, error: streamError } = useSessionEvents(selectedSessionID, {
+    onEvent: handleSessionEvent,
   })
 
   const loadSessions = useCallback(async () => {
@@ -146,7 +149,9 @@ function App() {
     const response = await submitMessage(selectedSessionID, content)
     setSessions((current) =>
       current.map((session) =>
-        session.id === selectedSessionID ? { ...session, status: response.status } : session,
+        session.id === selectedSessionID
+          ? { ...session, status: response.status, completed_at: response.status === 'running' ? null : session.completed_at }
+          : session,
       ),
     )
     setNotice('')
@@ -194,8 +199,8 @@ function App() {
     <main className="app-shell">
       <div className="hidden min-h-0 w-[360px] lg:flex">{list}</div>
 
-      <section className="flex min-w-0 flex-1 flex-col">
-        <header className="flex min-h-14 items-center justify-between gap-3 border-b bg-background px-3 lg:hidden">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b bg-background px-3 lg:hidden">
           <Sheet open={mobileListOpen} onOpenChange={setMobileListOpen}>
             <SheetTrigger asChild>
               <Button size="icon" variant="outline" aria-label="Open sessions">
@@ -209,26 +214,28 @@ function App() {
               <div className="min-h-0 flex-1">{list}</div>
             </SheetContent>
           </Sheet>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium">{selectedSession?.title || 'Gorchestra'}</p>
-            <p className="truncate text-xs text-muted-foreground">{selectedSession?.agent_type || 'No session'}</p>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            {selectedSession ? <StatusBadge status={selectedSession.status} /> : null}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium">{selectedSession?.title || 'Gorchestra'}</p>
+              <p className="truncate text-xs text-muted-foreground">{selectedSession?.agent_type || 'No session'}</p>
+            </div>
           </div>
-          {selectedSession ? <StatusBadge status={selectedSession.status} /> : null}
           <Button size="icon" onClick={() => setCreateOpen(true)} aria-label="Create session">
             <Plus />
           </Button>
         </header>
 
         {error ? (
-          <div role="alert" className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          <div role="alert" className="shrink-0 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
             {error}
           </div>
         ) : null}
         {loadingSessions ? (
-          <div className="border-b px-4 py-2 text-sm text-muted-foreground">Loading sessions...</div>
+          <div className="shrink-0 border-b px-4 py-2 text-sm text-muted-foreground">Loading sessions...</div>
         ) : null}
 
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <SessionDetail
             session={selectedSession}
             events={events}
@@ -264,6 +271,29 @@ async function includeSelectedSession(sessions: Session[], selectedSessionID: st
   }
 }
 
+function applyStatusEvent(session: Session, event: AgentEvent, status: SessionStatus) {
+  const updatedAt = payloadString(event.payload, 'updated_at') ?? event.created_at
+  const completedAt =
+    status === 'running' || status === 'idle'
+      ? null
+      : (payloadString(event.payload, 'completed_at') ?? event.created_at)
+
+  return {
+    ...session,
+    status,
+    updated_at: updatedAt,
+    completed_at: completedAt,
+  }
+}
+
+function payloadString(payload: unknown, key: string) {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    return null
+  }
+  const value = (payload as Record<string, unknown>)[key]
+  return typeof value === 'string' ? value : null
+}
+
 function sortSessions(sessions: Session[]) {
   return [...sessions].sort((left, right) => {
     const byUpdated = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
@@ -278,11 +308,11 @@ function messageFromError(error: unknown) {
 function healthLabel(state: HealthState) {
   switch (state) {
     case 'online':
-      return 'Backend online.'
+      return ''
     case 'offline':
       return 'Backend offline.'
     default:
-      return 'Checking backend.'
+      return ''
   }
 }
 

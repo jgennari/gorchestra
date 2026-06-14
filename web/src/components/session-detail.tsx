@@ -1,12 +1,15 @@
-import { Ban, RefreshCcw } from 'lucide-react'
+import { Brain, RefreshCcw } from 'lucide-react'
 import type { AgentEvent, Session } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { StatusBadge } from '@/components/status-badge'
+import { ChatTranscript } from '@/components/chat-transcript'
 import { EventStream } from '@/components/event-stream'
 import { PromptComposer } from '@/components/prompt-composer'
 import { SessionTitleEditor } from '@/components/session-title-editor'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
@@ -35,7 +38,7 @@ export function SessionDetail({
 }: Props) {
   if (!session) {
     return (
-      <section className="flex h-full flex-col items-center justify-center p-8 text-center">
+      <section className="flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
         <h2 className="text-lg font-semibold">No session selected</h2>
         <p className="mt-2 max-w-sm text-sm text-muted-foreground">
           Create or select a session to monitor agent work.
@@ -44,27 +47,25 @@ export function SessionDetail({
     )
   }
 
-  const composerDisabled = session.status !== 'idle'
-  const disabledReason =
-    session.status === 'running'
-      ? 'This session is running.'
-      : session.status === 'idle'
-        ? ''
-        : `This session is ${session.status}.`
+  const composerDisabled = session.status === 'running'
+  const disabledReason = session.status === 'running' ? 'This session is running.' : ''
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-background">
-      <header className="border-b p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <SessionTitleEditor title={session.title} onSave={onUpdateTitle} />
-              <StatusBadge status={session.status} />
-            </div>
-            <SessionMetadata session={session} lastEventAt={events.at(-1)?.created_at ?? ''} />
+    <section className="flex h-full w-full min-h-0 flex-col overflow-hidden bg-background">
+      <header className="shrink-0 border-b px-4 py-2">
+        <div className="flex min-h-10 items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <StatusBadge status={session.status} />
+            <SessionTitleEditor title={session.title} onSave={onUpdateTitle} />
+            <Badge variant="outline" className="shrink-0 capitalize" aria-label={`Agent: ${session.agent_type}`}>
+              {session.agent_type}
+            </Badge>
+            {notice ? <span className="truncate text-sm text-muted-foreground">{notice}</span> : null}
+            {streamError ? <span className="truncate text-sm text-destructive">{streamError}</span> : null}
           </div>
           <TooltipProvider>
             <div className="flex shrink-0 items-center gap-2">
+              <ConnectionIndicator state={streamState} error={streamError} />
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button variant="outline" size="icon" onClick={onRefresh} aria-label="Refresh session">
@@ -73,90 +74,91 @@ export function SessionDetail({
                 </TooltipTrigger>
                 <TooltipContent>Refresh session</TooltipContent>
               </Tooltip>
-              {session.status === 'running' ? (
-                <Button
-                  variant="outline"
-                  onClick={() => void onCancel()}
-                  aria-label="Cancel running session"
-                  className="border-destructive/40 text-destructive hover:bg-destructive/10"
-                >
-                  <Ban />
-                  Cancel
-                </Button>
-              ) : null}
             </div>
           </TooltipProvider>
         </div>
-        {notice ? <p className="mt-2 text-sm text-muted-foreground">{notice}</p> : null}
-        {streamError ? <p className="mt-2 text-sm text-destructive">{streamError}</p> : null}
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex items-center justify-between gap-3 border-b px-4 py-2">
-          <h3 className="text-sm font-medium">Activity</h3>
-          <ConnectionIndicator state={streamState} error={streamError} />
+      <Tabs defaultValue="chat" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="shrink-0 border-b px-4 py-2">
+          <TabsList aria-label="Message views">
+            <TabsTrigger value="chat">Chat</TabsTrigger>
+            <TabsTrigger value="debug">Debug</TabsTrigger>
+          </TabsList>
         </div>
-        <div className="min-h-0 flex-1">
+        <TabsContent value="chat" className="m-0 min-h-0 flex-1 overflow-hidden">
+          <ChatTranscript events={events} loading={streamState === 'loading'} error={streamError} />
+        </TabsContent>
+        <TabsContent value="debug" className="m-0 min-h-0 flex-1 overflow-hidden">
           <EventStream events={events} loading={streamState === 'loading'} error={streamError} />
-        </div>
-      </div>
-      <Separator />
+        </TabsContent>
+      </Tabs>
+      {session.status === 'running' ? <ThinkingIndicator /> : null}
+      <Separator className="shrink-0" />
       <PromptComposer
         disabled={composerDisabled}
         disabledReason={disabledReason}
         onSubmit={onSubmitPrompt}
+        onCancel={session.status === 'running' ? onCancel : undefined}
       />
     </section>
   )
 }
 
-function SessionMetadata({ session, lastEventAt }: { session: Session; lastEventAt: string }) {
-  const rows = [
-    ['Agent', session.agent_type],
-    ['Created', formatDateTime(session.created_at)],
-    ['Updated', formatDateTime(session.updated_at)],
-    ['Last event', lastEventAt ? formatDateTime(lastEventAt) : 'No events'],
-  ]
-  if (session.completed_at) {
-    rows.push(['Terminal', formatDateTime(session.completed_at)])
-  }
-
+function ThinkingIndicator() {
   return (
-    <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2 xl:grid-cols-5">
-      {rows.map(([label, value]) => (
-        <div key={label} className="min-w-0">
-          <dt className="inline font-medium text-foreground">{label}: </dt>
-          <dd className="inline break-words">{value}</dd>
-        </div>
-      ))}
-    </dl>
+    <div
+      role="status"
+      aria-label="Thinking"
+      aria-live="polite"
+      className="thinking-indicator shrink-0 border-t px-4 py-2 text-sm text-muted-foreground"
+    >
+      <span className="inline-flex items-center gap-2">
+        <Brain className="size-4" aria-hidden="true" />
+        <span>Thinking</span>
+      </span>
+    </div>
   )
 }
 
 function ConnectionIndicator({ state, error }: { state: StreamState; error: string }) {
-  const label = error ? 'stream error' : state
-  const visibleLabel = label === 'connected' ? 'live' : label
+  const visibleLabel = streamStateLabel(state, error)
   return (
     <span
+      aria-label={`Stream status: ${visibleLabel}`}
       className={cn(
-        'inline-flex h-8 items-center rounded-md border px-2 text-xs',
+        'inline-flex h-8 items-center gap-2 rounded-md border px-2 text-xs',
         error || state === 'disconnected'
-          ? 'border-destructive/40 text-destructive'
+          ? 'border-destructive/30 text-destructive'
           : state === 'reconnecting'
-            ? 'border-amber-200 bg-amber-50 text-amber-800'
-            : 'text-muted-foreground',
+            ? 'border-amber-200 text-amber-800'
+            : state === 'connected'
+              ? 'border-emerald-200 text-emerald-800'
+              : 'text-muted-foreground',
       )}
     >
+      <span
+        aria-hidden="true"
+        className={cn(
+          'size-2 rounded-full',
+          error || state === 'disconnected'
+            ? 'bg-destructive'
+            : state === 'reconnecting'
+              ? 'bg-amber-500'
+              : state === 'connected'
+                ? 'bg-emerald-500'
+                : 'bg-muted-foreground',
+          (state === 'loading' || state === 'reconnecting') && 'animate-pulse',
+        )}
+      />
       {visibleLabel}
     </span>
   )
 }
 
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(new Date(value))
+function streamStateLabel(state: StreamState, error: string) {
+  if (error || state === 'disconnected') return 'Disconnected'
+  if (state === 'connected') return 'Live'
+  if (state === 'reconnecting') return 'Reconnecting'
+  return 'Loading'
 }

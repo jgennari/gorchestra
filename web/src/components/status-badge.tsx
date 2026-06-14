@@ -1,19 +1,24 @@
 import type { SessionStatus } from '@/lib/api'
-import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
 
 type Props = {
   status: SessionStatus
+  className?: string
 }
 
-export function StatusBadge({ status }: Props) {
-  const variant =
-    status === 'completed'
-      ? 'success'
-      : status === 'running'
-        ? 'warning'
-        : status === 'failed' || status === 'cancelled'
-          ? 'destructive'
-          : 'outline'
-
-  return <Badge variant={variant}>{status}</Badge>
+export function StatusBadge({ status, className }: Props) {
+  return (
+    <span
+      aria-label={`Session status: ${status}`}
+      role="img"
+      title={`Session status: ${status}`}
+      className={cn(
+        'inline-block size-2.5 shrink-0 rounded-full',
+        status === 'running' && 'animate-pulse bg-yellow-400',
+        status === 'failed' && 'bg-destructive',
+        status === 'idle' && 'bg-muted-foreground',
+        className,
+      )}
+    />
+  )
 }

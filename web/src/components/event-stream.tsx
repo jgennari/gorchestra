@@ -108,10 +108,10 @@ export function EventStream({ events, loading = false, error = '' }: Props) {
   }
 
   return (
-    <div className="relative h-full">
+    <div className="relative h-full min-h-0 overflow-hidden">
       <ScrollArea
         ref={scrollRef}
-        className="h-full"
+        className="h-full min-h-0"
         role="log"
         aria-label="Session events"
         aria-live="polite"

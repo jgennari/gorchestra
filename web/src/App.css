@@ -1,7 +1,36 @@
 .app-shell {
+  height: 100vh;
+  height: 100dvh;
   min-height: 100vh;
   display: flex;
   overflow: hidden;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
+}
+
+.thinking-indicator {
+  background:
+    linear-gradient(
+      45deg,
+      hsl(var(--background)) 0%,
+      hsl(var(--muted)) 34%,
+      hsl(var(--background)) 68%,
+      hsl(var(--muted)) 100%
+    );
+  background-size: 240% 240%;
+  animation: thinking-gradient 2.4s ease-in-out infinite;
+}
+
+@keyframes thinking-gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
 }

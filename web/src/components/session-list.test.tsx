@@ -31,6 +31,8 @@ test('session list exposes sprint status filters', async () => {
   )
 
   expect(screen.queryByRole('tab', { name: 'Idle' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('tab', { name: 'Completed' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('tab', { name: 'Cancelled' })).not.toBeInTheDocument()
 
   await user.click(screen.getByRole('tab', { name: 'Running' }))
 
@@ -56,4 +58,20 @@ test('session rows are keyboard selectable', async () => {
   await user.keyboard('{Enter}')
 
   expect(onSelect).toHaveBeenCalledWith('sess_running')
+})
+
+test('session rows show status as a dot indicator', () => {
+  render(
+    <SessionList
+      sessions={sessions}
+      selectedSessionID={null}
+      filter="all"
+      onFilterChange={() => undefined}
+      onSelect={() => undefined}
+      onCreate={() => undefined}
+    />,
+  )
+
+  expect(screen.getByRole('img', { name: 'Session status: running' })).toBeInTheDocument()
+  expect(screen.queryByText('running')).not.toBeInTheDocument()
 })

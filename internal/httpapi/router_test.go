@@ -47,7 +47,7 @@ func TestListSessionsReturnsMostRecentlyUpdatedFirst(t *testing.T) {
 		ID:        "sess_old",
 		Title:     "Old session",
 		AgentType: "fake",
-		Status:    store.SessionStatusCompleted,
+		Status:    store.SessionStatusIdle,
 		CreatedAt: oldUpdatedAt,
 		UpdatedAt: oldUpdatedAt,
 	})
@@ -140,10 +140,10 @@ func TestListSessionsFiltersByStatus(t *testing.T) {
 		UpdatedAt: testCreatedAt,
 	})
 	fakeStore.addSessionWith(store.Session{
-		ID:        "sess_completed",
-		Title:     "Completed session",
+		ID:        "sess_failed",
+		Title:     "Failed session",
 		AgentType: "fake",
-		Status:    store.SessionStatusCompleted,
+		Status:    store.SessionStatusFailed,
 		CreatedAt: testCreatedAt,
 		UpdatedAt: testCreatedAt,
 	})
@@ -168,32 +168,34 @@ func TestListSessionsFiltersByStatus(t *testing.T) {
 }
 
 func TestListSessionsRejectsInvalidStatus(t *testing.T) {
-	fakeStore := newFakeHTTPStore()
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions?status=paused", nil)
-	rec := httptest.NewRecorder()
+	for _, status := range []string{"paused", "completed", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			fakeStore := newFakeHTTPStore()
+			req := httptest.NewRequest(http.MethodGet, "/api/sessions?status="+status, nil)
+			rec := httptest.NewRecorder()
 
-	NewRouter(Dependencies{Store: fakeStore}).ServeHTTP(rec, req)
+			NewRouter(Dependencies{Store: fakeStore}).ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
-	}
-	assertErrorResponse(t, rec, "status is unsupported")
-	if got := fakeStore.listSessionsCallCount(); got != 0 {
-		t.Fatalf("expected no list sessions calls, got %d", got)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+			}
+			assertErrorResponse(t, rec, "status is unsupported")
+			if got := fakeStore.listSessionsCallCount(); got != 0 {
+				t.Fatalf("expected no list sessions calls, got %d", got)
+			}
+		})
 	}
 }
 
 func TestGetSessionReturnsSession(t *testing.T) {
 	fakeStore := newFakeHTTPStore()
-	completedAt := testCreatedAt.Add(5 * time.Minute)
 	fakeStore.addSessionWith(store.Session{
-		ID:          testSessionID,
-		Title:       "Inspect repository",
-		AgentType:   "codex",
-		Status:      store.SessionStatusCompleted,
-		CreatedAt:   testCreatedAt,
-		UpdatedAt:   completedAt,
-		CompletedAt: &completedAt,
+		ID:        testSessionID,
+		Title:     "Inspect repository",
+		AgentType: "codex",
+		Status:    store.SessionStatusIdle,
+		CreatedAt: testCreatedAt,
+		UpdatedAt: testCreatedAt,
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID, nil)
@@ -207,11 +209,11 @@ func TestGetSessionReturnsSession(t *testing.T) {
 
 	var response sessionResponse
 	decodeJSON(t, rec, &response)
-	if response.ID != testSessionID || response.AgentType != "codex" || response.Status != string(store.SessionStatusCompleted) {
+	if response.ID != testSessionID || response.AgentType != "codex" || response.Status != string(store.SessionStatusIdle) {
 		t.Fatalf("unexpected session response: %#v", response)
 	}
-	if response.CompletedAt == nil || *response.CompletedAt != completedAt.UTC().Format(time.RFC3339Nano) {
-		t.Fatalf("expected completed_at %s, got %#v", completedAt.UTC().Format(time.RFC3339Nano), response.CompletedAt)
+	if response.CompletedAt != nil {
+		t.Fatalf("expected no completed_at for idle session, got %#v", response.CompletedAt)
 	}
 }
 
@@ -435,6 +437,31 @@ func TestSSEUsesIDEventAndDataFields(t *testing.T) {
 	}
 	if got := payload["text"]; got != "event 1" {
 		t.Fatalf("expected payload text %q, got %q", "event 1", got)
+	}
+}
+
+func TestSSEFlushesHeadersBeforeWaitingForEvents(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+
+	subscriber := &fakeSubscriber{}
+	store.onList = func(string, int64, int) {
+		subscriber.closeAll()
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events/stream", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store, Events: subscriber}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if !rec.Flushed {
+		t.Fatal("expected stream headers to be flushed before waiting for events")
+	}
+	if body := rec.Body.String(); !strings.Contains(body, ": connected\n\n") {
+		t.Fatalf("expected initial connected comment in stream body:\n%s", body)
 	}
 }
 
@@ -793,12 +820,7 @@ func (s *fakeHTTPStore) listSessionsCallCount() int {
 }
 
 func isTestTerminalSessionStatus(status store.SessionStatus) bool {
-	switch status {
-	case store.SessionStatusCompleted, store.SessionStatusFailed, store.SessionStatusCancelled:
-		return true
-	default:
-		return false
-	}
+	return status == store.SessionStatusFailed
 }
 
 type fakeSubscriber struct {

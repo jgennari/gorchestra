@@ -188,6 +188,9 @@ func (s *Store) UpdateSessionStatus(ctx context.Context, params UpdateSessionSta
 	if strings.TrimSpace(string(params.Status)) == "" {
 		return Session{}, fmt.Errorf("%w: status is required", ErrInvalidArgument)
 	}
+	if !isValidSessionStatus(params.Status) {
+		return Session{}, fmt.Errorf("%w: unsupported status %s", ErrInvalidArgument, params.Status)
+	}
 
 	now := s.now()
 	var completedAt any
@@ -435,8 +438,12 @@ func parseTime(value string) (time.Time, error) {
 }
 
 func isTerminalSessionStatus(status SessionStatus) bool {
+	return status == SessionStatusFailed
+}
+
+func isValidSessionStatus(status SessionStatus) bool {
 	switch status {
-	case SessionStatusCompleted, SessionStatusFailed, SessionStatusCancelled:
+	case SessionStatusIdle, SessionStatusRunning, SessionStatusFailed:
 		return true
 	default:
 		return false

@@ -95,6 +95,9 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         }
         lastSeqRef.current = lastSeq(history)
         setEvents((current) => appendEvents(current, history))
+        for (const event of history) {
+          onEventRef.current?.(event)
+        }
         connect(lastSeqRef.current)
       } catch (loadError) {
         if (closed) {

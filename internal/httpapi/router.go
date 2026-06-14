@@ -21,6 +21,7 @@ const (
 	maxEventLimit       = 1000
 	defaultSessionLimit = 50
 	maxSessionLimit     = 100
+	streamHeartbeat     = 15 * time.Second
 )
 
 type Store interface {
@@ -179,6 +180,10 @@ func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {
 	headers.Set("Connection", "keep-alive")
 	headers.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	if err := writeSSEComment(w, "connected"); err != nil {
+		return
+	}
+	flusher.Flush()
 
 	highestSeqSent := afterSeq
 	for _, event := range replayedEvents {
@@ -191,10 +196,18 @@ func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	heartbeat := time.NewTicker(streamHeartbeat)
+	defer heartbeat.Stop()
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-heartbeat.C:
+			if err := writeSSEComment(w, "heartbeat"); err != nil {
+				return
+			}
+			flusher.Flush()
 		case event, ok := <-liveEvents:
 			if !ok {
 				return
@@ -330,6 +343,11 @@ func writeSSE(w http.ResponseWriter, event store.Event) error {
 	}
 
 	return nil
+}
+
+func writeSSEComment(w http.ResponseWriter, comment string) error {
+	_, err := fmt.Fprintf(w, ": %s\n\n", comment)
+	return err
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

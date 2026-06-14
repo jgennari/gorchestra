@@ -2,6 +2,7 @@ import type { AgentEvent, SessionStatus } from '@/lib/api'
 
 export const knownEventTypes = [
   'user.message.completed',
+  'session.status.updated',
   'agent.run.started',
   'agent.status.started',
   'agent.message.delta',
@@ -51,6 +52,29 @@ export type EventGroup = {
   paths: string[]
   defaultOpen: boolean
   terminal: boolean
+}
+
+export type ChatTranscriptTool = {
+  id: string
+  kind: Extract<EventGroupKind, 'tool-call' | 'file-change'>
+  label: string
+  status: string
+  text: string
+  error: string
+  startSeq: number
+  endSeq: number
+}
+
+export type ChatTranscriptMessage = {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+  status: string
+  createdAt: string
+  tools: ChatTranscriptTool[]
+  streaming: boolean
+  startSeq: number
+  endSeq: number
 }
 
 export function appendEvent(events: AgentEvent[], event: AgentEvent) {
@@ -146,7 +170,47 @@ export function groupEvents(events: AgentEvent[]) {
   return groups
 }
 
+export function buildChatTranscript(events: AgentEvent[]) {
+  const messages: ChatTranscriptMessage[] = []
+  let currentAssistant: ChatTranscriptMessage | null = null
+  const assistantMessagesByItemID = new Map<string, ChatTranscriptMessage>()
+
+  for (const group of groupEvents(events)) {
+    if (group.kind === 'user-message') {
+      const message = chatMessageFromGroup('user', group)
+      messages.push(message)
+      currentAssistant = null
+      continue
+    }
+
+    if (group.kind === 'agent-message') {
+      currentAssistant = assistantMessageForGroup(messages, currentAssistant, assistantMessagesByItemID, group)
+      mergeAssistantMessage(currentAssistant, group)
+      continue
+    }
+
+    if (group.kind === 'tool-call' || group.kind === 'file-change') {
+      currentAssistant = ensureAssistantMessage(messages, currentAssistant, group)
+      currentAssistant.tools.push(chatToolFromGroup(group))
+      currentAssistant.streaming = group.status !== 'completed'
+      updateMessageRange(currentAssistant, group)
+      continue
+    }
+
+    if (group.kind === 'error') {
+      currentAssistant = ensureAssistantMessage(messages, currentAssistant, group)
+      currentAssistant.text = mergeChatText(currentAssistant.text, group.error || group.text || group.label)
+      currentAssistant.status = 'failed'
+      currentAssistant.streaming = false
+      updateMessageRange(currentAssistant, group)
+    }
+  }
+
+  return messages.filter((message) => message.text.trim() || message.tools.length > 0)
+}
+
 export function eventLabel(type: string) {
+  if (type === 'session.status.updated') return 'Session status'
   if (type.startsWith('user.message')) return 'User message'
   if (type.startsWith('agent.message')) return 'Agent message'
   if (type.startsWith('agent.thinking')) return 'Thinking'
@@ -184,19 +248,40 @@ export function payloadError(payload: unknown) {
   return typeof value === 'string' ? value : ''
 }
 
-export function statusFromEvent(type: string): SessionStatus | null {
+export function statusFromEvent(eventOrType: AgentEvent | string): SessionStatus | null {
+  const type = typeof eventOrType === 'string' ? eventOrType : eventOrType.type
+  if (type === 'session.status.updated' && typeof eventOrType !== 'string') {
+    return payloadSessionStatus(eventOrType.payload)
+  }
+
   switch (type) {
     case 'agent.run.started':
       return 'running'
     case 'agent.run.completed':
-      return 'completed'
+      return 'idle'
     case 'agent.run.failed':
       return 'failed'
     case 'agent.run.cancelled':
-      return 'cancelled'
+      return 'idle'
     default:
       return null
   }
+}
+
+function payloadSessionStatus(payload: unknown) {
+  if (!isRecord(payload)) {
+    return null
+  }
+  const status = payload.status
+  return isSessionStatus(status) ? status : null
+}
+
+function isSessionStatus(value: unknown): value is SessionStatus {
+  return (
+    value === 'idle' ||
+    value === 'running' ||
+    value === 'failed'
+  )
 }
 
 export function isTerminalEvent(type: string) {
@@ -304,6 +389,143 @@ function nearbyToolGroup(previous: EventGroup | undefined, event: AgentEvent) {
     return null
   }
   return previous
+}
+
+function chatMessageFromGroup(role: ChatTranscriptMessage['role'], group: EventGroup): ChatTranscriptMessage {
+  return {
+    id: `chat-${role}-${group.startSeq}`,
+    role,
+    text: group.text,
+    status: group.status,
+    createdAt: group.events[0]?.created_at ?? '',
+    tools: [],
+    streaming: group.status === 'delta' || group.status === 'started',
+    startSeq: group.startSeq,
+    endSeq: group.endSeq,
+  }
+}
+
+function ensureAssistantMessage(
+  messages: ChatTranscriptMessage[],
+  currentAssistant: ChatTranscriptMessage | null,
+  group: EventGroup,
+) {
+  if (currentAssistant) {
+    return currentAssistant
+  }
+
+  const message = chatMessageFromGroup('assistant', group)
+  message.text = ''
+  messages.push(message)
+  return message
+}
+
+function assistantMessageForGroup(
+  messages: ChatTranscriptMessage[],
+  currentAssistant: ChatTranscriptMessage | null,
+  assistantMessagesByItemID: Map<string, ChatTranscriptMessage>,
+  group: EventGroup,
+) {
+  const itemID = chatGroupItemID(group)
+  if (!itemID) {
+    return ensureAssistantMessage(messages, currentAssistant, group)
+  }
+
+  const existing = assistantMessagesByItemID.get(itemID)
+  if (existing) {
+    return existing
+  }
+
+  if (currentAssistant && !currentAssistant.text.trim() && currentAssistant.tools.length > 0) {
+    assistantMessagesByItemID.set(itemID, currentAssistant)
+    return currentAssistant
+  }
+
+  const message = chatMessageFromGroup('assistant', group)
+  message.text = ''
+  messages.push(message)
+  assistantMessagesByItemID.set(itemID, message)
+  return message
+}
+
+function mergeAssistantMessage(message: ChatTranscriptMessage, group: EventGroup) {
+  message.text = mergeChatText(message.text, group.text)
+  message.status = group.status
+  message.streaming = group.events.some((event) => event.type === 'agent.message.delta') && group.status !== 'completed'
+  updateMessageRange(message, group)
+}
+
+function chatToolFromGroup(group: EventGroup): ChatTranscriptTool {
+  return {
+    id: group.id,
+    kind: group.kind as ChatTranscriptTool['kind'],
+    label: cleanToolLabel(group.label),
+    status: group.status,
+    text: chatToolText(group),
+    error: group.error,
+    startSeq: group.startSeq,
+    endSeq: group.endSeq,
+  }
+}
+
+function chatToolText(group: EventGroup) {
+  const lines: string[] = []
+  for (const event of group.events) {
+    const line = cleanShellCommand(payloadText(event.payload))
+    if (!line || lines[lines.length - 1] === line) {
+      continue
+    }
+    lines.push(line)
+  }
+  if (lines.length > 0) {
+    return lines.join('\n')
+  }
+  return group.paths.join('\n')
+}
+
+function cleanToolLabel(label: string) {
+  const prefix = 'Tool: '
+  if (!label.startsWith(prefix)) {
+    return label
+  }
+  return `${prefix}${cleanShellCommand(label.slice(prefix.length))}`
+}
+
+function cleanShellCommand(value: string) {
+  const match = value.trim().match(/^(?:\/[^\s]+\/)?(?:zsh|bash|sh)\s+-lc\s+(.+)$/)
+  if (!match) {
+    return value
+  }
+  return unquoteShellArg(match[1])
+}
+
+function unquoteShellArg(value: string) {
+  const trimmed = value.trim()
+  if (trimmed.length >= 2) {
+    const first = trimmed[0]
+    const last = trimmed[trimmed.length - 1]
+    if ((first === "'" && last === "'") || (first === '"' && last === '"')) {
+      return trimmed.slice(1, -1)
+    }
+  }
+  return trimmed
+}
+
+function chatGroupItemID(group: EventGroup) {
+  return payloadString(group.events[0]?.payload, ['item_id', 'message_id', 'id'])
+}
+
+function updateMessageRange(message: ChatTranscriptMessage, group: EventGroup) {
+  message.startSeq = Math.min(message.startSeq, group.startSeq)
+  message.endSeq = Math.max(message.endSeq, group.endSeq)
+}
+
+function mergeChatText(current: string, next: string) {
+  if (!next) return current
+  if (!current) return next
+  if (next === current || current.endsWith(next)) return current
+  if (next.startsWith(current)) return next
+  return `${current}\n\n${next}`
 }
 
 function payloadPaths(payload: unknown) {

@@ -118,7 +118,7 @@ func TestMessageSubmissionPersistsUserMessageAndMarksSessionRunning(t *testing.T
 		agent.release()
 		waitFor(t, func() bool {
 			session, err := dbStore.GetSession(ctx, session.ID)
-			return err == nil && session.Status == store.SessionStatusCompleted
+			return err == nil && session.Status == store.SessionStatusIdle
 		})
 	})
 
@@ -146,7 +146,7 @@ func TestMessageSubmissionPersistsUserMessageAndMarksSessionRunning(t *testing.T
 	}
 
 	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
-	assertEventTypes(t, events, []string{"user.message.completed"})
+	assertEventTypes(t, events, []string{"user.message.completed", "session.status.updated"})
 	if events[0].Role != "user" {
 		t.Fatalf("expected user role, got %q", events[0].Role)
 	}
@@ -154,6 +154,7 @@ func TestMessageSubmissionPersistsUserMessageAndMarksSessionRunning(t *testing.T
 		t.Fatalf("expected completed user event, got %q", events[0].Status)
 	}
 	assertPayloadText(t, events[0], "Inspect this repo")
+	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
 }
 
 func TestUpdateSessionTitleTrimsAndReturnsSession(t *testing.T) {
@@ -275,7 +276,7 @@ func TestSuccessfulFakeAgentRunCompletesSessionAndIsVisibleThroughHistory(t *tes
 
 	waitFor(t, func() bool {
 		session, err := dbStore.GetSession(ctx, createResponse.SessionID)
-		return err == nil && session.Status == store.SessionStatusCompleted
+		return err == nil && session.Status == store.SessionStatusIdle
 	})
 	waitFor(t, func() bool {
 		return !runManager.Active(createResponse.SessionID)
@@ -284,13 +285,17 @@ func TestSuccessfulFakeAgentRunCompletesSessionAndIsVisibleThroughHistory(t *tes
 	events := listIntegrationEvents(t, ctx, dbStore, createResponse.SessionID)
 	assertEventTypes(t, events, []string{
 		"user.message.completed",
+		"session.status.updated",
 		"agent.run.started",
 		"agent.message.delta",
 		"agent.message.completed",
 		"agent.run.completed",
+		"session.status.updated",
 	})
 	assertTerminalRunEventCount(t, events, 1)
-	assertPayloadText(t, events[2], "Received task: Inspect this repo")
+	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
+	assertPayloadText(t, events[3], "Received task: Inspect this repo")
+	assertPayloadStatus(t, events[6], store.SessionStatusIdle)
 
 	historyReq := httptest.NewRequest(http.MethodGet, "/api/sessions/"+createResponse.SessionID+"/events?after_seq=0", nil)
 	historyRec := httptest.NewRecorder()
@@ -305,8 +310,8 @@ func TestSuccessfulFakeAgentRunCompletesSessionAndIsVisibleThroughHistory(t *tes
 	if len(historyResponse.Events) != len(events) {
 		t.Fatalf("expected %d history events, got %d", len(events), len(historyResponse.Events))
 	}
-	if historyResponse.Events[4].Type != "agent.run.completed" {
-		t.Fatalf("expected final history event agent.run.completed, got %q", historyResponse.Events[4].Type)
+	if historyResponse.Events[6].Type != "session.status.updated" {
+		t.Fatalf("expected final history event session.status.updated, got %q", historyResponse.Events[6].Type)
 	}
 }
 
@@ -331,14 +336,18 @@ func TestFakeAgentErrorEmitsFailedEventAndMarksSessionFailed(t *testing.T) {
 	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
 	assertEventTypes(t, events, []string{
 		"user.message.completed",
+		"session.status.updated",
 		"agent.run.started",
 		"agent.run.failed",
+		"session.status.updated",
 	})
 	assertTerminalRunEventCount(t, events, 1)
-	if events[2].Status != store.EventStatusFailed {
-		t.Fatalf("expected failed status, got %q", events[2].Status)
+	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
+	if events[3].Status != store.EventStatusFailed {
+		t.Fatalf("expected failed status, got %q", events[3].Status)
 	}
-	assertPayloadError(t, events[2], "planned failure")
+	assertPayloadError(t, events[3], "planned failure")
+	assertPayloadStatus(t, events[4], store.SessionStatusFailed)
 }
 
 func TestCancelRunningFakeAgentMarksSessionCancelledAndCleansUpRun(t *testing.T) {
@@ -372,7 +381,7 @@ func TestCancelRunningFakeAgentMarksSessionCancelledAndCleansUpRun(t *testing.T)
 
 	waitFor(t, func() bool {
 		session, err := dbStore.GetSession(ctx, session.ID)
-		return err == nil && session.Status == store.SessionStatusCancelled
+		return err == nil && session.Status == store.SessionStatusIdle
 	})
 	waitFor(t, func() bool {
 		return !runManager.Active(session.ID)
@@ -381,10 +390,14 @@ func TestCancelRunningFakeAgentMarksSessionCancelledAndCleansUpRun(t *testing.T)
 	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
 	assertEventTypes(t, events, []string{
 		"user.message.completed",
+		"session.status.updated",
 		"agent.run.started",
 		"agent.run.cancelled",
+		"session.status.updated",
 	})
 	assertTerminalRunEventCount(t, events, 1)
+	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
+	assertPayloadStatus(t, events[4], store.SessionStatusIdle)
 	if hasEvent(events, "agent.run.completed") {
 		t.Fatal("expected cancelled run not to emit agent.run.completed")
 	}
@@ -420,16 +433,10 @@ func TestCancelIdleSessionReturnsConflict(t *testing.T) {
 	}
 }
 
-func TestCancelCompletedSessionReturnsConflict(t *testing.T) {
+func TestCancelIdleAfterCompletedRunReturnsConflict(t *testing.T) {
 	ctx := context.Background()
 	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 	session := createIntegrationSession(t, ctx, dbStore)
-	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
-		ID:     session.ID,
-		Status: store.SessionStatusCompleted,
-	}); err != nil {
-		t.Fatalf("mark completed: %v", err)
-	}
 
 	rec := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", ``)
 
@@ -461,7 +468,7 @@ func TestDuplicateCancelReturnsConflictAfterTerminalState(t *testing.T) {
 
 	waitFor(t, func() bool {
 		session, err := dbStore.GetSession(ctx, session.ID)
-		return err == nil && session.Status == store.SessionStatusCancelled
+		return err == nil && session.Status == store.SessionStatusIdle
 	})
 
 	secondCancel := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", ``)
@@ -497,7 +504,8 @@ func TestCancelRunningSessionWithoutActiveRunFailsSession(t *testing.T) {
 	}
 
 	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
-	assertEventTypes(t, events, []string{"agent.run.failed"})
+	assertEventTypes(t, events, []string{"agent.run.failed", "session.status.updated"})
+	assertPayloadStatus(t, events[1], store.SessionStatusFailed)
 	assertTerminalRunEventCount(t, events, 1)
 }
 
@@ -539,24 +547,57 @@ func TestMessageSubmissionToRunningSessionReturnsConflict(t *testing.T) {
 	}
 }
 
-func TestMessageSubmissionToTerminalSessionReturnsConflict(t *testing.T) {
+func TestMessageSubmissionToFailedSessionStartsNewRun(t *testing.T) {
 	ctx := context.Background()
-	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	agent := newBlockingAgent()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
 	session := createIntegrationSession(t, ctx, dbStore)
+	t.Cleanup(func() {
+		agent.release()
+		waitFor(t, func() bool {
+			session, err := dbStore.GetSession(ctx, session.ID)
+			return err == nil && session.Status == store.SessionStatusIdle
+		})
+	})
 
-	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+	failedSession, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
 		ID:     session.ID,
-		Status: store.SessionStatusCompleted,
-	}); err != nil {
-		t.Fatalf("mark completed: %v", err)
+		Status: store.SessionStatusFailed,
+	})
+	if err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+	if failedSession.CompletedAt == nil {
+		t.Fatal("expected failure timestamp before submitting another message")
 	}
 
 	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Another message"}`)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected status %d, got %d with body %s", http.StatusConflict, rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
 	}
-	assertErrorResponse(t, rec, "session is not idle")
+
+	var response submitMessageResponse
+	decodeJSON(t, rec, &response)
+	if response.Status != string(store.SessionStatusRunning) {
+		t.Fatalf("expected response status running, got %q", response.Status)
+	}
+
+	updatedSession, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updatedSession.Status != store.SessionStatusRunning {
+		t.Fatalf("expected session status running, got %q", updatedSession.Status)
+	}
+	if updatedSession.CompletedAt != nil {
+		t.Fatalf("expected completed_at to be cleared for new run, got %s", updatedSession.CompletedAt)
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"user.message.completed", "session.status.updated"})
+	assertPayloadText(t, events[0], "Another message")
+	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
 }
 
 func TestMessageSubmissionToMissingSessionReturnsNotFound(t *testing.T) {
@@ -736,6 +777,15 @@ func assertPayloadText(t *testing.T, event store.Event, want string) {
 	payload := decodeEventPayload(t, event)
 	if payload["text"] != want {
 		t.Fatalf("expected payload text %q, got %#v", want, payload["text"])
+	}
+}
+
+func assertPayloadStatus(t *testing.T, event store.Event, want store.SessionStatus) {
+	t.Helper()
+
+	payload := decodeEventPayload(t, event)
+	if payload["status"] != string(want) {
+		t.Fatalf("expected payload status %q, got %#v", want, payload["status"])
 	}
 }
 

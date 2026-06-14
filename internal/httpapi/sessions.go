@@ -215,10 +215,6 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "session is already running")
 		return
 	}
-	if session.Status != store.SessionStatusIdle {
-		writeError(w, http.StatusConflict, "session is not idle")
-		return
-	}
 
 	agent, ok := api.agents.Get(session.AgentType)
 	if !ok {
@@ -264,6 +260,11 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to mark session running")
+		return
+	}
+	if err := api.appendSessionStatusUpdated(r.Context(), updatedSession); err != nil {
+		cleanup()
+		writeError(w, http.StatusInternalServerError, "failed to emit session status")
 		return
 	}
 
@@ -368,11 +369,11 @@ func (api API) runAgent(ctx context.Context, session store.Session, message stri
 				terminalEventEmitted = true
 			}
 		}
-		if _, updateErr := api.store.UpdateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
+		if _, updateErr := api.updateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
 			ID:     session.ID,
-			Status: store.SessionStatusCancelled,
+			Status: store.SessionStatusIdle,
 		}); updateErr != nil {
-			log.Printf("failed to mark session cancelled: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), updateErr)
+			log.Printf("failed to mark session idle after cancellation: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), updateErr)
 		}
 		return
 	}
@@ -386,7 +387,7 @@ func (api API) runAgent(ctx context.Context, session store.Session, message stri
 				terminalEventEmitted = true
 			}
 		}
-		if _, updateErr := api.store.UpdateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
+		if _, updateErr := api.updateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
 			ID:     session.ID,
 			Status: store.SessionStatusFailed,
 		}); updateErr != nil {
@@ -398,7 +399,7 @@ func (api API) runAgent(ctx context.Context, session store.Session, message stri
 	if !terminalEventEmitted {
 		if appendErr := api.appendAgentRunCompleted(context.Background(), session.ID, agent.Type()); appendErr != nil {
 			log.Printf("failed to append agent.run.completed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), appendErr)
-			if _, updateErr := api.store.UpdateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
+			if _, updateErr := api.updateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
 				ID:     session.ID,
 				Status: store.SessionStatusFailed,
 			}); updateErr != nil {
@@ -408,12 +409,23 @@ func (api API) runAgent(ctx context.Context, session store.Session, message stri
 		}
 	}
 
-	if _, err := api.store.UpdateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
+	if _, err := api.updateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
 		ID:     session.ID,
-		Status: store.SessionStatusCompleted,
+		Status: store.SessionStatusIdle,
 	}); err != nil {
-		log.Printf("failed to mark session completed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), err)
+		log.Printf("failed to mark session idle after completion: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), err)
 	}
+}
+
+func (api API) updateSessionStatus(ctx context.Context, params store.UpdateSessionStatusParams) (store.Session, error) {
+	session, err := api.store.UpdateSessionStatus(ctx, params)
+	if err != nil {
+		return store.Session{}, err
+	}
+	if err := api.appendSessionStatusUpdated(ctx, session); err != nil {
+		return session, err
+	}
+	return session, nil
 }
 
 func (api API) appendAgentEvent(ctx context.Context, sessionID string, event agents.AgentEvent) error {
@@ -440,6 +452,43 @@ func (api API) appendAgentEvent(ctx context.Context, sessionID string, event age
 		Payload:   payload,
 	})
 	return err
+}
+
+func (api API) appendSessionStatusUpdated(ctx context.Context, session store.Session) error {
+	payload := map[string]any{
+		"status":     string(session.Status),
+		"updated_at": session.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if session.CompletedAt != nil {
+		payload["completed_at"] = session.CompletedAt.UTC().Format(time.RFC3339Nano)
+	} else {
+		payload["completed_at"] = nil
+	}
+
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal session status payload: %w", err)
+	}
+
+	_, err = api.events.Append(ctx, eventservice.AppendParams{
+		SessionID: session.ID,
+		Type:      "session.status.updated",
+		Role:      "system",
+		Status:    eventStatusForSessionStatus(session.Status),
+		Payload:   encoded,
+	})
+	return err
+}
+
+func eventStatusForSessionStatus(status store.SessionStatus) store.EventStatus {
+	switch status {
+	case store.SessionStatusRunning:
+		return store.EventStatusStarted
+	case store.SessionStatusFailed:
+		return store.EventStatusFailed
+	default:
+		return store.EventStatusCompleted
+	}
 }
 
 func (api API) appendAgentRunFailed(ctx context.Context, sessionID string, agentType string, runErr error) error {
@@ -481,7 +530,7 @@ func (api API) failRunningSessionWithoutActiveRun(ctx context.Context, session s
 	if appendErr := api.appendAgentRunFailed(ctx, session.ID, session.AgentType, err); appendErr != nil {
 		log.Printf("failed to append agent.run.failed for missing active run: session_id=%s agent_type=%s error=%v", session.ID, session.AgentType, appendErr)
 	}
-	if _, updateErr := api.store.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+	if _, updateErr := api.updateSessionStatus(ctx, store.UpdateSessionStatusParams{
 		ID:     session.ID,
 		Status: store.SessionStatusFailed,
 	}); updateErr != nil {
@@ -529,9 +578,7 @@ func parseSessionStatus(w http.ResponseWriter, r *http.Request) (store.SessionSt
 	switch status {
 	case store.SessionStatusIdle,
 		store.SessionStatusRunning,
-		store.SessionStatusCompleted,
-		store.SessionStatusFailed,
-		store.SessionStatusCancelled:
+		store.SessionStatusFailed:
 		return status, true
 	default:
 		writeError(w, http.StatusBadRequest, "status is unsupported")
