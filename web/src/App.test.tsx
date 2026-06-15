@@ -159,6 +159,24 @@ test('global activity stream marks finished unselected sessions as unseen until 
   await waitFor(() => expect(faviconPath()).toBe('/favicon.svg'))
 })
 
+test('global terminal events mark unselected sessions unseen even when seen state is stale', async () => {
+  window.localStorage.setItem('gorchestra.session-seen-seq.v1', JSON.stringify({ sess_2: 5 }))
+  const runningSecondSession: Session = { ...secondSession, status: 'running', last_event_seq: 4, event_count: 4 }
+  vi.stubGlobal('fetch', fetchMock({ sessions: [firstSession, runningSecondSession] }))
+
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit(
+      event(5, 'agent.run.completed', { provider: 'codex', provider_event_type: 'turn/completed' }, 'sess_2'),
+    )
+  })
+
+  expect(await screen.findByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]')
+  await waitFor(() => expect(faviconPath()).toBe('/favicon-notify.svg'))
+})
+
 test('load older events fetches the previous event page', async () => {
   const user = userEvent.setup()
   const fetch = fetchMock({

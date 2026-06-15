@@ -161,6 +161,26 @@ function App() {
     })
   }, [])
 
+  const markSessionUnseenAfter = useCallback((sessionID: string, seq: number) => {
+    if (!sessionID || seq <= 0) {
+      return
+    }
+    setLastSeenSeqBySession((current) => {
+      const unseenSeq = Math.max(0, seq - 1)
+      if ((current[sessionID] ?? 0) <= unseenSeq) {
+        return current
+      }
+      const next = { ...current }
+      if (unseenSeq > 0) {
+        next[sessionID] = unseenSeq
+      } else {
+        delete next[sessionID]
+      }
+      saveSessionSeenSeqs(next)
+      return next
+    })
+  }, [])
+
   useEffect(() => {
     selectedSessionIDRef.current = selectedSessionID
   }, [selectedSessionID])
@@ -222,14 +242,18 @@ function App() {
   const handleActivityEvent = useCallback(
     (event: AgentEvent) => {
       applySessionActivityEvent(event)
-      const knownSession = sessionsRef.current.some((session) => session.id === event.session_id)
-      if (!knownSession || (isTerminalEvent(event.type) && event.session_id !== selectedSessionIDRef.current)) {
+      const knownSession = sessionsRef.current.find((session) => session.id === event.session_id)
+      const terminalUnselected = isTerminalEvent(event.type) && event.session_id !== selectedSessionIDRef.current
+      if (terminalUnselected && event.seq >= latestSessionSeq(knownSession ?? null)) {
+        markSessionUnseenAfter(event.session_id, event.seq)
+      }
+      if (!knownSession || terminalUnselected) {
         window.setTimeout(() => {
           void refreshSession(event.session_id)
         }, 250)
       }
     },
-    [applySessionActivityEvent, refreshSession],
+    [applySessionActivityEvent, markSessionUnseenAfter, refreshSession],
   )
 
   const {
