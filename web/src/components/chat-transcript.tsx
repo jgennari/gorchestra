@@ -18,7 +18,7 @@ type Props = {
   events: AgentEvent[]
   loading?: boolean
   error?: string
-  topInset?: 'none' | 'sessionHeader'
+  topInset?: 'none' | 'sessionHeader' | 'sessionHeaderAlert'
   bottomInset?: 'composer' | 'question'
   showDebugEvents?: boolean
   hasOlderEvents?: boolean
@@ -109,6 +109,7 @@ export function ChatTranscript({
           className={cn(
             'space-y-5 p-4',
             topInset === 'sessionHeader' && 'pt-24',
+            topInset === 'sessionHeaderAlert' && 'pt-36',
             bottomInset === 'question' ? 'pb-80' : 'pb-44',
           )}
         >
@@ -124,13 +125,7 @@ export function ChatTranscript({
   )
 }
 
-function LoadOlderEventsButton({
-  loading,
-  onLoad,
-}: {
-  loading: boolean
-  onLoad?: () => Promise<void> | void
-}) {
+function LoadOlderEventsButton({ loading, onLoad }: { loading: boolean; onLoad?: () => Promise<void> | void }) {
   return (
     <div className="flex justify-center">
       <button

@@ -245,11 +245,18 @@ func (s *Store) SetSessionProviderSessionID(ctx context.Context, params SetSessi
 	}
 	if session.ProviderSessionID != "" {
 		if session.ProviderSessionID != providerSessionID {
+			if params.Replace {
+				return s.updateSessionProviderSessionID(ctx, sessionID, providerSessionID)
+			}
 			return Session{}, fmt.Errorf("%w: provider_session_id already set for session %s", ErrInvalidArgument, sessionID)
 		}
 		return session, nil
 	}
 
+	return s.updateSessionProviderSessionID(ctx, sessionID, providerSessionID)
+}
+
+func (s *Store) updateSessionProviderSessionID(ctx context.Context, sessionID string, providerSessionID string) (Session, error) {
 	now := s.now()
 	result, err := s.db.ExecContext(
 		ctx,

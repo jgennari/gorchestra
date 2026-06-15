@@ -30,6 +30,8 @@ import {
   answerUserInput,
   archiveSession,
   cancelSession,
+  clearSession,
+  compactSession,
   createSession,
   fetchHealth,
   getSession,
@@ -44,6 +46,7 @@ import { nextSessionIDAfterArchive } from '@/lib/sessions'
 import { useSessionEvents } from '@/hooks/use-session-events'
 import { useTheme } from '@/hooks/use-theme'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { RunHealthRail } from '@/components/run-health-rail'
@@ -62,6 +65,11 @@ type PaneWidths = {
 }
 type FileOverlayMode = 'preview' | 'edit'
 type FileSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error'
+type CodexSessionAction = 'clear' | 'compact'
+type PendingSessionAction = {
+  action: CodexSessionAction
+  sessionID: string
+}
 
 const debugStorageKeyPrefix = 'gorchestra.session-debug.'
 const paneWidthsStorageKey = 'gorchestra.pane-widths.v1'
@@ -85,6 +93,8 @@ function App() {
   const [notice, setNotice] = useState('')
   const [showDebugEvents, setShowDebugEvents] = useState(false)
   const [archivingSessionID, setArchivingSessionID] = useState<string | null>(null)
+  const [confirmSessionAction, setConfirmSessionAction] = useState<PendingSessionAction | null>(null)
+  const [pendingSessionAction, setPendingSessionAction] = useState<PendingSessionAction | null>(null)
   const [paneWidths, setPaneWidths] = useState<PaneWidths>(() => loadPaneWidths())
   const [openWorkspaceFile, setOpenWorkspaceFile] = useState<WorkspaceFileContent | null>(null)
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
@@ -323,6 +333,48 @@ function App() {
     }
   }
 
+  function requestSessionAction(action: CodexSessionAction) {
+    if (!selectedSessionID) {
+      return
+    }
+    setConfirmSessionAction({ action, sessionID: selectedSessionID })
+  }
+
+  async function handleConfirmSessionAction() {
+    if (!confirmSessionAction) {
+      return
+    }
+
+    const { action, sessionID } = confirmSessionAction
+    setPendingSessionAction({ action, sessionID })
+    setError('')
+    try {
+      const response = action === 'clear' ? await clearSession(sessionID) : await compactSession(sessionID)
+      setSessions((current) =>
+        current.map((session) =>
+          session.id === sessionID
+            ? {
+                ...session,
+                status: response.status,
+                completed_at: response.status === 'running' ? null : session.completed_at,
+              }
+            : session,
+        ),
+      )
+      setNotice(action === 'clear' ? 'Clear started.' : 'Compaction started.')
+      setConfirmSessionAction(null)
+    } catch (actionError) {
+      setError(messageFromError(actionError))
+      if (actionError instanceof APIError && actionError.status === 409) {
+        await refreshSession(sessionID)
+      }
+    } finally {
+      setPendingSessionAction((current) =>
+        current?.action === action && current.sessionID === sessionID ? null : current,
+      )
+    }
+  }
+
   function handleRefresh() {
     void loadSessions()
     if (selectedSessionID) void refreshSession(selectedSessionID)
@@ -420,6 +472,11 @@ function App() {
       onThemeToggle={theme.nextPreference}
     />
   )
+  const confirmActionPending =
+    pendingSessionAction !== null &&
+    confirmSessionAction !== null &&
+    pendingSessionAction.sessionID === confirmSessionAction.sessionID &&
+    pendingSessionAction.action === confirmSessionAction.action
 
   return (
     <main className="app-shell">
@@ -463,11 +520,6 @@ function App() {
           </Button>
         </header>
 
-        {error ? (
-          <div role="alert" className="shrink-0 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
-            {error}
-          </div>
-        ) : null}
         {loadingSessions ? (
           <div className="shrink-0 border-b px-4 py-2 text-sm text-muted-foreground">Loading sessions...</div>
         ) : null}
@@ -481,6 +533,7 @@ function App() {
             hasOlderEvents={hasOlderEvents}
             loadingOlderEvents={loadingOlderEvents}
             onLoadOlderEvents={loadOlderEvents}
+            errorMessage={error || streamError}
             notice={notice || healthLabel(healthState)}
             showDebugEvents={showDebugEvents}
             onShowDebugEventsChange={handleShowDebugEventsChange}
@@ -490,6 +543,7 @@ function App() {
             onUpdateTitle={handleUpdateTitle}
             onRefresh={handleRefresh}
             onOpenFilePath={handleOpenWorkspacePath}
+            onErrorMessageChange={setError}
           />
           {openWorkspaceFile ? (
             <WorkspaceFileOverlay
@@ -518,15 +572,109 @@ function App() {
           events={events}
           streamState={streamState}
           streamError={streamError}
+          onClear={() => {
+            requestSessionAction('clear')
+            return Promise.resolve()
+          }}
+          onCompact={() => {
+            requestSessionAction('compact')
+            return Promise.resolve()
+          }}
           onArchive={handleArchiveSession}
           onOpenFile={setOpenWorkspaceFile}
+          clearPending={
+            selectedSession
+              ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+              : false
+          }
+          compactPending={
+            selectedSession
+              ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+              : false
+          }
           archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
         />
       </div>
 
+      <SessionActionConfirmDialog
+        request={confirmSessionAction}
+        session={
+          confirmSessionAction
+            ? (sessions.find((session) => session.id === confirmSessionAction.sessionID) ?? null)
+            : null
+        }
+        pending={confirmActionPending}
+        onOpenChange={(open) => {
+          if (!open && !pendingSessionAction) {
+            setConfirmSessionAction(null)
+          }
+        }}
+        onConfirm={() => void handleConfirmSessionAction()}
+      />
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
     </main>
   )
+}
+
+function SessionActionConfirmDialog({
+  request,
+  session,
+  pending,
+  onOpenChange,
+  onConfirm,
+}: {
+  request: PendingSessionAction | null
+  session: Session | null
+  pending: boolean
+  onOpenChange: (open: boolean) => void
+  onConfirm: () => void
+}) {
+  const action = request?.action ?? 'compact'
+  const copy = sessionActionDialogCopy(action)
+
+  return (
+    <Dialog open={Boolean(request)} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{copy.title}</DialogTitle>
+          <DialogDescription>{copy.description}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <p className="truncate text-sm text-muted-foreground" title={session?.title || undefined}>
+            {session?.title || 'Selected session'}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="button" disabled={pending} onClick={onConfirm}>
+              {pending ? copy.pendingLabel : copy.confirmLabel}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function sessionActionDialogCopy(action: CodexSessionAction) {
+  if (action === 'clear') {
+    return {
+      title: 'Clear context?',
+      description:
+        'Start a fresh Codex thread for this Gorchestra session. Existing Gorchestra activity stays visible in the transcript.',
+      confirmLabel: 'Clear',
+      pendingLabel: 'Clearing',
+    }
+  }
+
+  return {
+    title: 'Compact context?',
+    description:
+      'Ask Codex to summarize the current thread context so the session can continue with less token pressure.',
+    confirmLabel: 'Compact',
+    pendingLabel: 'Compacting',
+  }
 }
 
 function WorkspaceFileOverlay({
@@ -566,7 +714,7 @@ function WorkspaceFileOverlay({
     setDraft(file.content)
     setSaveState('clean')
     setSaveError('')
-  }, [clearSaveResetTimer, file.path, file.name, markdown])
+  }, [clearSaveResetTimer, file.content, file.path, file.name, markdown])
 
   useEffect(() => clearSaveResetTimer, [clearSaveResetTimer])
 

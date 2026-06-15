@@ -74,6 +74,7 @@ type ArchiveSessionParams struct {
 type SetSessionProviderSessionIDParams struct {
 	ID                string
 	ProviderSessionID string
+	Replace           bool
 }
 
 type ListSessionsParams struct {

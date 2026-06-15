@@ -886,7 +886,7 @@ func (s *fakeHTTPStore) SetSessionProviderSessionID(_ context.Context, params st
 	if !ok {
 		return store.Session{}, store.ErrNotFound
 	}
-	if session.ProviderSessionID != "" && session.ProviderSessionID != params.ProviderSessionID {
+	if session.ProviderSessionID != "" && session.ProviderSessionID != params.ProviderSessionID && !params.Replace {
 		return store.Session{}, store.ErrInvalidArgument
 	}
 	session.ProviderSessionID = params.ProviderSessionID

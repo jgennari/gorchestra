@@ -494,28 +494,146 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runCtx, cleanup, err := api.runs.Register(context.Background(), session.ID)
-	if err != nil {
-		if errors.Is(err, runcontrol.ErrRunAlreadyActive) {
-			writeError(w, http.StatusConflict, "session is already running")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to register run")
+	updatedSession, ok := api.startSessionRun(
+		w,
+		r,
+		session,
+		content,
+		attachments,
+		agent,
+		metadata,
+		agents.AgentActionMessage,
+		func(ctx context.Context) error {
+			return api.appendUserMessage(ctx, session.ID, content, attachments, eventOptions)
+		},
+		"failed to persist user message",
+	)
+	if !ok {
 		return
 	}
 
-	if err := api.appendUserMessage(r.Context(), session.ID, content, attachments, eventOptions); err != nil {
-		cleanup()
+	writeJSON(w, http.StatusAccepted, submitMessageResponse{
+		SessionID: updatedSession.ID,
+		Status:    string(updatedSession.Status),
+	})
+}
+
+func (api API) clearSessionHandler(w http.ResponseWriter, r *http.Request) {
+	api.sessionActionHandler(w, r, agents.AgentActionClear)
+}
+
+func (api API) compactSessionHandler(w http.ResponseWriter, r *http.Request) {
+	api.sessionActionHandler(w, r, agents.AgentActionCompact)
+}
+
+func (api API) sessionActionHandler(w http.ResponseWriter, r *http.Request, action agents.AgentAction) {
+	if !validateEmptyBody(w, r, string(action)) {
+		return
+	}
+
+	sessionID := chi.URLParam(r, "sessionId")
+	session, err := api.store.GetSession(r.Context(), sessionID)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "session not found")
 			return
 		}
-		if errors.Is(err, store.ErrInvalidArgument) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to persist user message")
+		writeError(w, http.StatusInternalServerError, "failed to load session")
 		return
+	}
+	if session.Status == store.SessionStatusRunning {
+		writeError(w, http.StatusConflict, "session is already running")
+		return
+	}
+	if session.ArchivedAt != nil {
+		writeError(w, http.StatusConflict, "session is archived")
+		return
+	}
+	if session.AgentType != "codex" {
+		writeError(w, http.StatusBadRequest, "session action requires a codex session")
+		return
+	}
+	if action == agents.AgentActionCompact && strings.TrimSpace(session.ProviderSessionID) == "" {
+		writeError(w, http.StatusConflict, "session has no codex thread to compact")
+		return
+	}
+
+	metadata, _, err := submitOptionsMetadata(session.AgentType, session.AgentOptions, nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	metadata["agent_action"] = string(action)
+
+	agent, ok := api.agents.Get(session.AgentType)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unsupported agent_type")
+		return
+	}
+	if !api.agentAvailable(w, agent) {
+		return
+	}
+
+	updatedSession, ok := api.startSessionRun(
+		w,
+		r,
+		session,
+		"",
+		nil,
+		agent,
+		metadata,
+		action,
+		func(ctx context.Context) error {
+			return api.appendUserAction(ctx, session.ID, action)
+		},
+		"failed to persist user action",
+	)
+	if !ok {
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, submitMessageResponse{
+		SessionID: updatedSession.ID,
+		Status:    string(updatedSession.Status),
+	})
+}
+
+func (api API) startSessionRun(
+	w http.ResponseWriter,
+	r *http.Request,
+	session store.Session,
+	message string,
+	attachments []agents.Attachment,
+	agent agents.Agent,
+	metadata map[string]any,
+	action agents.AgentAction,
+	appendBeforeRun func(context.Context) error,
+	appendErrorMessage string,
+) (store.Session, bool) {
+	runCtx, cleanup, err := api.runs.Register(context.Background(), session.ID)
+	if err != nil {
+		if errors.Is(err, runcontrol.ErrRunAlreadyActive) {
+			writeError(w, http.StatusConflict, "session is already running")
+			return store.Session{}, false
+		}
+		writeError(w, http.StatusInternalServerError, "failed to register run")
+		return store.Session{}, false
+	}
+
+	if appendBeforeRun != nil {
+		if err := appendBeforeRun(r.Context()); err != nil {
+			cleanup()
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "session not found")
+				return store.Session{}, false
+			}
+			if errors.Is(err, store.ErrInvalidArgument) {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return store.Session{}, false
+			}
+			writeError(w, http.StatusInternalServerError, appendErrorMessage)
+			return store.Session{}, false
+		}
 	}
 
 	updatedSession, err := api.store.UpdateSessionStatus(r.Context(), store.UpdateSessionStatusParams{
@@ -526,26 +644,23 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		cleanup()
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "session not found")
-			return
+			return store.Session{}, false
 		}
 		writeError(w, http.StatusInternalServerError, "failed to mark session running")
-		return
+		return store.Session{}, false
 	}
 	if err := api.appendSessionStatusUpdated(r.Context(), updatedSession); err != nil {
 		cleanup()
 		writeError(w, http.StatusInternalServerError, "failed to emit session status")
-		return
+		return store.Session{}, false
 	}
 
 	go func() {
 		defer cleanup()
-		api.runAgent(runCtx, updatedSession, content, attachments, agent, metadata)
+		api.runAgent(runCtx, updatedSession, message, attachments, agent, metadata, action)
 	}()
 
-	writeJSON(w, http.StatusAccepted, submitMessageResponse{
-		SessionID: updatedSession.ID,
-		Status:    string(updatedSession.Status),
-	})
+	return updatedSession, true
 }
 
 func (api API) cancelSessionHandler(w http.ResponseWriter, r *http.Request) {
@@ -687,6 +802,37 @@ func (api API) appendUserMessage(
 	return err
 }
 
+func (api API) appendUserAction(ctx context.Context, sessionID string, action agents.AgentAction) error {
+	payloadValue := map[string]any{
+		"action": string(action),
+		"text":   userActionText(action),
+	}
+	payload, err := json.Marshal(payloadValue)
+	if err != nil {
+		return fmt.Errorf("marshal user action payload: %w", err)
+	}
+
+	_, err = api.events.Append(ctx, eventservice.AppendParams{
+		SessionID: sessionID,
+		Type:      "user.action.completed",
+		Role:      "user",
+		Status:    store.EventStatusCompleted,
+		Payload:   payload,
+	})
+	return err
+}
+
+func userActionText(action agents.AgentAction) string {
+	switch action {
+	case agents.AgentActionClear:
+		return "Clear context"
+	case agents.AgentActionCompact:
+		return "Compact context"
+	default:
+		return "Session action"
+	}
+}
+
 func (api API) appendUserInputAnswered(
 	ctx context.Context,
 	sessionID string,
@@ -717,6 +863,7 @@ func (api API) runAgent(
 	attachments []agents.Attachment,
 	agent agents.Agent,
 	metadata map[string]any,
+	action agents.AgentAction,
 ) {
 	terminalEventEmitted := false
 	emit := func(ctx context.Context, event agents.AgentEvent) error {
@@ -725,7 +872,7 @@ func (api API) runAgent(
 			return fmt.Errorf("terminal run event already emitted for session %s", session.ID)
 		}
 
-		updatedSession, err := api.persistProviderSessionIDFromEvent(ctx, session, event)
+		updatedSession, err := api.persistProviderSessionIDFromEvent(ctx, session, event, action)
 		if err != nil {
 			return err
 		}
@@ -743,6 +890,7 @@ func (api API) runAgent(
 	err := agent.Run(ctx, agents.AgentInput{
 		SessionID:         session.ID,
 		ProviderSessionID: session.ProviderSessionID,
+		Action:            action,
 		Message:           message,
 		Workdir:           sessionWorkspacePath(session, api.workdir),
 		Metadata:          metadata,
@@ -809,6 +957,7 @@ func (api API) persistProviderSessionIDFromEvent(
 	ctx context.Context,
 	session store.Session,
 	event agents.AgentEvent,
+	action agents.AgentAction,
 ) (store.Session, error) {
 	providerSessionID := providerSessionIDFromAgentEvent(session.AgentType, event)
 	if providerSessionID == "" {
@@ -816,6 +965,13 @@ func (api API) persistProviderSessionIDFromEvent(
 	}
 	if session.ProviderSessionID != "" {
 		if session.ProviderSessionID != providerSessionID {
+			if action == agents.AgentActionClear {
+				return api.store.SetSessionProviderSessionID(ctx, store.SetSessionProviderSessionIDParams{
+					ID:                session.ID,
+					ProviderSessionID: providerSessionID,
+					Replace:           true,
+				})
+			}
 			return store.Session{}, fmt.Errorf("provider session mismatch for session %s: existing %q, event %q", session.ID, session.ProviderSessionID, providerSessionID)
 		}
 		return session, nil
@@ -823,6 +979,7 @@ func (api API) persistProviderSessionIDFromEvent(
 	return api.store.SetSessionProviderSessionID(ctx, store.SetSessionProviderSessionIDParams{
 		ID:                session.ID,
 		ProviderSessionID: providerSessionID,
+		Replace:           action == agents.AgentActionClear,
 	})
 }
 
@@ -1052,6 +1209,10 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, value any) bool {
 }
 
 func validateCancelBody(w http.ResponseWriter, r *http.Request) bool {
+	return validateEmptyBody(w, r, "cancel")
+}
+
+func validateEmptyBody(w http.ResponseWriter, r *http.Request, requestName string) bool {
 	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
 		return true
 	}
@@ -1061,7 +1222,7 @@ func validateCancelBody(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	if len(body) > 0 {
-		writeError(w, http.StatusBadRequest, "cancel request body must be empty")
+		writeError(w, http.StatusBadRequest, requestName+" request body must be empty")
 		return false
 	}
 

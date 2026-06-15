@@ -125,6 +125,8 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Put("/api/sessions/{sessionId}/files/content", api.updateSessionFileContentHandler)
 		r.Get("/api/sessions/{sessionId}/files/search", api.sessionFileSearchHandler)
 		r.Post("/api/sessions/{sessionId}/messages", api.submitMessageHandler)
+		r.Post("/api/sessions/{sessionId}/clear", api.clearSessionHandler)
+		r.Post("/api/sessions/{sessionId}/compact", api.compactSessionHandler)
 		r.Post("/api/sessions/{sessionId}/cancel", api.cancelSessionHandler)
 		r.Post("/api/sessions/{sessionId}/requests/{requestId}/answer", api.answerUserInputHandler)
 	}

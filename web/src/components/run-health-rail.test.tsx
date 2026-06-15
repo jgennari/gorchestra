@@ -20,10 +20,11 @@ const session: Session = {
 beforeEach(() => {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () =>
-      new Response(JSON.stringify({ root_path: '/repo', path: '', entries: [] }), {
-        headers: { 'Content-Type': 'application/json' },
-      }),
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify({ root_path: '/repo', path: '', entries: [] }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
     ),
   )
 })
@@ -93,13 +94,50 @@ test('run health rail archives an idle session from the slice action', async () 
   expect(onArchive).toHaveBeenCalledOnce()
 })
 
+test('run health rail exposes codex clear and compact actions', async () => {
+  const user = userEvent.setup()
+  const onClear = vi.fn(async () => undefined)
+  const onCompact = vi.fn(async () => undefined)
+
+  render(
+    <RunHealthRail
+      session={{ ...session, agent_type: 'codex', status: 'idle', provider_session_id: 'thread_1' }}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onArchive={async () => undefined}
+      onClear={onClear}
+      onCompact={onCompact}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Clear Codex context' }))
+  await user.click(screen.getByRole('button', { name: 'Compact Codex context' }))
+
+  expect(onClear).toHaveBeenCalledOnce()
+  expect(onCompact).toHaveBeenCalledOnce()
+})
+
+test('run health rail disables compact until a codex thread exists', () => {
+  render(
+    <RunHealthRail
+      session={{ ...session, agent_type: 'codex', status: 'idle', provider_session_id: undefined }}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onArchive={async () => undefined}
+    />,
+  )
+
+  expect(screen.getByRole('button', { name: 'Clear Codex context' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Compact Codex context' })).toBeDisabled()
+})
+
 test('run health rail latest event shows provider event type', () => {
   render(
     <RunHealthRail
       session={session}
-      events={[
-        event(1, 'provider.codex.event', 'system', 'completed', { provider_event_type: 'turn/completed' }),
-      ]}
+      events={[event(1, 'provider.codex.event', 'system', 'completed', { provider_event_type: 'turn/completed' })]}
       streamState="connected"
       streamError=""
       onArchive={async () => undefined}
@@ -150,6 +188,74 @@ test('run health rail active chat dot shows disconnected state', () => {
 
   expect(screen.getByRole('img', { name: 'Active chat: Disconnected' })).toHaveClass('bg-destructive')
   expect(screen.queryByText('lost connection')).not.toBeInTheDocument()
+})
+
+test('run health rail file explorer dot folders navigate to root and parent', async () => {
+  const user = userEvent.setup()
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    switch (String(url)) {
+      case '/api/sessions/sess_1/files':
+        return jsonResponse({
+          root_path: '/repo',
+          path: '',
+          entries: [
+            {
+              name: 'src',
+              path: 'src',
+              type: 'directory',
+              size_bytes: 0,
+              modified_at: '2026-06-12T16:00:00Z',
+            },
+          ],
+        })
+      case '/api/sessions/sess_1/files?path=src':
+        return jsonResponse({
+          root_path: '/repo',
+          path: 'src',
+          entries: [
+            {
+              name: 'nested',
+              path: 'src/nested',
+              type: 'directory',
+              size_bytes: 0,
+              modified_at: '2026-06-12T16:00:00Z',
+            },
+          ],
+        })
+      case '/api/sessions/sess_1/files?path=src%2Fnested':
+        return jsonResponse({
+          root_path: '/repo',
+          path: 'src/nested',
+          entries: [],
+        })
+      default:
+        throw new Error(`unexpected URL ${String(url)}`)
+    }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const requestedURLs = () => fetchMock.mock.calls.map(([url]) => String(url))
+
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onArchive={async () => undefined}
+    />,
+  )
+
+  await user.click(await screen.findByRole('button', { name: 'src' }))
+  await user.click(await screen.findByRole('button', { name: 'nested' }))
+  await waitFor(() => expect(requestedURLs()).toContain('/api/sessions/sess_1/files?path=src%2Fnested'))
+
+  await user.click(screen.getByRole('button', { name: 'Go to parent folder' }))
+  await waitFor(() =>
+    expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files?path=src')).toHaveLength(2),
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Go to workspace root' }))
+  await waitFor(() => expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files')).toHaveLength(2))
 })
 
 test('run health rail file explorer sends file content to the viewer', async () => {
@@ -213,13 +319,7 @@ test('run health rail file explorer sends file content to the viewer', async () 
   expect(screen.getAllByText('M').length).toBeGreaterThan(0)
 })
 
-function event(
-  seq: number,
-  type: string,
-  role: string,
-  status: string,
-  payload: Record<string, unknown>,
-): AgentEvent {
+function event(seq: number, type: string, role: string, status: string, payload: Record<string, unknown>): AgentEvent {
   return {
     id: `evt_${seq}`,
     session_id: 'sess_1',

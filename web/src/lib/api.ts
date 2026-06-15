@@ -173,6 +173,11 @@ type SubmitMessageResponse = {
   status: SessionStatus
 }
 
+type SessionActionResponse = {
+  session_id: string
+  status: SessionStatus
+}
+
 type CancelSessionResponse = {
   session_id: string
   status: SessionStatus | 'cancelling'
@@ -251,6 +256,18 @@ export async function updateSessionTitle(sessionID: string, title: string) {
 
 export async function archiveSession(sessionID: string) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}/archive`, {
+    method: 'POST',
+  })
+}
+
+export async function clearSession(sessionID: string) {
+  return requestJSON<SessionActionResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/clear`, {
+    method: 'POST',
+  })
+}
+
+export async function compactSession(sessionID: string) {
+  return requestJSON<SessionActionResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/compact`, {
     method: 'POST',
   })
 }

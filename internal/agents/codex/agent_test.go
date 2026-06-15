@@ -229,6 +229,68 @@ func TestAgentResumesExistingProviderSession(t *testing.T) {
 	}
 }
 
+func TestAgentClearsByStartingNewThread(t *testing.T) {
+	agent := fakeAppServerAgent(t, "clear")
+	recorder := newEventRecorder()
+
+	err := agent.Run(context.Background(), agents.AgentInput{
+		SessionID:         "sess_test",
+		ProviderSessionID: "thread_old",
+		Action:            agents.AgentActionClear,
+		Workdir:           t.TempDir(),
+	}, recorder.emit)
+	if err != nil {
+		t.Fatalf("run agent: %v", err)
+	}
+
+	events := recorder.snapshot()
+	assertAgentEventTypes(t, events, []string{"agent.run.started"})
+	payload, ok := events[0].Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected run started payload, got %#v", events[0].Payload)
+	}
+	if payload["provider_event_type"] != "thread/start" {
+		t.Fatalf("expected thread/start provider event, got %#v", payload["provider_event_type"])
+	}
+	if payload["thread_id"] != "thread_cleared" {
+		t.Fatalf("expected cleared thread id, got %#v", payload["thread_id"])
+	}
+	if payload["session_start_source"] != "clear" {
+		t.Fatalf("expected clear start source, got %#v", payload["session_start_source"])
+	}
+}
+
+func TestAgentCompactsExistingProviderSession(t *testing.T) {
+	agent := fakeAppServerAgent(t, "compact")
+	recorder := newEventRecorder()
+
+	err := agent.Run(context.Background(), agents.AgentInput{
+		SessionID:         "sess_test",
+		ProviderSessionID: "thread_fake",
+		Action:            agents.AgentActionCompact,
+		Workdir:           t.TempDir(),
+	}, recorder.emit)
+	if err != nil {
+		t.Fatalf("run agent: %v", err)
+	}
+
+	events := recorder.snapshot()
+	assertAgentEventTypes(t, events, []string{
+		"agent.run.started",
+		"agent.status.started",
+		"provider.codex.event",
+		"agent.run.completed",
+	})
+	payload, ok := events[2].Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected compact provider payload, got %#v", events[2].Payload)
+	}
+	if payload["provider_event_type"] != "thread/compacted" {
+		t.Fatalf("expected thread/compacted provider event, got %#v", payload["provider_event_type"])
+	}
+	assertTerminalCount(t, events, 1)
+}
+
 func TestAgentOptionsProbeNormalizesCodexOptions(t *testing.T) {
 	agent := fakeAppServerAgent(t, "options")
 
@@ -898,9 +960,16 @@ func runFakeAppServer(mode string) {
 				},
 			})
 		case "thread/start":
+			threadID := "thread_fake"
+			if mode == "clear" {
+				if stringAt(request.Params, "sessionStartSource") != "clear" {
+					os.Exit(6)
+				}
+				threadID = "thread_cleared"
+			}
 			fakeRespond(request.ID, map[string]any{
 				"thread": map[string]any{
-					"id":        "thread_fake",
+					"id":        threadID,
 					"sessionId": "session_fake",
 					"preview":   "",
 					"ephemeral": false,
@@ -915,6 +984,34 @@ func runFakeAppServer(mode string) {
 					"ephemeral": false,
 				},
 			})
+		case "thread/compact/start":
+			if mode != "compact" {
+				fakeRespondError(request.ID, -32601, "unknown fake method")
+				continue
+			}
+			if stringAt(request.Params, "threadId") != "thread_fake" {
+				os.Exit(7)
+			}
+			fakeRespond(request.ID, map[string]any{})
+			fakeNotify("turn/started", map[string]any{
+				"threadId": "thread_fake",
+				"turn": map[string]any{
+					"id":     "turn_compact",
+					"status": "inProgress",
+				},
+			})
+			fakeNotify("thread/compacted", map[string]any{
+				"threadId": "thread_fake",
+				"summary":  "Short summary.",
+			})
+			fakeNotify("turn/completed", map[string]any{
+				"threadId": "thread_fake",
+				"turn": map[string]any{
+					"id":     "turn_compact",
+					"status": "completed",
+				},
+			})
+			return
 		case "turn/start":
 			fakeRespond(request.ID, map[string]any{
 				"turn": map[string]any{

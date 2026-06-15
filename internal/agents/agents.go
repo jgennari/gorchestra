@@ -12,6 +12,14 @@ type Agent interface {
 	Run(ctx context.Context, input AgentInput, emit EmitFunc) error
 }
 
+type AgentAction string
+
+const (
+	AgentActionMessage AgentAction = "message"
+	AgentActionClear   AgentAction = "clear"
+	AgentActionCompact AgentAction = "compact"
+)
+
 type Availability interface {
 	Available() error
 }
@@ -60,6 +68,7 @@ type CollaborationModeOption struct {
 type AgentInput struct {
 	SessionID         string
 	ProviderSessionID string
+	Action            AgentAction
 	Message           string
 	Workdir           string
 	Metadata          map[string]any

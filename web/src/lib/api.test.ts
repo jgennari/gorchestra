@@ -2,6 +2,8 @@ import {
   answerUserInput,
   archiveSession,
   browseWorkspace,
+  clearSession,
+  compactSession,
   createSession,
   eventStreamURL,
   fetchAgentOptions,
@@ -180,6 +182,23 @@ test('archive session posts to the archive endpoint', async () => {
   const session = await archiveSession('sess_1')
 
   expect(session.archived_at).toBe('2026-06-12T16:05:00Z')
+})
+
+test('session action helpers post to clear and compact endpoints', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(init?.method).toBe('POST')
+    if (String(url) === '/api/sessions/sess_1/clear') {
+      return jsonResponse({ session_id: 'sess_1', status: 'running' })
+    }
+    if (String(url) === '/api/sessions/sess_1/compact') {
+      return jsonResponse({ session_id: 'sess_1', status: 'running' })
+    }
+    throw new Error(`unexpected URL ${String(url)}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(clearSession('sess_1')).resolves.toMatchObject({ status: 'running' })
+  await expect(compactSession('sess_1')).resolves.toMatchObject({ status: 'running' })
 })
 
 test('workspace helpers build the expected URLs', async () => {

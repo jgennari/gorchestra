@@ -443,6 +443,31 @@ func TestSetSessionProviderSessionIDRejectsDifferentExistingID(t *testing.T) {
 	}
 }
 
+func TestSetSessionProviderSessionIDCanReplaceExistingID(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	if _, err := store.SetSessionProviderSessionID(ctx, SetSessionProviderSessionIDParams{
+		ID:                session.ID,
+		ProviderSessionID: "thread_1",
+	}); err != nil {
+		t.Fatalf("set provider session id: %v", err)
+	}
+
+	updated, err := store.SetSessionProviderSessionID(ctx, SetSessionProviderSessionIDParams{
+		ID:                session.ID,
+		ProviderSessionID: "thread_2",
+		Replace:           true,
+	})
+	if err != nil {
+		t.Fatalf("replace provider session id: %v", err)
+	}
+	if updated.ProviderSessionID != "thread_2" {
+		t.Fatalf("expected provider session id thread_2, got %q", updated.ProviderSessionID)
+	}
+}
+
 func TestUpdateSessionTitleTrimsTitleAndUpdatesTimestamp(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)

@@ -20,6 +20,7 @@ type Props = {
   streamError: string
   hasOlderEvents?: boolean
   loadingOlderEvents?: boolean
+  errorMessage?: string
   notice: string
   showDebugEvents: boolean
   onShowDebugEventsChange: (showDebugEvents: boolean) => void
@@ -34,6 +35,7 @@ type Props = {
   onRefresh: () => void
   onUpdateTitle: (title: string) => Promise<void>
   onOpenFilePath?: (path: string) => Promise<void> | void
+  onErrorMessageChange?: (message: string) => void
 }
 
 export function SessionDetail({
@@ -43,6 +45,7 @@ export function SessionDetail({
   streamError,
   hasOlderEvents = false,
   loadingOlderEvents = false,
+  errorMessage = '',
   notice,
   showDebugEvents,
   onShowDebugEventsChange,
@@ -53,6 +56,7 @@ export function SessionDetail({
   onRefresh,
   onUpdateTitle,
   onOpenFilePath,
+  onErrorMessageChange,
 }: Props) {
   const userInputRequest = useMemo(
     () => (session?.status === 'running' ? pendingUserInputRequest(events) : null),
@@ -67,7 +71,15 @@ export function SessionDetail({
     return (
       <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
         <h2 className="text-lg font-semibold">No session selected</h2>
-        <p className="mt-2 max-w-sm text-sm text-muted-foreground">Create or select a session to monitor agent work.</p>
+        {errorMessage ? (
+          <p role="alert" className="mt-2 max-w-sm text-sm text-destructive">
+            {errorMessage}
+          </p>
+        ) : (
+          <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+            Create or select a session to monitor agent work.
+          </p>
+        )}
       </section>
     )
   }
@@ -85,8 +97,9 @@ export function SessionDetail({
             <Badge variant="outline" className="shrink-0 capitalize" aria-label={`Agent: ${session.agent_type}`}>
               {session.agent_type}
             </Badge>
-            {notice ? <span className="truncate text-sm text-muted-foreground lg:hidden">{notice}</span> : null}
-            {streamError ? <span className="truncate text-sm text-destructive lg:hidden">{streamError}</span> : null}
+            {notice && !errorMessage ? (
+              <span className="truncate text-sm text-muted-foreground lg:hidden">{notice}</span>
+            ) : null}
           </div>
           <TooltipProvider>
             <div className="flex shrink-0 items-center gap-2 lg:hidden">
@@ -108,8 +121,8 @@ export function SessionDetail({
         <ChatTranscript
           events={events}
           loading={streamState === 'loading'}
-          error={streamError}
-          topInset="sessionHeader"
+          error=""
+          topInset={errorMessage ? 'sessionHeaderAlert' : 'sessionHeader'}
           bottomInset={userInputRequest ? 'question' : 'composer'}
           showDebugEvents={showDebugEvents}
           hasOlderEvents={hasOlderEvents}
@@ -118,7 +131,12 @@ export function SessionDetail({
           onOpenFilePath={onOpenFilePath}
         />
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 p-3">
-          <ChatSessionHeader sessionID={session.id} title={session.title} onUpdateTitle={onUpdateTitle} />
+          <ChatSessionHeader
+            sessionID={session.id}
+            title={session.title}
+            errorMessage={errorMessage}
+            onUpdateTitle={onUpdateTitle}
+          />
         </div>
       </div>
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
@@ -135,6 +153,7 @@ export function SessionDetail({
             onSubmit={onSubmitPrompt}
             onShowDebugEventsChange={onShowDebugEventsChange}
             onCancel={session.status === 'running' ? onCancel : undefined}
+            onError={onErrorMessageChange}
           />
         </div>
       </div>
@@ -145,18 +164,35 @@ export function SessionDetail({
 function ChatSessionHeader({
   sessionID,
   title,
+  errorMessage,
   onUpdateTitle,
 }: {
   sessionID: string
   title: string
+  errorMessage: string
   onUpdateTitle: (title: string) => Promise<void>
 }) {
   return (
-    <div className="command-chat-header pointer-events-auto flex min-h-14 items-center justify-between gap-3 rounded-xl border border-border/90 px-3 py-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]">
-      <div className="min-w-0 flex-1">
-        <SessionTitleEditor title={title} onSave={onUpdateTitle} />
+    <div className="pointer-events-auto">
+      <div
+        className={cn(
+          'command-chat-header flex min-h-14 items-center justify-between gap-3 border border-border/90 px-3 py-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]',
+          errorMessage ? 'rounded-t-xl' : 'rounded-xl',
+        )}
+      >
+        <div className="min-w-0 flex-1">
+          <SessionTitleEditor title={title} onSave={onUpdateTitle} />
+        </div>
+        <SessionIDCopy sessionID={sessionID} />
       </div>
-      <SessionIDCopy sessionID={sessionID} />
+      {errorMessage ? (
+        <div
+          role="alert"
+          className="command-chat-header -mt-px rounded-b-xl border-x border-b border-destructive/30 px-3 py-2 text-sm text-destructive shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
+        >
+          {errorMessage}
+        </div>
+      ) : null}
     </div>
   )
 }

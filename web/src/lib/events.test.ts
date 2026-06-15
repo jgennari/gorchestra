@@ -245,6 +245,13 @@ test('chat transcript merges streaming assistant deltas with completion text', (
   expect(transcript[1]).toMatchObject({ role: 'assistant', text: 'Hi there', streaming: false })
 })
 
+test('chat transcript renders user action markers as user messages', () => {
+  const transcript = buildChatTranscript([event(1, 'user.action.completed', { action: 'compact', text: 'Compact context' })])
+
+  expect(transcript).toHaveLength(1)
+  expect(transcript[0]).toMatchObject({ role: 'user', text: 'Compact context' })
+})
+
 test('chat transcript renders structured plan events as visible plan messages', () => {
   const transcript = buildChatTranscript([
     event(1, 'agent.plan.delta', { item_id: 'plan_1', text: '# Plan\n' }),

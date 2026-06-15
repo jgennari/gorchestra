@@ -97,6 +97,16 @@ test('floating chat header shows and copies the session id', async () => {
   expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
 })
 
+test('floating chat header owns session errors', () => {
+  renderDetail({
+    streamError: 'HTTP 502',
+    errorMessage: 'HTTP 502',
+  })
+
+  expect(screen.getByRole('alert')).toHaveTextContent('HTTP 502')
+  expect(screen.queryByText(/Failed to load chat history/)).not.toBeInTheDocument()
+})
+
 test('message section renders chat with a bottom debug toggle', async () => {
   const user = userEvent.setup()
   const onShowDebugEventsChange = vi.fn()

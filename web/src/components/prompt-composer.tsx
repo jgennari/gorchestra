@@ -53,6 +53,7 @@ type Props = {
   onSubmit: (content: string, agentOptions?: SubmitAgentOptions, attachments?: MessageAttachment[]) => Promise<void>
   onShowDebugEventsChange?: (showDebugEvents: boolean) => void
   onCancel?: () => Promise<void>
+  onError?: (message: string) => void
 }
 
 type CodexSelection = {
@@ -81,6 +82,7 @@ export function PromptComposer({
   onSubmit,
   onShowDebugEventsChange,
   onCancel,
+  onError,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -89,7 +91,6 @@ export function PromptComposer({
   const [dragActive, setDragActive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [cancelling, setCancelling] = useState(false)
-  const [error, setError] = useState('')
   const [codexOptions, setCodexOptions] = useState<CodexAgentOptions | null>(null)
   const [codexOptionsLoading, setCodexOptionsLoading] = useState(false)
   const [codexOptionsError, setCodexOptionsError] = useState('')
@@ -98,11 +99,12 @@ export function PromptComposer({
   const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments)
   const canCancel = disabled && Boolean(onCancel)
   const inputDisabled = submitting
-  const promptPlaceholder = disabled && canCancel
-    ? 'Prepare your next message...'
-    : disabled
-      ? disabledReason
-      : 'Ask the agent to work on this repository...'
+  const promptPlaceholder =
+    disabled && canCancel
+      ? 'Prepare your next message...'
+      : disabled
+        ? disabledReason
+        : 'Ask the agent to work on this repository...'
   const codexToolbarVisible = agentType === 'codex'
   const selectedCodexModel = useMemo(
     () => selectedModel(codexOptions, codexSelection.model),
@@ -156,9 +158,14 @@ export function PromptComposer({
     }
 
     setSubmitting(true)
-    setError('')
+    onError?.('')
     try {
-      const submitAttachments = attachments.map(({ id: _id, ...attachment }) => attachment)
+      const submitAttachments = attachments.map((attachment) => ({
+        name: attachment.name,
+        media_type: attachment.media_type,
+        data_url: attachment.data_url,
+        size_bytes: attachment.size_bytes,
+      }))
       if (codexToolbarVisible) {
         if (submitAttachments.length > 0) {
           await onSubmit(content.trim(), submitOptionsForCodex(codexSelection, selectedFastTier), submitAttachments)
@@ -173,7 +180,7 @@ export function PromptComposer({
       setContent('')
       setAttachments([])
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Failed to submit prompt')
+      onError?.(submitError instanceof Error ? submitError.message : 'Failed to submit prompt')
     } finally {
       setSubmitting(false)
     }
@@ -203,11 +210,11 @@ export function PromptComposer({
     }
 
     setCancelling(true)
-    setError('')
+    onError?.('')
     try {
       await onCancel()
     } catch (cancelError) {
-      setError(cancelError instanceof Error ? cancelError.message : 'Failed to cancel run')
+      onError?.(cancelError instanceof Error ? cancelError.message : 'Failed to cancel run')
     } finally {
       setCancelling(false)
     }
@@ -219,18 +226,18 @@ export function PromptComposer({
       return
     }
     if (attachments.length + selectedFiles.length > maxImageAttachmentCount) {
-      setError(`Attach up to ${maxImageAttachmentCount} images.`)
+      onError?.(`Attach up to ${maxImageAttachmentCount} images.`)
       return
     }
 
     const imageFiles: File[] = []
     for (const file of selectedFiles) {
       if (!file.type.startsWith('image/')) {
-        setError('Only image attachments are supported.')
+        onError?.('Only image attachments are supported.')
         return
       }
       if (file.size > maxImageAttachmentBytes) {
-        setError(`${file.name} is larger than 5 MB.`)
+        onError?.(`${file.name} is larger than 5 MB.`)
         return
       }
       imageFiles.push(file)
@@ -239,9 +246,9 @@ export function PromptComposer({
     try {
       const nextAttachments = await Promise.all(imageFiles.map(fileToAttachment))
       setAttachments((current) => [...current, ...nextAttachments])
-      setError('')
+      onError?.('')
     } catch (attachmentError) {
-      setError(attachmentError instanceof Error ? attachmentError.message : 'Failed to attach image')
+      onError?.(attachmentError instanceof Error ? attachmentError.message : 'Failed to attach image')
     }
   }
 
@@ -293,9 +300,7 @@ export function PromptComposer({
               <ImageAttachmentPreview
                 key={attachment.id}
                 attachment={attachment}
-                onRemove={() =>
-                  setAttachments((current) => current.filter((item) => item.id !== attachment.id))
-                }
+                onRemove={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
               />
             ))}
           </div>
@@ -375,30 +380,17 @@ export function PromptComposer({
           </div>
         </div>
       </div>
-      {error ? <p className="mt-2 text-sm text-destructive">{error}</p> : null}
     </form>
   )
 }
 
-function ImageAttachmentPreview({
-  attachment,
-  onRemove,
-}: {
-  attachment: ComposerAttachment
-  onRemove: () => void
-}) {
+function ImageAttachmentPreview({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove: () => void }) {
   return (
     <figure className="group relative grid w-24 gap-1 rounded-lg border border-border/80 bg-surface-muted/70 p-1.5 shadow-sm">
       <div className="aspect-square overflow-hidden rounded-md bg-background">
-        <img
-          src={attachment.data_url}
-          alt={attachment.name}
-          className="h-full w-full object-cover"
-        />
+        <img src={attachment.data_url} alt={attachment.name} className="h-full w-full object-cover" />
       </div>
-      <figcaption className="min-w-0 truncate px-0.5 text-[10px] text-muted-foreground">
-        {attachment.name}
-      </figcaption>
+      <figcaption className="min-w-0 truncate px-0.5 text-[10px] text-muted-foreground">{attachment.name}</figcaption>
       <button
         type="button"
         aria-label={`Remove ${attachment.name}`}
@@ -650,9 +642,7 @@ function SwitchControl({
       <span
         className={cn(
           'relative inline-flex h-4 w-7 shrink-0 rounded-full border transition-colors',
-          active
-            ? 'border-amber-500/50 bg-amber-400 dark:bg-amber-400/70'
-            : 'border-border/80 bg-surface-muted',
+          active ? 'border-amber-500/50 bg-amber-400 dark:bg-amber-400/70' : 'border-border/80 bg-surface-muted',
         )}
         aria-hidden="true"
       >
@@ -699,10 +689,7 @@ function ThinkingIndicator() {
   )
 }
 
-function submitOptionsForCodex(
-  selection: CodexSelection,
-  fastTier: CodexServiceTierOption | null,
-): SubmitAgentOptions {
+function submitOptionsForCodex(selection: CodexSelection, fastTier: CodexServiceTierOption | null): SubmitAgentOptions {
   return {
     codex: {
       model: selection.model || undefined,
@@ -833,10 +820,7 @@ function cssNumber(value: string) {
   return parseFloat(value) || 0
 }
 
-function insertTextareaNewline(
-  textarea: HTMLTextAreaElement,
-  setContent: (content: string) => void,
-) {
+function insertTextareaNewline(textarea: HTMLTextAreaElement, setContent: (content: string) => void) {
   const start = textarea.selectionStart
   const end = textarea.selectionEnd
   const nextContent = `${textarea.value.slice(0, start)}\n${textarea.value.slice(end)}`

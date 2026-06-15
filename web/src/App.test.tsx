@@ -213,18 +213,47 @@ test('file change diff actions open absolute paths in the file editor', async ()
   expect(within(dialog).getByLabelText('File editor')).toHaveValue('package main\n')
 })
 
+test('codex session actions require dialog confirmation', async () => {
+  const user = userEvent.setup()
+  const codexSession: Session = { ...firstSession, agent_type: 'codex', provider_session_id: 'thread_1' }
+  const fetch = fetchMock({ sessions: [codexSession, secondSession] })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await user.click(await screen.findByRole('button', { name: 'Compact Codex context' }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'Compact context?' })
+  expect(dialog).toBeInTheDocument()
+  expect(fetch).not.toHaveBeenCalledWith(
+    '/api/sessions/sess_1/compact',
+    expect.objectContaining({ method: 'POST' }),
+  )
+
+  await user.click(within(dialog).getByRole('button', { name: 'Compact' }))
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_1/compact',
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+})
+
 function fetchMock({
   fileEntry = false,
   fileName = 'main.go',
   fileContent = 'package main\n',
   events = [],
   olderEvents = [],
+  sessions = [firstSession, secondSession],
 }: {
   fileEntry?: boolean
   fileName?: string
   fileContent?: string
   events?: AgentEvent[]
   olderEvents?: AgentEvent[]
+  sessions?: Session[]
 } = {}) {
   let currentContent = fileContent
   return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -233,13 +262,20 @@ function fetchMock({
       return jsonResponse({ status: 'ok' })
     }
     if (path === '/api/sessions?limit=50') {
-      return jsonResponse({ sessions: [firstSession, secondSession] })
+      return jsonResponse({ sessions })
     }
-    if (path === '/api/sessions/sess_1') {
-      return jsonResponse(firstSession)
+    const sessionMatch = path.match(/^\/api\/sessions\/([^/?]+)$/)
+    if (sessionMatch) {
+      const matchedSession = sessions.find((session) => session.id === decodeURIComponent(sessionMatch[1]))
+      if (matchedSession) {
+        return jsonResponse(matchedSession)
+      }
     }
-    if (path === '/api/sessions/sess_2') {
-      return jsonResponse(secondSession)
+    if (path === '/api/sessions/sess_1/clear' && init?.method === 'POST') {
+      return jsonResponse({ session_id: 'sess_1', status: 'running' })
+    }
+    if (path === '/api/sessions/sess_1/compact' && init?.method === 'POST') {
+      return jsonResponse({ session_id: 'sess_1', status: 'running' })
     }
     if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
       return jsonResponse({ events })

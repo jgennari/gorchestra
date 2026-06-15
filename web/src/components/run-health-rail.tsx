@@ -1,4 +1,4 @@
-import { Activity, Archive, ChevronUp, Clock3, FileText, Folder, Gauge, Loader2, Search } from 'lucide-react'
+import { Activity, Archive, Clock3, Eraser, FileText, Folder, Gauge, Loader2, Minimize2, Search } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { AgentEvent, Session, WorkspaceEntry, WorkspaceFileContent } from '@/lib/api'
@@ -14,8 +14,12 @@ type Props = {
   events: AgentEvent[]
   streamState: StreamState
   streamError: string
+  onClear?: () => Promise<void>
+  onCompact?: () => Promise<void>
   onArchive: () => Promise<void>
   onOpenFile?: (file: WorkspaceFileContent) => void
+  clearPending?: boolean
+  compactPending?: boolean
   archivePending?: boolean
 }
 
@@ -24,15 +28,25 @@ export function RunHealthRail({
   events,
   streamState,
   streamError,
+  onClear = async () => undefined,
+  onCompact = async () => undefined,
   onArchive,
   onOpenFile,
+  clearPending = false,
+  compactPending = false,
   archivePending = false,
 }: Props) {
   const latestEvent = events.at(-1)
   const tokenUsage = latestTokenUsage(events)
   const totalEventCount = Math.max(session?.event_count ?? 0, events.length)
-  const loadedToolCount = groupEvents(events).filter((group) => group.kind === 'tool-call' || group.kind === 'file-change').length
+  const loadedToolCount = groupEvents(events).filter(
+    (group) => group.kind === 'tool-call' || group.kind === 'file-change',
+  ).length
   const totalToolCount = Math.max(session?.tool_count ?? 0, loadedToolCount)
+  const actionPending = clearPending || compactPending
+  const codexActionDisabled =
+    !session || session.agent_type !== 'codex' || session.status === 'running' || Boolean(session.archived_at) || actionPending
+  const compactDisabled = codexActionDisabled || !session?.provider_session_id
 
   return (
     <aside className="command-rail flex h-full w-full shrink-0 flex-col px-3 py-4">
@@ -76,6 +90,31 @@ export function RunHealthRail({
           </RailPanel>
         ) : null}
 
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            className="justify-center border-border/70 bg-background/40 px-2 text-muted-foreground hover:bg-background/70"
+            disabled={codexActionDisabled}
+            onClick={() => void onClear()}
+            aria-label="Clear Codex context"
+          >
+            {clearPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Eraser aria-hidden="true" />}
+            <span>{clearPending ? 'Clearing' : 'Clear'}</span>
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="justify-center border-border/70 bg-background/40 px-2 text-muted-foreground hover:bg-background/70"
+            disabled={compactDisabled}
+            onClick={() => void onCompact()}
+            aria-label="Compact Codex context"
+          >
+            {compactPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
+            <span>{compactPending ? 'Compacting' : 'Compact'}</span>
+          </Button>
+        </div>
+
         <Button
           type="button"
           variant="outline"
@@ -109,6 +148,12 @@ function FileExplorer({
   const sessionID = session?.id ?? ''
   const displayEntries = query.trim() ? results : entries
   const pathLabel = useMemo(() => basename(currentPath) || 'Workspace', [currentPath])
+
+  function navigateToDirectory(path: string) {
+    setCurrentPath(path)
+    setQuery('')
+    setError('')
+  }
 
   useEffect(() => {
     setCurrentPath('')
@@ -185,8 +230,7 @@ function FileExplorer({
       return
     }
     if (entry.type === 'directory') {
-      setCurrentPath(entry.path)
-      setQuery('')
+      navigateToDirectory(entry.path)
       return
     }
 
@@ -206,17 +250,6 @@ function FileExplorer({
     <RailPanel className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between gap-2">
         <RailSectionTitle icon={Folder} label="Files" />
-        <button
-          type="button"
-          className="inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-          disabled={!currentPath || !sessionID}
-          onClick={() => {
-            setCurrentPath(parentPath(currentPath))
-          }}
-          aria-label="Go to parent folder"
-        >
-          <ChevronUp className="size-3.5" aria-hidden="true" />
-        </button>
       </div>
 
       <div className="mt-2 flex items-center gap-1.5 rounded border border-border/70 bg-background/55 px-2 py-1.5">
@@ -244,8 +277,28 @@ function FileExplorer({
             <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
             Loading files
           </div>
-        ) : displayEntries.length > 0 ? (
+        ) : (
           <div className="space-y-0.5">
+            <button
+              type="button"
+              className="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
+              onClick={() => navigateToDirectory('')}
+              aria-label="Go to workspace root"
+            >
+              <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate font-mono">.</span>
+              <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">root</span>
+            </button>
+            <button
+              type="button"
+              className="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
+              onClick={() => navigateToDirectory(parentPath(currentPath))}
+              aria-label="Go to parent folder"
+            >
+              <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate font-mono">..</span>
+              <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">parent</span>
+            </button>
             {displayEntries.map((entry) => (
               <button
                 key={`${entry.type}:${entry.path}`}
@@ -262,9 +315,10 @@ function FileExplorer({
                 {entry.git_status ? <GitStatus status={entry.git_status} /> : null}
               </button>
             ))}
+            {displayEntries.length === 0 ? (
+              <p className="py-3 text-xs text-muted-foreground">{query.trim() ? 'No matches' : 'No files'}</p>
+            ) : null}
           </div>
-        ) : (
-          <p className="py-3 text-xs text-muted-foreground">{query.trim() ? 'No matches' : 'No files'}</p>
         )}
       </div>
 

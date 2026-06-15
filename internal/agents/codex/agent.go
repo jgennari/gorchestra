@@ -264,6 +264,7 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 		attachments:       input.Attachments,
 		sessionID:         input.SessionID,
 		providerSessionID: strings.TrimSpace(input.ProviderSessionID),
+		action:            agentAction(input.Action),
 		userInput:         input.UserInput,
 	}
 	return run.execute(ctx, input, workdir)
@@ -336,6 +337,13 @@ func stringMetadataValue(values map[string]any, key string) string {
 func boolMetadataValue(values map[string]any, key string) bool {
 	value, _ := values[key].(bool)
 	return value
+}
+
+func agentAction(action agents.AgentAction) agents.AgentAction {
+	if action == "" {
+		return agents.AgentActionMessage
+	}
+	return action
 }
 
 type appServerProbe struct {
@@ -578,6 +586,7 @@ type appServerRun struct {
 	attachments       []agents.Attachment
 	sessionID         string
 	providerSessionID string
+	action            agents.AgentAction
 	userInput         agents.UserInputBroker
 
 	stateMu  sync.Mutex
@@ -593,16 +602,46 @@ func (r *appServerRun) execute(ctx context.Context, input agents.AgentInput, wor
 	if err := r.initialize(ctx); err != nil {
 		return err
 	}
+	switch r.action {
+	case agents.AgentActionMessage:
+		return r.executeMessage(ctx, input, workdir)
+	case agents.AgentActionClear:
+		return r.executeClear(ctx, workdir)
+	case agents.AgentActionCompact:
+		return r.executeCompact(ctx, workdir)
+	default:
+		return fmt.Errorf("unsupported codex agent action %q", r.action)
+	}
+}
+
+func (r *appServerRun) executeMessage(ctx context.Context, input agents.AgentInput, workdir string) error {
 	if r.providerSessionID != "" {
 		if err := r.resumeThread(ctx, r.providerSessionID, workdir); err != nil {
 			return err
 		}
 	} else {
-		if err := r.startThread(ctx, workdir); err != nil {
+		if err := r.startThread(ctx, workdir, ""); err != nil {
 			return err
 		}
 	}
 	if err := r.startTurn(ctx, input.Message, workdir); err != nil {
+		return err
+	}
+	return r.awaitTerminal(ctx)
+}
+
+func (r *appServerRun) executeClear(ctx context.Context, workdir string) error {
+	return r.startThread(ctx, workdir, "clear")
+}
+
+func (r *appServerRun) executeCompact(ctx context.Context, workdir string) error {
+	if r.providerSessionID == "" {
+		return fmt.Errorf("codex compact requires an existing thread")
+	}
+	if err := r.resumeThread(ctx, r.providerSessionID, workdir); err != nil {
+		return err
+	}
+	if err := r.startCompact(ctx); err != nil {
 		return err
 	}
 	return r.awaitTerminal(ctx)
@@ -634,7 +673,7 @@ func (r *appServerRun) initialize(ctx context.Context) error {
 	return r.rpc.sendNotification("initialized", nil)
 }
 
-func (r *appServerRun) startThread(ctx context.Context, workdir string) error {
+func (r *appServerRun) startThread(ctx context.Context, workdir string, startSource string) error {
 	params := map[string]any{
 		"cwd":                   workdir,
 		"runtimeWorkspaceRoots": []string{workdir},
@@ -644,6 +683,9 @@ func (r *appServerRun) startThread(ctx context.Context, workdir string) error {
 	}
 	if r.agent.model != "" {
 		params["model"] = r.agent.model
+	}
+	if startSource != "" {
+		params["sessionStartSource"] = startSource
 	}
 
 	id, err := r.rpc.sendRequest("thread/start", params)
@@ -664,7 +706,9 @@ func (r *appServerRun) startThread(ctx context.Context, workdir string) error {
 		return fmt.Errorf("codex thread/start response missing thread.id")
 	}
 	r.setThreadID(threadID)
-	return r.emitSyntheticRunStarted(ctx, "thread/start", threadID)
+	return r.emitSyntheticRunStarted(ctx, "thread/start", threadID, map[string]any{
+		"session_start_source": startSource,
+	})
 }
 
 func (r *appServerRun) resumeThread(ctx context.Context, providerSessionID string, workdir string) error {
@@ -711,6 +755,29 @@ func (r *appServerRun) resumeThread(ctx context.Context, providerSessionID strin
 	}
 	r.setThreadID(resumedThreadID)
 	return r.emitSyntheticRunStarted(ctx, "thread/resume", resumedThreadID)
+}
+
+func (r *appServerRun) startCompact(ctx context.Context) error {
+	threadID := r.getThreadID()
+	if threadID == "" {
+		return fmt.Errorf("codex thread/compact/start requires threadId")
+	}
+
+	id, err := r.rpc.sendRequest("thread/compact/start", map[string]any{
+		"threadId": threadID,
+	})
+	if err != nil {
+		return err
+	}
+
+	response, err := r.awaitResponse(ctx, id)
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return fmt.Errorf("codex thread/compact/start failed: %s", response.Error.Message)
+	}
+	return nil
 }
 
 func (r *appServerRun) startTurn(ctx context.Context, message string, workdir string) error {
@@ -1115,10 +1182,19 @@ func (r *appServerRun) handleNotification(ctx context.Context, message *rpcMessa
 	return terminal, nil
 }
 
-func (r *appServerRun) emitSyntheticRunStarted(ctx context.Context, providerEventType string, threadID string) error {
+func (r *appServerRun) emitSyntheticRunStarted(ctx context.Context, providerEventType string, threadID string, extraPayload ...map[string]any) error {
 	event := r.normalizer.syntheticRunStarted(providerEventType, threadID)
 	if event.Event.Type == "" {
 		return nil
+	}
+	if len(extraPayload) > 0 {
+		if payload, ok := event.Event.Payload.(map[string]any); ok {
+			for key, value := range extraPayload[0] {
+				if value != nil && value != "" {
+					payload[key] = value
+				}
+			}
+		}
 	}
 	return r.emitEvent(ctx, event)
 }

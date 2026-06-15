@@ -2,6 +2,7 @@ import type { AgentEvent, SessionStatus, UserInputQuestion } from '@/lib/api'
 
 export const knownEventTypes = [
   'user.message.completed',
+  'user.action.completed',
   'session.status.updated',
   'agent.run.started',
   'agent.status.started',
@@ -398,6 +399,7 @@ export function eventLabel(eventOrType: AgentEvent | string) {
   if (typeof eventOrType !== 'string' && isPlanEvent(eventOrType)) return 'Plan'
   if (providerEventType && type.startsWith('provider.')) return providerEventType
   if (type === 'session.status.updated') return 'Session status'
+  if (type.startsWith('user.action')) return 'User action'
   if (type.startsWith('user.message')) return 'User message'
   if (type.startsWith('agent.message')) return 'Agent message'
   if (type.startsWith('agent.plan')) return 'Plan'
@@ -609,7 +611,7 @@ function appendToGroup(group: EventGroup, event: AgentEvent) {
 
 function groupKind(event: AgentEvent): EventGroupKind {
   if (isErrorEvent(event.type, event.status)) return 'error'
-  if (event.type === 'user.message.completed') return 'user-message'
+  if (event.type === 'user.message.completed' || event.type === 'user.action.completed') return 'user-message'
   if (event.type.startsWith('agent.message')) return 'agent-message'
   if (isPlanEvent(event)) return 'plan'
   if (event.type.startsWith('agent.thinking')) return 'thinking'
