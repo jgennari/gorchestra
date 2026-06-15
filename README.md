@@ -190,11 +190,3 @@ bun run build
 ```
 
 `dist/SHA256SUMS` contains SHA-256 checksums for local release artifacts.
-
-## Project Trail
-
-- [Roadmap](docs/roadmap.md) - target architecture, milestones, API shape, event model, and build order.
-- [Sprint 1](docs/sprint-1.md) - project skeleton checklist and completion criteria.
-- [Sprint 2](docs/sprint-2.md) - SQLite session and event store checklist and completion criteria.
-- [Sprint 3](docs/sprint-3.md) - internal event pipeline checklist and completion criteria.
-- [Sprint 4](docs/sprint-4.md) through [Sprint 10](docs/sprint-10.md) - follow-on implementation notes.
