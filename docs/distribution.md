@@ -5,14 +5,23 @@ Gorchestra has two distribution paths: GitHub release downloads and the
 
 ## GitHub Releases
 
-Publishing a tag that looks like `v0.1.2` runs `.github/workflows/release.yml`.
-The workflow builds the frontend, stages the embedded assets, runs backend
-tests, cross-compiles release binaries, packages them as tarballs, writes
-`SHA256SUMS`, and publishes everything to a GitHub release.
+Use the `Prepare Release` workflow in GitHub Actions for normal releases. Enter
+a version like `0.1.4`; the workflow checks out `main`, builds the frontend,
+stages `web/dist` into `internal/webassets/dist`, commits the generated assets
+if needed, creates the annotated release tag, and dispatches the release
+publisher on that tag.
+
+The `.github/workflows/release.yml` workflow builds the frontend, verifies the
+embedded assets are already current for the tag, runs backend tests,
+cross-compiles release binaries, packages them as tarballs, writes `SHA256SUMS`,
+and publishes everything to a GitHub release. Manual tag pushes that look like
+`v0.1.4` still run the same workflow as a fallback.
 
 Because the Homebrew source formula builds without Bun, release tags must point
-to commits where `internal/webassets/dist` is current. The workflow checks this
-after rebuilding the frontend and fails if embedded assets are out of date.
+to commits where `internal/webassets/dist` is current. The `Prepare Release`
+workflow handles that automatically. Manual tag pushes are still guarded by the
+release workflow and fail with the stale asset file list if embedded assets are
+out of date.
 
 Release archives are named:
 

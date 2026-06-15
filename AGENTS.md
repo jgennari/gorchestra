@@ -43,4 +43,5 @@ Its guiding principle is: agents perform work; Gorchestra conducts the performan
 - This repository is in initial setup. Do not assume implementation directories exist until they are created.
 - When a Go module exists, run `go test ./...` before finishing backend changes.
 - When a frontend package exists, run the relevant package manager's test and build commands before finishing frontend changes.
+- For release packaging, tagging, and Homebrew tap details, use `docs/distribution.md` as the source of truth.
 - Keep generated artifacts, local databases, build output, and dependency directories out of git.

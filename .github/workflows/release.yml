@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*.*.*'
@@ -49,7 +50,22 @@ jobs:
         run: bun run build:stage
 
       - name: Verify embedded assets are committed
-        run: git diff --exit-code -- internal/webassets/dist
+        shell: bash
+        run: |
+          status="$(git status --porcelain --untracked-files=all -- internal/webassets/dist)"
+          if [[ -z "$status" ]]; then
+            echo "Embedded frontend assets are current"
+            exit 0
+          fi
+
+          echo "::error::Embedded frontend assets are out of date for this tag."
+          echo "Use the Prepare Release workflow so generated assets are committed before the tag is created."
+          echo
+          echo "Changed files:"
+          printf '%s\n' "$status"
+          echo
+          git diff --stat -- internal/webassets/dist
+          exit 1
 
       - name: Test backend
         run: go test ./...
