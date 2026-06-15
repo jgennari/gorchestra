@@ -145,7 +145,7 @@ async function buildBackend() {
 
 function startFrontend() {
   frontend = Bun.spawn(
-    ['bun', 'run', 'dev', '--', '--host', webHost, '--port', webPort],
+    ['bun', 'run', 'dev', '--', '--host', webHost, '--port', webPort, '--strictPort'],
     {
       cwd: join(repoRoot, 'web'),
       env: {
