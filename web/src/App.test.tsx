@@ -192,10 +192,10 @@ test('file change diff actions open absolute paths in the file editor', async ()
       events: [
         event(1, 'file.change.completed', {
           item_id: 'edit_1',
-          paths: ['/repo/src/main.go'],
+          paths: ['/repo/src/main.go:12'],
           changes: [
             {
-              path: '/repo/src/main.go',
+              path: '/repo/src/main.go:12',
               patch: '@@ -1,2 +1,2 @@\n-old\n+new',
             },
           ],

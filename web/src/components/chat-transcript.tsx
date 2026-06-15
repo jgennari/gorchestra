@@ -1,5 +1,5 @@
 import { Check, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Copy, FileText, Loader2 } from 'lucide-react'
-import { isValidElement, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { isValidElement, useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AgentEvent } from '@/lib/api'
@@ -14,6 +14,8 @@ import type {
 import { buildChatTimeline } from '@/lib/events'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
+
+const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
 
 type Props = {
   events: AgentEvent[]
@@ -43,7 +45,10 @@ export function ChatTranscript({
   const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
   const scrollRef = useRef<HTMLDivElement>(null)
   const scrollIdleTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const autoLoadOlderRef = useRef(false)
+  const autoScrollPausedRef = useRef(false)
   const [scrolling, setScrolling] = useState(false)
+  const [autoScrollPaused, setAutoScrollPaused] = useState(false)
   const lastSeq = timeline.at(-1)?.endSeq ?? 0
 
   useEffect(() => {
@@ -51,8 +56,22 @@ export function ChatTranscript({
     if (!element) {
       return
     }
-    element.scrollTop = element.scrollHeight
+    if (!autoScrollPausedRef.current) {
+      scrollToBottom(element)
+    }
   }, [lastSeq])
+
+  useEffect(() => {
+    if (events.length === 0) {
+      setAutoScrollPausedState(false)
+    }
+  }, [events.length])
+
+  useEffect(() => {
+    if (!loadingOlderEvents) {
+      autoLoadOlderRef.current = false
+    }
+  }, [loadingOlderEvents])
 
   useEffect(() => {
     return () => {
@@ -62,12 +81,51 @@ export function ChatTranscript({
     }
   }, [])
 
-  function handleScroll() {
+  function handleScroll(event: UIEvent<HTMLDivElement>) {
     setScrolling(true)
     if (scrollIdleTimer.current) {
       window.clearTimeout(scrollIdleTimer.current)
     }
     scrollIdleTimer.current = window.setTimeout(() => setScrolling(false), 900)
+    setAutoScrollPausedState(!isScrolledNearBottom(event.currentTarget))
+    maybeLoadOlderFromScroll(event.currentTarget)
+  }
+
+  function setAutoScrollPausedState(paused: boolean) {
+    autoScrollPausedRef.current = paused
+    setAutoScrollPaused((current) => (current === paused ? current : paused))
+  }
+
+  function scrollToBottom(element: HTMLDivElement) {
+    element.scrollTop = element.scrollHeight
+  }
+
+  function resumeAutoScroll() {
+    const element = scrollRef.current
+    if (!element) {
+      return
+    }
+    setAutoScrollPausedState(false)
+    scrollToBottom(element)
+  }
+
+  function maybeLoadOlderFromScroll(element: HTMLDivElement) {
+    if (
+      element.scrollTop > 0 ||
+      !hasOlderEvents ||
+      loadingOlderEvents ||
+      autoLoadOlderRef.current ||
+      !onLoadOlderEvents
+    ) {
+      return
+    }
+
+    autoLoadOlderRef.current = true
+    void Promise.resolve()
+      .then(() => onLoadOlderEvents())
+      .finally(() => {
+        autoLoadOlderRef.current = false
+      })
   }
 
   if (error && timeline.length === 0) {
@@ -127,8 +185,30 @@ export function ChatTranscript({
           ))}
         </div>
       </ScrollArea>
+      {autoScrollPaused ? (
+        <div
+          className={cn(
+            'pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4',
+            bottomInset === 'question' ? 'bottom-72' : 'bottom-36',
+          )}
+        >
+          <button
+            type="button"
+            className="pointer-events-auto inline-flex h-9 items-center gap-2 rounded-full border border-border/70 bg-background/90 px-3.5 text-xs font-medium text-foreground shadow-lg shadow-black/10 backdrop-blur transition-colors hover:bg-background"
+            aria-label="Scroll to latest and resume auto-scroll"
+            onClick={resumeAutoScroll}
+          >
+            <ChevronDown className="size-3.5" aria-hidden="true" />
+            Jump to latest
+          </button>
+        </div>
+      ) : null}
     </div>
   )
+}
+
+function isScrolledNearBottom(element: HTMLDivElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX
 }
 
 function timelineRowSpacing(item: ChatTimelineItem, previous: ChatTimelineItem | undefined, hasPriorRow: boolean) {
@@ -248,7 +328,11 @@ function ChatMessageRow({
           {message.attachments.length > 0 ? <MessageAttachments attachments={message.attachments} /> : null}
 
           {message.text ? (
-            <MarkdownContent content={message.text} variant={user ? 'inverted' : plan ? 'plan' : 'default'} />
+            <MarkdownContent
+              content={message.text}
+              variant={user ? 'inverted' : plan ? 'plan' : 'default'}
+              onOpenFilePath={onOpenFilePath}
+            />
           ) : user && message.attachments.length > 0 ? null : (
             <p className="text-muted-foreground">Working...</p>
           )}
@@ -321,7 +405,15 @@ function formatMessageTimestamp(value: string) {
 
 type MarkdownVariant = 'default' | 'inverted' | 'plan'
 
-function MarkdownContent({ content, variant }: { content: string; variant: MarkdownVariant }) {
+function MarkdownContent({
+  content,
+  variant,
+  onOpenFilePath,
+}: {
+  content: string
+  variant: MarkdownVariant
+  onOpenFilePath?: (path: string) => Promise<void> | void
+}) {
   const inverted = variant === 'inverted'
   const plan = variant === 'plan'
 
@@ -332,19 +424,32 @@ function MarkdownContent({ content, variant }: { content: string; variant: Markd
         p: ({ children }) => (
           <p className="my-2 first:mt-0 last:mb-0 whitespace-pre-wrap break-words leading-relaxed">{children}</p>
         ),
-        a: ({ children, href }) => (
-          <a
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            className={cn(
-              'underline underline-offset-2',
-              inverted ? 'text-primary-foreground' : plan ? 'text-amber-700 dark:text-amber-200' : 'text-primary',
-            )}
-          >
-            {children}
-          </a>
-        ),
+        a: ({ children, href }) => {
+          const filePath = markdownFilePathFromHref(href)
+          const opensFileEditor = Boolean(filePath && onOpenFilePath)
+
+          return (
+            <a
+              href={href}
+              target={opensFileEditor ? undefined : '_blank'}
+              rel={opensFileEditor ? undefined : 'noreferrer'}
+              className={cn(
+                'underline underline-offset-2',
+                inverted ? 'text-primary-foreground' : plan ? 'text-amber-700 dark:text-amber-200' : 'text-primary',
+              )}
+              onClick={
+                opensFileEditor
+                  ? (event) => {
+                      event.preventDefault()
+                      void onOpenFilePath?.(filePath)
+                    }
+                  : undefined
+              }
+            >
+              {children}
+            </a>
+          )
+        },
         ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
         ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
         li: ({ children }) => <li className="leading-relaxed">{children}</li>,
@@ -410,6 +515,63 @@ function MarkdownContent({ content, variant }: { content: string; variant: Markd
     >
       {content}
     </ReactMarkdown>
+  )
+}
+
+function markdownFilePathFromHref(href: string | undefined) {
+  let value = href?.trim() ?? ''
+  if (!value || value.startsWith('#')) {
+    return ''
+  }
+
+  if (value.startsWith('file://')) {
+    value = value.slice('file://'.length)
+  } else if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^[a-z]:[\\/]/i.test(value)) {
+    try {
+      const url = new URL(value)
+      if (url.origin !== window.location.origin) {
+        return ''
+      }
+      value = `${url.pathname}${url.search}${url.hash}`
+    } catch {
+      return ''
+    }
+  }
+
+  try {
+    value = decodeURI(value)
+  } catch {
+    // Keep the original href if it is not valid URI-encoded text.
+  }
+
+  value = value.split('#')[0]?.split('?')[0]?.replaceAll('\\', '/').replace(/:\d+(?::\d+)?$/, '') ?? ''
+  if (!value || value.endsWith('/')) {
+    return ''
+  }
+
+  return looksLikeWorkspaceFileLink(value) ? value : ''
+}
+
+function looksLikeWorkspaceFileLink(path: string) {
+  if (path.startsWith('./') || path.startsWith('../')) {
+    return true
+  }
+  if (path.startsWith('/')) {
+    return (
+      ['/Users/', '/home/', '/repo/', '/workspace/', '/workspaces/', '/private/', '/tmp/', '/var/'].some((prefix) =>
+        path.startsWith(prefix),
+      ) && looksLikeFileName(path)
+    )
+  }
+  return looksLikeFileName(path)
+}
+
+function looksLikeFileName(path: string) {
+  const name = path.split('/').at(-1) ?? ''
+  return (
+    /^(AGENTS\.md|README(?:\.[\w-]+)?|Makefile|Dockerfile|go\.mod|go\.sum|package\.json|pnpm-lock\.yaml|yarn\.lock|\.env(?:\.[\w-]+)?)$/i.test(
+      name,
+    ) || /\.[A-Za-z0-9][A-Za-z0-9_-]{0,15}$/.test(name)
   )
 }
 

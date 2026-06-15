@@ -128,6 +128,12 @@ export type WorkspaceEntry = {
   git_status?: string
 }
 
+export type WorkspaceSearchResult = WorkspaceEntry & {
+  match_type?: 'name' | 'content'
+  line_number?: number
+  line_text?: string
+}
+
 export type WorkspaceBrowseResponse = {
   root_id?: string
   root_path: string
@@ -149,7 +155,7 @@ export type WorkspaceFileContent = {
 export type WorkspaceSearchResponse = {
   query: string
   path: string
-  results: WorkspaceEntry[]
+  results: WorkspaceSearchResult[]
 }
 
 type ErrorResponse = {

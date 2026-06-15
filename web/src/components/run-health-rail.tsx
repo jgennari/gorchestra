@@ -1,7 +1,7 @@
 import { Activity, Archive, Clock3, Eraser, FileText, Folder, Gauge, Loader2, Minimize2, RefreshCw, Search } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { AgentEvent, Session, WorkspaceEntry, WorkspaceFileContent } from '@/lib/api'
+import type { AgentEvent, Session, WorkspaceEntry, WorkspaceFileContent, WorkspaceSearchResult } from '@/lib/api'
 import { getSessionFileContent, listSessionFiles, searchSessionFiles } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
 import type { TokenUsageSummary } from '@/lib/events'
@@ -132,7 +132,7 @@ function FileExplorer({
   const [currentPath, setCurrentPath] = useState('')
   const [entries, setEntries] = useState<WorkspaceEntry[]>([])
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<WorkspaceEntry[]>([])
+  const [results, setResults] = useState<WorkspaceSearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [searching, setSearching] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
@@ -261,11 +261,11 @@ function FileExplorer({
       <div className="mt-2 flex items-center gap-1.5 rounded border border-border/70 bg-background/55 px-2 py-1.5">
         <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <input
-          aria-label="Search files"
+          aria-label="Search files and contents"
           value={query}
           disabled={!sessionID}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search files"
+          placeholder="Search files and contents"
           className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
         />
         {searching ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-hidden="true" /> : null}
@@ -315,15 +315,18 @@ function FileExplorer({
               <button
                 key={`${entry.type}:${entry.path}`}
                 type="button"
-                className="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-foreground hover:bg-surface-muted/70"
+                className="flex w-full min-w-0 items-start gap-1.5 rounded px-1.5 py-1 text-left text-xs text-foreground hover:bg-surface-muted/70"
                 onClick={() => void openEntry(entry)}
               >
                 {entry.type === 'directory' ? (
-                  <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <Folder className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                 ) : (
-                  <FileText className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <FileText className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                 )}
-                <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{entry.name}</span>
+                  {query.trim() ? <SearchMatchDetail entry={entry} /> : null}
+                </span>
                 {entry.git_status ? <GitStatus status={entry.git_status} /> : null}
               </button>
             ))}
@@ -336,6 +339,21 @@ function FileExplorer({
 
       {error ? <p className="mt-2 shrink-0 text-xs text-destructive">{error}</p> : null}
     </RailPanel>
+  )
+}
+
+function SearchMatchDetail({ entry }: { entry: WorkspaceEntry | WorkspaceSearchResult }) {
+  const result = entry as WorkspaceSearchResult
+  const linePrefix = result.match_type === 'content' && result.line_number ? `:${result.line_number}` : ''
+  const detail = result.match_type === 'content' && result.line_text ? result.line_text : entry.path
+
+  return (
+    <span className="mt-0.5 block min-w-0 truncate font-mono text-[10px] leading-snug text-muted-foreground">
+      {entry.path}
+      {linePrefix}
+      {result.match_type === 'content' && result.line_text ? ' ' : null}
+      {result.match_type === 'content' && result.line_text ? detail : null}
+    </span>
   )
 }
 

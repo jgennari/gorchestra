@@ -1221,7 +1221,7 @@ function formatBytes(value: number) {
 }
 
 function workspaceRelativeFilePath(path: string, workspacePath: string) {
-  const filePath = path.trim().replaceAll('\\', '/')
+  const filePath = path.trim().replaceAll('\\', '/').replace(/:\d+(?::\d+)?$/, '')
   if (!filePath) {
     throw new Error('File path is unavailable.')
   }

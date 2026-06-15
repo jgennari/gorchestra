@@ -1,11 +1,12 @@
-import { ChevronUp, Folder, Loader2 } from 'lucide-react'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Folder, Info, Loader2 } from 'lucide-react'
+import { useEffect, useState, type FormEvent } from 'react'
 import type { AgentType, Session, SessionAgentOptions, WorkspaceEntry, WorkspaceRoot } from '@/lib/api'
 import { browseWorkspace, isAgentType, listWorkspaceRoots } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 type Props = {
   open: boolean
@@ -30,7 +31,7 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
   const [loadingWorkspace, setLoadingWorkspace] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
-  const selectedRoot = useMemo(() => roots.find((root) => root.id === rootID) ?? null, [rootID, roots])
+  const isAtWorkspaceRoot = currentPath === ''
 
   useEffect(() => {
     if (!open) {
@@ -140,6 +141,20 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
               placeholder="Refactor auth middleware"
             />
           </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="agent-type">
+              Agent
+            </label>
+            <Select value={agentType} onValueChange={(value) => setAgentType(value as AgentType)}>
+              <SelectTrigger id="agent-type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="fake">Fake</SelectItem>
+                <SelectItem value="codex">Codex</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           {agentType === 'codex' ? (
             <label
               className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"
@@ -161,26 +176,9 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
             </label>
           ) : null}
           <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="agent-type">
-              Agent
-            </label>
-            <Select value={agentType} onValueChange={(value) => setAgentType(value as AgentType)}>
-              <SelectTrigger id="agent-type">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="fake">Fake</SelectItem>
-                <SelectItem value="codex">Codex</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="workspace-path">
-              Workspace
-            </label>
-            <Input id="workspace-path" value={workspacePath || 'No workspace roots configured'} readOnly />
-            <div className="rounded-md border border-border/70 bg-surface-muted/40">
-              <div className="flex items-center gap-2 border-b border-border/60 px-2 py-2">
+            <div className="text-sm font-medium">Workspace</div>
+            <div className="rounded-md border border-border/70 bg-background">
+              <div className="border-b border-border/60 px-2 py-2">
                 {roots.length > 1 ? (
                   <Select
                     value={rootID}
@@ -191,7 +189,7 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
                       setWorkspacePath(root?.path ?? '')
                     }}
                   >
-                    <SelectTrigger className="h-8 min-w-0 flex-1">
+                    <SelectTrigger className="h-8 min-w-0">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -202,22 +200,13 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
                       ))}
                     </SelectContent>
                   </Select>
-                ) : (
-                  <div className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                    {selectedRoot?.name ?? 'Workspace root'}
-                  </div>
-                )}
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="size-8"
-                  disabled={!currentPath || loadingWorkspace}
-                  onClick={() => setCurrentPath(parentPath(currentPath))}
-                  aria-label="Go to parent directory"
-                >
-                  <ChevronUp className="size-4" aria-hidden="true" />
-                </Button>
+                ) : null}
+                <div className={roots.length > 1 ? 'mt-1 flex items-center gap-2' : 'flex items-center gap-2'}>
+                  <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+                    {workspacePath || 'No workspace roots configured'}
+                  </p>
+                  <WorkspaceHelpTooltip />
+                </div>
               </div>
               <div className="max-h-44 overflow-auto p-1">
                 {loadingWorkspace ? (
@@ -225,20 +214,51 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
                     <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
                     Loading directories
                   </div>
-                ) : entries.length > 0 ? (
-                  entries.map((entry) => (
-                    <button
-                      key={entry.path}
-                      type="button"
-                      className="flex w-full min-w-0 items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-surface-muted"
-                      onClick={() => setCurrentPath(entry.path)}
-                    >
-                      <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                      <span className="truncate">{entry.name}</span>
-                    </button>
-                  ))
                 ) : (
-                  <p className="px-2 py-3 text-xs text-muted-foreground">No child directories</p>
+                  <div className="space-y-0.5">
+                    {!isAtWorkspaceRoot ? (
+                      <>
+                        <button
+                          type="button"
+                          className="flex w-full min-w-0 items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
+                          onClick={() => setCurrentPath('')}
+                          aria-label="Go to workspace root"
+                        >
+                          <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                          <span className="min-w-0 flex-1 truncate font-mono">.</span>
+                          <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">
+                            root
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="flex w-full min-w-0 items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
+                          onClick={() => setCurrentPath(parentPath(currentPath))}
+                          aria-label="Go to parent folder"
+                        >
+                          <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                          <span className="min-w-0 flex-1 truncate font-mono">..</span>
+                          <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">
+                            parent
+                          </span>
+                        </button>
+                      </>
+                    ) : null}
+                    {entries.map((entry) => (
+                      <button
+                        key={entry.path}
+                        type="button"
+                        className="flex w-full min-w-0 items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-surface-muted/70"
+                        onClick={() => setCurrentPath(entry.path)}
+                      >
+                        <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                        <span className="truncate">{entry.name}</span>
+                      </button>
+                    ))}
+                    {entries.length === 0 ? (
+                      <p className="px-2 py-3 text-xs text-muted-foreground">No child directories</p>
+                    ) : null}
+                  </div>
                 )}
               </div>
             </div>
@@ -259,6 +279,28 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+function WorkspaceHelpTooltip() {
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Workspace root help"
+          >
+            <Info className="size-3.5" aria-hidden="true" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-72 p-2 leading-relaxed">
+          Start Gorchestra with <code className="font-mono">--workspace /path/to/repo</code> to change the base
+          workspace. Add more selectable roots with <code className="font-mono">--workspace-root /path</code>.
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 

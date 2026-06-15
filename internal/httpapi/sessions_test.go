@@ -131,7 +131,8 @@ func TestSessionFileAPIsListSearchAndReadWorkspaceFiles(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(workspace, "src"), 0o755); err != nil {
 		t.Fatalf("create src directory: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workspace, "src", "main.go"), []byte("package main\n"), 0o644); err != nil {
+	source := "package main\n\nfunc main() {\n\tprintln(\"needle\")\n}\n"
+	if err := os.WriteFile(filepath.Join(workspace, "src", "main.go"), []byte(source), 0o644); err != nil {
 		t.Fatalf("write source file: %v", err)
 	}
 	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
@@ -163,6 +164,22 @@ func TestSessionFileAPIsListSearchAndReadWorkspaceFiles(t *testing.T) {
 	if len(searchResponse.Results) != 1 || searchResponse.Results[0].Path != "src/main.go" {
 		t.Fatalf("expected src/main.go search result, got %#v", searchResponse.Results)
 	}
+	if searchResponse.Results[0].MatchType != "name" {
+		t.Fatalf("expected name search result, got %#v", searchResponse.Results[0])
+	}
+
+	contentSearchRec := get(handler, "/api/sessions/"+session.ID+"/files/search?q=needle")
+	if contentSearchRec.Code != http.StatusOK {
+		t.Fatalf("expected content search status %d, got %d with body %s", http.StatusOK, contentSearchRec.Code, contentSearchRec.Body.String())
+	}
+	var contentSearchResponse workspaceSearchResponse
+	decodeJSON(t, contentSearchRec, &contentSearchResponse)
+	if len(contentSearchResponse.Results) != 1 || contentSearchResponse.Results[0].Path != "src/main.go" {
+		t.Fatalf("expected src/main.go content search result, got %#v", contentSearchResponse.Results)
+	}
+	if contentSearchResponse.Results[0].MatchType != "content" || contentSearchResponse.Results[0].LineNumber != 4 || !strings.Contains(contentSearchResponse.Results[0].LineText, "needle") {
+		t.Fatalf("expected content search metadata, got %#v", contentSearchResponse.Results[0])
+	}
 
 	contentRec := get(handler, "/api/sessions/"+session.ID+"/files/content?path="+url.QueryEscape("src/main.go"))
 	if contentRec.Code != http.StatusOK {
@@ -170,7 +187,7 @@ func TestSessionFileAPIsListSearchAndReadWorkspaceFiles(t *testing.T) {
 	}
 	var contentResponse workspaceFileContentResponse
 	decodeJSON(t, contentRec, &contentResponse)
-	if contentResponse.Content != "package main\n" || contentResponse.Encoding != "utf-8" {
+	if contentResponse.Content != source || contentResponse.Encoding != "utf-8" {
 		t.Fatalf("expected text file content, got %#v", contentResponse)
 	}
 

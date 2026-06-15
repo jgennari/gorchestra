@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	maxFilePreviewBytes = 256 * 1024
-	maxSearchResults    = 50
-	maxSearchWalkItems  = 5000
+	maxFilePreviewBytes       = 256 * 1024
+	maxSearchResults          = 50
+	maxSearchWalkItems        = 5000
+	maxSearchLineSnippetRunes = 180
 )
 
 type workspaceConfig struct {
@@ -80,9 +81,16 @@ type updateWorkspaceFileContentRequest struct {
 }
 
 type workspaceSearchResponse struct {
-	Query   string                   `json:"query"`
-	Path    string                   `json:"path"`
-	Results []workspaceEntryResponse `json:"results"`
+	Query   string                          `json:"query"`
+	Path    string                          `json:"path"`
+	Results []workspaceSearchResultResponse `json:"results"`
+}
+
+type workspaceSearchResultResponse struct {
+	workspaceEntryResponse
+	MatchType  string `json:"match_type"`
+	LineNumber int    `json:"line_number,omitempty"`
+	LineText   string `json:"line_text,omitempty"`
 }
 
 func newWorkspaceConfig(defaultPath string, rootPaths []string) workspaceConfig {
@@ -310,7 +318,7 @@ func (api API) sessionFileSearchHandler(w http.ResponseWriter, r *http.Request) 
 		writeWorkspacePathError(w, err)
 		return
 	}
-	applyGitStatuses(workspacePath, results)
+	applyGitStatusesToSearchResults(workspacePath, results)
 
 	writeJSON(w, http.StatusOK, workspaceSearchResponse{
 		Query:   query,
@@ -610,7 +618,7 @@ func isBinaryPreview(data []byte) bool {
 	return false
 }
 
-func searchWorkspace(rootPath string, startPath string, query string) ([]workspaceEntryResponse, error) {
+func searchWorkspace(rootPath string, startPath string, query string) ([]workspaceSearchResultResponse, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
 		return nil, nil
@@ -623,7 +631,7 @@ func searchWorkspace(rootPath string, startPath string, query string) ([]workspa
 		return nil, errors.New("path must be a directory")
 	}
 
-	results := make([]workspaceEntryResponse, 0)
+	results := make([]workspaceSearchResultResponse, 0)
 	walked := 0
 	err = filepath.WalkDir(startPath, func(fullPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -639,12 +647,24 @@ func searchWorkspace(rootPath string, startPath string, query string) ([]workspa
 		if fullPath == startPath {
 			return nil
 		}
-		if strings.Contains(strings.ToLower(entry.Name()), query) {
-			info, err := entry.Info()
-			if err != nil {
-				return nil
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+
+		nameMatches := strings.Contains(strings.ToLower(entry.Name()), query)
+		lineNumber, lineText, contentMatches := searchFileContent(fullPath, info, query)
+		if nameMatches || contentMatches {
+			result := workspaceSearchResultResponse{
+				workspaceEntryResponse: workspaceEntry(rootPath, fullPath, info),
+				MatchType:              "name",
+				LineNumber:             lineNumber,
+				LineText:               lineText,
 			}
-			results = append(results, workspaceEntry(rootPath, fullPath, info))
+			if !nameMatches && contentMatches {
+				result.MatchType = "content"
+			}
+			results = append(results, result)
 		}
 		return nil
 	})
@@ -657,6 +677,31 @@ func searchWorkspace(rootPath string, startPath string, query string) ([]workspa
 	return results, nil
 }
 
+func searchFileContent(fullPath string, info fs.FileInfo, query string) (int, string, bool) {
+	if info.IsDir() || info.Size() > maxFilePreviewBytes {
+		return 0, "", false
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil || isBinaryPreview(data) {
+		return 0, "", false
+	}
+	for index, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(strings.ToLower(line), query) {
+			return index + 1, searchLineSnippet(line), true
+		}
+	}
+	return 0, "", false
+}
+
+func searchLineSnippet(line string) string {
+	line = strings.TrimSpace(strings.ReplaceAll(line, "\t", " "))
+	if utf8.RuneCountInString(line) <= maxSearchLineSnippetRunes {
+		return line
+	}
+	runes := []rune(line)
+	return string(runes[:maxSearchLineSnippetRunes]) + "..."
+}
+
 func shouldSkipSearchDirectory(name string) bool {
 	switch name {
 	case ".git", "node_modules", "vendor", "dist", "build", ".next", ".cache":
@@ -667,6 +712,16 @@ func shouldSkipSearchDirectory(name string) bool {
 }
 
 func applyGitStatuses(rootPath string, entries []workspaceEntryResponse) {
+	statuses := gitStatusesForWorkspace(rootPath)
+	if len(statuses) == 0 {
+		return
+	}
+	for index := range entries {
+		entries[index].GitStatus = gitStatusForPath(statuses, entries[index].Path, entries[index].Type == "directory")
+	}
+}
+
+func applyGitStatusesToSearchResults(rootPath string, entries []workspaceSearchResultResponse) {
 	statuses := gitStatusesForWorkspace(rootPath)
 	if len(statuses) == 0 {
 		return

@@ -332,6 +332,51 @@ test('run health rail file explorer dot folders hide at root and navigate from s
   expect(screen.queryByRole('button', { name: 'Go to workspace root' })).not.toBeInTheDocument()
 })
 
+test('run health rail file explorer searches file contents with snippets', async () => {
+  const user = userEvent.setup()
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    switch (String(url)) {
+      case '/api/sessions/sess_1/files':
+        return jsonResponse({ root_path: '/repo', path: '', entries: [] })
+      case '/api/sessions/sess_1/files/search?q=needle':
+        return jsonResponse({
+          query: 'needle',
+          path: '',
+          results: [
+            {
+              name: 'main.go',
+              path: 'src/main.go',
+              type: 'file',
+              size_bytes: 48,
+              modified_at: '2026-06-12T16:00:00Z',
+              match_type: 'content',
+              line_number: 4,
+              line_text: 'println("needle")',
+            },
+          ],
+        })
+      default:
+        throw new Error(`unexpected URL ${String(url)}`)
+    }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onArchive={async () => undefined}
+    />,
+  )
+
+  await user.type(screen.getByRole('textbox', { name: 'Search files and contents' }), 'needle')
+
+  expect(await screen.findByRole('button', { name: /main\.go/i })).toBeInTheDocument()
+  expect(screen.getByText('src/main.go:4 println("needle")')).toBeInTheDocument()
+})
+
 test('run health rail file explorer sends file content to the viewer', async () => {
   const user = userEvent.setup()
   const onOpenFile = vi.fn()

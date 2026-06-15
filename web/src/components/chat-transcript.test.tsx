@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AgentEvent } from '@/lib/api'
 import { ChatTranscript } from '@/components/chat-transcript'
@@ -58,6 +58,26 @@ test('renders markdown in chat messages', () => {
   expect(screen.getByText('First item')).toBeInTheDocument()
 })
 
+test('opens markdown file links in the file editor action', async () => {
+  const user = userEvent.setup()
+  const onOpenFilePath = vi.fn()
+
+  render(
+    <ChatTranscript
+      onOpenFilePath={onOpenFilePath}
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', {
+          text: 'Changed [chat-transcript.tsx](/Users/joey/Source/gorchestra/web/src/components/chat-transcript.tsx:54).',
+        }),
+      ]}
+    />,
+  )
+
+  await user.click(screen.getByRole('link', { name: 'chat-transcript.tsx' }))
+
+  expect(onOpenFilePath).toHaveBeenCalledWith('/Users/joey/Source/gorchestra/web/src/components/chat-transcript.tsx')
+})
+
 test('renders legacy raw Codex plan messages with a plan label', () => {
   const planText = 'Review `README.md` before running:\n\n```sh\nbun test\n```\n'
   const { container } = render(
@@ -104,6 +124,33 @@ test('load older control invokes the older event loader', async () => {
   expect(onLoadOlderEvents).toHaveBeenCalledTimes(1)
 })
 
+test('scrolling to the top auto-loads older events and leaves the manual button', async () => {
+  let resolveLoad: () => void = () => undefined
+  const onLoadOlderEvents = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveLoad = resolve
+      }),
+  )
+
+  render(
+    <ChatTranscript
+      hasOlderEvents
+      onLoadOlderEvents={onLoadOlderEvents}
+      events={[event(251, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })]}
+    />,
+  )
+
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  fireEvent.scroll(log, { target: { scrollTop: 0 } })
+  fireEvent.scroll(log, { target: { scrollTop: 0 } })
+
+  await waitFor(() => expect(onLoadOlderEvents).toHaveBeenCalledTimes(1))
+  expect(screen.getByRole('button', { name: 'Load older events' })).toBeInTheDocument()
+
+  resolveLoad()
+})
+
 test('load older control is disabled while older events are loading', () => {
   render(
     <ChatTranscript
@@ -115,6 +162,49 @@ test('load older control is disabled while older events are loading', () => {
   )
 
   expect(screen.getByRole('button', { name: 'Load older events' })).toBeDisabled()
+})
+
+test('pauses auto-scroll when scrolled up and resumes from the latest pill', async () => {
+  const user = userEvent.setup()
+  const { rerender } = render(
+    <ChatTranscript events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]} />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1000, clientHeight: 400 })
+  fireEvent.scroll(log)
+
+  expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+
+  setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1200, clientHeight: 400 })
+  rerender(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' }),
+        event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Two' }),
+      ]}
+    />,
+  )
+
+  expect(log.scrollTop).toBe(120)
+
+  await user.click(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' }))
+
+  expect(log.scrollTop).toBe(1200)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+
+  setScrollMetrics(log, { scrollTop: 1200, scrollHeight: 1400, clientHeight: 400 })
+  rerender(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' }),
+        event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Two' }),
+        event(3, 'agent.message.completed', 'assistant', 'completed', { text: 'Three' }),
+      ]}
+    />,
+  )
+
+  await waitFor(() => expect(log.scrollTop).toBe(1400))
 })
 
 test('copies fenced code blocks from user and assistant messages', async () => {
@@ -416,6 +506,15 @@ test('labels provider debug rows with provider event type', () => {
   expect(screen.getByText('turn/completed')).toBeInTheDocument()
   expect(screen.queryByText('provider.codex.event')).not.toBeInTheDocument()
 })
+
+function setScrollMetrics(
+  element: HTMLElement,
+  metrics: { scrollTop: number; scrollHeight: number; clientHeight: number },
+) {
+  Object.defineProperty(element, 'scrollTop', { configurable: true, writable: true, value: metrics.scrollTop })
+  Object.defineProperty(element, 'scrollHeight', { configurable: true, writable: true, value: metrics.scrollHeight })
+  Object.defineProperty(element, 'clientHeight', { configurable: true, writable: true, value: metrics.clientHeight })
+}
 
 function event(seq: number, type: string, role: string, status: string, payload: Record<string, unknown>): AgentEvent {
   return {
