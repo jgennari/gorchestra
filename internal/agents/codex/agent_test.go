@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +20,7 @@ import (
 
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("GORCHESTRA_FAKE_CODEX_APP_SERVER"); mode != "" {
+		recordFakeAppServerStart()
 		runFakeAppServer(mode)
 		return
 	}
@@ -323,6 +326,48 @@ func TestAgentOptionsProbeNormalizesCodexOptions(t *testing.T) {
 	}
 	if len(options.CollaborationModes) != 2 || options.CollaborationModes[0].Mode != "plan" {
 		t.Fatalf("expected collaboration modes, got %#v", options.CollaborationModes)
+	}
+}
+
+func TestAgentOptionsAreCached(t *testing.T) {
+	countPath := filepath.Join(t.TempDir(), "starts")
+	t.Setenv("GORCHESTRA_FAKE_CODEX_APP_SERVER_START_COUNT", countPath)
+	agent := fakeAppServerAgent(t, "options")
+
+	options, err := agent.Options(context.Background())
+	if err != nil {
+		t.Fatalf("load options: %v", err)
+	}
+	options.Models[0].Model = "mutated"
+
+	cached, err := agent.Options(context.Background())
+	if err != nil {
+		t.Fatalf("load cached options: %v", err)
+	}
+
+	if starts := fakeAppServerStartCount(t, countPath); starts != 1 {
+		t.Fatalf("expected one fake app-server start, got %d", starts)
+	}
+	if cached.Models[0].Model != "gpt-5.5" {
+		t.Fatalf("expected cached options to be cloned, got %#v", cached.Models[0])
+	}
+}
+
+func TestAgentOptionsCacheExpires(t *testing.T) {
+	countPath := filepath.Join(t.TempDir(), "starts")
+	t.Setenv("GORCHESTRA_FAKE_CODEX_APP_SERVER_START_COUNT", countPath)
+	agent := fakeAppServerAgent(t, "options", WithOptionsCacheTTL(time.Nanosecond))
+
+	if _, err := agent.Options(context.Background()); err != nil {
+		t.Fatalf("load options: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if _, err := agent.Options(context.Background()); err != nil {
+		t.Fatalf("reload options: %v", err)
+	}
+
+	if starts := fakeAppServerStartCount(t, countPath); starts != 2 {
+		t.Fatalf("expected cache expiry to reload options, got %d starts", starts)
 	}
 }
 
@@ -745,16 +790,17 @@ func TestAgentAnswersUserInputServerRequest(t *testing.T) {
 	assertTerminalCount(t, events, 1)
 }
 
-func fakeAppServerAgent(t *testing.T, mode string) *Agent {
+func fakeAppServerAgent(t *testing.T, mode string, options ...Option) *Agent {
 	t.Helper()
 	t.Setenv("GORCHESTRA_FAKE_CODEX_APP_SERVER", mode)
-	return New(
+	baseOptions := []Option{
 		WithBinary(os.Args[0]),
-		WithInterruptGrace(50*time.Millisecond),
+		WithInterruptGrace(50 * time.Millisecond),
 		WithVersionChecker(func(context.Context, string) (string, error) {
 			return "codex-cli fake", nil
 		}),
-	)
+	}
+	return New(append(baseOptions, options...)...)
 }
 
 func normalizeFixture(t *testing.T, name string) []agents.AgentEvent {
@@ -1098,6 +1144,34 @@ func runFakeAppServer(mode string) {
 			fakeRespondError(request.ID, -32601, "unknown fake method")
 		}
 	}
+}
+
+func recordFakeAppServerStart() {
+	path := os.Getenv("GORCHESTRA_FAKE_CODEX_APP_SERVER_START_COUNT")
+	if path == "" {
+		return
+	}
+	count := 0
+	if raw, err := os.ReadFile(path); err == nil {
+		count, _ = strconv.Atoi(strings.TrimSpace(string(raw)))
+	}
+	_ = os.WriteFile(path, []byte(strconv.Itoa(count+1)), 0o644)
+}
+
+func fakeAppServerStartCount(t *testing.T, path string) int {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read fake app-server start count: %v", err)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse fake app-server start count %q: %v", string(raw), err)
+	}
+	return count
 }
 
 func fakeRespond(id json.RawMessage, result any) {

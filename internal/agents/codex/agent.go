@@ -26,6 +26,7 @@ const (
 	defaultNetworkAccess   = true
 	defaultWebSearchMode   = "live"
 	defaultInterruptGrace  = 2 * time.Second
+	defaultOptionsCacheTTL = 5 * time.Minute
 	defaultFastServiceTier = "priority"
 )
 
@@ -47,17 +48,23 @@ type Agent struct {
 	availabilitySet bool
 	availabilityErr error
 	version         string
+	optionsMu       sync.Mutex
+	optionsCache    agents.Options
+	optionsCacheSet bool
+	optionsExpires  time.Time
+	optionsCacheTTL time.Duration
 }
 
 func New(options ...Option) *Agent {
 	agent := &Agent{
-		binary:         defaultBinary,
-		sandbox:        defaultSandbox,
-		approvalPolicy: defaultApprovalPolicy,
-		networkAccess:  defaultNetworkAccess,
-		webSearchMode:  defaultWebSearchMode,
-		interruptGrace: defaultInterruptGrace,
-		versionChecker: defaultVersionChecker,
+		binary:          defaultBinary,
+		sandbox:         defaultSandbox,
+		approvalPolicy:  defaultApprovalPolicy,
+		networkAccess:   defaultNetworkAccess,
+		webSearchMode:   defaultWebSearchMode,
+		interruptGrace:  defaultInterruptGrace,
+		optionsCacheTTL: defaultOptionsCacheTTL,
+		versionChecker:  defaultVersionChecker,
 	}
 	for _, option := range options {
 		option(agent)
@@ -123,6 +130,14 @@ func WithVersionChecker(checker VersionChecker) Option {
 	}
 }
 
+func WithOptionsCacheTTL(ttl time.Duration) Option {
+	return func(agent *Agent) {
+		if ttl >= 0 {
+			agent.optionsCacheTTL = ttl
+		}
+	}
+}
+
 func (a *Agent) Type() string {
 	return Type
 }
@@ -174,6 +189,32 @@ func (a *Agent) Options(ctx context.Context) (agents.Options, error) {
 	if err := ctx.Err(); err != nil {
 		return agents.Options{}, err
 	}
+
+	a.optionsMu.Lock()
+	defer a.optionsMu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return agents.Options{}, err
+	}
+	if a.optionsCacheTTL > 0 && a.optionsCacheSet && time.Now().Before(a.optionsExpires) {
+		return cloneOptions(a.optionsCache), nil
+	}
+
+	options, err := a.loadOptions(ctx)
+	if err != nil {
+		return agents.Options{}, err
+	}
+	if a.optionsCacheTTL > 0 {
+		a.optionsCache = cloneOptions(options)
+		a.optionsExpires = time.Now().Add(a.optionsCacheTTL)
+		a.optionsCacheSet = true
+	} else {
+		a.optionsCacheSet = false
+	}
+	return cloneOptions(options), nil
+}
+
+func (a *Agent) loadOptions(ctx context.Context) (agents.Options, error) {
 	if err := a.Available(); err != nil {
 		return agents.Options{}, err
 	}
@@ -222,6 +263,25 @@ func (a *Agent) Options(ctx context.Context) (agents.Options, error) {
 	}
 
 	return normalizeOptions(models, modes), nil
+}
+
+func cloneOptions(options agents.Options) agents.Options {
+	cloned := agents.Options{
+		DefaultModel: options.DefaultModel,
+	}
+	if len(options.Models) > 0 {
+		cloned.Models = make([]agents.ModelOption, len(options.Models))
+		for index, model := range options.Models {
+			cloned.Models[index] = model
+			cloned.Models[index].SupportedReasoningEfforts = append(
+				[]agents.ReasoningEffortOption(nil),
+				model.SupportedReasoningEfforts...,
+			)
+			cloned.Models[index].ServiceTiers = append([]agents.ModelServiceTier(nil), model.ServiceTiers...)
+		}
+	}
+	cloned.CollaborationModes = append([]agents.CollaborationModeOption(nil), options.CollaborationModes...)
+	return cloned
 }
 
 func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
