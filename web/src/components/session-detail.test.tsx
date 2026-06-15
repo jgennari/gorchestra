@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps, ReactNode } from 'react'
 import type { AgentEvent, Session } from '@/lib/api'
@@ -79,7 +79,7 @@ test('mobile header shows the agent chip without date metadata', () => {
   expect(screen.queryByText(/Last event:/)).not.toBeInTheDocument()
 })
 
-test('floating chat header shows and copies the session id', async () => {
+test('floating chat header shows session details and copies the session key', async () => {
   const user = userEvent.setup()
   const writeText = vi.fn(async () => undefined)
   Object.defineProperty(navigator, 'clipboard', {
@@ -89,9 +89,17 @@ test('floating chat header shows and copies the session id', async () => {
 
   renderDetail()
 
-  expect(screen.getByText('sess_1')).toBeInTheDocument()
+  expect(screen.queryByText('sess_1')).not.toBeInTheDocument()
 
-  await user.click(screen.getByRole('button', { name: 'Copy session id' }))
+  await user.click(screen.getByRole('button', { name: 'Session details' }))
+
+  const popover = screen.getByRole('dialog', { name: 'Session details' })
+  expect(within(popover).getByText('Session key')).toBeInTheDocument()
+  expect(within(popover).getByText('sess_1')).toBeInTheDocument()
+  expect(within(popover).getByText('Workspace path')).toBeInTheDocument()
+  expect(within(popover).getByText('/repo')).toBeInTheDocument()
+
+  await user.click(within(popover).getByRole('button', { name: 'Copy session key' }))
 
   expect(writeText).toHaveBeenCalledWith('sess_1')
   expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()

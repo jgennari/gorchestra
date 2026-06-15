@@ -240,6 +240,33 @@ test('codex session actions require dialog confirmation', async () => {
   )
 })
 
+test('archive requires dialog confirmation', async () => {
+  const user = userEvent.setup()
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await user.click(await screen.findByRole('button', { name: 'Archive selected session' }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'Archive session?' })
+  expect(dialog).toBeInTheDocument()
+  expect(within(dialog).getByText('Inspect repo')).toBeInTheDocument()
+  expect(fetch).not.toHaveBeenCalledWith(
+    '/api/sessions/sess_1/archive',
+    expect.objectContaining({ method: 'POST' }),
+  )
+
+  await user.click(within(dialog).getByRole('button', { name: 'Archive' }))
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_1/archive',
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+})
+
 function fetchMock({
   fileEntry = false,
   fileName = 'main.go',
@@ -276,6 +303,17 @@ function fetchMock({
     }
     if (path === '/api/sessions/sess_1/compact' && init?.method === 'POST') {
       return jsonResponse({ session_id: 'sess_1', status: 'running' })
+    }
+    const archiveMatch = path.match(/^\/api\/sessions\/([^/?]+)\/archive$/)
+    if (archiveMatch && init?.method === 'POST') {
+      const matchedSession = sessions.find((session) => session.id === decodeURIComponent(archiveMatch[1]))
+      if (matchedSession) {
+        return jsonResponse({
+          ...matchedSession,
+          archived_at: '2026-06-12T16:05:00Z',
+          updated_at: '2026-06-12T16:05:00Z',
+        })
+      }
     }
     if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
       return jsonResponse({ events })

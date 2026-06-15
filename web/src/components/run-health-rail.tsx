@@ -1,4 +1,4 @@
-import { Activity, Archive, Clock3, Eraser, FileText, Folder, Gauge, Loader2, Minimize2, Search } from 'lucide-react'
+import { Activity, Archive, Clock3, Eraser, FileText, Folder, Gauge, Loader2, Minimize2, RefreshCw, Search } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { AgentEvent, Session, WorkspaceEntry, WorkspaceFileContent } from '@/lib/api'
@@ -135,9 +135,12 @@ function FileExplorer({
   const [results, setResults] = useState<WorkspaceEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [searching, setSearching] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
   const [error, setError] = useState('')
   const sessionID = session?.id ?? ''
   const displayEntries = query.trim() ? results : entries
+  const refreshing = loading || searching
+  const isAtWorkspaceRoot = currentPath === ''
   const pathLabel = useMemo(() => basename(currentPath) || 'Workspace', [currentPath])
 
   function navigateToDirectory(path: string) {
@@ -181,7 +184,7 @@ function FileExplorer({
     return () => {
       cancelled = true
     }
-  }, [currentPath, sessionID])
+  }, [currentPath, reloadKey, sessionID])
 
   useEffect(() => {
     const trimmed = query.trim()
@@ -214,7 +217,7 @@ function FileExplorer({
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [currentPath, query, sessionID])
+  }, [currentPath, query, reloadKey, sessionID])
 
   async function openEntry(entry: WorkspaceEntry) {
     if (!sessionID) {
@@ -241,6 +244,18 @@ function FileExplorer({
     <RailPanel className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between gap-2">
         <RailSectionTitle icon={Folder} label="Files" />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7 border-transparent text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
+          disabled={!sessionID || refreshing}
+          onClick={() => setReloadKey((value) => value + 1)}
+          aria-label="Refresh files"
+          title="Refresh files"
+        >
+          {refreshing ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+        </Button>
       </div>
 
       <div className="mt-2 flex items-center gap-1.5 rounded border border-border/70 bg-background/55 px-2 py-1.5">
@@ -270,26 +285,32 @@ function FileExplorer({
           </div>
         ) : (
           <div className="space-y-0.5">
-            <button
-              type="button"
-              className="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
-              onClick={() => navigateToDirectory('')}
-              aria-label="Go to workspace root"
-            >
-              <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate font-mono">.</span>
-              <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">root</span>
-            </button>
-            <button
-              type="button"
-              className="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
-              onClick={() => navigateToDirectory(parentPath(currentPath))}
-              aria-label="Go to parent folder"
-            >
-              <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate font-mono">..</span>
-              <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">parent</span>
-            </button>
+            {!isAtWorkspaceRoot ? (
+              <>
+                <button
+                  type="button"
+                  className="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
+                  onClick={() => navigateToDirectory('')}
+                  aria-label="Go to workspace root"
+                >
+                  <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate font-mono">.</span>
+                  <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">root</span>
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
+                  onClick={() => navigateToDirectory(parentPath(currentPath))}
+                  aria-label="Go to parent folder"
+                >
+                  <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate font-mono">..</span>
+                  <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">
+                    parent
+                  </span>
+                </button>
+              </>
+            ) : null}
             {displayEntries.map((entry) => (
               <button
                 key={`${entry.type}:${entry.path}`}
@@ -430,7 +451,7 @@ function CodexContextActions({
   onCompact: () => Promise<void>
 }) {
   return (
-    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/60 pt-3">
+    <div className="mt-3 grid grid-cols-2 gap-2">
       <Button
         type="button"
         variant="outline"

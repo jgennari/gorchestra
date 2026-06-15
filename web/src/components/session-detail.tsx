@@ -1,5 +1,5 @@
-import { Check, Copy, RefreshCcw } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { Check, Copy, Ellipsis, RefreshCcw } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentEvent, MessageAttachment, Session, SubmitAgentOptions, UserInputAnswers } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
 import { Badge } from '@/components/ui/badge'
@@ -133,6 +133,7 @@ export function SessionDetail({
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 p-3">
           <ChatSessionHeader
             sessionID={session.id}
+            workspacePath={session.workspace_path}
             title={session.title}
             errorMessage={errorMessage}
             onUpdateTitle={onUpdateTitle}
@@ -163,11 +164,13 @@ export function SessionDetail({
 
 function ChatSessionHeader({
   sessionID,
+  workspacePath,
   title,
   errorMessage,
   onUpdateTitle,
 }: {
   sessionID: string
+  workspacePath: string
   title: string
   errorMessage: string
   onUpdateTitle: (title: string) => Promise<void>
@@ -183,7 +186,7 @@ function ChatSessionHeader({
         <div className="min-w-0 flex-1">
           <SessionTitleEditor title={title} onSave={onUpdateTitle} />
         </div>
-        <SessionIDCopy sessionID={sessionID} />
+        <SessionDetailsMenu sessionID={sessionID} workspacePath={workspacePath} />
       </div>
       {errorMessage ? (
         <div
@@ -197,8 +200,33 @@ function ChatSessionHeader({
   )
 }
 
-function SessionIDCopy({ sessionID }: { sessionID: string }) {
+function SessionDetailsMenu({ sessionID, workspacePath }: { sessionID: string; workspacePath: string }) {
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
 
   async function handleCopy() {
     try {
@@ -211,18 +239,60 @@ function SessionIDCopy({ sessionID }: { sessionID: string }) {
   }
 
   return (
-    <div className="flex min-w-0 max-w-[45%] shrink items-center gap-1.5 rounded-md bg-background/30 px-2 py-1">
-      <code className="min-w-0 truncate font-mono text-[11px] text-muted-foreground/90">{sessionID}</code>
+    <div ref={menuRef} className="relative shrink-0">
       <Button
         type="button"
         variant="ghost"
         size="icon"
-        className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground [&_svg]:size-3.5"
-        aria-label="Copy session id"
-        onClick={() => void handleCopy()}
+        className="h-8 w-8 text-muted-foreground hover:bg-background/50 hover:text-foreground"
+        aria-label="Session details"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
       >
-        {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+        <Ellipsis aria-hidden="true" />
       </Button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label="Session details"
+          className="absolute right-0 top-full z-50 mt-2 w-96 max-w-[calc(100vw-2rem)] rounded-lg border border-border/80 bg-popover p-3 text-popover-foreground shadow-lg"
+        >
+          <div className="space-y-3">
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  Session key
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground [&_svg]:size-3.5"
+                  aria-label="Copy session key"
+                  onClick={() => void handleCopy()}
+                >
+                  {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+                </Button>
+              </div>
+              <code className="mt-1 block overflow-x-auto whitespace-nowrap rounded-md bg-surface-muted/75 px-2 py-1.5 font-mono text-xs text-foreground">
+                {sessionID}
+              </code>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Workspace path
+              </p>
+              <code
+                className="mt-1 block max-h-24 overflow-auto rounded-md bg-surface-muted/75 px-2 py-1.5 font-mono text-xs text-foreground break-all"
+                title={workspacePath || undefined}
+              >
+                {workspacePath || 'Unavailable'}
+              </code>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

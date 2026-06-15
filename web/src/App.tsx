@@ -93,6 +93,7 @@ function App() {
   const [notice, setNotice] = useState('')
   const [showDebugEvents, setShowDebugEvents] = useState(false)
   const [archivingSessionID, setArchivingSessionID] = useState<string | null>(null)
+  const [confirmArchiveSessionID, setConfirmArchiveSessionID] = useState<string | null>(null)
   const [confirmSessionAction, setConfirmSessionAction] = useState<PendingSessionAction | null>(null)
   const [pendingSessionAction, setPendingSessionAction] = useState<PendingSessionAction | null>(null)
   const [paneWidths, setPaneWidths] = useState<PaneWidths>(() => loadPaneWidths())
@@ -309,12 +310,19 @@ function App() {
     applySession(updated)
   }
 
-  async function handleArchiveSession() {
+  function requestArchiveSession() {
     if (!selectedSessionID) {
       return
     }
+    setConfirmArchiveSessionID(selectedSessionID)
+  }
 
-    const sessionID = selectedSessionID
+  async function handleConfirmArchiveSession() {
+    if (!confirmArchiveSessionID) {
+      return
+    }
+
+    const sessionID = confirmArchiveSessionID
     const nextSelectedID = nextSessionIDAfterArchive(sessions, sessionID, selectedSessionID)
     setArchivingSessionID(sessionID)
     setError('')
@@ -323,6 +331,7 @@ function App() {
       setSessions((current) => current.filter((session) => session.id !== sessionID))
       selectSession(nextSelectedID, 'replace')
       setNotice('')
+      setConfirmArchiveSessionID(null)
     } catch (archiveError) {
       setError(messageFromError(archiveError))
       if (archiveError instanceof APIError && archiveError.status === 409) {
@@ -481,6 +490,11 @@ function App() {
     confirmSessionAction !== null &&
     pendingSessionAction.sessionID === confirmSessionAction.sessionID &&
     pendingSessionAction.action === confirmSessionAction.action
+  const confirmArchiveSession = confirmArchiveSessionID
+    ? (sessions.find((session) => session.id === confirmArchiveSessionID) ?? null)
+    : null
+  const confirmArchivePending =
+    confirmArchiveSessionID !== null && archivingSessionID === confirmArchiveSessionID
 
   return (
     <main className="app-shell">
@@ -584,7 +598,10 @@ function App() {
             requestSessionAction('compact')
             return Promise.resolve()
           }}
-          onArchive={handleArchiveSession}
+          onArchive={() => {
+            requestArchiveSession()
+            return Promise.resolve()
+          }}
           onOpenFile={setOpenWorkspaceFile}
           clearPending={
             selectedSession
@@ -614,6 +631,16 @@ function App() {
           }
         }}
         onConfirm={() => void handleConfirmSessionAction()}
+      />
+      <ArchiveSessionConfirmDialog
+        session={confirmArchiveSession}
+        pending={confirmArchivePending}
+        onOpenChange={(open) => {
+          if (!open && !archivingSessionID) {
+            setConfirmArchiveSessionID(null)
+          }
+        }}
+        onConfirm={() => void handleConfirmArchiveSession()}
       />
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
     </main>
@@ -653,6 +680,44 @@ function SessionActionConfirmDialog({
             </Button>
             <Button type="button" disabled={pending} onClick={onConfirm}>
               {pending ? copy.pendingLabel : copy.confirmLabel}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ArchiveSessionConfirmDialog({
+  session,
+  pending,
+  onOpenChange,
+  onConfirm,
+}: {
+  session: Session | null
+  pending: boolean
+  onOpenChange: (open: boolean) => void
+  onConfirm: () => void
+}) {
+  return (
+    <Dialog open={Boolean(session)} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Archive session?</DialogTitle>
+          <DialogDescription>
+            Hide this session from the active list. Its event history and files remain stored.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <p className="truncate text-sm text-muted-foreground" title={session?.title || undefined}>
+            {session?.title || 'Selected session'}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="button" variant="destructive" disabled={pending} onClick={onConfirm}>
+              {pending ? 'Archiving' : 'Archive'}
             </Button>
           </div>
         </div>

@@ -69,7 +69,7 @@ test('run health rail shows metrics and active chat status without session ident
   expect(screen.getByText('Agent message')).toBeInTheDocument()
   expect(screen.queryByText('Connection')).not.toBeInTheDocument()
   expect(screen.queryByText('Live')).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /refresh/i })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Refresh files' })).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /cancel run/i })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /theme/i })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Archive selected session' })).toBeDisabled()
@@ -194,7 +194,68 @@ test('run health rail active chat dot shows disconnected state', () => {
   expect(screen.queryByText('lost connection')).not.toBeInTheDocument()
 })
 
-test('run health rail file explorer dot folders navigate to root and parent', async () => {
+test('run health rail file explorer refresh reloads the current folder', async () => {
+  const user = userEvent.setup()
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    switch (String(url)) {
+      case '/api/sessions/sess_1/files':
+        return jsonResponse({
+          root_path: '/repo',
+          path: '',
+          entries: [
+            {
+              name: 'src',
+              path: 'src',
+              type: 'directory',
+              size_bytes: 0,
+              modified_at: '2026-06-12T16:00:00Z',
+            },
+          ],
+        })
+      case '/api/sessions/sess_1/files?path=src':
+        return jsonResponse({
+          root_path: '/repo',
+          path: 'src',
+          entries: [
+            {
+              name: 'nested',
+              path: 'src/nested',
+              type: 'directory',
+              size_bytes: 0,
+              modified_at: '2026-06-12T16:00:00Z',
+            },
+          ],
+        })
+      default:
+        throw new Error(`unexpected URL ${String(url)}`)
+    }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const requestedURLs = () => fetchMock.mock.calls.map(([url]) => String(url))
+
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onArchive={async () => undefined}
+    />,
+  )
+
+  await screen.findByRole('button', { name: 'src' })
+  await user.click(screen.getByRole('button', { name: 'Refresh files' }))
+  await waitFor(() => expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files')).toHaveLength(2))
+
+  await user.click(screen.getByRole('button', { name: 'src' }))
+  await screen.findByRole('button', { name: 'nested' })
+  await user.click(screen.getByRole('button', { name: 'Refresh files' }))
+  await waitFor(() =>
+    expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files?path=src')).toHaveLength(2),
+  )
+})
+
+test('run health rail file explorer dot folders hide at root and navigate from subfolders', async () => {
   const user = userEvent.setup()
   const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
     switch (String(url)) {
@@ -249,7 +310,14 @@ test('run health rail file explorer dot folders navigate to root and parent', as
     />,
   )
 
-  await user.click(await screen.findByRole('button', { name: 'src' }))
+  expect(await screen.findByRole('button', { name: 'src' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Go to parent folder' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Go to workspace root' })).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'src' }))
+  expect(screen.getByRole('button', { name: 'Go to parent folder' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Go to workspace root' })).toBeInTheDocument()
+
   await user.click(await screen.findByRole('button', { name: 'nested' }))
   await waitFor(() => expect(requestedURLs()).toContain('/api/sessions/sess_1/files?path=src%2Fnested'))
 
@@ -260,6 +328,8 @@ test('run health rail file explorer dot folders navigate to root and parent', as
 
   await user.click(screen.getByRole('button', { name: 'Go to workspace root' }))
   await waitFor(() => expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files')).toHaveLength(2))
+  expect(screen.queryByRole('button', { name: 'Go to parent folder' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Go to workspace root' })).not.toBeInTheDocument()
 })
 
 test('run health rail file explorer sends file content to the viewer', async () => {
