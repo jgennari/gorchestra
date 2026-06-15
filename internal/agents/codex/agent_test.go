@@ -229,8 +229,8 @@ func TestAgentResumesExistingProviderSession(t *testing.T) {
 	}
 }
 
-func TestAgentClearsByStartingNewThread(t *testing.T) {
-	agent := fakeAppServerAgent(t, "clear")
+func TestAgentRejectsDirectClearAction(t *testing.T) {
+	agent := fakeAppServerAgent(t, "success")
 	recorder := newEventRecorder()
 
 	err := agent.Run(context.Background(), agents.AgentInput{
@@ -239,24 +239,11 @@ func TestAgentClearsByStartingNewThread(t *testing.T) {
 		Action:            agents.AgentActionClear,
 		Workdir:           t.TempDir(),
 	}, recorder.emit)
-	if err != nil {
-		t.Fatalf("run agent: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "clear is handled by session orchestration") {
+		t.Fatalf("expected direct clear rejection, got %v", err)
 	}
-
-	events := recorder.snapshot()
-	assertAgentEventTypes(t, events, []string{"agent.run.started"})
-	payload, ok := events[0].Payload.(map[string]any)
-	if !ok {
-		t.Fatalf("expected run started payload, got %#v", events[0].Payload)
-	}
-	if payload["provider_event_type"] != "thread/start" {
-		t.Fatalf("expected thread/start provider event, got %#v", payload["provider_event_type"])
-	}
-	if payload["thread_id"] != "thread_cleared" {
-		t.Fatalf("expected cleared thread id, got %#v", payload["thread_id"])
-	}
-	if payload["session_start_source"] != "clear" {
-		t.Fatalf("expected clear start source, got %#v", payload["session_start_source"])
+	if events := recorder.snapshot(); len(events) != 0 {
+		t.Fatalf("expected no events, got %#v", events)
 	}
 }
 
@@ -960,16 +947,9 @@ func runFakeAppServer(mode string) {
 				},
 			})
 		case "thread/start":
-			threadID := "thread_fake"
-			if mode == "clear" {
-				if stringAt(request.Params, "sessionStartSource") != "clear" {
-					os.Exit(6)
-				}
-				threadID = "thread_cleared"
-			}
 			fakeRespond(request.ID, map[string]any{
 				"thread": map[string]any{
-					"id":        threadID,
+					"id":        "thread_fake",
 					"sessionId": "session_fake",
 					"preview":   "",
 					"ephemeral": false,

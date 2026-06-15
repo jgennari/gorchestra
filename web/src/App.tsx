@@ -356,12 +356,16 @@ function App() {
             ? {
                 ...session,
                 status: response.status,
+                provider_session_id: action === 'clear' ? undefined : session.provider_session_id,
                 completed_at: response.status === 'running' ? null : session.completed_at,
               }
             : session,
         ),
       )
-      setNotice(action === 'clear' ? 'Clear started.' : 'Compaction started.')
+      if (action === 'clear') {
+        await refreshSession(sessionID)
+      }
+      setNotice(action === 'clear' ? 'Context cleared.' : 'Compaction started.')
       setConfirmSessionAction(null)
     } catch (actionError) {
       setError(messageFromError(actionError))

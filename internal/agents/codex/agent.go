@@ -606,7 +606,7 @@ func (r *appServerRun) execute(ctx context.Context, input agents.AgentInput, wor
 	case agents.AgentActionMessage:
 		return r.executeMessage(ctx, input, workdir)
 	case agents.AgentActionClear:
-		return r.executeClear(ctx, workdir)
+		return fmt.Errorf("codex clear is handled by session orchestration")
 	case agents.AgentActionCompact:
 		return r.executeCompact(ctx, workdir)
 	default:
@@ -620,7 +620,7 @@ func (r *appServerRun) executeMessage(ctx context.Context, input agents.AgentInp
 			return err
 		}
 	} else {
-		if err := r.startThread(ctx, workdir, ""); err != nil {
+		if err := r.startThread(ctx, workdir); err != nil {
 			return err
 		}
 	}
@@ -628,10 +628,6 @@ func (r *appServerRun) executeMessage(ctx context.Context, input agents.AgentInp
 		return err
 	}
 	return r.awaitTerminal(ctx)
-}
-
-func (r *appServerRun) executeClear(ctx context.Context, workdir string) error {
-	return r.startThread(ctx, workdir, "clear")
 }
 
 func (r *appServerRun) executeCompact(ctx context.Context, workdir string) error {
@@ -673,7 +669,7 @@ func (r *appServerRun) initialize(ctx context.Context) error {
 	return r.rpc.sendNotification("initialized", nil)
 }
 
-func (r *appServerRun) startThread(ctx context.Context, workdir string, startSource string) error {
+func (r *appServerRun) startThread(ctx context.Context, workdir string) error {
 	params := map[string]any{
 		"cwd":                   workdir,
 		"runtimeWorkspaceRoots": []string{workdir},
@@ -684,10 +680,6 @@ func (r *appServerRun) startThread(ctx context.Context, workdir string, startSou
 	if r.agent.model != "" {
 		params["model"] = r.agent.model
 	}
-	if startSource != "" {
-		params["sessionStartSource"] = startSource
-	}
-
 	id, err := r.rpc.sendRequest("thread/start", params)
 	if err != nil {
 		return err
@@ -706,9 +698,7 @@ func (r *appServerRun) startThread(ctx context.Context, workdir string, startSou
 		return fmt.Errorf("codex thread/start response missing thread.id")
 	}
 	r.setThreadID(threadID)
-	return r.emitSyntheticRunStarted(ctx, "thread/start", threadID, map[string]any{
-		"session_start_source": startSource,
-	})
+	return r.emitSyntheticRunStarted(ctx, "thread/start", threadID)
 }
 
 func (r *appServerRun) resumeThread(ctx context.Context, providerSessionID string, workdir string) error {
@@ -1182,19 +1172,10 @@ func (r *appServerRun) handleNotification(ctx context.Context, message *rpcMessa
 	return terminal, nil
 }
 
-func (r *appServerRun) emitSyntheticRunStarted(ctx context.Context, providerEventType string, threadID string, extraPayload ...map[string]any) error {
+func (r *appServerRun) emitSyntheticRunStarted(ctx context.Context, providerEventType string, threadID string) error {
 	event := r.normalizer.syntheticRunStarted(providerEventType, threadID)
 	if event.Event.Type == "" {
 		return nil
-	}
-	if len(extraPayload) > 0 {
-		if payload, ok := event.Event.Payload.(map[string]any); ok {
-			for key, value := range extraPayload[0] {
-				if value != nil && value != "" {
-					payload[key] = value
-				}
-			}
-		}
 	}
 	return r.emitEvent(ctx, event)
 }

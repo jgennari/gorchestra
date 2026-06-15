@@ -282,6 +282,36 @@ func (s *Store) updateSessionProviderSessionID(ctx context.Context, sessionID st
 	return s.GetSession(ctx, sessionID)
 }
 
+func (s *Store) ClearSessionProviderSessionID(ctx context.Context, params ClearSessionProviderSessionIDParams) (Session, error) {
+	sessionID := strings.TrimSpace(params.ID)
+	if sessionID == "" {
+		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+
+	now := s.now()
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE sessions
+		 SET provider_session_id = NULL, updated_at = ?
+		 WHERE id = ?`,
+		formatTime(now),
+		sessionID,
+	)
+	if err != nil {
+		return Session{}, fmt.Errorf("clear session provider_session_id: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, fmt.Errorf("check clear session provider_session_id rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, sessionID)
+	}
+
+	return s.GetSession(ctx, sessionID)
+}
+
 func (s *Store) UpdateSessionStatus(ctx context.Context, params UpdateSessionStatusParams) (Session, error) {
 	if strings.TrimSpace(params.ID) == "" {
 		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)

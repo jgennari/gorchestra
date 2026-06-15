@@ -77,6 +77,10 @@ type SetSessionProviderSessionIDParams struct {
 	Replace           bool
 }
 
+type ClearSessionProviderSessionIDParams struct {
+	ID string
+}
+
 type ListSessionsParams struct {
 	Limit  int
 	Status SessionStatus

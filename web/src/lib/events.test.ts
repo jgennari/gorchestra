@@ -245,11 +245,44 @@ test('chat transcript merges streaming assistant deltas with completion text', (
   expect(transcript[1]).toMatchObject({ role: 'assistant', text: 'Hi there', streaming: false })
 })
 
-test('chat transcript renders user action markers as user messages', () => {
-  const transcript = buildChatTranscript([event(1, 'user.action.completed', { action: 'compact', text: 'Compact context' })])
+test('chat timeline renders session action markers as separators', () => {
+  const events = [
+    event(1, 'user.message.completed', { text: 'Hello' }),
+    event(2, 'session.action.completed', { action: 'clear', text: 'Clear context' }),
+    event(3, 'agent.message.completed', { text: 'Done' }),
+  ]
+  const timeline = buildChatTimeline(events, false)
 
-  expect(transcript).toHaveLength(1)
-  expect(transcript[0]).toMatchObject({ role: 'user', text: 'Compact context' })
+  expect(timeline.map((item) => item.kind)).toEqual(['message', 'action', 'message'])
+  expect(buildChatTranscript(events).map((message) => message.text)).toEqual(['Hello', 'Done'])
+
+  const actionItem = timeline[1]
+  expect(actionItem?.kind).toBe('action')
+  if (actionItem?.kind !== 'action') {
+    throw new Error('expected action timeline item')
+  }
+  expect(actionItem.action).toMatchObject({
+    action: 'clear',
+    label: 'CONVERSATION CLEARED',
+    startSeq: 2,
+    endSeq: 2,
+  })
+})
+
+test('chat timeline renders legacy user action markers as separators', () => {
+  const timeline = buildChatTimeline(
+    [event(1, 'user.action.completed', { action: 'compact', text: 'Compact context' })],
+    false,
+  )
+
+  expect(timeline.map((item) => item.kind)).toEqual(['action'])
+
+  const actionItem = timeline[0]
+  expect(actionItem?.kind).toBe('action')
+  if (actionItem?.kind !== 'action') {
+    throw new Error('expected action timeline item')
+  }
+  expect(actionItem.action.label).toBe('CONVERSATION COMPACTED')
 })
 
 test('chat transcript renders structured plan events as visible plan messages', () => {

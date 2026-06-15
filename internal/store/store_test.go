@@ -468,6 +468,27 @@ func TestSetSessionProviderSessionIDCanReplaceExistingID(t *testing.T) {
 	}
 }
 
+func TestClearSessionProviderSessionID(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	if _, err := store.SetSessionProviderSessionID(ctx, SetSessionProviderSessionIDParams{
+		ID:                session.ID,
+		ProviderSessionID: "thread_1",
+	}); err != nil {
+		t.Fatalf("set provider session id: %v", err)
+	}
+
+	updated, err := store.ClearSessionProviderSessionID(ctx, ClearSessionProviderSessionIDParams{ID: session.ID})
+	if err != nil {
+		t.Fatalf("clear provider session id: %v", err)
+	}
+	if updated.ProviderSessionID != "" {
+		t.Fatalf("expected provider session id to be cleared, got %q", updated.ProviderSessionID)
+	}
+}
+
 func TestUpdateSessionTitleTrimsTitleAndUpdatesTimestamp(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)

@@ -895,6 +895,20 @@ func (s *fakeHTTPStore) SetSessionProviderSessionID(_ context.Context, params st
 	return session, nil
 }
 
+func (s *fakeHTTPStore) ClearSessionProviderSessionID(_ context.Context, params store.ClearSessionProviderSessionIDParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[params.ID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+	session.ProviderSessionID = ""
+	session.UpdatedAt = testCreatedAt
+	s.sessions[params.ID] = session
+	return session, nil
+}
+
 func (s *fakeHTTPStore) ListEvents(_ context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error) {
 	s.mu.Lock()
 	s.listCalls = append(s.listCalls, listCall{sessionID: sessionID, afterSeq: afterSeq, limit: limit, mode: "after"})

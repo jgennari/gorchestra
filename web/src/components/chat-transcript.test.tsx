@@ -22,6 +22,25 @@ test('renders user and assistant messages without duplicating completion text', 
   expect(container.querySelectorAll('time[datetime="2026-06-12T16:00:00Z"]')).toHaveLength(2)
 })
 
+test('renders session actions as conversation breaks', () => {
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'user.message.completed', 'user', 'completed', { text: 'Hello' }),
+        event(2, 'session.action.completed', 'system', 'completed', {
+          action: 'clear',
+          text: 'Clear context',
+        }),
+        event(3, 'agent.message.completed', 'assistant', 'completed', { text: 'Done' }),
+      ]}
+    />,
+  )
+
+  expect(screen.getByRole('separator', { name: 'CONVERSATION CLEARED' })).toBeInTheDocument()
+  expect(screen.getByText('CONVERSATION CLEARED')).toBeInTheDocument()
+  expect(screen.queryByText('Clear context')).not.toBeInTheDocument()
+})
+
 test('renders markdown in chat messages', () => {
   render(
     <ChatTranscript

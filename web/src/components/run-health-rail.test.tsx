@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AgentEvent, Session } from '@/lib/api'
 import { RunHealthRail } from '@/components/run-health-rail'
@@ -111,8 +111,12 @@ test('run health rail exposes codex clear and compact actions', async () => {
     />,
   )
 
-  await user.click(screen.getByRole('button', { name: 'Clear Codex context' }))
-  await user.click(screen.getByRole('button', { name: 'Compact Codex context' }))
+  const tokenPanel = screen.getByText('Tokens').closest('section')
+  expect(tokenPanel).toBeInTheDocument()
+  expect(within(tokenPanel as HTMLElement).getByText('No token usage yet')).toBeInTheDocument()
+
+  await user.click(within(tokenPanel as HTMLElement).getByRole('button', { name: 'Clear Codex context' }))
+  await user.click(within(tokenPanel as HTMLElement).getByRole('button', { name: 'Compact Codex context' }))
 
   expect(onClear).toHaveBeenCalledOnce()
   expect(onCompact).toHaveBeenCalledOnce()

@@ -3,6 +3,7 @@ import type { AgentEvent, SessionStatus, UserInputQuestion } from '@/lib/api'
 export const knownEventTypes = [
   'user.message.completed',
   'user.action.completed',
+  'session.action.completed',
   'session.status.updated',
   'agent.run.started',
   'agent.status.started',
@@ -35,6 +36,7 @@ export type DisplayEvent = AgentEvent & {
 
 export type EventGroupKind =
   | 'user-message'
+  | 'action-break'
   | 'agent-message'
   | 'plan'
   | 'thinking'
@@ -107,6 +109,15 @@ export type ChatDebugEvent = {
   createdAt: string
 }
 
+export type ChatActionBreak = {
+  id: string
+  action: string
+  label: string
+  createdAt: string
+  startSeq: number
+  endSeq: number
+}
+
 export type ChatTimelineItem =
   | {
       kind: 'message'
@@ -121,6 +132,13 @@ export type ChatTimelineItem =
       startSeq: number
       endSeq: number
       event: ChatDebugEvent
+    }
+  | {
+      kind: 'action'
+      id: string
+      startSeq: number
+      endSeq: number
+      action: ChatActionBreak
     }
 
 export type PendingUserInputRequest = {
@@ -265,6 +283,18 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
   const assistantMessagesByItemID = new Map<string, ChatTranscriptMessage>()
 
   for (const group of groupEvents(events)) {
+    if (group.kind === 'action-break') {
+      currentAssistant = null
+      items.push({
+        kind: 'action',
+        id: `action-${group.id}`,
+        startSeq: group.startSeq,
+        endSeq: group.endSeq,
+        action: chatActionFromGroup(group),
+      })
+      continue
+    }
+
     if (group.kind === 'user-message') {
       const message = chatMessageFromGroup('user', group)
       messages.push(message)
@@ -310,7 +340,12 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
     }
   }
 
-  return items.filter((item) => item.kind === 'debug' || item.message.text.trim() || item.message.tools.length > 0)
+  return items.filter((item) => {
+    if (item.kind === 'debug' || item.kind === 'action') {
+      return true
+    }
+    return item.message.text.trim() || item.message.tools.length > 0
+  })
 }
 
 export function pendingUserInputRequest(events: AgentEvent[]) {
@@ -397,9 +432,10 @@ export function eventLabel(eventOrType: AgentEvent | string) {
   const providerEventType =
     typeof eventOrType === 'string' ? '' : payloadString(eventOrType.payload, ['provider_event_type'])
   if (typeof eventOrType !== 'string' && isPlanEvent(eventOrType)) return 'Plan'
+  if (typeof eventOrType !== 'string' && isActionBreakEvent(eventOrType)) return actionBreakLabel(eventOrType)
   if (providerEventType && type.startsWith('provider.')) return providerEventType
   if (type === 'session.status.updated') return 'Session status'
-  if (type.startsWith('user.action')) return 'User action'
+  if (type.startsWith('session.action') || type.startsWith('user.action')) return 'Session action'
   if (type.startsWith('user.message')) return 'User message'
   if (type.startsWith('agent.message')) return 'Agent message'
   if (type.startsWith('agent.plan')) return 'Plan'
@@ -611,7 +647,8 @@ function appendToGroup(group: EventGroup, event: AgentEvent) {
 
 function groupKind(event: AgentEvent): EventGroupKind {
   if (isErrorEvent(event.type, event.status)) return 'error'
-  if (event.type === 'user.message.completed' || event.type === 'user.action.completed') return 'user-message'
+  if (isActionBreakEvent(event)) return 'action-break'
+  if (event.type === 'user.message.completed') return 'user-message'
   if (event.type.startsWith('agent.message')) return 'agent-message'
   if (isPlanEvent(event)) return 'plan'
   if (event.type.startsWith('agent.thinking')) return 'thinking'
@@ -704,6 +741,35 @@ function chatMessageFromGroup(role: ChatTranscriptMessage['role'], group: EventG
     streaming: group.status === 'delta' || group.status === 'started',
     startSeq: group.startSeq,
     endSeq: group.endSeq,
+  }
+}
+
+function chatActionFromGroup(group: EventGroup): ChatActionBreak {
+  const event = group.events[0]
+  const action = event ? payloadString(event.payload, ['action']) : ''
+  return {
+    id: `action-${group.startSeq}`,
+    action,
+    label: event ? actionBreakLabel(event) : group.label,
+    createdAt: event?.created_at ?? '',
+    startSeq: group.startSeq,
+    endSeq: group.endSeq,
+  }
+}
+
+function isActionBreakEvent(event: AgentEvent) {
+  return event.type === 'session.action.completed' || event.type === 'user.action.completed'
+}
+
+function actionBreakLabel(event: AgentEvent) {
+  const action = payloadString(event.payload, ['action']).trim().toLowerCase()
+  switch (action) {
+    case 'clear':
+      return 'CONVERSATION CLEARED'
+    case 'compact':
+      return 'CONVERSATION COMPACTED'
+    default:
+      return payloadString(event.payload, ['label']) || 'SESSION ACTION'
   }
 }
 
@@ -1058,6 +1124,7 @@ function syncMessageTimelineItem(items: ChatTimelineItem[], message: ChatTranscr
 function isHiddenDebugGroup(group: EventGroup) {
   switch (group.kind) {
     case 'user-message':
+    case 'action-break':
     case 'agent-message':
     case 'plan':
     case 'tool-call':

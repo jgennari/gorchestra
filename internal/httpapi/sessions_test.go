@@ -818,9 +818,10 @@ func TestCodexRunStartedPersistsProviderSessionID(t *testing.T) {
 	}
 }
 
-func TestClearCodexSessionReplacesProviderSessionID(t *testing.T) {
+func TestClearCodexSessionClearsProviderSessionID(t *testing.T) {
 	ctx := context.Background()
-	agent := codexThreadAgent{threadID: "thread_new"}
+	agent := newBlockingAgent()
+	agent.agentType = "codex"
 	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
 	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
 		Title:     "Codex run",
@@ -835,36 +836,47 @@ func TestClearCodexSessionReplacesProviderSessionID(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set provider session id: %v", err)
 	}
+	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: store.SessionStatusFailed,
+	}); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
 
 	rec := postJSON(handler, "/api/sessions/"+session.ID+"/clear", ``)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
 	}
-
-	waitFor(t, func() bool {
-		session, err := dbStore.GetSession(ctx, session.ID)
-		return err == nil && session.Status == store.SessionStatusIdle
-	})
+	var response submitMessageResponse
+	decodeJSON(t, rec, &response)
+	if response.Status != string(store.SessionStatusIdle) {
+		t.Fatalf("expected idle response status, got %q", response.Status)
+	}
 
 	updated, err := dbStore.GetSession(ctx, session.ID)
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if updated.ProviderSessionID != "thread_new" {
-		t.Fatalf("expected provider session id thread_new, got %q", updated.ProviderSessionID)
+	if updated.ProviderSessionID != "" {
+		t.Fatalf("expected provider session id to be cleared, got %q", updated.ProviderSessionID)
+	}
+	if updated.Status != store.SessionStatusIdle {
+		t.Fatalf("expected session status idle, got %q", updated.Status)
 	}
 
 	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
 	assertEventTypes(t, events, []string{
-		"user.action.completed",
-		"session.status.updated",
-		"agent.run.started",
-		"agent.run.completed",
+		"session.action.completed",
 		"session.status.updated",
 	})
 	assertPayloadAction(t, events[0], "clear")
-	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
-	assertPayloadStatus(t, events[4], store.SessionStatusIdle)
+	assertPayloadStatus(t, events[1], store.SessionStatusIdle)
+
+	select {
+	case input := <-agent.started:
+		t.Fatalf("expected clear not to start codex agent, got %#v", input)
+	default:
+	}
 }
 
 func TestCompactCodexSessionStartsActionRun(t *testing.T) {
@@ -905,7 +917,7 @@ func TestCompactCodexSessionStartsActionRun(t *testing.T) {
 	}
 
 	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
-	assertEventTypes(t, events, []string{"user.action.completed", "session.status.updated"})
+	assertEventTypes(t, events, []string{"session.action.completed", "session.status.updated"})
 	assertPayloadAction(t, events[0], "compact")
 	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
 

@@ -47,6 +47,8 @@ export function RunHealthRail({
   const codexActionDisabled =
     !session || session.agent_type !== 'codex' || session.status === 'running' || Boolean(session.archived_at) || actionPending
   const compactDisabled = codexActionDisabled || !session?.provider_session_id
+  const showCodexActions = session?.agent_type === 'codex'
+  const showTokenPanel = Boolean(tokenUsage) || showCodexActions
 
   return (
     <aside className="command-rail flex h-full w-full shrink-0 flex-col px-3 py-4">
@@ -65,15 +67,19 @@ export function RunHealthRail({
             <Metric label="Events" value={totalEventCount} />
             <Metric label="Tools" value={totalToolCount} />
           </div>
-        </RailPanel>
-
-        <RailPanel>
-          <RailSectionTitle icon={Clock3} label="Latest" />
-          <div className="mt-2 min-w-0">
-            <p className="truncate text-xs font-medium">{latestEvent ? eventLabel(latestEvent) : 'No events'}</p>
-            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-              {latestEvent ? formatShortDateTime(latestEvent.created_at) : 'Waiting for activity'}
-            </p>
+          <div className="mt-3 border-t border-border/60 pt-3">
+            <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              <Clock3 className="size-3" aria-hidden="true" />
+              <span>Latest</span>
+            </div>
+            <div className="mt-1 flex w-full min-w-0 items-center gap-2">
+              <p className="min-w-0 flex-1 truncate text-xs font-medium">
+                {latestEvent ? eventLabel(latestEvent) : 'No events'}
+              </p>
+              <p className="ml-auto shrink-0 text-right text-[11px] text-muted-foreground">
+                {latestEvent ? formatShortDateTime(latestEvent.created_at) : 'Waiting for activity'}
+              </p>
+            </div>
           </div>
         </RailPanel>
       </div>
@@ -83,37 +89,22 @@ export function RunHealthRail({
       </div>
 
       <div className="mt-auto space-y-3 pt-3">
-        {tokenUsage ? (
+        {showTokenPanel ? (
           <RailPanel>
             <RailSectionTitle icon={Gauge} label="Tokens" />
-            <TokenUsageView usage={tokenUsage} />
+            {tokenUsage ? <TokenUsageView usage={tokenUsage} /> : <TokenUsageEmptyState />}
+            {showCodexActions ? (
+              <CodexContextActions
+                clearPending={clearPending}
+                compactPending={compactPending}
+                clearDisabled={codexActionDisabled}
+                compactDisabled={compactDisabled}
+                onClear={onClear}
+                onCompact={onCompact}
+              />
+            ) : null}
           </RailPanel>
         ) : null}
-
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            className="justify-center border-border/70 bg-background/40 px-2 text-muted-foreground hover:bg-background/70"
-            disabled={codexActionDisabled}
-            onClick={() => void onClear()}
-            aria-label="Clear Codex context"
-          >
-            {clearPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Eraser aria-hidden="true" />}
-            <span>{clearPending ? 'Clearing' : 'Clear'}</span>
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            className="justify-center border-border/70 bg-background/40 px-2 text-muted-foreground hover:bg-background/70"
-            disabled={compactDisabled}
-            onClick={() => void onCompact()}
-            aria-label="Compact Codex context"
-          >
-            {compactPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
-            <span>{compactPending ? 'Compacting' : 'Compact'}</span>
-          </Button>
-        </div>
 
         <Button
           type="button"
@@ -415,6 +406,53 @@ function TokenUsageView({ usage }: { usage: TokenUsageSummary }) {
       <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
         {formatTokenCount(usage.total.reasoningOutputTokens)} reasoning
       </p>
+    </div>
+  )
+}
+
+function TokenUsageEmptyState() {
+  return <p className="mt-3 text-[11px] text-muted-foreground">No token usage yet</p>
+}
+
+function CodexContextActions({
+  clearPending,
+  compactPending,
+  clearDisabled,
+  compactDisabled,
+  onClear,
+  onCompact,
+}: {
+  clearPending: boolean
+  compactPending: boolean
+  clearDisabled: boolean
+  compactDisabled: boolean
+  onClear: () => Promise<void>
+  onCompact: () => Promise<void>
+}) {
+  return (
+    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/60 pt-3">
+      <Button
+        type="button"
+        variant="outline"
+        className="justify-center border-border/70 bg-background/40 px-2 text-muted-foreground hover:bg-background/70"
+        disabled={clearDisabled}
+        onClick={() => void onClear()}
+        aria-label="Clear Codex context"
+      >
+        {clearPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Eraser aria-hidden="true" />}
+        <span>{clearPending ? 'Clearing' : 'Clear'}</span>
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        className="justify-center border-border/70 bg-background/40 px-2 text-muted-foreground hover:bg-background/70"
+        disabled={compactDisabled}
+        onClick={() => void onCompact()}
+        aria-label="Compact Codex context"
+      >
+        {compactPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
+        <span>{compactPending ? 'Compacting' : 'Compact'}</span>
+      </Button>
     </div>
   )
 }
