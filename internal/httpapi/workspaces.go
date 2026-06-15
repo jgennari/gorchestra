@@ -50,10 +50,17 @@ type workspaceRootResponse struct {
 }
 
 type workspaceBrowseResponse struct {
-	RootID   string                   `json:"root_id,omitempty"`
-	RootPath string                   `json:"root_path"`
-	Path     string                   `json:"path"`
-	Entries  []workspaceEntryResponse `json:"entries"`
+	RootID     string                       `json:"root_id,omitempty"`
+	RootPath   string                       `json:"root_path"`
+	Path       string                       `json:"path"`
+	Entries    []workspaceEntryResponse     `json:"entries"`
+	GitSummary *workspaceGitSummaryResponse `json:"git_summary,omitempty"`
+}
+
+type workspaceGitSummaryResponse struct {
+	Added    int `json:"added"`
+	Modified int `json:"modified"`
+	Deleted  int `json:"deleted"`
 }
 
 type workspaceEntryResponse struct {
@@ -210,12 +217,14 @@ func (api API) sessionFilesHandler(w http.ResponseWriter, r *http.Request) {
 		writeWorkspacePathError(w, err)
 		return
 	}
-	applyGitStatuses(workspacePath, entries)
+	gitStatuses := gitStatusesForWorkspace(workspacePath)
+	applyGitStatusesFromMap(gitStatuses, entries)
 
 	writeJSON(w, http.StatusOK, workspaceBrowseResponse{
-		RootPath: session.WorkspacePath,
-		Path:     relativePath,
-		Entries:  entries,
+		RootPath:   session.WorkspacePath,
+		Path:       relativePath,
+		Entries:    entries,
+		GitSummary: gitSummaryForStatuses(gitStatuses),
 	})
 }
 
@@ -713,12 +722,38 @@ func shouldSkipSearchDirectory(name string) bool {
 
 func applyGitStatuses(rootPath string, entries []workspaceEntryResponse) {
 	statuses := gitStatusesForWorkspace(rootPath)
+	applyGitStatusesFromMap(statuses, entries)
+}
+
+func applyGitStatusesFromMap(statuses map[string]string, entries []workspaceEntryResponse) {
 	if len(statuses) == 0 {
 		return
 	}
 	for index := range entries {
 		entries[index].GitStatus = gitStatusForPath(statuses, entries[index].Path, entries[index].Type == "directory")
 	}
+}
+
+func gitSummaryForStatuses(statuses map[string]string) *workspaceGitSummaryResponse {
+	if len(statuses) == 0 {
+		return nil
+	}
+	summary := workspaceGitSummaryResponse{}
+	for _, status := range statuses {
+		switch status {
+		case "added", "untracked":
+			summary.Added++
+		case "deleted":
+			summary.Deleted++
+		case "modified", "renamed", "copied", "conflicted":
+			summary.Modified++
+		default:
+			if status != "" {
+				summary.Modified++
+			}
+		}
+	}
+	return &summary
 }
 
 func applyGitStatusesToSearchResults(rootPath string, entries []workspaceSearchResultResponse) {

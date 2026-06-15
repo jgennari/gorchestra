@@ -119,6 +119,16 @@ export type ChatActionBreak = {
   endSeq: number
 }
 
+export type ChatRunError = {
+  id: string
+  label: string
+  error: string
+  status: string
+  createdAt: string
+  startSeq: number
+  endSeq: number
+}
+
 export type ChatTimelineItem =
   | {
       kind: 'message'
@@ -133,6 +143,13 @@ export type ChatTimelineItem =
       startSeq: number
       endSeq: number
       event: ChatDebugEvent
+    }
+  | {
+      kind: 'error'
+      id: string
+      startSeq: number
+      endSeq: number
+      error: ChatRunError
     }
   | {
       kind: 'action'
@@ -335,12 +352,14 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
     }
 
     if (group.kind === 'error') {
-      currentAssistant = ensureAssistantMessage(messages, currentAssistant, group)
-      currentAssistant.text = mergeChatText(currentAssistant.text, group.error || group.text || group.label)
-      currentAssistant.status = 'failed'
-      currentAssistant.streaming = false
-      updateMessageRange(currentAssistant, group)
-      syncMessageTimelineItem(items, currentAssistant)
+      items.push({
+        kind: 'error',
+        id: `error-${group.id}`,
+        startSeq: group.startSeq,
+        endSeq: group.endSeq,
+        error: chatRunErrorFromGroup(group),
+      })
+      currentAssistant = null
       continue
     }
 
@@ -356,7 +375,7 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
   }
 
   return items.filter((item) => {
-    if (item.kind === 'debug' || item.kind === 'action') {
+    if (item.kind === 'debug' || item.kind === 'action' || item.kind === 'error') {
       return true
     }
     return item.message.text.trim() || item.message.tools.length > 0
@@ -1204,6 +1223,25 @@ function chatDebugEventFromGroup(group: EventGroup): ChatDebugEvent {
     payload: group.events.length === 1 ? group.events[0]?.payload : group.events.map(rawEventSummary),
     createdAt: group.events[0]?.created_at ?? '',
   }
+}
+
+function chatRunErrorFromGroup(group: EventGroup): ChatRunError {
+  return {
+    id: `error-${group.id}`,
+    label: runErrorLabel(group),
+    status: group.status,
+    startSeq: group.startSeq,
+    endSeq: group.endSeq,
+    error: group.error || group.text || group.label,
+    createdAt: group.events[0]?.created_at ?? '',
+  }
+}
+
+function runErrorLabel(group: EventGroup) {
+  if (group.events.some((event) => event.type === 'agent.run.failed')) {
+    return 'Run failed'
+  }
+  return group.label
 }
 
 function rawEventSummary(event: AgentEvent) {

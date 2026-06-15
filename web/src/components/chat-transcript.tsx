@@ -16,6 +16,7 @@ import type { AgentEvent } from '@/lib/api'
 import type {
   ChatActionBreak,
   ChatDebugEvent,
+  ChatRunError,
   ChatTimelineItem,
   ChatTranscriptAttachment,
   ChatTranscriptMessage,
@@ -259,8 +260,14 @@ function timelineRowSpacing(item: ChatTimelineItem, previous: ChatTimelineItem |
   if (item.kind === 'debug' && previous?.kind === 'debug') {
     return 'mt-1'
   }
+  if (item.kind === 'error' && previous?.kind === 'error') {
+    return 'mt-2'
+  }
   if (item.kind === 'debug' || previous?.kind === 'debug') {
     return 'mt-2'
+  }
+  if (item.kind === 'error' || previous?.kind === 'error') {
+    return 'mt-3'
   }
   return 'mt-5'
 }
@@ -300,6 +307,9 @@ function ChatTimelineRow({
   }
   if (item.kind === 'debug') {
     return <DebugEventRow event={item.event} />
+  }
+  if (item.kind === 'error') {
+    return <RunErrorRow error={item.error} />
   }
   return (
     <ChatMessageRow
@@ -902,6 +912,35 @@ function DebugEventRow({ event }: { event: ChatDebugEvent }) {
             </pre>
           </div>
         ) : null}
+      </div>
+    </article>
+  )
+}
+
+function RunErrorRow({ error }: { error: ChatRunError }) {
+  const sequence = error.startSeq === error.endSeq ? `#${error.startSeq}` : `#${error.startSeq}-${error.endSeq}`
+  const timestamp = formatMessageTimestamp(error.createdAt)
+
+  return (
+    <article className="flex justify-start" role="alert" aria-label={`${error.label}: ${error.error}`}>
+      <div className="relative max-w-[min(48rem,90%)] rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 pr-12 text-sm text-destructive shadow-sm">
+        <FloatingCopyButton label="Copy error" value={error.error} />
+        <div className="flex min-w-0 items-center gap-2 text-xs font-medium">
+          <span className="min-w-0 flex-1 truncate">{error.label}</span>
+          <span className="shrink-0 text-[11px] capitalize text-destructive/75">{error.status}</span>
+          <span className="shrink-0 text-[11px] tabular-nums text-destructive/65">{sequence}</span>
+          {timestamp ? (
+            <time
+              className="shrink-0 text-[11px] font-normal tabular-nums text-destructive/65"
+              dateTime={error.createdAt}
+            >
+              {timestamp}
+            </time>
+          ) : null}
+        </div>
+        <p className="mt-1 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-destructive">
+          {error.error}
+        </p>
       </div>
     </article>
   )

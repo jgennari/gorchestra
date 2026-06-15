@@ -136,11 +136,18 @@ export type WorkspaceSearchResult = WorkspaceEntry & {
   line_text?: string
 }
 
+export type WorkspaceGitSummary = {
+  added: number
+  modified: number
+  deleted: number
+}
+
 export type WorkspaceBrowseResponse = {
   root_id?: string
   root_path: string
   path: string
   entries: WorkspaceEntry[]
+  git_summary?: WorkspaceGitSummary
 }
 
 export type WorkspaceFileContent = {

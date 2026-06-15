@@ -95,6 +95,58 @@
   border-color: hsl(50 82% 43% / 0.76);
 }
 
+.git-file-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  padding: 0.125rem 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.git-file-tag--added {
+  background: hsl(var(--success) / 0.14);
+  color: hsl(var(--success));
+}
+
+.git-file-tag--modified {
+  background: hsl(var(--warning) / 0.18);
+  color: hsl(34 82% 31%);
+}
+
+.git-file-tag--deleted {
+  background: hsl(var(--destructive) / 0.12);
+  color: hsl(var(--destructive));
+}
+
+.git-file-tag--neutral {
+  background: hsl(var(--surface-muted));
+  color: hsl(var(--muted-foreground));
+}
+
+:root[data-theme='dark'] .git-file-tag--added {
+  background: hsl(var(--success) / 0.22);
+  color: hsl(156 78% 74%);
+}
+
+:root[data-theme='dark'] .git-file-tag--modified {
+  background: hsl(var(--warning) / 0.24);
+  color: hsl(40 96% 76%);
+}
+
+:root[data-theme='dark'] .git-file-tag--deleted {
+  background: hsl(var(--destructive) / 0.22);
+  color: hsl(4 90% 76%);
+}
+
+:root[data-theme='dark'] .git-file-tag--neutral {
+  background: hsl(var(--surface-muted) / 0.9);
+  color: hsl(var(--foreground));
+}
+
 .chat-canvas {
   background:
     linear-gradient(hsl(var(--border) / 0.2) 1px, transparent 1px),

@@ -30,6 +30,13 @@ function event(
   }
 }
 
+function failedEvent(seq: number, type = 'agent.run.failed', payload: Record<string, unknown> = { error: 'run failed' }) {
+  return {
+    ...event(seq, type, payload),
+    status: 'failed',
+  }
+}
+
 test('event reducer appends events in sequence order', () => {
   const events = appendEvents([], [event(3), event(1), event(2)])
 
@@ -354,6 +361,31 @@ test('chat transcript merges streaming assistant deltas with completion text', (
   expect(transcript).toHaveLength(2)
   expect(transcript[0]).toMatchObject({ role: 'user', text: 'Hello' })
   expect(transcript[1]).toMatchObject({ role: 'assistant', text: 'Hi there', streaming: false })
+})
+
+test('chat timeline renders run failures as non-message error rows', () => {
+  const events = [
+    event(1, 'user.message.completed', { text: 'Make the change' }),
+    event(2, 'agent.message.completed', { text: 'I started the work.' }),
+    failedEvent(3, 'agent.run.failed', { error: 'read codex app-server stdout: bufio.Scanner: token too long' }),
+  ]
+  const timeline = buildChatTimeline(events, false)
+
+  expect(timeline.map((item) => item.kind)).toEqual(['message', 'message', 'error'])
+  expect(buildChatTranscript(events).map((message) => message.text)).toEqual(['Make the change', 'I started the work.'])
+
+  const errorItem = timeline[2]
+  expect(errorItem?.kind).toBe('error')
+  if (errorItem?.kind !== 'error') {
+    throw new Error('expected error timeline item')
+  }
+  expect(errorItem.error).toMatchObject({
+    label: 'Run failed',
+    error: 'read codex app-server stdout: bufio.Scanner: token too long',
+    status: 'failed',
+    startSeq: 3,
+    endSeq: 3,
+  })
 })
 
 test('chat timeline renders session action markers as separators', () => {

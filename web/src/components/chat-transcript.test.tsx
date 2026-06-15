@@ -41,6 +41,29 @@ test('renders session actions as conversation breaks', () => {
   expect(screen.queryByText('Clear context')).not.toBeInTheDocument()
 })
 
+test('renders run failures as system error rows instead of assistant text', () => {
+  const errorText = 'read codex app-server stdout: bufio.Scanner: token too long'
+
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'user.message.completed', 'user', 'completed', { text: 'Keep working' }),
+        event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'I started the change.' }),
+        event(3, 'agent.run.failed', 'assistant', 'failed', { error: errorText }),
+      ]}
+    />,
+  )
+
+  const alert = screen.getByRole('alert', { name: `Run failed: ${errorText}` })
+  expect(alert).toHaveTextContent('Run failed')
+  expect(alert).toHaveTextContent(errorText)
+  expect(alert).toHaveTextContent('#3')
+
+  const assistantMessage = screen.getByText('Assistant').closest('article')
+  expect(assistantMessage).toHaveTextContent('I started the change.')
+  expect(assistantMessage).not.toHaveTextContent(errorText)
+})
+
 test('renders markdown in chat messages', () => {
   render(
     <ChatTranscript

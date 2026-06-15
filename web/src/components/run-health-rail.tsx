@@ -1,7 +1,14 @@
 import { Activity, Archive, Clock3, Eraser, FileText, Folder, Gauge, Loader2, Minimize2, RefreshCw, Search, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { AgentEvent, Session, WorkspaceEntry, WorkspaceFileContent, WorkspaceSearchResult } from '@/lib/api'
+import type {
+  AgentEvent,
+  Session,
+  WorkspaceEntry,
+  WorkspaceFileContent,
+  WorkspaceGitSummary,
+  WorkspaceSearchResult,
+} from '@/lib/api'
 import { getSessionFileContent, listSessionFiles, searchSessionFiles } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
 import type { TokenUsageSummary } from '@/lib/events'
@@ -135,6 +142,7 @@ function FileExplorer({
 }) {
   const [currentPath, setCurrentPath] = useState('')
   const [entries, setEntries] = useState<WorkspaceEntry[]>([])
+  const [gitSummary, setGitSummary] = useState<WorkspaceGitSummary | null>(null)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<WorkspaceSearchResult[]>([])
   const [loading, setLoading] = useState(false)
@@ -165,6 +173,7 @@ function FileExplorer({
   useEffect(() => {
     setCurrentPath('')
     setEntries([])
+    setGitSummary(null)
     setResults([])
     setQuery('')
     setError('')
@@ -183,9 +192,11 @@ function FileExplorer({
         const response = await listSessionFiles(sessionID, currentPath)
         if (cancelled) return
         setEntries(response.entries)
+        setGitSummary(response.git_summary ?? null)
       } catch (loadError) {
         if (!cancelled) {
           setEntries([])
+          setGitSummary(null)
           setError(loadError instanceof Error ? loadError.message : 'Failed to load files')
         }
       } finally {
@@ -257,7 +268,10 @@ function FileExplorer({
   return (
     <RailPanel className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between gap-2">
-        <RailSectionTitle icon={Folder} label="Files" />
+        <div className="flex min-w-0 items-center gap-2">
+          <RailSectionTitle icon={Folder} label="Files" />
+          <GitSummary summary={gitSummary} />
+        </div>
         <Button
           type="button"
           variant="ghost"
@@ -382,6 +396,48 @@ function SearchMatchDetail({ entry }: { entry: WorkspaceEntry | WorkspaceSearchR
       {result.match_type === 'content' && result.line_text ? detail : null}
     </span>
   )
+}
+
+function GitSummary({ summary }: { summary: WorkspaceGitSummary | null }) {
+  if (!summary || summary.added + summary.modified + summary.deleted === 0) {
+    return null
+  }
+
+  return (
+    <div className="flex shrink-0 items-center gap-1" aria-label="Git file summary">
+      <GitSummaryBadge label="+" value={summary.added} tone="added" />
+      <GitSummaryBadge label="~" value={summary.modified} tone="modified" />
+      <GitSummaryBadge label="-" value={summary.deleted} tone="deleted" />
+    </div>
+  )
+}
+
+type GitFileTone = 'added' | 'modified' | 'deleted' | 'neutral'
+
+function GitSummaryBadge({ label, value, tone }: { label: string; value: number; tone: GitFileTone }) {
+  if (value === 0) {
+    return null
+  }
+
+  return (
+    <span className={cn('git-file-tag', gitFileToneClassName(tone))} title={`${gitSummaryLabel(label)}: ${value}`}>
+      {label}
+      {value}
+    </span>
+  )
+}
+
+function gitSummaryLabel(label: string) {
+  switch (label) {
+    case '+':
+      return 'Added'
+    case '~':
+      return 'Modified'
+    case '-':
+      return 'Deleted'
+    default:
+      return label
+  }
 }
 
 function ActiveChatDot({
@@ -534,13 +590,7 @@ function TokenMetric({ label, value }: { label: string; value: number }) {
 
 function GitStatus({ status }: { status: string }) {
   return (
-    <span
-      className={cn(
-        'shrink-0 rounded px-1 py-0.5 text-[9px] font-medium uppercase leading-none',
-        gitStatusClassName(status),
-      )}
-      title={`Git: ${status}`}
-    >
+    <span className={cn('git-file-tag shrink-0 uppercase', gitStatusClassName(status))} title={`Git: ${status}`}>
       {gitStatusLabel(status)}
     </span>
   )
@@ -549,15 +599,28 @@ function GitStatus({ status }: { status: string }) {
 function gitStatusClassName(status: string) {
   switch (status) {
     case 'modified':
-      return 'bg-[hsl(var(--warning))]/18 text-amber-700 dark:text-amber-300'
+      return gitFileToneClassName('modified')
     case 'added':
     case 'untracked':
-      return 'bg-[hsl(var(--success))]/14 text-[hsl(var(--success))]'
+      return gitFileToneClassName('added')
     case 'deleted':
     case 'conflicted':
-      return 'bg-destructive/12 text-destructive'
+      return gitFileToneClassName('deleted')
     default:
-      return 'bg-surface-muted text-muted-foreground'
+      return gitFileToneClassName('neutral')
+  }
+}
+
+function gitFileToneClassName(tone: GitFileTone) {
+  switch (tone) {
+    case 'added':
+      return 'git-file-tag--added'
+    case 'modified':
+      return 'git-file-tag--modified'
+    case 'deleted':
+      return 'git-file-tag--deleted'
+    default:
+      return 'git-file-tag--neutral'
   }
 }
 

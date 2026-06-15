@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -216,6 +217,53 @@ func TestSessionFileAPIsListSearchAndReadWorkspaceFiles(t *testing.T) {
 		t.Fatalf("expected binary update status %d, got %d with body %s", http.StatusBadRequest, binaryUpdateRec.Code, binaryUpdateRec.Body.String())
 	}
 	assertErrorResponse(t, binaryUpdateRec, "file must be UTF-8 text")
+}
+
+func TestSessionFilesIncludesGitSummary(t *testing.T) {
+	ctx := context.Background()
+	workspace := canonicalPath(t, t.TempDir())
+	runGit(t, workspace, "init")
+	if err := os.WriteFile(filepath.Join(workspace, "modified.txt"), []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("write modified seed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "deleted.txt"), []byte("delete me\n"), 0o644); err != nil {
+		t.Fatalf("write deleted seed: %v", err)
+	}
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "-c", "user.name=Gorchestra Test", "-c", "user.email=test@example.com", "commit", "-m", "seed")
+
+	if err := os.WriteFile(filepath.Join(workspace, "modified.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("modify tracked file: %v", err)
+	}
+	if err := os.Remove(filepath.Join(workspace, "deleted.txt")); err != nil {
+		t.Fatalf("delete tracked file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "added.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write added file: %v", err)
+	}
+
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Git files",
+		AgentType:     "fake",
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	listRec := get(handler, "/api/sessions/"+session.ID+"/files")
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d with body %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+	var response workspaceBrowseResponse
+	decodeJSON(t, listRec, &response)
+	if response.GitSummary == nil {
+		t.Fatal("expected git summary")
+	}
+	if response.GitSummary.Added != 1 || response.GitSummary.Modified != 1 || response.GitSummary.Deleted != 1 {
+		t.Fatalf("expected added/modified/deleted counts of 1, got %#v", response.GitSummary)
+	}
 }
 
 func TestCreateSessionRejectsUnsupportedAgent(t *testing.T) {
@@ -2033,4 +2081,17 @@ func decodeAgentOptions(t *testing.T, raw json.RawMessage) map[string]map[string
 		t.Fatalf("decode agent options: %v", err)
 	}
 	return options
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if _, lookErr := exec.LookPath("git"); lookErr != nil {
+			t.Skip("git is not available")
+		}
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
 }

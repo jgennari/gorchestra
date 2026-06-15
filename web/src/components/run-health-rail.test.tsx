@@ -319,6 +319,36 @@ test('run health rail file explorer external refresh preserves the current folde
   )
 })
 
+test('run health rail file explorer shows git file summary counts', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    if (String(url) === '/api/sessions/sess_1/files') {
+      return jsonResponse({
+        root_path: '/repo',
+        path: '',
+        git_summary: { added: 2, modified: 3, deleted: 1 },
+        entries: [],
+      })
+    }
+    throw new Error(`unexpected URL ${String(url)}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onArchive={async () => undefined}
+    />,
+  )
+
+  const summary = await screen.findByLabelText('Git file summary')
+  expect(within(summary).getByText('+2')).toBeInTheDocument()
+  expect(within(summary).getByText('~3')).toBeInTheDocument()
+  expect(within(summary).getByText('-1')).toBeInTheDocument()
+})
+
 test('run health rail file explorer dot folders hide at root and navigate from subfolders', async () => {
   const user = userEvent.setup()
   const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
