@@ -1,7 +1,8 @@
-import { Activity, Archive, Clock3, Gauge } from 'lucide-react'
+import { Activity, Archive, ChevronUp, Clock3, FileText, Folder, Gauge, Loader2, Search } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { ReactNode } from 'react'
-import type { AgentEvent, Session } from '@/lib/api'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import type { AgentEvent, Session, WorkspaceEntry, WorkspaceFileContent } from '@/lib/api'
+import { getSessionFileContent, listSessionFiles, searchSessionFiles } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
 import type { TokenUsageSummary } from '@/lib/events'
 import { eventLabel, groupEvents, latestTokenUsage } from '@/lib/events'
@@ -14,6 +15,7 @@ type Props = {
   streamState: StreamState
   streamError: string
   onArchive: () => Promise<void>
+  onOpenFile?: (file: WorkspaceFileContent) => void
   archivePending?: boolean
 }
 
@@ -23,6 +25,7 @@ export function RunHealthRail({
   streamState,
   streamError,
   onArchive,
+  onOpenFile,
   archivePending = false,
 }: Props) {
   const toolCount = groupEvents(events).filter((group) => group.kind === 'tool-call' || group.kind === 'file-change').length
@@ -30,7 +33,7 @@ export function RunHealthRail({
   const tokenUsage = latestTokenUsage(events)
 
   return (
-    <aside className="command-rail flex h-full w-[232px] shrink-0 flex-col px-3 py-4">
+    <aside className="command-rail flex h-full w-full shrink-0 flex-col px-3 py-4">
       <div className="space-y-3">
         <RailPanel>
           <div className="flex items-center justify-between gap-2">
@@ -59,6 +62,10 @@ export function RunHealthRail({
         </RailPanel>
       </div>
 
+      <div className="mt-3 min-h-0 flex-1">
+        <FileExplorer session={session} onOpenFile={onOpenFile} />
+      </div>
+
       <div className="mt-auto space-y-3 pt-3">
         {tokenUsage ? (
           <RailPanel>
@@ -80,6 +87,187 @@ export function RunHealthRail({
         </Button>
       </div>
     </aside>
+  )
+}
+
+function FileExplorer({
+  session,
+  onOpenFile = () => undefined,
+}: {
+  session: Session | null
+  onOpenFile?: (file: WorkspaceFileContent) => void
+}) {
+  const [currentPath, setCurrentPath] = useState('')
+  const [entries, setEntries] = useState<WorkspaceEntry[]>([])
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<WorkspaceEntry[]>([])
+  const [loading, setLoading] = useState(false)
+  const [searching, setSearching] = useState(false)
+  const [error, setError] = useState('')
+  const sessionID = session?.id ?? ''
+  const displayEntries = query.trim() ? results : entries
+  const pathLabel = useMemo(() => basename(currentPath) || 'Workspace', [currentPath])
+
+  useEffect(() => {
+    setCurrentPath('')
+    setEntries([])
+    setResults([])
+    setQuery('')
+    setError('')
+  }, [sessionID])
+
+  useEffect(() => {
+    if (!sessionID) {
+      return
+    }
+
+    let cancelled = false
+    async function loadFiles() {
+      setLoading(true)
+      setError('')
+      try {
+        const response = await listSessionFiles(sessionID, currentPath)
+        if (cancelled) return
+        setEntries(response.entries)
+      } catch (loadError) {
+        if (!cancelled) {
+          setEntries([])
+          setError(loadError instanceof Error ? loadError.message : 'Failed to load files')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void loadFiles()
+    return () => {
+      cancelled = true
+    }
+  }, [currentPath, sessionID])
+
+  useEffect(() => {
+    const trimmed = query.trim()
+    if (!sessionID || !trimmed) {
+      setResults([])
+      return
+    }
+
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      async function runSearch() {
+        setSearching(true)
+        setError('')
+        try {
+          const response = await searchSessionFiles(sessionID, trimmed, currentPath)
+          if (!cancelled) setResults(response.results)
+        } catch (searchError) {
+          if (!cancelled) {
+            setResults([])
+            setError(searchError instanceof Error ? searchError.message : 'Failed to search files')
+          }
+        } finally {
+          if (!cancelled) setSearching(false)
+        }
+      }
+      void runSearch()
+    }, 220)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [currentPath, query, sessionID])
+
+  async function openEntry(entry: WorkspaceEntry) {
+    if (!sessionID) {
+      return
+    }
+    if (entry.type === 'directory') {
+      setCurrentPath(entry.path)
+      setQuery('')
+      return
+    }
+
+    setLoading(true)
+    setError('')
+    try {
+      const content = await getSessionFileContent(sessionID, entry.path)
+      onOpenFile(content)
+    } catch (contentError) {
+      setError(contentError instanceof Error ? contentError.message : 'Failed to read file')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <RailPanel className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center justify-between gap-2">
+        <RailSectionTitle icon={Folder} label="Files" />
+        <button
+          type="button"
+          className="inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+          disabled={!currentPath || !sessionID}
+          onClick={() => {
+            setCurrentPath(parentPath(currentPath))
+          }}
+          aria-label="Go to parent folder"
+        >
+          <ChevronUp className="size-3.5" aria-hidden="true" />
+        </button>
+      </div>
+
+      <div className="mt-2 flex items-center gap-1.5 rounded border border-border/70 bg-background/55 px-2 py-1.5">
+        <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <input
+          aria-label="Search files"
+          value={query}
+          disabled={!sessionID}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search files"
+          className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+        />
+        {searching ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-hidden="true" /> : null}
+      </div>
+
+      <p className="mt-2 truncate text-[11px] text-muted-foreground" title={session?.workspace_path || undefined}>
+        {session ? pathLabel : 'No session selected'}
+      </p>
+
+      <div className="mt-1 min-h-0 flex-1 overflow-auto">
+        {!sessionID ? (
+          <p className="py-3 text-xs text-muted-foreground">Select a session to browse files.</p>
+        ) : loading && entries.length === 0 ? (
+          <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+            Loading files
+          </div>
+        ) : displayEntries.length > 0 ? (
+          <div className="space-y-0.5">
+            {displayEntries.map((entry) => (
+              <button
+                key={`${entry.type}:${entry.path}`}
+                type="button"
+                className="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-foreground hover:bg-surface-muted/70"
+                onClick={() => void openEntry(entry)}
+              >
+                {entry.type === 'directory' ? (
+                  <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                ) : (
+                  <FileText className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                )}
+                <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                {entry.git_status ? <GitStatus status={entry.git_status} /> : null}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="py-3 text-xs text-muted-foreground">{query.trim() ? 'No matches' : 'No files'}</p>
+        )}
+      </div>
+
+      {error ? <p className="mt-2 shrink-0 text-xs text-destructive">{error}</p> : null}
+    </RailPanel>
   )
 }
 
@@ -109,9 +297,9 @@ function ActiveChatDot({
   )
 }
 
-function RailPanel({ children }: { children: ReactNode }) {
+function RailPanel({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <section className="rounded-md border border-border/70 bg-background/46 p-3 shadow-sm">
+    <section className={cn('rounded-md border border-border/70 bg-background/46 p-3 shadow-sm', className)}>
       {children}
     </section>
   )
@@ -136,9 +324,9 @@ function Metric({ label, value }: { label: string; value: number }) {
 }
 
 function TokenUsageView({ usage }: { usage: TokenUsageSummary }) {
-  const contextPercent = usage.total.totalTokens / usage.modelContextWindow
+  const contextTokens = usage.last.totalTokens > 0 ? usage.last.totalTokens : usage.total.totalTokens
+  const contextPercent = contextTokens / usage.modelContextWindow
   const cachedPercent = usage.total.inputTokens > 0 ? usage.total.cachedInputTokens / usage.total.inputTokens : 0
-  const lastTurnVisible = usage.last.totalTokens > 0 && usage.last.totalTokens !== usage.total.totalTokens
 
   return (
     <div className="mt-3">
@@ -155,7 +343,10 @@ function TokenUsageView({ usage }: { usage: TokenUsageSummary }) {
         />
       </div>
       <p className="mt-1 truncate text-[11px] text-muted-foreground">
-        {formatTokenCount(usage.total.totalTokens)} / {formatTokenCount(usage.modelContextWindow)}
+        {formatTokenCount(contextTokens)} / {formatTokenCount(usage.modelContextWindow)} current
+      </p>
+      <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+        {formatTokenCount(usage.total.totalTokens)} cumulative
       </p>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
@@ -167,7 +358,6 @@ function TokenUsageView({ usage }: { usage: TokenUsageSummary }) {
       </p>
       <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
         {formatTokenCount(usage.total.reasoningOutputTokens)} reasoning
-        {lastTurnVisible ? ` · ${formatTokenCount(usage.last.totalTokens)} last turn` : ''}
       </p>
     </div>
   )
@@ -180,6 +370,65 @@ function TokenMetric({ label, value }: { label: string; value: number }) {
       <p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
     </div>
   )
+}
+
+function GitStatus({ status }: { status: string }) {
+  return (
+    <span
+      className={cn(
+        'shrink-0 rounded px-1 py-0.5 text-[9px] font-medium uppercase leading-none',
+        gitStatusClassName(status),
+      )}
+      title={`Git: ${status}`}
+    >
+      {gitStatusLabel(status)}
+    </span>
+  )
+}
+
+function gitStatusClassName(status: string) {
+  switch (status) {
+    case 'modified':
+      return 'bg-[hsl(var(--warning))]/18 text-amber-700 dark:text-amber-300'
+    case 'added':
+    case 'untracked':
+      return 'bg-[hsl(var(--success))]/14 text-[hsl(var(--success))]'
+    case 'deleted':
+    case 'conflicted':
+      return 'bg-destructive/12 text-destructive'
+    default:
+      return 'bg-surface-muted text-muted-foreground'
+  }
+}
+
+function gitStatusLabel(status: string) {
+  switch (status) {
+    case 'modified':
+      return 'M'
+    case 'added':
+      return 'A'
+    case 'deleted':
+      return 'D'
+    case 'untracked':
+      return '?'
+    case 'conflicted':
+      return '!'
+    case 'renamed':
+      return 'R'
+    default:
+      return status.slice(0, 1)
+  }
+}
+
+function basename(path: string) {
+  const parts = path.split('/').filter(Boolean)
+  return parts.at(-1) ?? ''
+}
+
+function parentPath(path: string) {
+  const parts = path.split('/').filter(Boolean)
+  parts.pop()
+  return parts.join('/')
 }
 
 function streamStateLabel(state: StreamState, error: string) {

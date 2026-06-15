@@ -4,73 +4,145 @@
   min-height: 100vh;
   display: flex;
   overflow: hidden;
-  background:
-    linear-gradient(135deg, hsl(var(--background)), hsl(var(--surface)));
+  background: linear-gradient(135deg, hsl(var(--background)), hsl(var(--surface)));
   color: hsl(var(--foreground));
 }
 
 .command-sidebar {
-  background:
-    linear-gradient(180deg, hsl(var(--sidebar)), hsl(var(--surface)));
+  background: linear-gradient(180deg, hsl(var(--sidebar)), hsl(var(--surface)));
 }
 
 .command-rail {
-  background:
-    linear-gradient(180deg, hsl(var(--rail)), hsl(var(--surface-muted)));
+  background: linear-gradient(180deg, hsl(var(--rail)), hsl(var(--surface-muted)));
   box-shadow:
     inset -1px 0 0 hsl(var(--border) / 0.72),
     inset 1px 0 0 hsl(var(--foreground) / 0.04);
 }
 
 .command-workspace {
-  background:
-    linear-gradient(180deg, hsl(var(--background) / 0.88), hsl(var(--surface) / 0.94));
+  background: linear-gradient(180deg, hsl(var(--background) / 0.88), hsl(var(--surface) / 0.94));
+}
+
+.pane-resize-handle {
+  position: relative;
+  width: 10px;
+  min-width: 10px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pane-resize-handle::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: hsl(var(--border) / 0.62);
+  opacity: 0.55;
+}
+
+.pane-resize-handle:hover::after,
+.pane-resize-handle:focus-visible::after {
+  width: 2px;
+  background: hsl(var(--primary) / 0.62);
+  opacity: 1;
+}
+
+.pane-resize-handle:focus-visible {
+  outline: none;
 }
 
 .command-card {
-  background:
-    linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--surface) / 0.96));
+  background: linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--surface) / 0.96));
   border-color: hsl(var(--border) / 0.72);
 }
 
 .command-composer {
-  background:
-    linear-gradient(180deg, hsl(var(--surface) / 0.58), hsl(var(--background) / 0.70));
+  background: linear-gradient(180deg, hsl(var(--surface) / 0.58), hsl(var(--background) / 0.7));
   backdrop-filter: blur(22px) saturate(1.25);
   -webkit-backdrop-filter: blur(22px) saturate(1.25);
 }
 
 .command-chat-header {
-  background:
-    linear-gradient(180deg, hsl(var(--surface) / 0.58), hsl(var(--background) / 0.70));
+  background: linear-gradient(180deg, hsl(var(--surface) / 0.58), hsl(var(--background) / 0.7));
   backdrop-filter: blur(22px) saturate(1.25);
   -webkit-backdrop-filter: blur(22px) saturate(1.25);
 }
 
-:root[data-theme="dark"] .command-composer {
-  background:
-    linear-gradient(180deg, hsl(var(--surface) / 0.52), hsl(var(--background) / 0.66));
+.command-file-overlay {
+  background: linear-gradient(180deg, hsl(var(--background) / 0.94), hsl(var(--surface) / 0.96));
+  backdrop-filter: blur(24px) saturate(1.15);
+  -webkit-backdrop-filter: blur(24px) saturate(1.15);
 }
 
-:root[data-theme="dark"] .command-chat-header {
-  background:
-    linear-gradient(180deg, hsl(var(--surface) / 0.52), hsl(var(--background) / 0.66));
+:root[data-theme='dark'] .command-composer {
+  background: linear-gradient(180deg, hsl(var(--surface) / 0.52), hsl(var(--background) / 0.66));
+}
+
+:root[data-theme='dark'] .command-chat-header {
+  background: linear-gradient(180deg, hsl(var(--surface) / 0.52), hsl(var(--background) / 0.66));
 }
 
 .codex-plan-composer {
   border-color: hsl(43 92% 68% / 0.72);
 }
 
-:root[data-theme="dark"] .codex-plan-composer {
+:root[data-theme='dark'] .codex-plan-composer {
   border-color: hsl(50 82% 43% / 0.76);
 }
 
 .chat-canvas {
   background:
-    linear-gradient(hsl(var(--border) / 0.20) 1px, transparent 1px),
+    linear-gradient(hsl(var(--border) / 0.2) 1px, transparent 1px),
     linear-gradient(90deg, hsl(var(--border) / 0.16) 1px, transparent 1px),
     linear-gradient(180deg, hsl(var(--background) / 0.56), hsl(var(--surface) / 0.42));
-  background-size: 28px 28px, 28px 28px, 100% 100%;
+  background-size:
+    28px 28px,
+    28px 28px,
+    100% 100%;
+}
+
+.chat-scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 160ms ease;
+}
+
+.chat-scroll-area:hover,
+.chat-scroll-area:focus-within,
+.chat-scroll-area[data-scrolling='true'] {
+  scrollbar-color: hsl(var(--muted-foreground) / 0.32) transparent;
+}
+
+.chat-scroll-area::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.chat-scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-scroll-area::-webkit-scrollbar-thumb {
+  min-height: 48px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: transparent;
+}
+
+.chat-scroll-area:hover::-webkit-scrollbar-thumb,
+.chat-scroll-area:focus-within::-webkit-scrollbar-thumb,
+.chat-scroll-area[data-scrolling='true']::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--muted-foreground) / 0.3);
+}
+
+.chat-scroll-area::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.46);
 }
 
 .thinking-indicator {
@@ -78,14 +150,13 @@
 }
 
 .thinking-indicator__text {
-  background:
-    linear-gradient(
-      90deg,
-      hsl(var(--muted-foreground)) 0%,
-      hsl(var(--primary)) 42%,
-      hsl(var(--glow)) 58%,
-      hsl(var(--muted-foreground)) 100%
-    );
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted-foreground)) 0%,
+    hsl(var(--primary)) 42%,
+    hsl(var(--glow)) 58%,
+    hsl(var(--muted-foreground)) 100%
+  );
   background-size: 240% 240%;
   background-clip: text;
   color: transparent;

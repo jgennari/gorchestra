@@ -306,6 +306,7 @@ type codexRunOptions struct {
 	ReasoningEffort string
 	ServiceTier     string
 	PlanningMode    bool
+	RunDangerously  bool
 }
 
 func runOptionsFromMetadata(metadata map[string]any) codexRunOptions {
@@ -319,6 +320,7 @@ func runOptionsFromMetadata(metadata map[string]any) codexRunOptions {
 		ReasoningEffort: stringMetadataValue(rawOptions, "reasoning_effort"),
 		ServiceTier:     stringMetadataValue(rawOptions, "service_tier"),
 		PlanningMode:    boolMetadataValue(rawOptions, "planning_mode"),
+		RunDangerously:  boolMetadataValue(rawOptions, "run_dangerously"),
 	}
 	if options.ServiceTier == "" && boolMetadataValue(rawOptions, "fast_mode") {
 		options.ServiceTier = defaultFastServiceTier
@@ -636,8 +638,8 @@ func (r *appServerRun) startThread(ctx context.Context, workdir string) error {
 	params := map[string]any{
 		"cwd":                   workdir,
 		"runtimeWorkspaceRoots": []string{workdir},
-		"approvalPolicy":        r.agent.approvalPolicy,
-		"sandbox":               r.agent.sandbox,
+		"approvalPolicy":        r.approvalPolicy(),
+		"sandbox":               r.sandboxMode(),
 		"ephemeral":             false,
 	}
 	if r.agent.model != "" {
@@ -674,8 +676,8 @@ func (r *appServerRun) resumeThread(ctx context.Context, providerSessionID strin
 	params := map[string]any{
 		"threadId":       threadID,
 		"cwd":            workdir,
-		"approvalPolicy": r.agent.approvalPolicy,
-		"sandbox":        r.agent.sandbox,
+		"approvalPolicy": r.approvalPolicy(),
+		"sandbox":        r.sandboxMode(),
 	}
 	if r.agent.model != "" {
 		params["model"] = r.agent.model
@@ -718,9 +720,9 @@ func (r *appServerRun) startTurn(ctx context.Context, message string, workdir st
 		"input":                 userInputItems(message, r.attachments),
 		"cwd":                   workdir,
 		"runtimeWorkspaceRoots": []string{workdir},
-		"approvalPolicy":        r.agent.approvalPolicy,
+		"approvalPolicy":        r.approvalPolicy(),
 	}
-	if sandboxPolicy := sandboxPolicyForMode(r.agent.sandbox, r.agent.networkAccess); sandboxPolicy != nil {
+	if sandboxPolicy := sandboxPolicyForMode(r.sandboxMode(), r.networkAccess()); sandboxPolicy != nil {
 		params["sandboxPolicy"] = sandboxPolicy
 	}
 	if r.agent.model != "" {
@@ -735,25 +737,8 @@ func (r *appServerRun) startTurn(ctx context.Context, message string, workdir st
 	if r.options.ReasoningEffort != "" {
 		params["effort"] = r.options.ReasoningEffort
 	}
-	if r.options.PlanningMode {
-		model := r.options.Model
-		if model == "" {
-			model = r.agent.model
-		}
-		if model != "" {
-			settings := map[string]any{
-				"model":                  model,
-				"reasoning_effort":       nil,
-				"developer_instructions": nil,
-			}
-			if r.options.ReasoningEffort != "" {
-				settings["reasoning_effort"] = r.options.ReasoningEffort
-			}
-			params["collaborationMode"] = map[string]any{
-				"mode":     "plan",
-				"settings": settings,
-			}
-		}
+	if collaborationMode := r.collaborationModeParam(); collaborationMode != nil {
+		params["collaborationMode"] = collaborationMode
 	}
 
 	id, err := r.rpc.sendRequest("turn/start", params)
@@ -775,6 +760,54 @@ func (r *appServerRun) startTurn(ctx context.Context, message string, workdir st
 	}
 	r.setTurnID(turnID)
 	return r.emitSyntheticTurnStarted(ctx, "turn/start", threadID, turnID)
+}
+
+func (r *appServerRun) collaborationModeParam() map[string]any {
+	model := r.options.Model
+	if model == "" {
+		model = r.agent.model
+	}
+	if model == "" {
+		return nil
+	}
+
+	mode := "default"
+	if r.options.PlanningMode {
+		mode = "plan"
+	}
+	settings := map[string]any{
+		"model":                  model,
+		"reasoning_effort":       nil,
+		"developer_instructions": nil,
+	}
+	if r.options.ReasoningEffort != "" {
+		settings["reasoning_effort"] = r.options.ReasoningEffort
+	}
+	return map[string]any{
+		"mode":     mode,
+		"settings": settings,
+	}
+}
+
+func (r *appServerRun) approvalPolicy() string {
+	if r.options.RunDangerously {
+		return "never"
+	}
+	return r.agent.approvalPolicy
+}
+
+func (r *appServerRun) sandboxMode() string {
+	if r.options.RunDangerously {
+		return "danger-full-access"
+	}
+	return r.agent.sandbox
+}
+
+func (r *appServerRun) networkAccess() bool {
+	if r.options.RunDangerously {
+		return true
+	}
+	return r.agent.networkAccess
 }
 
 func userInputItems(message string, attachments []agents.Attachment) []map[string]any {

@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps, ReactNode } from 'react'
-import type { Session } from '@/lib/api'
+import type { AgentEvent, Session } from '@/lib/api'
 import { SessionDetail } from '@/components/session-detail'
 
 const baseSession: Session = {
@@ -9,6 +9,7 @@ const baseSession: Session = {
   title: 'Inspect repo',
   agent_type: 'fake',
   status: 'idle',
+  workspace_path: '/repo',
   created_at: '2026-06-12T16:00:00Z',
   updated_at: '2026-06-12T16:00:00Z',
   completed_at: null,
@@ -32,14 +33,32 @@ test('prompt composer remains enabled after a completed run returns to idle', ()
   expect(screen.getByLabelText('Prompt')).toBeEnabled()
 })
 
-test('thinking indicator is visible only while running', () => {
+test('thinking indicator follows active reasoning events while running', () => {
   const { rerender } = renderDetail()
 
   expect(screen.queryByRole('status', { name: /thinking/i })).not.toBeInTheDocument()
 
-  rerenderDetail(rerender, { session: { ...baseSession, status: 'running' } })
+  rerenderDetail(rerender, {
+    session: { ...baseSession, status: 'running' },
+    events: [event(1, 'agent.status.started', { provider_event_type: 'turn/started' })],
+  })
 
   expect(screen.getByRole('status', { name: /thinking/i })).toBeInTheDocument()
+
+  rerenderDetail(rerender, {
+    session: { ...baseSession, status: 'running' },
+    events: [
+      event(1, 'agent.status.started', { provider_event_type: 'turn/started' }),
+      event(2, 'agent.thinking.completed', {
+        provider_event_type: 'item/completed',
+        item_type: 'reasoning',
+        item_id: 'rs_1',
+        text: '',
+      }),
+    ],
+  })
+
+  expect(screen.queryByRole('status', { name: /thinking/i })).not.toBeInTheDocument()
 })
 
 test('mobile header shows status as a dot indicator', () => {
@@ -96,10 +115,7 @@ function renderDetail(overrides: Partial<SessionDetailProps> = {}) {
   return render(<SessionDetail {...props(overrides)} />)
 }
 
-function rerenderDetail(
-  rerender: (ui: ReactNode) => void,
-  overrides: Partial<SessionDetailProps> = {},
-) {
+function rerenderDetail(rerender: (ui: ReactNode) => void, overrides: Partial<SessionDetailProps> = {}) {
   rerender(<SessionDetail {...props(overrides)} />)
 }
 
@@ -118,5 +134,18 @@ function props(overrides: Partial<SessionDetailProps>): SessionDetailProps {
     onRefresh: () => undefined,
     onUpdateTitle: async () => undefined,
     ...overrides,
+  }
+}
+
+function event(seq: number, type: string, payload: Record<string, unknown>): AgentEvent {
+  return {
+    id: `evt_${seq}`,
+    session_id: 'sess_1',
+    seq,
+    type,
+    role: 'assistant',
+    status: type.endsWith('.completed') ? 'completed' : 'started',
+    payload,
+    created_at: '2026-06-12T16:00:00Z',
   }
 }

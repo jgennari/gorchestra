@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, FileText, Loader2 } from 'lucide-react'
 import { isValidElement, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -21,6 +21,10 @@ type Props = {
   topInset?: 'none' | 'sessionHeader'
   bottomInset?: 'composer' | 'question'
   showDebugEvents?: boolean
+  hasOlderEvents?: boolean
+  loadingOlderEvents?: boolean
+  onLoadOlderEvents?: () => Promise<void> | void
+  onOpenFilePath?: (path: string) => Promise<void> | void
 }
 
 export function ChatTranscript({
@@ -30,9 +34,15 @@ export function ChatTranscript({
   topInset = 'none',
   bottomInset = 'composer',
   showDebugEvents = false,
+  hasOlderEvents = false,
+  loadingOlderEvents = false,
+  onLoadOlderEvents,
+  onOpenFilePath,
 }: Props) {
   const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
   const scrollRef = useRef<HTMLDivElement>(null)
+  const scrollIdleTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const [scrolling, setScrolling] = useState(false)
   const lastSeq = timeline.at(-1)?.endSeq ?? 0
 
   useEffect(() => {
@@ -42,6 +52,22 @@ export function ChatTranscript({
     }
     element.scrollTop = element.scrollHeight
   }, [lastSeq])
+
+  useEffect(() => {
+    return () => {
+      if (scrollIdleTimer.current) {
+        window.clearTimeout(scrollIdleTimer.current)
+      }
+    }
+  }, [])
+
+  function handleScroll() {
+    setScrolling(true)
+    if (scrollIdleTimer.current) {
+      window.clearTimeout(scrollIdleTimer.current)
+    }
+    scrollIdleTimer.current = window.setTimeout(() => setScrolling(false), 900)
+  }
 
   if (error && timeline.length === 0) {
     return (
@@ -71,7 +97,9 @@ export function ChatTranscript({
     <div className="chat-canvas relative h-full min-h-0 overflow-hidden">
       <ScrollArea
         ref={scrollRef}
-        className="h-full min-h-0"
+        className="chat-scroll-area h-full min-h-0"
+        data-scrolling={scrolling ? 'true' : undefined}
+        onScroll={handleScroll}
         role="log"
         aria-label="Chat messages"
         aria-live="polite"
@@ -84,8 +112,11 @@ export function ChatTranscript({
             bottomInset === 'question' ? 'pb-80' : 'pb-44',
           )}
         >
+          {hasOlderEvents || loadingOlderEvents ? (
+            <LoadOlderEventsButton loading={loadingOlderEvents} onLoad={onLoadOlderEvents} />
+          ) : null}
           {timeline.map((item) => (
-            <ChatTimelineRow key={item.id} item={item} />
+            <ChatTimelineRow key={item.id} item={item} onOpenFilePath={onOpenFilePath} />
           ))}
         </div>
       </ScrollArea>
@@ -93,14 +124,53 @@ export function ChatTranscript({
   )
 }
 
-function ChatTimelineRow({ item }: { item: ChatTimelineItem }) {
+function LoadOlderEventsButton({
+  loading,
+  onLoad,
+}: {
+  loading: boolean
+  onLoad?: () => Promise<void> | void
+}) {
+  return (
+    <div className="flex justify-center">
+      <button
+        type="button"
+        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/70 bg-background/80 px-3 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-background hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
+        aria-label="Load older events"
+        disabled={loading || !onLoad}
+        onClick={() => void onLoad?.()}
+      >
+        {loading ? (
+          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+        ) : (
+          <ChevronUp className="size-3.5" aria-hidden="true" />
+        )}
+        {loading ? 'Loading' : 'Load older'}
+      </button>
+    </div>
+  )
+}
+
+function ChatTimelineRow({
+  item,
+  onOpenFilePath,
+}: {
+  item: ChatTimelineItem
+  onOpenFilePath?: (path: string) => Promise<void> | void
+}) {
   if (item.kind === 'debug') {
     return <DebugEventRow event={item.event} />
   }
-  return <ChatMessageRow message={item.message} />
+  return <ChatMessageRow message={item.message} onOpenFilePath={onOpenFilePath} />
 }
 
-function ChatMessageRow({ message }: { message: ChatTranscriptMessage }) {
+function ChatMessageRow({
+  message,
+  onOpenFilePath,
+}: {
+  message: ChatTranscriptMessage
+  onOpenFilePath?: (path: string) => Promise<void> | void
+}) {
   const user = message.role === 'user'
   const [showAllTools, setShowAllTools] = useState(false)
   const visibleTools = showAllTools ? message.tools : message.tools.slice(0, 3)
@@ -134,9 +204,7 @@ function ChatMessageRow({ message }: { message: ChatTranscriptMessage }) {
             ) : null}
           </div>
 
-          {message.attachments.length > 0 ? (
-            <MessageAttachments attachments={message.attachments} />
-          ) : null}
+          {message.attachments.length > 0 ? <MessageAttachments attachments={message.attachments} /> : null}
 
           {message.text ? (
             <MarkdownContent content={message.text} inverted={user} />
@@ -148,7 +216,7 @@ function ChatMessageRow({ message }: { message: ChatTranscriptMessage }) {
         {message.tools.length > 0 ? (
           <div className="mt-2 space-y-1 border-l border-border/80 pl-3">
             {visibleTools.map((tool) => (
-              <ToolCallRow key={tool.id} tool={tool} />
+              <ToolCallRow key={tool.id} tool={tool} onOpenFilePath={onOpenFilePath} />
             ))}
             {message.tools.length > 3 ? (
               <button
@@ -157,7 +225,11 @@ function ChatMessageRow({ message }: { message: ChatTranscriptMessage }) {
                 aria-expanded={showAllTools}
                 onClick={() => setShowAllTools((current) => !current)}
               >
-                {hasHiddenTools ? <ChevronRight className="size-2.5" aria-hidden="true" /> : <ChevronDown className="size-2.5" aria-hidden="true" />}
+                {hasHiddenTools ? (
+                  <ChevronRight className="size-2.5" aria-hidden="true" />
+                ) : (
+                  <ChevronDown className="size-2.5" aria-hidden="true" />
+                )}
                 {hasHiddenTools ? `Show ${message.tools.length - visibleTools.length} More` : 'Show Less'}
               </button>
             ) : null}
@@ -180,11 +252,7 @@ function MessageAttachments({ attachments }: { attachments: ChatTranscriptAttach
           className="block overflow-hidden rounded-md border border-border/70 bg-background/80"
           aria-label={`Open ${attachment.name}`}
         >
-          <img
-            src={attachment.dataURL}
-            alt={attachment.name}
-            className="h-24 w-24 object-cover"
-          />
+          <img src={attachment.dataURL} alt={attachment.name} className="h-24 w-24 object-cover" />
         </a>
       ))}
     </div>
@@ -210,7 +278,9 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
-        p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0 whitespace-pre-wrap break-words leading-relaxed">{children}</p>,
+        p: ({ children }) => (
+          <p className="my-2 first:mt-0 last:mb-0 whitespace-pre-wrap break-words leading-relaxed">{children}</p>
+        ),
         a: ({ children, href }) => (
           <a
             href={href}
@@ -238,7 +308,11 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
           const code = childrenToString(children)
           const block = className?.startsWith('language-') || code.endsWith('\n')
           if (block) {
-            return <CodeBlock code={code} className={className} inverted={inverted}>{children}</CodeBlock>
+            return (
+              <CodeBlock code={code} className={className} inverted={inverted}>
+                {children}
+              </CodeBlock>
+            )
           }
           return (
             <code
@@ -299,15 +373,7 @@ function CodeBlock({
   )
 }
 
-function FloatingCopyButton({
-  label,
-  value,
-  inverted = false,
-}: {
-  label: string
-  value: string
-  inverted?: boolean
-}) {
+function FloatingCopyButton({ label, value, inverted = false }: { label: string; value: string; inverted?: boolean }) {
   const [copied, setCopied] = useState(false)
 
   async function handleCopy() {
@@ -350,11 +416,19 @@ function childrenToString(children: ReactNode): string {
   return ''
 }
 
-function ToolCallRow({ tool }: { tool: ChatTranscriptTool }) {
+function ToolCallRow({
+  tool,
+  onOpenFilePath,
+}: {
+  tool: ChatTranscriptTool
+  onOpenFilePath?: (path: string) => Promise<void> | void
+}) {
   const output = tool.error || tool.text
   const [outputOpen, setOutputOpen] = useState(false)
   const name = tool.label.replace(/^Tool:\s*/, '')
   const statusDotClassName = toolStatusDotClassName(tool)
+  const filePath = tool.kind === 'file-change' ? (tool.paths[0] ?? '') : ''
+  const showFileEditorAction = Boolean(onOpenFilePath && filePath && output && !tool.error && looksLikeDiff(output))
 
   return (
     <div className="text-xs">
@@ -383,19 +457,104 @@ function ToolCallRow({ tool }: { tool: ChatTranscriptTool }) {
         outputOpen ? (
           <div className="relative ml-5 mt-1">
             <FloatingCopyButton label="Copy tool output" value={output} />
-            <pre
-              className={cn(
-                'max-h-44 overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-surface-muted/70 p-2 pr-12 font-mono leading-relaxed text-muted-foreground',
-                tool.error && 'text-destructive',
-              )}
-            >
-              {output}
-            </pre>
+            {showFileEditorAction ? <FloatingOpenFileButton path={filePath} onOpenFilePath={onOpenFilePath} /> : null}
+            <ToolOutput
+              output={output}
+              error={Boolean(tool.error)}
+              diff={tool.kind === 'file-change'}
+              actionPadding={showFileEditorAction}
+            />
           </div>
         ) : null
       ) : null}
     </div>
   )
+}
+
+function FloatingOpenFileButton({
+  path,
+  onOpenFilePath,
+}: {
+  path: string
+  onOpenFilePath?: (path: string) => Promise<void> | void
+}) {
+  return (
+    <button
+      type="button"
+      aria-label="Show in File Editor"
+      onClick={() => void onOpenFilePath?.(path)}
+      className="absolute right-10 top-2 z-10 inline-flex size-7 items-center justify-center rounded-md border border-border/70 bg-background/90 text-xs text-muted-foreground shadow-sm transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <FileText className="size-3.5" aria-hidden="true" />
+    </button>
+  )
+}
+
+function ToolOutput({
+  output,
+  error,
+  diff,
+  actionPadding = false,
+}: {
+  output: string
+  error: boolean
+  diff: boolean
+  actionPadding?: boolean
+}) {
+  if (!diff || error || !looksLikeDiff(output)) {
+    return (
+      <pre
+        className={cn(
+          'max-h-44 overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-surface-muted/70 p-2 font-mono leading-relaxed text-muted-foreground',
+          actionPadding ? 'pr-20' : 'pr-12',
+          error && 'text-destructive',
+        )}
+      >
+        {output}
+      </pre>
+    )
+  }
+
+  return (
+    <pre
+      className={cn(
+        'max-h-64 overflow-auto rounded border border-border/60 bg-surface-muted/70 p-2 font-mono leading-relaxed text-muted-foreground',
+        actionPadding ? 'pr-20' : 'pr-12',
+      )}
+    >
+      {output.split('\n').map((line, index) => (
+        <span key={`${index}-${line}`} className={cn('block min-h-[1.25em] whitespace-pre', diffLineClassName(line))}>
+          {line || ' '}
+        </span>
+      ))}
+    </pre>
+  )
+}
+
+function looksLikeDiff(output: string) {
+  return output
+    .split('\n')
+    .some(
+      (line) =>
+        line.startsWith('@@') ||
+        line.startsWith('--- ') ||
+        line.startsWith('+++ ') ||
+        line.startsWith('-') ||
+        line.startsWith('+'),
+    )
+}
+
+function diffLineClassName(line: string) {
+  if (line.startsWith('+') && !line.startsWith('+++')) {
+    return 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+  }
+  if (line.startsWith('-') && !line.startsWith('---')) {
+    return 'bg-destructive/10 text-destructive'
+  }
+  if (line.startsWith('@@')) {
+    return 'bg-primary/10 text-primary'
+  }
+  return ''
 }
 
 function DebugEventRow({ event }: { event: ChatDebugEvent }) {

@@ -70,22 +70,32 @@ func (s *Store) CreateSession(ctx context.Context, params CreateSessionParams) (
 
 	now := s.now()
 	session := Session{
-		ID:        id,
-		Title:     params.Title,
-		AgentType: params.AgentType,
-		Status:    SessionStatusIdle,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:            id,
+		Title:         params.Title,
+		AgentType:     params.AgentType,
+		Status:        SessionStatusIdle,
+		WorkspacePath: strings.TrimSpace(params.WorkspacePath),
+		AgentOptions:  json.RawMessage(`{}`),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if len(params.AgentOptions) > 0 {
+		if !json.Valid(params.AgentOptions) {
+			return Session{}, fmt.Errorf("%w: agent_options must be valid JSON", ErrInvalidArgument)
+		}
+		session.AgentOptions = append(json.RawMessage(nil), params.AgentOptions...)
 	}
 
 	if _, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO sessions (id, title, agent_type, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, title, agent_type, status, workspace_path, agent_options_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID,
 		session.Title,
 		session.AgentType,
 		string(session.Status),
+		session.WorkspacePath,
+		string(session.AgentOptions),
 		formatTime(session.CreatedAt),
 		formatTime(session.UpdatedAt),
 	); err != nil {
@@ -98,7 +108,7 @@ func (s *Store) CreateSession(ctx context.Context, params CreateSessionParams) (
 func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT id, title, agent_type, status, provider_session_id, created_at, updated_at, completed_at, archived_at
+		`SELECT id, title, agent_type, status, provider_session_id, workspace_path, agent_options_json, created_at, updated_at, completed_at, archived_at
 		 FROM sessions
 		 WHERE id = ?`,
 		id,
@@ -118,7 +128,7 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 		limit = defaultSessionLimit
 	}
 
-	query := `SELECT id, title, agent_type, status, provider_session_id, created_at, updated_at, completed_at, archived_at
+	query := `SELECT id, title, agent_type, status, provider_session_id, workspace_path, agent_options_json, created_at, updated_at, completed_at, archived_at
 		 FROM sessions`
 	args := []any{}
 	filters := []string{`archived_at IS NULL`}
@@ -417,6 +427,71 @@ func (s *Store) ListEvents(ctx context.Context, sessionID string, afterSeq int64
 	return events, nil
 }
 
+func (s *Store) ListRecentEvents(ctx context.Context, sessionID string, limit int) ([]Event, error) {
+	if limit <= 0 {
+		limit = defaultEventLimit
+	}
+
+	events, err := s.listEventsDescending(ctx, sessionID, ``, 0, limit)
+	if err != nil {
+		return nil, err
+	}
+	reverseEvents(events)
+	return events, nil
+}
+
+func (s *Store) ListEventsBefore(ctx context.Context, sessionID string, beforeSeq int64, limit int) ([]Event, error) {
+	if limit <= 0 {
+		limit = defaultEventLimit
+	}
+
+	events, err := s.listEventsDescending(ctx, sessionID, `AND seq < ?`, beforeSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	reverseEvents(events)
+	return events, nil
+}
+
+func (s *Store) listEventsDescending(ctx context.Context, sessionID string, extraWhere string, seqBound int64, limit int) ([]Event, error) {
+	query := `SELECT id, session_id, seq, type, role, status, payload_json, created_at
+		 FROM events
+		 WHERE session_id = ? ` + extraWhere + `
+		 ORDER BY seq DESC
+		 LIMIT ?`
+	args := []any{sessionID}
+	if extraWhere != "" {
+		args = append(args, seqBound)
+	}
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list events descending: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]Event, 0)
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list events descending rows: %w", err)
+	}
+
+	return events, nil
+}
+
+func reverseEvents(events []Event) {
+	for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
+		events[left], events[right] = events[right], events[left]
+	}
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -425,6 +500,8 @@ func scanSession(row rowScanner) (Session, error) {
 	var session Session
 	var status string
 	var providerSessionID sql.NullString
+	var workspacePath sql.NullString
+	var agentOptions string
 	var createdAt string
 	var updatedAt string
 	var completedAt sql.NullString
@@ -436,6 +513,8 @@ func scanSession(row rowScanner) (Session, error) {
 		&session.AgentType,
 		&status,
 		&providerSessionID,
+		&workspacePath,
+		&agentOptions,
 		&createdAt,
 		&updatedAt,
 		&completedAt,
@@ -460,6 +539,16 @@ func scanSession(row rowScanner) (Session, error) {
 	if providerSessionID.Valid {
 		session.ProviderSessionID = providerSessionID.String
 	}
+	if workspacePath.Valid {
+		session.WorkspacePath = workspacePath.String
+	}
+	if agentOptions == "" {
+		agentOptions = "{}"
+	}
+	if !json.Valid([]byte(agentOptions)) {
+		return Session{}, fmt.Errorf("scan session: invalid agent_options_json")
+	}
+	session.AgentOptions = json.RawMessage(agentOptions)
 	session.CreatedAt = parsedCreatedAt
 	session.UpdatedAt = parsedUpdatedAt
 

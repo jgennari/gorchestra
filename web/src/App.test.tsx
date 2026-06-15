@@ -1,7 +1,17 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from '@/App'
-import type { Session } from '@/lib/api'
+import type { AgentEvent, Session } from '@/lib/api'
+
+vi.mock('@monaco-editor/react', () => ({
+  default: ({ value, onChange }: { value?: string; onChange?: (value: string | undefined) => void }) => (
+    <textarea
+      aria-label="File editor"
+      value={value ?? ''}
+      onChange={(event) => onChange?.(event.currentTarget.value)}
+    />
+  ),
+}))
 
 const firstSession = session('sess_1', 'Inspect repo', '2026-06-12T16:02:00Z')
 const secondSession = session('sess_2', 'Write docs', '2026-06-12T16:01:00Z')
@@ -9,6 +19,7 @@ const secondSession = session('sess_2', 'Write docs', '2026-06-12T16:01:00Z')
 beforeEach(() => {
   window.history.replaceState({}, '', '/')
   window.localStorage.clear()
+  FakeEventSource.instances = []
   vi.stubGlobal('fetch', fetchMock())
   vi.stubGlobal('EventSource', FakeEventSource)
   vi.stubGlobal('matchMedia', matchMediaMock)
@@ -38,13 +49,185 @@ test('loading with a session route selects that session', async () => {
 
   await waitFor(() => expect(screen.getAllByText('Write docs').length).toBeGreaterThan(0))
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
-  expect(screen.getAllByRole('button', { name: /Write docs/ }).some((button) => (
-    button.getAttribute('aria-current') === 'true'
-  ))).toBe(true)
+  expect(
+    screen
+      .getAllByRole('button', { name: /Write docs/ })
+      .some((button) => button.getAttribute('aria-current') === 'true'),
+  ).toBe(true)
 })
 
-function fetchMock() {
-  return vi.fn(async (url: RequestInfo | URL) => {
+test('initial session load fetches the recent event window and streams after the tail', async () => {
+  const fetch = fetchMock({
+    events: [event(39, 'agent.message.delta', { text: 'Tail' }), event(40, 'agent.message.completed', { text: 'Tail' })],
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_1/events?tail=true&limit=250',
+      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+  await waitFor(() =>
+    expect(FakeEventSource.instances.some((source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=40'))
+      .toBe(true),
+  )
+})
+
+test('load older events fetches the previous event page', async () => {
+  const user = userEvent.setup()
+  const fetch = fetchMock({
+    events: [event(251, 'agent.message.delta', { text: 'Tail' }), event(252, 'agent.message.completed', { text: 'Tail' })],
+    olderEvents: [event(249, 'user.message.completed', { text: 'Older prompt' }), event(250, 'agent.message.completed', { text: 'Older answer' })],
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await user.click(await screen.findByRole('button', { name: 'Load older events' }))
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_1/events?before_seq=251&limit=250',
+      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+  expect(await screen.findByText('Older prompt')).toBeInTheDocument()
+})
+
+test('desktop pane resize handles update persisted widths', async () => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    value: 1600,
+  })
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+
+  fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize sessions pane', hidden: true }), {
+    key: 'ArrowRight',
+  })
+  fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize details pane', hidden: true }), {
+    key: 'ArrowLeft',
+  })
+
+  await waitFor(() => {
+    const stored = JSON.parse(window.localStorage.getItem('gorchestra.pane-widths.v1') ?? '{}') as {
+      left?: number
+      right?: number
+    }
+    expect(stored.left).toBe(364)
+    expect(stored.right).toBe(360)
+  })
+})
+
+test('file browser opens a chat overlay viewer that can close', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal('fetch', fetchMock({ fileEntry: true }))
+
+  render(<App />)
+
+  await user.click(await screen.findByRole('button', { name: /main\.go/i }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'File viewer: main.go' })
+  expect(dialog).toBeInTheDocument()
+  expect(within(dialog).getAllByText('main.go')).toHaveLength(1)
+  expect(within(dialog).getByLabelText('File editor')).toHaveValue('package main\n')
+
+  await user.click(screen.getByRole('button', { name: 'Close file viewer' }))
+
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'File viewer: main.go' })).not.toBeInTheDocument())
+})
+
+test('file browser renders markdown files as markdown', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal(
+    'fetch',
+    fetchMock({ fileEntry: true, fileName: 'README.md', fileContent: '# Project Notes\n\n- Ship it' }),
+  )
+
+  render(<App />)
+
+  await user.click(await screen.findByRole('button', { name: /README\.md/i }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'File viewer: README.md' })
+  expect(dialog).toBeInTheDocument()
+  expect(within(dialog).getAllByText('README.md')).toHaveLength(1)
+  expect(within(dialog).getByRole('heading', { name: 'Project Notes' })).toBeInTheDocument()
+  expect(within(dialog).getByRole('listitem')).toHaveTextContent('Ship it')
+})
+
+test('file browser edit mode saves workspace files', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal('fetch', fetchMock({ fileEntry: true, fileName: 'README.md', fileContent: '# Project Notes\n' }))
+
+  render(<App />)
+
+  await user.click(await screen.findByRole('button', { name: /README\.md/i }))
+  const dialog = await screen.findByRole('dialog', { name: 'File viewer: README.md' })
+  await user.click(within(dialog).getByRole('button', { name: /edit/i }))
+
+  const editor = within(dialog).getByLabelText('File editor')
+  await user.clear(editor)
+  await user.type(editor, '# Edited Notes\n\nSaved')
+  await user.click(within(dialog).getByRole('button', { name: /^save$/i }))
+
+  await waitFor(() => expect(within(dialog).getByText('Saved')).toBeInTheDocument())
+  await user.click(within(dialog).getByRole('button', { name: /preview/i }))
+
+  expect(within(dialog).getByRole('heading', { name: 'Edited Notes' })).toBeInTheDocument()
+  expect(within(dialog).getAllByText('Saved').length).toBeGreaterThan(0)
+})
+
+test('file change diff actions open absolute paths in the file editor', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal(
+    'fetch',
+    fetchMock({
+      fileName: 'src/main.go',
+      fileContent: 'package main\n',
+      events: [
+        event(1, 'file.change.completed', {
+          item_id: 'edit_1',
+          paths: ['/repo/src/main.go'],
+          changes: [
+            {
+              path: '/repo/src/main.go',
+              patch: '@@ -1,2 +1,2 @@\n-old\n+new',
+            },
+          ],
+        }),
+      ],
+    }),
+  )
+
+  render(<App />)
+
+  await user.click(await screen.findByRole('button', { name: /expand main\.go/i }))
+  await user.click(screen.getByRole('button', { name: 'Show in File Editor' }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'File viewer: src/main.go' })
+  expect(within(dialog).getByLabelText('File editor')).toHaveValue('package main\n')
+})
+
+function fetchMock({
+  fileEntry = false,
+  fileName = 'main.go',
+  fileContent = 'package main\n',
+  events = [],
+  olderEvents = [],
+}: {
+  fileEntry?: boolean
+  fileName?: string
+  fileContent?: string
+  events?: AgentEvent[]
+  olderEvents?: AgentEvent[]
+} = {}) {
+  let currentContent = fileContent
+  return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const path = String(url)
     if (path === '/api/health') {
       return jsonResponse({ status: 'ok' })
@@ -58,23 +241,73 @@ function fetchMock() {
     if (path === '/api/sessions/sess_2') {
       return jsonResponse(secondSession)
     }
-    if (path === '/api/sessions/sess_1/events?after_seq=0&limit=1000') {
+    if (path === '/api/sessions/sess_1/events?tail=true&limit=250') {
+      return jsonResponse({ events })
+    }
+    if (path === '/api/sessions/sess_2/events?tail=true&limit=250') {
       return jsonResponse({ events: [] })
     }
-    if (path === '/api/sessions/sess_2/events?after_seq=0&limit=1000') {
-      return jsonResponse({ events: [] })
+    if (path === '/api/sessions/sess_1/events?before_seq=251&limit=250') {
+      return jsonResponse({ events: olderEvents })
+    }
+    if (path === '/api/sessions/sess_1/files') {
+      return jsonResponse({
+        root_path: '/repo',
+        path: '',
+        entries: fileEntry
+          ? [
+              {
+                name: fileName,
+                path: fileName,
+                type: 'file',
+                size_bytes: fileContent.length,
+                modified_at: '2026-06-12T16:00:00Z',
+              },
+            ]
+          : [],
+      })
+    }
+    if (path === '/api/sessions/sess_2/files') {
+      return jsonResponse({ root_path: '/repo', path: '', entries: [] })
+    }
+    if (path === `/api/sessions/sess_1/files/content?path=${encodeURIComponent(fileName)}`) {
+      if (init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { content?: string }
+        currentContent = body.content ?? ''
+        return jsonResponse({
+          name: fileName,
+          path: fileName,
+          size_bytes: currentContent.length,
+          modified_at: '2026-06-12T16:00:00Z',
+          content: currentContent,
+          encoding: 'utf-8',
+          truncated: false,
+        })
+      }
+      return jsonResponse({
+        name: fileName,
+        path: fileName,
+        size_bytes: currentContent.length,
+        modified_at: '2026-06-12T16:00:00Z',
+        content: currentContent,
+        encoding: 'utf-8',
+        truncated: false,
+      })
     }
     throw new Error(`unexpected URL ${path}`)
   })
 }
 
 class FakeEventSource {
+  static instances: FakeEventSource[] = []
+
   url: string
   onopen: ((event: Event) => void) | null = null
   onerror: ((event: Event) => void) | null = null
 
   constructor(url: string) {
     this.url = url
+    FakeEventSource.instances.push(this)
     window.setTimeout(() => this.onopen?.(new Event('open')), 0)
   }
 
@@ -102,10 +335,24 @@ function session(id: string, title: string, updatedAt: string): Session {
     title,
     agent_type: 'fake',
     status: 'idle',
+    workspace_path: '/repo',
     created_at: '2026-06-12T16:00:00Z',
     updated_at: updatedAt,
     completed_at: null,
     archived_at: null,
+  }
+}
+
+function event(seq: number, type: string, payload: Record<string, unknown>): AgentEvent {
+  return {
+    id: `evt_${seq}`,
+    session_id: 'sess_1',
+    seq,
+    type,
+    role: 'assistant',
+    status: 'completed',
+    payload,
+    created_at: '2026-06-12T16:00:00Z',
   }
 }
 

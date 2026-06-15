@@ -13,12 +13,14 @@ const webHost = tailnetMode ? '0.0.0.0' : '127.0.0.1'
 const backendURL = process.env.BACKEND_URL ?? `http://localhost:${backendPort}`
 const tmpDir = join(repoRoot, '.tmp')
 const backendDB = process.env.GORCHESTRA_DB ?? join(tmpDir, 'sessions.db')
+const backendWorkspace = process.env.GORCHESTRA_WORKSPACE ?? ''
 const backendBinary = join(
   tmpDir,
   process.platform === 'win32' ? 'gorchestra-dev.exe' : 'gorchestra-dev',
 )
 const pollIntervalMs = 750
 const restartDebounceMs = 250
+const restartDeferMs = 2000
 
 const ignoredDirs = new Set([
   '.git',
@@ -39,6 +41,7 @@ let restartTimer: Timer | undefined
 let pollTimer: Timer | undefined
 let checkingForChanges = false
 let lastBackendSignature = ''
+let restartDeferredLogged = false
 
 async function main() {
   lastBackendSignature = await backendSignature()
@@ -54,6 +57,9 @@ function printStartup() {
   console.log(`[dev] mode: ${tailnetMode ? 'tailnet' : 'local'}`)
   console.log(`[dev] backend: ${backendURL}`)
   console.log(`[dev] database: ${backendDB}`)
+  if (backendWorkspace) {
+    console.log(`[dev] workspace: ${backendWorkspace}`)
+  }
   console.log(`[dev] frontend: http://${webHost}:${webPort}`)
 
   if (tailnetMode) {
@@ -98,7 +104,12 @@ async function startBackend() {
     return
   }
 
-  backend = Bun.spawn([backendBinary, '--db', backendDB], {
+  const backendArgs = [backendBinary, '--db', backendDB]
+  if (backendWorkspace) {
+    backendArgs.push('--workspace', backendWorkspace)
+  }
+
+  backend = Bun.spawn(backendArgs, {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -194,12 +205,39 @@ async function restartBackend() {
     return
   }
 
+  if (await hasRunningSessions()) {
+    if (!restartDeferredLogged) {
+      console.log('[backend] source changed; deferring restart until active runs finish')
+      restartDeferredLogged = true
+    }
+    restartTimer = setTimeout(() => {
+      void restartBackend()
+    }, restartDeferMs)
+    return
+  }
+
   backendRestarting = true
-  console.log('[backend] restarting after source change')
+  console.log(restartDeferredLogged ? '[backend] active runs finished; restarting after source change' : '[backend] restarting after source change')
+  restartDeferredLogged = false
 
   await stopProcess(backend)
   await startBackend()
   backendRestarting = false
+}
+
+async function hasRunningSessions() {
+  try {
+    const response = await fetch(`${backendURL}/api/sessions?limit=1&status=running`, {
+      signal: AbortSignal.timeout(1000),
+    })
+    if (!response.ok) {
+      return false
+    }
+    const payload = (await response.json()) as { sessions?: unknown[] }
+    return Array.isArray(payload.sessions) && payload.sessions.length > 0
+  } catch {
+    return false
+  }
 }
 
 async function backendSignature() {

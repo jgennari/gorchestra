@@ -21,12 +21,22 @@ import (
 )
 
 type createSessionRequest struct {
-	AgentType string `json:"agent_type"`
-	Title     string `json:"title"`
+	AgentType     string              `json:"agent_type"`
+	Title         string              `json:"title"`
+	WorkspacePath string              `json:"workspace_path"`
+	AgentOptions  *createAgentOptions `json:"agent_options,omitempty"`
 }
 
 type updateSessionRequest struct {
 	Title string `json:"title"`
+}
+
+type createAgentOptions struct {
+	Codex *createCodexOptions `json:"codex,omitempty"`
+}
+
+type createCodexOptions struct {
+	RunDangerously bool `json:"run_dangerously,omitempty"`
 }
 
 type createSessionResponse struct {
@@ -39,6 +49,8 @@ type sessionResponse struct {
 	AgentType         string  `json:"agent_type"`
 	Status            string  `json:"status"`
 	ProviderSessionID string  `json:"provider_session_id,omitempty"`
+	WorkspacePath     string  `json:"workspace_path"`
+	AgentOptions      any     `json:"agent_options"`
 	CreatedAt         string  `json:"created_at"`
 	UpdatedAt         string  `json:"updated_at"`
 	CompletedAt       *string `json:"completed_at"`
@@ -156,9 +168,22 @@ func (api API) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	workspacePath, err := api.workspaces.resolveWorkspacePath(request.WorkspacePath)
+	if err != nil {
+		writeWorkspacePathError(w, err)
+		return
+	}
+	agentOptions, err := createSessionAgentOptions(agentType, request.AgentOptions)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	session, err := api.store.CreateSession(r.Context(), store.CreateSessionParams{
-		Title:     request.Title,
-		AgentType: agentType,
+		Title:         request.Title,
+		AgentType:     agentType,
+		WorkspacePath: workspacePath,
+		AgentOptions:  agentOptions,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidArgument) {
@@ -254,12 +279,19 @@ func sessionResponseFromStore(session store.Session) sessionResponse {
 		archivedAt = &formatted
 	}
 
+	agentOptions := map[string]any{}
+	if len(session.AgentOptions) > 0 {
+		_ = json.Unmarshal(session.AgentOptions, &agentOptions)
+	}
+
 	return sessionResponse{
 		ID:                session.ID,
 		Title:             session.Title,
 		AgentType:         session.AgentType,
 		Status:            string(session.Status),
 		ProviderSessionID: session.ProviderSessionID,
+		WorkspacePath:     session.WorkspacePath,
+		AgentOptions:      agentOptions,
 		CreatedAt:         session.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:         session.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		CompletedAt:       completedAt,
@@ -267,24 +299,60 @@ func sessionResponseFromStore(session store.Session) sessionResponse {
 	}
 }
 
-func submitOptionsMetadata(agentType string, options *submitAgentOptions) (map[string]any, map[string]any, error) {
+func createSessionAgentOptions(agentType string, options *createAgentOptions) (json.RawMessage, error) {
+	if options == nil || options.Codex == nil {
+		return json.RawMessage(`{}`), nil
+	}
+	if agentType != "codex" {
+		return nil, fmt.Errorf("codex options require a codex session")
+	}
+
+	agentOptions := map[string]any{}
+	codexOptions := map[string]any{}
+	if options.Codex.RunDangerously {
+		codexOptions["run_dangerously"] = true
+	}
+	if len(codexOptions) > 0 {
+		agentOptions["codex"] = codexOptions
+	}
+
+	encoded, err := json.Marshal(agentOptions)
+	if err != nil {
+		return nil, fmt.Errorf("marshal agent options: %w", err)
+	}
+	return encoded, nil
+}
+
+func submitOptionsMetadata(agentType string, sessionAgentOptions json.RawMessage, options *submitAgentOptions) (map[string]any, map[string]any, error) {
 	metadata := map[string]any{
 		"agent_type": agentType,
 	}
+	codexOptions := map[string]any{}
+	if len(sessionAgentOptions) > 0 {
+		var persisted map[string]map[string]any
+		if err := json.Unmarshal(sessionAgentOptions, &persisted); err != nil {
+			return nil, nil, fmt.Errorf("session agent options are invalid")
+		}
+		for key, value := range persisted["codex"] {
+			codexOptions[key] = value
+		}
+	}
 	if options == nil || options.Codex == nil {
-		return metadata, nil, nil
+		if len(codexOptions) == 0 {
+			return metadata, nil, nil
+		}
+		metadata["codex_options"] = codexOptions
+		return metadata, map[string]any{"codex": codexOptions}, nil
 	}
 	if agentType != "codex" {
 		return nil, nil, fmt.Errorf("codex options require a codex session")
 	}
 
-	codexOptions := map[string]any{
-		"model":            strings.TrimSpace(options.Codex.Model),
-		"reasoning_effort": strings.TrimSpace(options.Codex.ReasoningEffort),
-		"fast_mode":        options.Codex.FastMode,
-		"planning_mode":    options.Codex.PlanningMode,
-		"service_tier":     strings.TrimSpace(options.Codex.ServiceTier),
-	}
+	codexOptions["model"] = strings.TrimSpace(options.Codex.Model)
+	codexOptions["reasoning_effort"] = strings.TrimSpace(options.Codex.ReasoningEffort)
+	codexOptions["fast_mode"] = options.Codex.FastMode
+	codexOptions["planning_mode"] = options.Codex.PlanningMode
+	codexOptions["service_tier"] = strings.TrimSpace(options.Codex.ServiceTier)
 	metadata["codex_options"] = codexOptions
 	return metadata, map[string]any{"codex": codexOptions}, nil
 }
@@ -407,7 +475,7 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	metadata, eventOptions, err := submitOptionsMetadata(session.AgentType, request.AgentOptions)
+	metadata, eventOptions, err := submitOptionsMetadata(session.AgentType, session.AgentOptions, request.AgentOptions)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -503,8 +571,15 @@ func (api API) cancelSessionHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, runcontrol.ErrRunNotActive) {
-			api.failRunningSessionWithoutActiveRun(r.Context(), session)
-			writeError(w, http.StatusConflict, "session has no active run")
+			updatedSession, ok := api.failRunningSessionWithoutActiveRun(r.Context(), session)
+			if !ok {
+				writeError(w, http.StatusInternalServerError, "failed to repair stale run")
+				return
+			}
+			writeJSON(w, http.StatusAccepted, submitMessageResponse{
+				SessionID: updatedSession.ID,
+				Status:    string(updatedSession.Status),
+			})
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to cancel session")
@@ -665,7 +740,7 @@ func (api API) runAgent(
 		SessionID:         session.ID,
 		ProviderSessionID: session.ProviderSessionID,
 		Message:           message,
-		Workdir:           api.workdir,
+		Workdir:           sessionWorkspacePath(session, api.workdir),
 		Metadata:          metadata,
 		Attachments:       attachments,
 		UserInput:         api.runs,
@@ -879,17 +954,20 @@ func (api API) appendAgentRunCancelled(ctx context.Context, sessionID string, ag
 	})
 }
 
-func (api API) failRunningSessionWithoutActiveRun(ctx context.Context, session store.Session) {
+func (api API) failRunningSessionWithoutActiveRun(ctx context.Context, session store.Session) (store.Session, bool) {
 	err := fmt.Errorf("running session has no active run")
 	if appendErr := api.appendAgentRunFailed(ctx, session.ID, session.AgentType, err); appendErr != nil {
 		log.Printf("failed to append agent.run.failed for missing active run: session_id=%s agent_type=%s error=%v", session.ID, session.AgentType, appendErr)
 	}
-	if _, updateErr := api.updateSessionStatus(ctx, store.UpdateSessionStatusParams{
+	updatedSession, updateErr := api.updateSessionStatus(ctx, store.UpdateSessionStatusParams{
 		ID:     session.ID,
 		Status: store.SessionStatusFailed,
-	}); updateErr != nil {
+	})
+	if updateErr != nil {
 		log.Printf("failed to mark session failed for missing active run: session_id=%s agent_type=%s error=%v", session.ID, session.AgentType, updateErr)
+		return store.Session{}, false
 	}
+	return updatedSession, true
 }
 
 func (api API) agentAvailable(w http.ResponseWriter, agent agents.Agent) bool {

@@ -308,6 +308,65 @@ func TestStartTurnAppliesRunOptions(t *testing.T) {
 	if settings["model"] != "gpt-5.5" || settings["reasoning_effort"] != "xhigh" {
 		t.Fatalf("unexpected collaboration settings %#v", settings)
 	}
+	if settings["developer_instructions"] != nil {
+		t.Fatalf("expected built-in collaboration instructions, got %#v", settings["developer_instructions"])
+	}
+}
+
+func TestStartTurnSendsDefaultCollaborationMode(t *testing.T) {
+	var written bytes.Buffer
+	incoming := make(chan incomingMessage, 1)
+	incoming <- incomingMessage{Message: &rpcMessage{
+		ID:     json.RawMessage(`1`),
+		Result: json.RawMessage(`{"turn":{"id":"turn_fake","status":"inProgress"}}`),
+	}}
+
+	run := &appServerRun{
+		agent:      New(WithModel("gpt-default")),
+		rpc:        newRPCClient(bufferWriteCloser{Buffer: &written}),
+		incoming:   incoming,
+		process:    &processState{done: make(chan struct{})},
+		emit:       func(context.Context, agents.AgentEvent) error { return nil },
+		normalizer: newNormalizer(),
+		options: codexRunOptions{
+			Model:           "gpt-5.5",
+			ReasoningEffort: "xhigh",
+			PlanningMode:    false,
+		},
+	}
+	run.setThreadID("thread_fake")
+
+	if err := run.startTurn(context.Background(), "Hello", "/tmp/workspace"); err != nil {
+		t.Fatalf("start turn: %v", err)
+	}
+
+	var request struct {
+		Method string         `json:"method"`
+		Params map[string]any `json:"params"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(written.Bytes()), &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if request.Method != "turn/start" {
+		t.Fatalf("expected turn/start request, got %q", request.Method)
+	}
+	collaborationMode, ok := request.Params["collaborationMode"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected collaboration mode, got %#v", request.Params["collaborationMode"])
+	}
+	if collaborationMode["mode"] != "default" {
+		t.Fatalf("expected default collaboration mode, got %#v", collaborationMode["mode"])
+	}
+	settings, ok := collaborationMode["settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected collaboration settings, got %#v", collaborationMode["settings"])
+	}
+	if settings["model"] != "gpt-5.5" || settings["reasoning_effort"] != "xhigh" {
+		t.Fatalf("unexpected collaboration settings %#v", settings)
+	}
+	if settings["developer_instructions"] != nil {
+		t.Fatalf("expected built-in collaboration instructions, got %#v", settings["developer_instructions"])
+	}
 }
 
 func TestStartTurnCanDisableSandboxNetworkAccess(t *testing.T) {
@@ -344,6 +403,47 @@ func TestStartTurnCanDisableSandboxNetworkAccess(t *testing.T) {
 	}
 	if sandboxPolicy["type"] != "readOnly" || sandboxPolicy["networkAccess"] != false {
 		t.Fatalf("expected readOnly sandbox without network access, got %#v", sandboxPolicy)
+	}
+}
+
+func TestStartTurnCanRunDangerously(t *testing.T) {
+	var written bytes.Buffer
+	incoming := make(chan incomingMessage, 1)
+	incoming <- incomingMessage{Message: &rpcMessage{
+		ID:     json.RawMessage(`1`),
+		Result: json.RawMessage(`{"turn":{"id":"turn_fake","status":"inProgress"}}`),
+	}}
+
+	run := &appServerRun{
+		agent:      New(WithSandbox("read-only"), WithNetworkAccess(false)),
+		rpc:        newRPCClient(bufferWriteCloser{Buffer: &written}),
+		incoming:   incoming,
+		process:    &processState{done: make(chan struct{})},
+		emit:       func(context.Context, agents.AgentEvent) error { return nil },
+		normalizer: newNormalizer(),
+		options:    codexRunOptions{RunDangerously: true},
+	}
+	run.setThreadID("thread_fake")
+
+	if err := run.startTurn(context.Background(), "Hello", "/tmp/workspace"); err != nil {
+		t.Fatalf("start turn: %v", err)
+	}
+
+	var request struct {
+		Params map[string]any `json:"params"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(written.Bytes()), &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if request.Params["approvalPolicy"] != "never" {
+		t.Fatalf("expected never approval policy, got %#v", request.Params["approvalPolicy"])
+	}
+	sandboxPolicy, ok := request.Params["sandboxPolicy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected sandbox policy, got %#v", request.Params["sandboxPolicy"])
+	}
+	if sandboxPolicy["type"] != "dangerFullAccess" {
+		t.Fatalf("expected dangerFullAccess sandbox, got %#v", sandboxPolicy)
 	}
 }
 

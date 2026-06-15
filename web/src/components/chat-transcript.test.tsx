@@ -39,6 +39,36 @@ test('renders markdown in chat messages', () => {
   expect(screen.getByText('First item')).toBeInTheDocument()
 })
 
+test('load older control invokes the older event loader', async () => {
+  const user = userEvent.setup()
+  const onLoadOlderEvents = vi.fn()
+
+  render(
+    <ChatTranscript
+      hasOlderEvents
+      onLoadOlderEvents={onLoadOlderEvents}
+      events={[event(251, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })]}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Load older events' }))
+
+  expect(onLoadOlderEvents).toHaveBeenCalledTimes(1)
+})
+
+test('load older control is disabled while older events are loading', () => {
+  render(
+    <ChatTranscript
+      hasOlderEvents
+      loadingOlderEvents
+      onLoadOlderEvents={() => undefined}
+      events={[event(251, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })]}
+    />,
+  )
+
+  expect(screen.getByRole('button', { name: 'Load older events' })).toBeDisabled()
+})
+
 test('copies fenced code blocks from user and assistant messages', async () => {
   const user = userEvent.setup()
   const writeText = vi.fn(async () => undefined)
@@ -102,6 +132,35 @@ test('groups tool calls under assistant messages with expandable output', async 
   await user.click(screen.getByRole('button', { name: 'Copy tool output' }))
 
   expect(writeText).toHaveBeenCalledWith('go test ./...\nok')
+})
+
+test('opens file-change diffs in the file editor', async () => {
+  const user = userEvent.setup()
+  const onOpenFilePath = vi.fn()
+
+  render(
+    <ChatTranscript
+      onOpenFilePath={onOpenFilePath}
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Updating file.' }),
+        event(2, 'file.change.completed', 'assistant', 'completed', {
+          item_id: 'edit_1',
+          paths: ['/repo/src/main.go'],
+          changes: [
+            {
+              path: '/repo/src/main.go',
+              patch: '@@ -1,2 +1,2 @@\n-old\n+new',
+            },
+          ],
+        }),
+      ]}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: /expand main\.go/i }))
+  await user.click(screen.getByRole('button', { name: 'Show in File Editor' }))
+
+  expect(onOpenFilePath).toHaveBeenCalledWith('/repo/src/main.go')
 })
 
 test('shows codex command aggregated output in expandable tool output', async () => {
@@ -212,7 +271,10 @@ test('renders separate assistant items with sequential tools', () => {
         event(5, 'tool.call.completed', 'assistant', 'completed', { item_id: 'tool_1', output: '/repo' }),
         event(6, 'agent.message.delta', 'assistant', 'delta', { item_id: 'msg_2', text: 'Section 2' }),
         event(7, 'agent.message.completed', 'assistant', 'completed', { item_id: 'msg_2', text: 'Section 2' }),
-        event(8, 'tool.call.started', 'assistant', 'started', { item_id: 'tool_2', command: "/bin/zsh -lc 'git status --short'" }),
+        event(8, 'tool.call.started', 'assistant', 'started', {
+          item_id: 'tool_2',
+          command: "/bin/zsh -lc 'git status --short'",
+        }),
         event(9, 'tool.call.completed', 'assistant', 'completed', { item_id: 'tool_2', output: ' M file.ts' }),
       ]}
     />,
@@ -286,9 +348,7 @@ test('labels provider debug rows with provider event type', () => {
   render(
     <ChatTranscript
       showDebugEvents
-      events={[
-        event(1, 'provider.codex.event', 'system', 'completed', { provider_event_type: 'turn/completed' }),
-      ]}
+      events={[event(1, 'provider.codex.event', 'system', 'completed', { provider_event_type: 'turn/completed' })]}
     />,
   )
 
@@ -296,13 +356,7 @@ test('labels provider debug rows with provider event type', () => {
   expect(screen.queryByText('provider.codex.event')).not.toBeInTheDocument()
 })
 
-function event(
-  seq: number,
-  type: string,
-  role: string,
-  status: string,
-  payload: Record<string, unknown>,
-): AgentEvent {
+function event(seq: number, type: string, role: string, status: string, payload: Record<string, unknown>): AgentEvent {
   return {
     id: `evt_${seq}`,
     session_id: 'sess_1',

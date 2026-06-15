@@ -63,6 +63,7 @@ export type ChatTranscriptTool = {
   status: string
   text: string
   error: string
+  paths: string[]
   startSeq: number
   endSeq: number
 }
@@ -319,9 +320,11 @@ export function pendingUserInputRequest(events: AgentEvent[]) {
     }
   }
 
-  return [...requests.values()]
-    .filter((request) => request.seq > latestTerminalSeq && !answered.has(request.requestID))
-    .sort((left, right) => right.seq - left.seq)[0] ?? null
+  return (
+    [...requests.values()]
+      .filter((request) => request.seq > latestTerminalSeq && !answered.has(request.requestID))
+      .sort((left, right) => right.seq - left.seq)[0] ?? null
+  )
 }
 
 export function latestTokenUsage(events: AgentEvent[]) {
@@ -335,9 +338,48 @@ export function latestTokenUsage(events: AgentEvent[]) {
   return latest
 }
 
+export function activeThinking(events: AgentEvent[]) {
+  let activeGenericThinking = false
+  const activeThinkingItems = new Set<string>()
+
+  for (const event of sortedUniqueEvents(events)) {
+    if (event.type === 'agent.status.started') {
+      activeGenericThinking = true
+      continue
+    }
+
+    if (event.type === 'agent.thinking.delta') {
+      const itemID = payloadItemID(event.payload)
+      if (itemID) {
+        activeThinkingItems.add(itemID)
+      } else {
+        activeGenericThinking = true
+      }
+      continue
+    }
+
+    if (event.type === 'agent.thinking.completed') {
+      const itemID = payloadItemID(event.payload)
+      if (itemID) {
+        activeThinkingItems.delete(itemID)
+      }
+      activeGenericThinking = false
+      continue
+    }
+
+    if (clearsActiveThinking(event)) {
+      activeGenericThinking = false
+      activeThinkingItems.clear()
+    }
+  }
+
+  return activeGenericThinking || activeThinkingItems.size > 0
+}
+
 export function eventLabel(eventOrType: AgentEvent | string) {
   const type = typeof eventOrType === 'string' ? eventOrType : eventOrType.type
-  const providerEventType = typeof eventOrType === 'string' ? '' : payloadString(eventOrType.payload, ['provider_event_type'])
+  const providerEventType =
+    typeof eventOrType === 'string' ? '' : payloadString(eventOrType.payload, ['provider_event_type'])
   if (providerEventType && type.startsWith('provider.')) return providerEventType
   if (type === 'session.status.updated') return 'Session status'
   if (type.startsWith('user.message')) return 'User message'
@@ -407,11 +449,7 @@ function payloadSessionStatus(payload: unknown) {
 }
 
 function isSessionStatus(value: unknown): value is SessionStatus {
-  return (
-    value === 'idle' ||
-    value === 'running' ||
-    value === 'failed'
-  )
+  return value === 'idle' || value === 'running' || value === 'failed'
 }
 
 export function isTerminalEvent(type: string) {
@@ -465,7 +503,11 @@ function appendToGroup(group: EventGroup, event: AgentEvent) {
   if (group.kind === 'tool-call') {
     group.label = toolLabelFromEvents(group.events)
   }
-  group.defaultOpen = group.events.some((item) => isErrorEvent(item.type, item.status)) || defaultOpen(group.kind, event)
+  if (group.kind === 'file-change') {
+    group.label = fileChangeLabel(group)
+  }
+  group.defaultOpen =
+    group.events.some((item) => isErrorEvent(item.type, item.status)) || defaultOpen(group.kind, event)
   group.terminal = group.terminal || isTerminalEvent(event.type)
 }
 
@@ -486,7 +528,20 @@ function groupLabel(event: AgentEvent, kind: EventGroupKind) {
     return toolLabelFromEvents([event])
   }
   if (kind === 'file-change') {
-    return 'File change'
+    return fileChangeLabel({
+      id: `${kind}-${event.seq}`,
+      kind,
+      label: eventLabel(event),
+      status: event.status,
+      startSeq: event.seq,
+      endSeq: event.seq,
+      events: [event],
+      text: payloadText(event.payload),
+      error: payloadError(event.payload),
+      paths: payloadPaths(event.payload),
+      defaultOpen: defaultOpen(kind, event),
+      terminal: isTerminalEvent(event.type),
+    })
   }
   return eventLabel(event)
 }
@@ -503,14 +558,21 @@ function toolGroupID(event: AgentEvent) {
   if (!event.type.startsWith('tool.call')) {
     return ''
   }
-  return payloadString(event.payload, [
-    'tool_call_id',
-    'call_id',
-    'item_id',
-    'process_id',
-    'tool_id',
-    'id',
-  ])
+  return payloadString(event.payload, ['tool_call_id', 'call_id', 'item_id', 'process_id', 'tool_id', 'id'])
+}
+
+function payloadItemID(payload: unknown) {
+  return payloadString(payload, ['item_id', 'itemId', 'id'])
+}
+
+function clearsActiveThinking(event: AgentEvent) {
+  return (
+    event.type.startsWith('agent.message') ||
+    event.type.startsWith('tool.call') ||
+    event.type.startsWith('file.change') ||
+    event.type === 'agent.input.requested' ||
+    isTerminalEvent(event.type)
+  )
 }
 
 function nearbyToolGroup(previous: EventGroup | undefined, event: AgentEvent) {
@@ -619,12 +681,20 @@ function chatToolFromGroup(group: EventGroup): ChatTranscriptTool {
     status: group.status,
     text: chatToolText(group),
     error: group.error,
+    paths: group.paths,
     startSeq: group.startSeq,
     endSeq: group.endSeq,
   }
 }
 
 function chatToolText(group: EventGroup) {
+  if (group.kind === 'file-change') {
+    const diffText = fileChangeDiffText(group)
+    if (diffText) {
+      return diffText
+    }
+  }
+
   const lines: string[] = []
   for (const event of group.events) {
     for (const line of toolTextLines(event.payload)) {
@@ -638,6 +708,113 @@ function chatToolText(group: EventGroup) {
     return lines.join('\n')
   }
   return group.paths.join('\n')
+}
+
+function fileChangeLabel(group: EventGroup) {
+  const fileName = group.paths[0] ? basename(group.paths[0]) : ''
+  if (!fileName) {
+    return 'File change'
+  }
+  if (group.paths.length > 1) {
+    return `${fileName} +${group.paths.length - 1}`
+  }
+  return fileName
+}
+
+function fileChangeDiffText(group: EventGroup) {
+  const chunks: string[] = []
+  for (const event of group.events) {
+    for (const chunk of fileChangeDiffChunks(event.payload)) {
+      if (!chunk || chunks[chunks.length - 1] === chunk) {
+        continue
+      }
+      chunks.push(chunk)
+    }
+  }
+  return chunks.join('\n')
+}
+
+function fileChangeDiffChunks(payload: unknown) {
+  if (!isRecord(payload)) {
+    return []
+  }
+
+  const direct = firstPayloadString(payload, [
+    'diff',
+    'patch',
+    'unified_diff',
+    'unifiedDiff',
+    'text',
+    'output',
+    'summary',
+  ])
+  if (direct) {
+    return [direct]
+  }
+
+  const changes = Array.isArray(payload.changes) ? payload.changes : []
+  return changes.flatMap((change) => fileChangeDiffChunk(change))
+}
+
+function fileChangeDiffChunk(change: unknown) {
+  if (!isRecord(change)) {
+    return []
+  }
+
+  const direct = firstPayloadString(change, ['diff', 'patch', 'unified_diff', 'unifiedDiff'])
+  if (direct) {
+    return [direct]
+  }
+
+  const path = payloadString(change, ['path'])
+  const oldText = firstPayloadString(change, ['old_text', 'oldText', 'before', 'previous', 'original'])
+  const newText = firstPayloadString(change, ['new_text', 'newText', 'after', 'current', 'replacement'])
+  if (oldText || newText) {
+    return [simpleDiff(path, oldText, newText)]
+  }
+
+  const fallback = firstPayloadString(change, ['text', 'output', 'summary'])
+  return fallback ? [path ? `${path}\n${fallback}` : fallback] : []
+}
+
+function simpleDiff(path: string, oldText: string, newText: string) {
+  const lines: string[] = []
+  if (path) {
+    lines.push(`--- ${path}`)
+    lines.push(`+++ ${path}`)
+  }
+  if (oldText) {
+    lines.push(
+      ...oldText
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => `- ${line}`),
+    )
+  }
+  if (newText) {
+    lines.push(
+      ...newText
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => `+ ${line}`),
+    )
+  }
+  return lines.join('\n')
+}
+
+function basename(path: string) {
+  const trimmed = path.trim().replace(/\/+$/, '')
+  return trimmed.split('/').filter(Boolean).pop() ?? trimmed
+}
+
+function firstPayloadString(payload: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = payload[key]
+    if (typeof value === 'string' && value.trim()) {
+      return value
+    }
+  }
+  return ''
 }
 
 function toolLabelFromEvents(events: AgentEvent[]) {
@@ -884,7 +1061,10 @@ function userInputRequestFromEvent(event: AgentEvent): PendingUserInputRequest |
 }
 
 function tokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
-  if (event.type !== 'provider.codex.event' || payloadString(event.payload, ['provider_event_type']) !== 'thread/tokenUsage/updated') {
+  if (
+    event.type !== 'provider.codex.event' ||
+    payloadString(event.payload, ['provider_event_type']) !== 'thread/tokenUsage/updated'
+  ) {
     return null
   }
   if (!isRecord(event.payload) || !isRecord(event.payload.raw)) {
@@ -938,14 +1118,16 @@ function payloadQuestions(value: unknown): UserInputQuestion[] {
     if (!id || !question) {
       return []
     }
-    return [{
-      id,
-      header: payloadString(item, ['header']),
-      question,
-      is_other: item.is_other === true,
-      is_secret: item.is_secret === true,
-      options: payloadOptions(item.options),
-    }]
+    return [
+      {
+        id,
+        header: payloadString(item, ['header']),
+        question,
+        is_other: item.is_other === true,
+        is_secret: item.is_secret === true,
+        options: payloadOptions(item.options),
+      },
+    ]
   })
 }
 
@@ -961,10 +1143,12 @@ function payloadOptions(value: unknown) {
     if (!label) {
       return []
     }
-    return [{
-      label,
-      description: payloadString(item, ['description']),
-    }]
+    return [
+      {
+        label,
+        description: payloadString(item, ['description']),
+      },
+    ]
   })
 }
 

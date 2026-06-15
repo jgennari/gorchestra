@@ -29,6 +29,8 @@ type Session struct {
 	AgentType         string
 	Status            SessionStatus
 	ProviderSessionID string
+	WorkspacePath     string
+	AgentOptions      json.RawMessage
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	CompletedAt       *time.Time
@@ -47,8 +49,10 @@ type Event struct {
 }
 
 type CreateSessionParams struct {
-	Title     string
-	AgentType string
+	Title         string
+	AgentType     string
+	WorkspacePath string
+	AgentOptions  json.RawMessage
 }
 
 type UpdateSessionStatusParams struct {

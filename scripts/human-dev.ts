@@ -1,4 +1,5 @@
 import { mkdir, rm } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -8,6 +9,7 @@ const sessionName = process.env.GORCHESTRA_HUMAN_TMUX ?? 'gorchestra-human'
 const backendPort = process.env.GORCHESTRA_HUMAN_PORT ?? '18080'
 const webPort = process.env.GORCHESTRA_HUMAN_WEB_PORT ?? '15173'
 const dbPath = process.env.GORCHESTRA_HUMAN_DB ?? join(tmpDir, 'sessions.db')
+const workspacePath = process.env.GORCHESTRA_HUMAN_WORKSPACE ?? homedir()
 const command = Bun.argv[2] ?? 'start'
 
 type RunOptions = {
@@ -60,6 +62,7 @@ async function start() {
     `PORT=${shellQuote(backendPort)}`,
     `WEB_PORT=${shellQuote(webPort)}`,
     `GORCHESTRA_DB=${shellQuote(dbPath)}`,
+    `GORCHESTRA_WORKSPACE=${shellQuote(workspacePath)}`,
   ]
 
   if (process.env.VITE_ALLOWED_HOSTS) {
@@ -140,6 +143,7 @@ async function status() {
     console.log('[human-dev] tailnet: unavailable')
   }
   console.log(`[human-dev] database: ${dbPath}`)
+  console.log(`[human-dev] workspace: ${workspacePath}`)
 }
 
 function logs() {

@@ -19,6 +19,7 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "sessions")
 	assertTableExists(t, ctx, store, "events")
 	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
+	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
 }
 
 func TestMigrationsAreIdempotent(t *testing.T) {
@@ -33,8 +34,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 4 {
-		t.Fatalf("expected four recorded migrations, got %d", count)
+	if count != 6 {
+		t.Fatalf("expected six recorded migrations, got %d", count)
 	}
 }
 
@@ -205,8 +206,9 @@ func TestCreateSessionPersistsIdleSession(t *testing.T) {
 	store := newTestStore(t, ctx)
 
 	created, err := store.CreateSession(ctx, CreateSessionParams{
-		Title:     "Inspect repository",
-		AgentType: "codex",
+		Title:         "Inspect repository",
+		AgentType:     "codex",
+		WorkspacePath: "/tmp/gorchestra-workspace",
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -223,6 +225,9 @@ func TestCreateSessionPersistsIdleSession(t *testing.T) {
 	}
 	if created.CreatedAt.IsZero() || created.UpdatedAt.IsZero() {
 		t.Fatal("expected timestamps")
+	}
+	if created.WorkspacePath != "/tmp/gorchestra-workspace" {
+		t.Fatalf("expected workspace path, got %q", created.WorkspacePath)
 	}
 
 	persisted, err := store.GetSession(ctx, created.ID)
@@ -241,6 +246,9 @@ func TestCreateSessionPersistsIdleSession(t *testing.T) {
 	}
 	if persisted.Status != SessionStatusIdle {
 		t.Fatalf("expected idle status, got %q", persisted.Status)
+	}
+	if persisted.WorkspacePath != "/tmp/gorchestra-workspace" {
+		t.Fatalf("expected persisted workspace path, got %q", persisted.WorkspacePath)
 	}
 }
 
@@ -726,6 +734,56 @@ func TestListEventsHonorsLimit(t *testing.T) {
 	}
 
 	assertSeqs(t, events, []int64{1, 2})
+}
+
+func TestListRecentEventsReturnsTailInAscendingSequence(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	appendTestEvent(t, ctx, store, session.ID, `{"text":"one"}`)
+	appendTestEvent(t, ctx, store, session.ID, `{"text":"two"}`)
+	appendTestEvent(t, ctx, store, session.ID, `{"text":"three"}`)
+
+	events, err := store.ListRecentEvents(ctx, session.ID, 2)
+	if err != nil {
+		t.Fatalf("list recent events: %v", err)
+	}
+
+	assertSeqs(t, events, []int64{2, 3})
+}
+
+func TestListEventsBeforeReturnsPreviousPageInAscendingSequence(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	appendTestEvent(t, ctx, store, session.ID, `{"text":"one"}`)
+	appendTestEvent(t, ctx, store, session.ID, `{"text":"two"}`)
+	appendTestEvent(t, ctx, store, session.ID, `{"text":"three"}`)
+	appendTestEvent(t, ctx, store, session.ID, `{"text":"four"}`)
+
+	events, err := store.ListEventsBefore(ctx, session.ID, 4, 2)
+	if err != nil {
+		t.Fatalf("list events before: %v", err)
+	}
+
+	assertSeqs(t, events, []int64{2, 3})
+}
+
+func TestListEventsBeforeReturnsEmptyAtBoundary(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	appendTestEvent(t, ctx, store, session.ID, `{"text":"one"}`)
+
+	events, err := store.ListEventsBefore(ctx, session.ID, 1, 2)
+	if err != nil {
+		t.Fatalf("list events before: %v", err)
+	}
+
+	assertSeqs(t, events, []int64{})
 }
 
 func TestConcurrentAppendsProduceUniqueContiguousSequences(t *testing.T) {

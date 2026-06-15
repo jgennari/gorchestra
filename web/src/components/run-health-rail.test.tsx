@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AgentEvent, Session } from '@/lib/api'
 import { RunHealthRail } from '@/components/run-health-rail'
@@ -8,11 +8,27 @@ const session: Session = {
   title: 'Inspect repo',
   agent_type: 'fake',
   status: 'running',
+  workspace_path: '/repo',
   created_at: '2026-06-12T16:00:00Z',
   updated_at: '2026-06-12T16:01:00Z',
   completed_at: null,
   archived_at: null,
 }
+
+beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      new Response(JSON.stringify({ root_path: '/repo', path: '', entries: [] }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ),
+  )
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 test('run health rail shows metrics and active chat status without session identity', () => {
   const onArchive = vi.fn(async () => undefined)
@@ -110,7 +126,8 @@ test('run health rail shows latest token usage summary', () => {
 
   expect(screen.getByText('Tokens')).toBeInTheDocument()
   expect(screen.getByText('5%')).toBeInTheDocument()
-  expect(screen.getByText('14k / 258k')).toBeInTheDocument()
+  expect(screen.getByText('14k / 258k current')).toBeInTheDocument()
+  expect(screen.getByText('14k cumulative')).toBeInTheDocument()
   expect(screen.getByText('Input')).toBeInTheDocument()
   expect(screen.getByText('Output')).toBeInTheDocument()
   expect(screen.getByText('4.5k cached (32%)')).toBeInTheDocument()
@@ -130,6 +147,67 @@ test('run health rail active chat dot shows disconnected state', () => {
 
   expect(screen.getByRole('img', { name: 'Active chat: Disconnected' })).toHaveClass('bg-destructive')
   expect(screen.queryByText('lost connection')).not.toBeInTheDocument()
+})
+
+test('run health rail file explorer sends file content to the viewer', async () => {
+  const user = userEvent.setup()
+  const onOpenFile = vi.fn()
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    if (String(url) === '/api/sessions/sess_1/files') {
+      return jsonResponse({
+        root_path: '/repo',
+        path: '',
+        entries: [
+          {
+            name: 'main.go',
+            path: 'main.go',
+            type: 'file',
+            size_bytes: 13,
+            modified_at: '2026-06-12T16:00:00Z',
+            git_status: 'modified',
+          },
+        ],
+      })
+    }
+    if (String(url) === '/api/sessions/sess_1/files/content?path=main.go') {
+      return jsonResponse({
+        name: 'main.go',
+        path: 'main.go',
+        size_bytes: 13,
+        modified_at: '2026-06-12T16:00:00Z',
+        content: 'package main\n',
+        encoding: 'utf-8',
+        truncated: false,
+        git_status: 'modified',
+      })
+    }
+    throw new Error(`unexpected URL ${String(url)}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onArchive={async () => undefined}
+      onOpenFile={onOpenFile}
+    />,
+  )
+
+  await user.click(await screen.findByRole('button', { name: /main\.go/i }))
+
+  await waitFor(() =>
+    expect(onOpenFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'main.go',
+        content: 'package main\n',
+      }),
+    ),
+  )
+  expect(screen.queryByText(/package main/)).not.toBeInTheDocument()
+  expect(screen.getAllByText('M').length).toBeGreaterThan(0)
 })
 
 function event(
@@ -173,4 +251,11 @@ function tokenUsageRaw() {
       modelContextWindow: 258400,
     },
   }
+}
+
+function jsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
 }

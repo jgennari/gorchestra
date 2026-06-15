@@ -10,7 +10,7 @@ import { PromptComposer } from '@/components/prompt-composer'
 import { SessionTitleEditor } from '@/components/session-title-editor'
 import { UserInputCard } from '@/components/user-input-card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { pendingUserInputRequest } from '@/lib/events'
+import { activeThinking, pendingUserInputRequest } from '@/lib/events'
 import { cn } from '@/lib/utils'
 
 type Props = {
@@ -18,14 +18,22 @@ type Props = {
   events: AgentEvent[]
   streamState: StreamState
   streamError: string
+  hasOlderEvents?: boolean
+  loadingOlderEvents?: boolean
   notice: string
   showDebugEvents: boolean
   onShowDebugEventsChange: (showDebugEvents: boolean) => void
-  onSubmitPrompt: (content: string, agentOptions?: SubmitAgentOptions, attachments?: MessageAttachment[]) => Promise<void>
+  onLoadOlderEvents?: () => Promise<void> | void
+  onSubmitPrompt: (
+    content: string,
+    agentOptions?: SubmitAgentOptions,
+    attachments?: MessageAttachment[],
+  ) => Promise<void>
   onAnswerUserInput: (requestID: string, answers: UserInputAnswers) => Promise<void>
   onCancel: () => Promise<void>
   onRefresh: () => void
   onUpdateTitle: (title: string) => Promise<void>
+  onOpenFilePath?: (path: string) => Promise<void> | void
 }
 
 export function SessionDetail({
@@ -33,27 +41,33 @@ export function SessionDetail({
   events,
   streamState,
   streamError,
+  hasOlderEvents = false,
+  loadingOlderEvents = false,
   notice,
   showDebugEvents,
   onShowDebugEventsChange,
+  onLoadOlderEvents,
   onSubmitPrompt,
   onAnswerUserInput,
   onCancel,
   onRefresh,
   onUpdateTitle,
+  onOpenFilePath,
 }: Props) {
   const userInputRequest = useMemo(
     () => (session?.status === 'running' ? pendingUserInputRequest(events) : null),
     [events, session?.status],
+  )
+  const thinking = useMemo(
+    () => session?.status === 'running' && !userInputRequest && activeThinking(events),
+    [events, session?.status, userInputRequest],
   )
 
   if (!session) {
     return (
       <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
         <h2 className="text-lg font-semibold">No session selected</h2>
-        <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-          Create or select a session to monitor agent work.
-        </p>
+        <p className="mt-2 max-w-sm text-sm text-muted-foreground">Create or select a session to monitor agent work.</p>
       </section>
     )
   }
@@ -98,13 +112,13 @@ export function SessionDetail({
           topInset="sessionHeader"
           bottomInset={userInputRequest ? 'question' : 'composer'}
           showDebugEvents={showDebugEvents}
+          hasOlderEvents={hasOlderEvents}
+          loadingOlderEvents={loadingOlderEvents}
+          onLoadOlderEvents={onLoadOlderEvents}
+          onOpenFilePath={onOpenFilePath}
         />
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 p-3">
-          <ChatSessionHeader
-            sessionID={session.id}
-            title={session.title}
-            onUpdateTitle={onUpdateTitle}
-          />
+          <ChatSessionHeader sessionID={session.id} title={session.title} onUpdateTitle={onUpdateTitle} />
         </div>
       </div>
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
@@ -116,7 +130,7 @@ export function SessionDetail({
             agentType={session.agent_type}
             disabled={composerDisabled}
             disabledReason={disabledReason}
-            thinking={session.status === 'running' && !userInputRequest}
+            thinking={thinking}
             showDebugEvents={showDebugEvents}
             onSubmit={onSubmitPrompt}
             onShowDebugEventsChange={onShowDebugEventsChange}
@@ -162,9 +176,7 @@ function SessionIDCopy({ sessionID }: { sessionID: string }) {
 
   return (
     <div className="flex min-w-0 max-w-[45%] shrink items-center gap-1.5 rounded-md bg-background/30 px-2 py-1">
-      <code className="min-w-0 truncate font-mono text-[11px] text-muted-foreground/90">
-        {sessionID}
-      </code>
+      <code className="min-w-0 truncate font-mono text-[11px] text-muted-foreground/90">{sessionID}</code>
       <Button
         type="button"
         variant="ghost"

@@ -312,6 +312,93 @@ func TestEventHistoryCapsLargeLimit(t *testing.T) {
 	}
 }
 
+func TestEventHistoryTailReturnsRecentEvents(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEvent(1, "agent.message.delta"),
+		testEvent(2, "agent.message.delta"),
+		testEvent(3, "agent.message.completed"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?tail=true&limit=2", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+
+	if got, want := len(response.Events), 2; got != want {
+		t.Fatalf("expected %d events, got %d: %#v", want, got, response.Events)
+	}
+	if response.Events[0].Seq != 2 || response.Events[1].Seq != 3 {
+		t.Fatalf("expected seqs [2 3], got [%d %d]", response.Events[0].Seq, response.Events[1].Seq)
+	}
+	call := store.lastListCall(t)
+	if call.mode != "tail" {
+		t.Fatalf("expected tail event list mode, got %q", call.mode)
+	}
+}
+
+func TestEventHistoryBeforeSeqReturnsPreviousEvents(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEvent(1, "agent.message.delta"),
+		testEvent(2, "agent.message.delta"),
+		testEvent(3, "agent.message.delta"),
+		testEvent(4, "agent.message.completed"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?before_seq=4&limit=2", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+
+	if got, want := len(response.Events), 2; got != want {
+		t.Fatalf("expected %d events, got %d: %#v", want, got, response.Events)
+	}
+	if response.Events[0].Seq != 2 || response.Events[1].Seq != 3 {
+		t.Fatalf("expected seqs [2 3], got [%d %d]", response.Events[0].Seq, response.Events[1].Seq)
+	}
+	call := store.lastListCall(t)
+	if call.mode != "before" || call.beforeSeq != 4 {
+		t.Fatalf("expected before event list mode at seq 4, got mode=%q before_seq=%d", call.mode, call.beforeSeq)
+	}
+}
+
+func TestEventHistoryRejectsMixedCursors(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?after_seq=1&tail=true", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "use only one event history cursor")
+	if got := store.listCallCount(); got != 0 {
+		t.Fatalf("expected no list calls, got %d", got)
+	}
+}
+
 func TestEventHistoryRejectsInvalidAfterSeq(t *testing.T) {
 	for _, afterSeq := range []string{"-1", "nope"} {
 		t.Run(afterSeq, func(t *testing.T) {
@@ -577,7 +664,9 @@ type fakeHTTPStore struct {
 type listCall struct {
 	sessionID string
 	afterSeq  int64
+	beforeSeq int64
 	limit     int
+	mode      string
 }
 
 type listSessionsCall struct {
@@ -620,12 +709,13 @@ func (s *fakeHTTPStore) CreateSession(_ context.Context, params store.CreateSess
 
 	id := fmt.Sprintf("sess_fake_%d", len(s.sessions)+1)
 	session := store.Session{
-		ID:        id,
-		Title:     params.Title,
-		AgentType: params.AgentType,
-		Status:    store.SessionStatusIdle,
-		CreatedAt: testCreatedAt,
-		UpdatedAt: testCreatedAt,
+		ID:            id,
+		Title:         params.Title,
+		AgentType:     params.AgentType,
+		Status:        store.SessionStatusIdle,
+		WorkspacePath: params.WorkspacePath,
+		CreatedAt:     testCreatedAt,
+		UpdatedAt:     testCreatedAt,
 	}
 	s.sessions[id] = session
 
@@ -775,7 +865,7 @@ func (s *fakeHTTPStore) SetSessionProviderSessionID(_ context.Context, params st
 
 func (s *fakeHTTPStore) ListEvents(_ context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error) {
 	s.mu.Lock()
-	s.listCalls = append(s.listCalls, listCall{sessionID: sessionID, afterSeq: afterSeq, limit: limit})
+	s.listCalls = append(s.listCalls, listCall{sessionID: sessionID, afterSeq: afterSeq, limit: limit, mode: "after"})
 	onList := s.onList
 	listErr := s.listErr
 	s.mu.Unlock()
@@ -802,6 +892,53 @@ func (s *fakeHTTPStore) ListEvents(_ context.Context, sessionID string, afterSeq
 		filtered = filtered[:limit]
 	}
 
+	return append([]store.Event(nil), filtered...), nil
+}
+
+func (s *fakeHTTPStore) ListRecentEvents(_ context.Context, sessionID string, limit int) ([]store.Event, error) {
+	s.mu.Lock()
+	s.listCalls = append(s.listCalls, listCall{sessionID: sessionID, limit: limit, mode: "tail"})
+	listErr := s.listErr
+	s.mu.Unlock()
+
+	if listErr != nil {
+		return nil, listErr
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	events := s.events[sessionID]
+	start := 0
+	if limit > 0 && len(events) > limit {
+		start = len(events) - limit
+	}
+	return append([]store.Event(nil), events[start:]...), nil
+}
+
+func (s *fakeHTTPStore) ListEventsBefore(_ context.Context, sessionID string, beforeSeq int64, limit int) ([]store.Event, error) {
+	s.mu.Lock()
+	s.listCalls = append(s.listCalls, listCall{sessionID: sessionID, beforeSeq: beforeSeq, limit: limit, mode: "before"})
+	listErr := s.listErr
+	s.mu.Unlock()
+
+	if listErr != nil {
+		return nil, listErr
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	events := s.events[sessionID]
+	filtered := make([]store.Event, 0, len(events))
+	for _, event := range events {
+		if event.Seq < beforeSeq {
+			filtered = append(filtered, event)
+		}
+	}
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[len(filtered)-limit:]
+	}
 	return append([]store.Event(nil), filtered...), nil
 }
 

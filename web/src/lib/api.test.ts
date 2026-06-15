@@ -1,13 +1,21 @@
 import {
   answerUserInput,
   archiveSession,
+  browseWorkspace,
   createSession,
   eventStreamURL,
   fetchAgentOptions,
+  getSessionFileContent,
   isAgentType,
   listEvents,
+  listEventsBefore,
+  listRecentEvents,
   listSessions,
+  listSessionFiles,
+  listWorkspaceRoots,
+  searchSessionFiles,
   submitMessage,
+  updateSessionFileContent,
   updateSessionTitle,
 } from '@/lib/api'
 
@@ -19,12 +27,20 @@ test('session API helpers build the expected URLs', async () => {
     if (String(url) === '/api/sessions/sess_1/events?after_seq=4&limit=20') {
       return jsonResponse({ events: [] })
     }
+    if (String(url) === '/api/sessions/sess_1/events?tail=true&limit=25') {
+      return jsonResponse({ events: [] })
+    }
+    if (String(url) === '/api/sessions/sess_1/events?before_seq=100&limit=25') {
+      return jsonResponse({ events: [] })
+    }
     throw new Error(`unexpected URL ${String(url)}`)
   })
   vi.stubGlobal('fetch', fetchMock)
 
   await listSessions(25)
   await listEvents('sess_1', 4, 20)
+  await listRecentEvents('sess_1', 25)
+  await listEventsBefore('sess_1', 100, 25)
 
   expect(eventStreamURL('sess_1', 4)).toBe('/api/sessions/sess_1/events/stream?after_seq=4')
 })
@@ -49,6 +65,7 @@ test('title update helper patches the session title', async () => {
       title: 'New title',
       agent_type: 'fake',
       status: 'idle',
+      workspace_path: '/repo',
       created_at: '2026-06-12T16:00:00Z',
       updated_at: '2026-06-12T16:01:00Z',
       completed_at: null,
@@ -75,6 +92,7 @@ test('create session posts agent type and optional title', async () => {
         title: 'Inspect repo',
         agent_type: 'fake',
         status: 'idle',
+        workspace_path: '/repo',
         created_at: '2026-06-12T16:00:00Z',
         updated_at: '2026-06-12T16:00:00Z',
         completed_at: null,
@@ -85,9 +103,50 @@ test('create session posts agent type and optional title', async () => {
   })
   vi.stubGlobal('fetch', fetchMock)
 
-  const session = await createSession({ agent_type: 'fake', title: 'Inspect repo' })
+  const session = await createSession({
+    agent_type: 'fake',
+    title: 'Inspect repo',
+  })
 
   expect(session.id).toBe('sess_1')
+})
+
+test('create session can post agent options', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions') {
+      expect(init?.method).toBe('POST')
+      expect(init?.body).toBe(
+        JSON.stringify({
+          agent_type: 'codex',
+          agent_options: { codex: { run_dangerously: true } },
+        }),
+      )
+      return jsonResponse({ session_id: 'sess_1' })
+    }
+    if (String(url) === '/api/sessions/sess_1') {
+      return jsonResponse({
+        id: 'sess_1',
+        title: '',
+        agent_type: 'codex',
+        status: 'idle',
+        workspace_path: '/repo',
+        agent_options: { codex: { run_dangerously: true } },
+        created_at: '2026-06-12T16:00:00Z',
+        updated_at: '2026-06-12T16:00:00Z',
+        completed_at: null,
+        archived_at: null,
+      })
+    }
+    throw new Error(`unexpected URL ${String(url)}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const session = await createSession({
+    agent_type: 'codex',
+    agent_options: { codex: { run_dangerously: true } },
+  })
+
+  expect(session.agent_options?.codex?.run_dangerously).toBe(true)
 })
 
 test('archive session posts to the archive endpoint', async () => {
@@ -99,6 +158,7 @@ test('archive session posts to the archive endpoint', async () => {
       title: 'Inspect repo',
       agent_type: 'fake',
       status: 'idle',
+      workspace_path: '/repo',
       created_at: '2026-06-12T16:00:00Z',
       updated_at: '2026-06-12T16:05:00Z',
       completed_at: null,
@@ -110,6 +170,71 @@ test('archive session posts to the archive endpoint', async () => {
   const session = await archiveSession('sess_1')
 
   expect(session.archived_at).toBe('2026-06-12T16:05:00Z')
+})
+
+test('workspace helpers build the expected URLs', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    switch (String(url)) {
+      case '/api/workspaces/roots':
+        return jsonResponse({
+          roots: [{ id: 'root_1', name: 'repo', path: '/repo', default: true }],
+        })
+      case '/api/workspaces/browse?root_id=root_1&path=src':
+        return jsonResponse({
+          root_id: 'root_1',
+          root_path: '/repo',
+          path: 'src',
+          entries: [],
+        })
+      case '/api/sessions/sess_1/files?path=src':
+        return jsonResponse({ root_path: '/repo', path: 'src', entries: [] })
+      case '/api/sessions/sess_1/files/search?q=main&path=src':
+        return jsonResponse({ query: 'main', path: 'src', results: [] })
+      case '/api/sessions/sess_1/files/content?path=src%2Fmain.go':
+        return jsonResponse({
+          name: 'main.go',
+          path: 'src/main.go',
+          size_bytes: 13,
+          modified_at: '2026-06-12T16:00:00Z',
+          content: 'package main\n',
+          encoding: 'utf-8',
+          truncated: false,
+        })
+      default:
+        throw new Error(`unexpected URL ${String(url)}`)
+    }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await listWorkspaceRoots()
+  await browseWorkspace('root_1', 'src')
+  await listSessionFiles('sess_1', 'src')
+  await searchSessionFiles('sess_1', 'main', 'src')
+  const content = await getSessionFileContent('sess_1', 'src/main.go')
+
+  expect(content.content).toBe('package main\n')
+})
+
+test('workspace file content update helper writes content', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1/files/content?path=src%2Fmain.go')
+    expect(init?.method).toBe('PUT')
+    expect(init?.body).toBe(JSON.stringify({ content: 'package main\n' }))
+    return jsonResponse({
+      name: 'main.go',
+      path: 'src/main.go',
+      size_bytes: 13,
+      modified_at: '2026-06-12T16:00:00Z',
+      content: 'package main\n',
+      encoding: 'utf-8',
+      truncated: false,
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const content = await updateSessionFileContent('sess_1', 'src/main.go', 'package main\n')
+
+  expect(content.content).toBe('package main\n')
 })
 
 test('agent options helper fetches codex options', async () => {
@@ -183,7 +308,11 @@ test('answer user input posts selected answers', async () => {
     expect(String(url)).toBe('/api/sessions/sess_1/requests/call_test/answer')
     expect(init?.method).toBe('POST')
     expect(init?.body).toBe(JSON.stringify({ answers }))
-    return jsonResponse({ session_id: 'sess_1', request_id: 'call_test', status: 'answered' })
+    return jsonResponse({
+      session_id: 'sess_1',
+      request_id: 'call_test',
+      status: 'answered',
+    })
   })
   vi.stubGlobal('fetch', fetchMock)
 

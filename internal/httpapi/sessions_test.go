@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,7 +23,8 @@ import (
 
 func TestCreateSessionCreatesIdleFakeAgentSession(t *testing.T) {
 	ctx := context.Background()
-	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	workspace := canonicalPath(t, t.TempDir())
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
 
 	rec := postJSON(handler, "/api/sessions", `{"agent_type":"fake","title":"Inspect repository"}`)
 
@@ -48,6 +51,154 @@ func TestCreateSessionCreatesIdleFakeAgentSession(t *testing.T) {
 	if session.Status != store.SessionStatusIdle {
 		t.Fatalf("expected idle status, got %q", session.Status)
 	}
+	if session.WorkspacePath != workspace {
+		t.Fatalf("expected workspace path %q, got %q", workspace, session.WorkspacePath)
+	}
+}
+
+func TestCreateSessionAcceptsWorkspaceInsideAllowedRoot(t *testing.T) {
+	ctx := context.Background()
+	root := canonicalPath(t, t.TempDir())
+	project := filepath.Join(root, "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, root, fake.New())
+
+	rec := postJSON(handler, "/api/sessions", `{"agent_type":"fake","workspace_path":`+quoteJSON(project)+`}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+	var response createSessionResponse
+	decodeJSON(t, rec, &response)
+	session, err := dbStore.GetSession(ctx, response.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.WorkspacePath != project {
+		t.Fatalf("expected workspace path %q, got %q", project, session.WorkspacePath)
+	}
+}
+
+func TestCreateSessionRejectsWorkspaceOutsideAllowedRoots(t *testing.T) {
+	ctx := context.Background()
+	root := canonicalPath(t, t.TempDir())
+	outside := canonicalPath(t, t.TempDir())
+	_, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, root, fake.New())
+
+	rec := postJSON(handler, "/api/sessions", `{"agent_type":"fake","workspace_path":`+quoteJSON(outside)+`}`)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusForbidden, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "workspace is outside allowed roots")
+}
+
+func TestWorkspaceRootsAndBrowseExposeAllowedServerDirectories(t *testing.T) {
+	ctx := context.Background()
+	root := canonicalPath(t, t.TempDir())
+	project := filepath.Join(root, "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
+	_, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, root, fake.New())
+
+	rootsRec := get(handler, "/api/workspaces/roots")
+	if rootsRec.Code != http.StatusOK {
+		t.Fatalf("expected roots status %d, got %d with body %s", http.StatusOK, rootsRec.Code, rootsRec.Body.String())
+	}
+	var rootsResponse workspaceRootsResponse
+	decodeJSON(t, rootsRec, &rootsResponse)
+	if len(rootsResponse.Roots) != 1 || rootsResponse.Roots[0].Path != root || !rootsResponse.Roots[0].Default {
+		t.Fatalf("expected default root %q, got %#v", root, rootsResponse.Roots)
+	}
+
+	browseRec := get(handler, "/api/workspaces/browse?root_id="+rootsResponse.Roots[0].ID)
+	if browseRec.Code != http.StatusOK {
+		t.Fatalf("expected browse status %d, got %d with body %s", http.StatusOK, browseRec.Code, browseRec.Body.String())
+	}
+	var browseResponse workspaceBrowseResponse
+	decodeJSON(t, browseRec, &browseResponse)
+	if len(browseResponse.Entries) != 1 || browseResponse.Entries[0].Name != "project" || browseResponse.Entries[0].Type != "directory" {
+		t.Fatalf("expected project directory, got %#v", browseResponse.Entries)
+	}
+}
+
+func TestSessionFileAPIsListSearchAndReadWorkspaceFiles(t *testing.T) {
+	ctx := context.Background()
+	workspace := canonicalPath(t, t.TempDir())
+	if err := os.Mkdir(filepath.Join(workspace, "src"), 0o755); err != nil {
+		t.Fatalf("create src directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "src", "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Files",
+		AgentType:     "fake",
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	listRec := get(handler, "/api/sessions/"+session.ID+"/files")
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d with body %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+	var listResponse workspaceBrowseResponse
+	decodeJSON(t, listRec, &listResponse)
+	if len(listResponse.Entries) != 1 || listResponse.Entries[0].Name != "src" {
+		t.Fatalf("expected src entry, got %#v", listResponse.Entries)
+	}
+
+	searchRec := get(handler, "/api/sessions/"+session.ID+"/files/search?q=main")
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("expected search status %d, got %d with body %s", http.StatusOK, searchRec.Code, searchRec.Body.String())
+	}
+	var searchResponse workspaceSearchResponse
+	decodeJSON(t, searchRec, &searchResponse)
+	if len(searchResponse.Results) != 1 || searchResponse.Results[0].Path != "src/main.go" {
+		t.Fatalf("expected src/main.go search result, got %#v", searchResponse.Results)
+	}
+
+	contentRec := get(handler, "/api/sessions/"+session.ID+"/files/content?path="+url.QueryEscape("src/main.go"))
+	if contentRec.Code != http.StatusOK {
+		t.Fatalf("expected content status %d, got %d with body %s", http.StatusOK, contentRec.Code, contentRec.Body.String())
+	}
+	var contentResponse workspaceFileContentResponse
+	decodeJSON(t, contentRec, &contentResponse)
+	if contentResponse.Content != "package main\n" || contentResponse.Encoding != "utf-8" {
+		t.Fatalf("expected text file content, got %#v", contentResponse)
+	}
+
+	updateRec := putJSON(handler, "/api/sessions/"+session.ID+"/files/content?path="+url.QueryEscape("src/main.go"), `{"content":"package main\n\nfunc main() {}\n"}`)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected update status %d, got %d with body %s", http.StatusOK, updateRec.Code, updateRec.Body.String())
+	}
+	var updatedContent workspaceFileContentResponse
+	decodeJSON(t, updateRec, &updatedContent)
+	if updatedContent.Content != "package main\n\nfunc main() {}\n" {
+		t.Fatalf("expected updated content, got %#v", updatedContent.Content)
+	}
+	persisted, err := os.ReadFile(filepath.Join(workspace, "src", "main.go"))
+	if err != nil {
+		t.Fatalf("read persisted source file: %v", err)
+	}
+	if string(persisted) != updatedContent.Content {
+		t.Fatalf("expected persisted content %q, got %q", updatedContent.Content, string(persisted))
+	}
+
+	if err := os.WriteFile(filepath.Join(workspace, "src", "image.bin"), []byte{0x00, 0x01}, 0o644); err != nil {
+		t.Fatalf("write binary file: %v", err)
+	}
+	binaryUpdateRec := putJSON(handler, "/api/sessions/"+session.ID+"/files/content?path="+url.QueryEscape("src/image.bin"), `{"content":"text"}`)
+	if binaryUpdateRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected binary update status %d, got %d with body %s", http.StatusBadRequest, binaryUpdateRec.Code, binaryUpdateRec.Body.String())
+	}
+	assertErrorResponse(t, binaryUpdateRec, "file must be UTF-8 text")
 }
 
 func TestCreateSessionRejectsUnsupportedAgent(t *testing.T) {
@@ -81,6 +232,48 @@ func TestCreateSessionAcceptsAvailableCodexAgent(t *testing.T) {
 	}
 	if session.AgentType != "codex" {
 		t.Fatalf("expected codex agent type, got %q", session.AgentType)
+	}
+}
+
+func TestCreateSessionStoresCodexRunDangerouslyOption(t *testing.T) {
+	ctx := context.Background()
+	codexAgent := availabilityAgent{agentType: "codex"}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, codexAgent)
+
+	rec := postJSON(handler, "/api/sessions", `{
+		"agent_type":"codex",
+		"title":"Danger run",
+		"agent_options":{"codex":{"run_dangerously":true}}
+	}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	var response createSessionResponse
+	decodeJSON(t, rec, &response)
+	session, err := dbStore.GetSession(ctx, response.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	var options map[string]map[string]any
+	if err := json.Unmarshal(session.AgentOptions, &options); err != nil {
+		t.Fatalf("decode agent options: %v", err)
+	}
+	if options["codex"]["run_dangerously"] != true {
+		t.Fatalf("expected run_dangerously option, got %#v", options)
+	}
+
+	var sessionResponse sessionResponse
+	getRec := get(handler, "/api/sessions/"+response.SessionID)
+	decodeJSON(t, getRec, &sessionResponse)
+	responseOptions, ok := sessionResponse.AgentOptions.(map[string]any)
+	if !ok {
+		t.Fatalf("expected response agent options map, got %#v", sessionResponse.AgentOptions)
+	}
+	codexOptions, ok := responseOptions["codex"].(map[string]any)
+	if !ok || codexOptions["run_dangerously"] != true {
+		t.Fatalf("expected response run_dangerously option, got %#v", responseOptions)
 	}
 }
 
@@ -421,7 +614,7 @@ func TestMessageSubmissionReturnsUnavailableForRegisteredUnavailableAgent(t *tes
 func TestMessageSubmissionPassesConfiguredWorkdirToAgent(t *testing.T) {
 	ctx := context.Background()
 	agent := newBlockingAgent()
-	workdir := filepath.Join(t.TempDir(), "workspace")
+	workdir := canonicalPath(t, t.TempDir())
 	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workdir, agent)
 	session := createIntegrationSession(t, ctx, dbStore)
 	t.Cleanup(agent.release)
@@ -436,6 +629,41 @@ func TestMessageSubmissionPassesConfiguredWorkdirToAgent(t *testing.T) {
 	case input := <-agent.started:
 		if input.Workdir != workdir {
 			t.Fatalf("expected workdir %q, got %q", workdir, input.Workdir)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("context ended before agent started")
+	}
+}
+
+func TestMessageSubmissionPassesSessionWorkspaceToAgent(t *testing.T) {
+	ctx := context.Background()
+	agent := newBlockingAgent()
+	defaultWorkdir := canonicalPath(t, t.TempDir())
+	sessionWorkdir := filepath.Join(defaultWorkdir, "project")
+	if err := os.Mkdir(sessionWorkdir, 0o755); err != nil {
+		t.Fatalf("create session workspace: %v", err)
+	}
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, defaultWorkdir, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Workspace run",
+		AgentType:     "fake",
+		WorkspacePath: sessionWorkdir,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(agent.release)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Inspect this repo"}`)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	select {
+	case input := <-agent.started:
+		if input.Workdir != sessionWorkdir {
+			t.Fatalf("expected workdir %q, got %q", sessionWorkdir, input.Workdir)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("context ended before agent started")
@@ -487,6 +715,38 @@ func TestMessageSubmissionPassesCodexOptionsToAgentMetadata(t *testing.T) {
 		assertMetadataValue(t, options, "service_tier", "priority")
 		assertMetadataValue(t, options, "fast_mode", true)
 		assertMetadataValue(t, options, "planning_mode", true)
+	case <-time.After(2 * time.Second):
+		t.Fatal("context ended before agent started")
+	}
+}
+
+func TestMessageSubmissionPassesSessionCodexOptionsToAgentMetadata(t *testing.T) {
+	ctx := context.Background()
+	agent := newBlockingAgent()
+	agent.agentType = "codex"
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:        "Codex run",
+		AgentType:    "codex",
+		AgentOptions: json.RawMessage(`{"codex":{"run_dangerously":true}}`),
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(agent.release)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Inspect this repo"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	select {
+	case input := <-agent.started:
+		options, ok := input.Metadata["codex_options"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected codex options metadata, got %#v", input.Metadata["codex_options"])
+		}
+		assertMetadataValue(t, options, "run_dangerously", true)
 	case <-time.After(2 * time.Second):
 		t.Fatal("context ended before agent started")
 	}
@@ -901,10 +1161,17 @@ func TestCancelRunningSessionWithoutActiveRunFailsSession(t *testing.T) {
 	}
 
 	rec := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", ``)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected status %d, got %d with body %s", http.StatusConflict, rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
 	}
-	assertErrorResponse(t, rec, "session has no active run")
+	var response submitMessageResponse
+	decodeJSON(t, rec, &response)
+	if response.SessionID != session.ID {
+		t.Fatalf("expected session_id %q, got %q", session.ID, response.SessionID)
+	}
+	if response.Status != string(store.SessionStatusFailed) {
+		t.Fatalf("expected failed status, got %q", response.Status)
+	}
 
 	updatedSession, err := dbStore.GetSession(ctx, session.ID)
 	if err != nil {
@@ -1065,6 +1332,11 @@ func newIntegrationAPI(t *testing.T, ctx context.Context, agent agents.Agent) (*
 
 func newIntegrationAPIWithWorkdir(t *testing.T, ctx context.Context, workdir string, agent agents.Agent) (*store.Store, *eventservice.Service, *runcontrol.Manager, http.Handler) {
 	t.Helper()
+	return newIntegrationAPIWithWorkspaceRoots(t, ctx, workdir, nil, agent)
+}
+
+func newIntegrationAPIWithWorkspaceRoots(t *testing.T, ctx context.Context, workdir string, workspaceRoots []string, agent agents.Agent) (*store.Store, *eventservice.Service, *runcontrol.Manager, http.Handler) {
+	t.Helper()
 
 	dbStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "sessions.db"))
 	if err != nil {
@@ -1088,11 +1360,12 @@ func newIntegrationAPIWithWorkdir(t *testing.T, ctx context.Context, workdir str
 
 	runManager := runcontrol.NewManager()
 	handler := NewRouter(Dependencies{
-		Store:   dbStore,
-		Events:  events,
-		Agents:  registry,
-		Runs:    runManager,
-		Workdir: workdir,
+		Store:          dbStore,
+		Events:         events,
+		Agents:         registry,
+		Runs:           runManager,
+		Workdir:        workdir,
+		WorkspaceRoots: workspaceRoots,
 	})
 
 	return dbStore, events, runManager, handler
@@ -1126,6 +1399,38 @@ func patchJSON(handler http.Handler, path string, body string) *httptest.Respons
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func putJSON(handler http.Handler, path string, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func get(handler http.Handler, path string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func quoteJSON(value string) string {
+	body, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}
+
+func canonicalPath(t *testing.T, value string) string {
+	t.Helper()
+	evaluated, err := filepath.EvalSymlinks(value)
+	if err != nil {
+		t.Fatalf("evaluate path %q: %v", value, err)
+	}
+	return evaluated
 }
 
 func listIntegrationEvents(t *testing.T, ctx context.Context, dbStore *store.Store, sessionID string) []store.Event {

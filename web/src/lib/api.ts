@@ -7,10 +7,18 @@ export type Session = {
   agent_type: AgentType
   status: SessionStatus
   provider_session_id?: string
+  workspace_path: string
+  agent_options?: SessionAgentOptions
   created_at: string
   updated_at: string
   completed_at: string | null
   archived_at: string | null
+}
+
+export type SessionAgentOptions = {
+  codex?: {
+    run_dangerously?: boolean
+  }
 }
 
 export type AgentEvent = {
@@ -100,12 +108,58 @@ export type UserInputQuestionAnswer = {
 
 export type UserInputAnswers = Record<string, UserInputQuestionAnswer>
 
+export type WorkspaceRoot = {
+  id: string
+  name: string
+  path: string
+  default: boolean
+}
+
+export type WorkspaceEntryType = 'directory' | 'file'
+
+export type WorkspaceEntry = {
+  name: string
+  path: string
+  type: WorkspaceEntryType
+  size_bytes: number
+  modified_at: string
+  git_status?: string
+}
+
+export type WorkspaceBrowseResponse = {
+  root_id?: string
+  root_path: string
+  path: string
+  entries: WorkspaceEntry[]
+}
+
+export type WorkspaceFileContent = {
+  name: string
+  path: string
+  size_bytes: number
+  modified_at: string
+  content: string
+  encoding: 'utf-8' | 'binary'
+  truncated: boolean
+  git_status?: string
+}
+
+export type WorkspaceSearchResponse = {
+  query: string
+  path: string
+  results: WorkspaceEntry[]
+}
+
 type ErrorResponse = {
   error?: string
 }
 
 type ListSessionsResponse = {
   sessions: Session[]
+}
+
+type WorkspaceRootsResponse = {
+  roots: WorkspaceRoot[]
 }
 
 type CreateSessionResponse = {
@@ -119,7 +173,7 @@ type SubmitMessageResponse = {
 
 type CancelSessionResponse = {
   session_id: string
-  status: 'cancelling'
+  status: SessionStatus | 'cancelling'
 }
 
 type AnswerUserInputResponse = {
@@ -136,6 +190,8 @@ type ListSessionsOptions = {
   limit?: number
   status?: SessionStatus
 }
+
+export const defaultEventWindowLimit = 250
 
 export class APIError extends Error {
   status: number
@@ -171,7 +227,12 @@ export async function getSession(sessionID: string) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`)
 }
 
-export async function createSession(params: { agent_type: AgentType; title?: string }) {
+export async function createSession(params: {
+  agent_type: AgentType
+  title?: string
+  workspace_path?: string
+  agent_options?: SessionAgentOptions
+}) {
   const data = await requestJSON<CreateSessionResponse>('/api/sessions', {
     method: 'POST',
     body: JSON.stringify(params),
@@ -199,13 +260,61 @@ export async function fetchAgentOptions(agentType: AgentType) {
   return requestJSON<CodexAgentOptions>(`/api/agents/${encodeURIComponent(agentType)}/options`)
 }
 
+export async function listWorkspaceRoots() {
+  const data = await requestJSON<WorkspaceRootsResponse>('/api/workspaces/roots')
+  return data.roots
+}
+
+export async function browseWorkspace(rootID: string, path = '') {
+  const params = new URLSearchParams()
+  if (rootID) params.set('root_id', rootID)
+  if (path) params.set('path', path)
+  return requestJSON<WorkspaceBrowseResponse>(withQuery('/api/workspaces/browse', params))
+}
+
+export async function listSessionFiles(sessionID: string, path = '') {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  return requestJSON<WorkspaceBrowseResponse>(withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files`, params))
+}
+
+export async function searchSessionFiles(sessionID: string, query: string, path = '') {
+  const params = new URLSearchParams({ q: query })
+  if (path) params.set('path', path)
+  return requestJSON<WorkspaceSearchResponse>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files/search`, params),
+  )
+}
+
+export async function getSessionFileContent(sessionID: string, path: string) {
+  const params = new URLSearchParams({ path })
+  return requestJSON<WorkspaceFileContent>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files/content`, params),
+  )
+}
+
+export async function updateSessionFileContent(sessionID: string, path: string, content: string) {
+  const params = new URLSearchParams({ path })
+  return requestJSON<WorkspaceFileContent>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files/content`, params),
+    {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    },
+  )
+}
+
 export async function submitMessage(
   sessionID: string,
   content: string,
   agentOptions?: SubmitAgentOptions,
   attachments: MessageAttachment[] = [],
 ) {
-  const body: { content: string; agent_options?: SubmitAgentOptions; attachments?: MessageAttachment[] } = { content }
+  const body: {
+    content: string
+    agent_options?: SubmitAgentOptions
+    attachments?: MessageAttachment[]
+  } = { content }
   if (agentOptions) {
     body.agent_options = agentOptions
   }
@@ -242,8 +351,29 @@ export async function listEvents(sessionID: string, afterSeq = 0, limit = 1000) 
   return data.events
 }
 
+export async function listRecentEvents(sessionID: string, limit = defaultEventWindowLimit) {
+  const params = new URLSearchParams({ tail: 'true', limit: String(limit) })
+  const data = await requestJSON<EventHistoryResponse>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
+  )
+  return data.events
+}
+
+export async function listEventsBefore(sessionID: string, beforeSeq: number, limit = defaultEventWindowLimit) {
+  const params = new URLSearchParams({ before_seq: String(beforeSeq), limit: String(limit) })
+  const data = await requestJSON<EventHistoryResponse>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
+  )
+  return data.events
+}
+
 export function eventStreamURL(sessionID: string, afterSeq: number) {
   return `/api/sessions/${encodeURIComponent(sessionID)}/events/stream?after_seq=${afterSeq}`
+}
+
+function withQuery(path: string, params: URLSearchParams) {
+  const query = params.toString()
+  return query ? `${path}?${query}` : path
 }
 
 async function requestJSON<T>(url: string, init: RequestInit = {}) {

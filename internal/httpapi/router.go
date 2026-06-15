@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -33,6 +34,8 @@ type Store interface {
 	UpdateSessionStatus(ctx context.Context, params store.UpdateSessionStatusParams) (store.Session, error)
 	SetSessionProviderSessionID(ctx context.Context, params store.SetSessionProviderSessionIDParams) (store.Session, error)
 	ListEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error)
+	ListRecentEvents(ctx context.Context, sessionID string, limit int) ([]store.Event, error)
+	ListEventsBefore(ctx context.Context, sessionID string, beforeSeq int64, limit int) ([]store.Event, error)
 }
 
 type EventService interface {
@@ -54,19 +57,21 @@ type RunManager interface {
 }
 
 type Dependencies struct {
-	Store   Store
-	Events  EventService
-	Agents  AgentRegistry
-	Runs    RunManager
-	Workdir string
+	Store          Store
+	Events         EventService
+	Agents         AgentRegistry
+	Runs           RunManager
+	Workdir        string
+	WorkspaceRoots []string
 }
 
 type API struct {
-	store   Store
-	events  EventService
-	agents  AgentRegistry
-	runs    RunManager
-	workdir string
+	store      Store
+	events     EventService
+	agents     AgentRegistry
+	runs       RunManager
+	workdir    string
+	workspaces workspaceConfig
 }
 
 var _ RunManager = (*runcontrol.Manager)(nil)
@@ -102,6 +107,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.agents = deps[0].Agents
 		api.runs = deps[0].Runs
 		api.workdir = deps[0].Workdir
+		api.workspaces = newWorkspaceConfig(deps[0].Workdir, deps[0].WorkspaceRoots)
 	}
 
 	r := chi.NewRouter()
@@ -109,9 +115,15 @@ func NewRouter(deps ...Dependencies) http.Handler {
 
 	if api.store != nil && api.events != nil && api.agents != nil && api.runs != nil {
 		r.Get("/api/agents/{agentType}/options", api.agentOptionsHandler)
+		r.Get("/api/workspaces/roots", api.workspaceRootsHandler)
+		r.Get("/api/workspaces/browse", api.workspaceBrowseHandler)
 		r.Post("/api/sessions", api.createSessionHandler)
 		r.Patch("/api/sessions/{sessionId}", api.updateSessionHandler)
 		r.Post("/api/sessions/{sessionId}/archive", api.archiveSessionHandler)
+		r.Get("/api/sessions/{sessionId}/files", api.sessionFilesHandler)
+		r.Get("/api/sessions/{sessionId}/files/content", api.sessionFileContentHandler)
+		r.Put("/api/sessions/{sessionId}/files/content", api.updateSessionFileContentHandler)
+		r.Get("/api/sessions/{sessionId}/files/search", api.sessionFileSearchHandler)
 		r.Post("/api/sessions/{sessionId}/messages", api.submitMessageHandler)
 		r.Post("/api/sessions/{sessionId}/cancel", api.cancelSessionHandler)
 		r.Post("/api/sessions/{sessionId}/requests/{requestId}/answer", api.answerUserInputHandler)
@@ -138,22 +150,80 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	afterSeq, ok := parseAfterSeq(w, r)
-	if !ok {
-		return
-	}
 	limit, ok := parseLimit(w, r)
 	if !ok {
 		return
 	}
 
-	events, err := api.store.ListEvents(r.Context(), sessionID, afterSeq, limit)
+	events, err := api.listHistoryEvents(r, sessionID, limit)
+	if errors.Is(err, errInvalidEventHistoryCursor) {
+		writeError(w, http.StatusBadRequest, eventHistoryCursorMessage(err))
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list events")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, eventHistoryResponse{Events: eventResponses(events)})
+}
+
+var errInvalidEventHistoryCursor = errors.New("invalid event history cursor")
+
+func eventHistoryCursorMessage(err error) string {
+	message := err.Error()
+	return strings.TrimPrefix(message, errInvalidEventHistoryCursor.Error()+": ")
+}
+
+func (api API) listHistoryEvents(r *http.Request, sessionID string, limit int) ([]store.Event, error) {
+	query := r.URL.Query()
+	rawAfterSeq := query.Get("after_seq")
+	rawBeforeSeq := query.Get("before_seq")
+	rawTail := query.Get("tail")
+
+	tail := false
+	if rawTail != "" {
+		parsedTail, err := strconv.ParseBool(rawTail)
+		if err != nil {
+			return nil, fmt.Errorf("%w: tail must be a boolean", errInvalidEventHistoryCursor)
+		}
+		tail = parsedTail
+	}
+
+	cursorCount := 0
+	if rawAfterSeq != "" {
+		cursorCount++
+	}
+	if rawBeforeSeq != "" {
+		cursorCount++
+	}
+	if tail {
+		cursorCount++
+	}
+	if cursorCount > 1 {
+		return nil, fmt.Errorf("%w: use only one event history cursor", errInvalidEventHistoryCursor)
+	}
+
+	if tail {
+		return api.store.ListRecentEvents(r.Context(), sessionID, limit)
+	}
+	if rawBeforeSeq != "" {
+		beforeSeq, err := parseNonNegativeInt64(rawBeforeSeq, "before_seq")
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", errInvalidEventHistoryCursor, err.Error())
+		}
+		return api.store.ListEventsBefore(r.Context(), sessionID, beforeSeq, limit)
+	}
+
+	afterSeq := int64(0)
+	if rawAfterSeq != "" {
+		parsedAfterSeq, err := parseNonNegativeInt64(rawAfterSeq, "after_seq")
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", errInvalidEventHistoryCursor, err.Error())
+		}
+		afterSeq = parsedAfterSeq
+	}
+	return api.store.ListEvents(r.Context(), sessionID, afterSeq, limit)
 }
 
 func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {
@@ -278,13 +348,21 @@ func parseAfterSeq(w http.ResponseWriter, r *http.Request) (int64, bool) {
 		return 0, true
 	}
 
-	afterSeq, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || afterSeq < 0 {
-		writeError(w, http.StatusBadRequest, "after_seq must be a non-negative integer")
+	afterSeq, err := parseNonNegativeInt64(raw, "after_seq")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return 0, false
 	}
 
 	return afterSeq, true
+}
+
+func parseNonNegativeInt64(raw string, name string) (int64, error) {
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", name)
+	}
+	return value, nil
 }
 
 func parseLimit(w http.ResponseWriter, r *http.Request) (int, bool) {

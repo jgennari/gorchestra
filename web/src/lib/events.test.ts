@@ -1,5 +1,6 @@
 import type { AgentEvent } from '@/lib/api'
 import {
+  activeThinking,
   appendEvent,
   appendEvents,
   buildChatTranscript,
@@ -36,7 +37,10 @@ test('event reducer appends events in sequence order', () => {
 })
 
 test('event reducer dedupes by sequence', () => {
-  const events = appendEvent([event(1, 'agent.message.delta', { text: 'first' })], event(1, 'agent.message.delta', { text: 'second' }))
+  const events = appendEvent(
+    [event(1, 'agent.message.delta', { text: 'first' })],
+    event(1, 'agent.message.delta', { text: 'second' }),
+  )
 
   expect(events).toHaveLength(1)
   expect(events[0].payload).toEqual({ text: 'first' })
@@ -133,10 +137,7 @@ test('pending user input request is derived from replayed events', () => {
     questions: [{ id: 'question_test', question: 'Pick one' }],
   })
 
-  expect(pendingUserInputRequest([
-    requested,
-    event(3, 'agent.input.answered', { request_id: 'call_test' }),
-  ])).toBeNull()
+  expect(pendingUserInputRequest([requested, event(3, 'agent.input.answered', { request_id: 'call_test' })])).toBeNull()
 })
 
 test('chat timeline only includes hidden debug events when enabled', () => {
@@ -157,18 +158,25 @@ test('chat timeline only includes hidden debug events when enabled', () => {
 })
 
 test('chat timeline labels provider debug events with provider event type', () => {
-  const debugItems = buildChatTimeline([
-    event(1, 'provider.codex.event', { provider_event_type: 'turn/completed' }),
-  ], true).filter((item) => item.kind === 'debug')
+  const debugItems = buildChatTimeline(
+    [event(1, 'provider.codex.event', { provider_event_type: 'turn/completed' })],
+    true,
+  ).filter((item) => item.kind === 'debug')
 
   expect(debugItems.map((item) => item.event.label)).toEqual(['turn/completed'])
 })
 
 test('latest token usage is derived from codex provider events', () => {
   const usage = latestTokenUsage([
-    event(1, 'provider.codex.event', { provider_event_type: 'thread/tokenUsage/updated', raw: tokenUsageRaw(1000, 500) }),
+    event(1, 'provider.codex.event', {
+      provider_event_type: 'thread/tokenUsage/updated',
+      raw: tokenUsageRaw(1000, 500),
+    }),
     event(2, 'provider.codex.event', { provider_event_type: 'turn/completed' }),
-    event(3, 'provider.codex.event', { provider_event_type: 'thread/tokenUsage/updated', raw: tokenUsageRaw(13903, 19) }),
+    event(3, 'provider.codex.event', {
+      provider_event_type: 'thread/tokenUsage/updated',
+      raw: tokenUsageRaw(13903, 19),
+    }),
   ])
 
   expect(usage).toMatchObject({
@@ -189,6 +197,39 @@ test('latest token usage is derived from codex provider events', () => {
     modelContextWindow: 258400,
     seq: 3,
   })
+})
+
+test('active thinking clears when codex reasoning item completes', () => {
+  expect(activeThinking([event(1, 'agent.status.started', { provider_event_type: 'turn/started' })])).toBe(true)
+
+  expect(
+    activeThinking([
+      event(1, 'agent.status.started', { provider_event_type: 'turn/started' }),
+      event(2, 'agent.thinking.completed', {
+        provider_event_type: 'item/completed',
+        item_type: 'reasoning',
+        item_id: 'rs_1',
+        text: '',
+      }),
+    ]),
+  ).toBe(false)
+})
+
+test('active thinking tracks reasoning item deltas by item id', () => {
+  expect(
+    activeThinking([
+      event(1, 'agent.thinking.delta', { item_id: 'rs_1', text: 'checking' }),
+      event(2, 'agent.thinking.delta', { item_id: 'rs_2', text: 'planning' }),
+      event(3, 'agent.thinking.completed', { item_id: 'rs_1', text: '' }),
+    ]),
+  ).toBe(true)
+
+  expect(
+    activeThinking([
+      event(1, 'agent.thinking.delta', { item_id: 'rs_1', text: 'checking' }),
+      event(2, 'agent.thinking.completed', { item_id: 'rs_1', text: '' }),
+    ]),
+  ).toBe(false)
 })
 
 test('chat transcript merges streaming assistant deltas with completion text', () => {
@@ -301,6 +342,52 @@ test('chat transcript includes codex command aggregated output in tool details',
   })
 })
 
+test('chat transcript labels file changes as edits and shows emitted patches', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Updating tests.' }),
+    event(2, 'file.change.started', {
+      item_id: 'edit_1',
+      paths: ['/Users/joey/Source/gorchestra/internal/httpapi/sessions_test.go'],
+    }),
+    event(3, 'file.change.completed', {
+      item_id: 'edit_1',
+      changes: [
+        {
+          path: '/Users/joey/Source/gorchestra/internal/httpapi/sessions_test.go',
+          patch: '@@ -1,3 +1,3 @@\n-old line\n+new line',
+        },
+      ],
+    }),
+  ])
+
+  expect(transcript[0].tools[0]).toMatchObject({
+    label: 'sessions_test.go',
+    status: 'completed',
+    text: '@@ -1,3 +1,3 @@\n-old line\n+new line',
+  })
+})
+
+test('chat transcript falls back to file paths when file change diffs are unavailable', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Updating files.' }),
+    event(2, 'file.change.completed', {
+      item_id: 'edit_1',
+      paths: [
+        '/Users/joey/Source/gorchestra/internal/httpapi/sessions_test.go',
+        '/Users/joey/Source/gorchestra/internal/httpapi/sessions.go',
+      ],
+    }),
+  ])
+
+  expect(transcript[0].tools[0]).toMatchObject({
+    label: 'sessions_test.go +1',
+    text: [
+      '/Users/joey/Source/gorchestra/internal/httpapi/sessions_test.go',
+      '/Users/joey/Source/gorchestra/internal/httpapi/sessions.go',
+    ].join('\n'),
+  })
+})
+
 test('chat transcript labels web search tools from completed query metadata', () => {
   const transcript = buildChatTranscript([
     event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Checking weather.' }),
@@ -324,10 +411,6 @@ test('chat transcript labels web search tools from completed query metadata', ()
 
   expect(transcript[0].tools[0]).toMatchObject({
     label: 'Tool: Web search: weather: 33445, United States',
-    text: [
-      'Query: weather: 33445, United States',
-      'Queries:',
-      '- weather: 33445, United States',
-    ].join('\n'),
+    text: ['Query: weather: 33445, United States', 'Queries:', '- weather: 33445, United States'].join('\n'),
   })
 })
