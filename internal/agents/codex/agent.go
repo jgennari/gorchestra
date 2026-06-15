@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -943,7 +944,7 @@ func (r *appServerRun) awaitTerminal(ctx context.Context) error {
 			if r.normalizer.terminal {
 				return r.terminalReturn(ctx)
 			}
-			return r.processExitBeforeTerminal(ctx)
+			return r.awaitTerminalAfterProcessExit(ctx)
 		case incoming, ok := <-r.incoming:
 			if !ok {
 				if r.normalizer.terminal {
@@ -964,6 +965,35 @@ func (r *appServerRun) awaitTerminal(ctx context.Context) error {
 			if terminal {
 				return r.terminalReturn(ctx)
 			}
+		}
+	}
+}
+
+func (r *appServerRun) awaitTerminalAfterProcessExit(ctx context.Context) error {
+	timer := time.NewTimer(r.agent.interruptGrace)
+	defer timer.Stop()
+
+	for {
+		if r.normalizer.terminal {
+			return r.terminalReturn(ctx)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case incoming, ok := <-r.incoming:
+			if !ok {
+				return r.processExitBeforeTerminal(ctx)
+			}
+			_, _, terminal, err := r.handleIncoming(ctx, incoming, "")
+			if err != nil {
+				return err
+			}
+			if terminal {
+				return r.terminalReturn(ctx)
+			}
+		case <-timer.C:
+			return r.processExitBeforeTerminal(ctx)
 		}
 	}
 }
@@ -1349,7 +1379,9 @@ func scanJSONRPC(reader io.Reader, incoming chan<- incomingMessage) {
 		incoming <- incomingMessage{Message: message}
 	}
 	if err := scanner.Err(); err != nil {
-		incoming <- incomingMessage{ReadErr: fmt.Errorf("read codex app-server stdout: %w", err)}
+		if !errors.Is(err, os.ErrClosed) {
+			incoming <- incomingMessage{ReadErr: fmt.Errorf("read codex app-server stdout: %w", err)}
+		}
 	}
 }
 
@@ -1364,7 +1396,9 @@ func scanStderr(reader io.Reader, incoming chan<- incomingMessage) {
 		incoming <- incomingMessage{Stderr: line}
 	}
 	if err := scanner.Err(); err != nil {
-		incoming <- incomingMessage{ReadErr: fmt.Errorf("read codex app-server stderr: %w", err)}
+		if !errors.Is(err, os.ErrClosed) {
+			incoming <- incomingMessage{ReadErr: fmt.Errorf("read codex app-server stderr: %w", err)}
+		}
 	}
 }
 
