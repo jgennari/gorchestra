@@ -84,6 +84,41 @@ test('event groups connect nearby anonymous tool events', () => {
   expect(groups[0].kind).toBe('tool-call')
 })
 
+test('event groups connect file changes by payload identifier across interleaved events', () => {
+  const groups = groupEvents([
+    event(1, 'file.change.started', {
+      item_id: 'edit_1',
+      paths: ['/repo/README.md'],
+    }),
+    event(2, 'provider.codex.event', { provider_event_type: 'thread/tokenUsage/updated' }),
+    event(3, 'file.change.delta', {
+      item_id: 'edit_1',
+      changes: [
+        {
+          path: '/repo/README.md',
+          patch: '@@ -1 +1 @@\n-old\n+new',
+        },
+      ],
+    }),
+    event(4, 'provider.codex.event', { provider_event_type: 'account/rateLimits/updated' }),
+    event(5, 'file.change.completed', {
+      item_id: 'edit_1',
+      paths: ['/repo/README.md'],
+    }),
+  ])
+
+  const fileGroups = groups.filter((group) => group.kind === 'file-change')
+
+  expect(fileGroups).toHaveLength(1)
+  expect(fileGroups[0]).toMatchObject({
+    id: 'file-change-edit_1',
+    label: 'README.md',
+    status: 'completed',
+    paths: ['/repo/README.md'],
+  })
+  expect(fileGroups[0].events.map((item) => item.seq)).toEqual([1, 3, 5])
+})
+
 test('event groups combine consecutive log output', () => {
   const groups = groupEvents([
     event(1, 'agent.log.delta', { text: 'line 1\n' }),

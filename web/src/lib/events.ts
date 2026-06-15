@@ -208,10 +208,12 @@ export function coalesceDisplayEvents(events: AgentEvent[]) {
 export function groupEvents(events: AgentEvent[]) {
   const groups: EventGroup[] = []
   const toolGroupsByID = new Map<string, EventGroup>()
+  const fileChangeGroupsByID = new Map<string, EventGroup>()
 
   for (const event of sortedUniqueEvents(events)) {
     const previous = groups[groups.length - 1]
     const toolID = toolGroupID(event)
+    const fileChangeID = fileChangeGroupID(event)
 
     if (
       event.type === 'agent.message.delta' &&
@@ -262,8 +264,20 @@ export function groupEvents(events: AgentEvent[]) {
       continue
     }
 
-    if (event.type.startsWith('file.change') && previous?.kind === 'file-change' && event.seq - previous.endSeq <= 2) {
-      appendToGroup(previous, event)
+    if (event.type.startsWith('file.change')) {
+      const fileChangeGroup = fileChangeID
+        ? fileChangeGroupsByID.get(fileChangeID)
+        : nearbyFileChangeGroup(previous, event)
+      if (fileChangeGroup) {
+        appendToGroup(fileChangeGroup, event)
+        continue
+      }
+
+      const group = newGroup(event)
+      groups.push(group)
+      if (fileChangeID) {
+        fileChangeGroupsByID.set(fileChangeID, group)
+      }
       continue
     }
 
@@ -707,6 +721,10 @@ function groupID(event: AgentEvent) {
     const toolID = toolGroupID(event)
     if (toolID) return `tool-${toolID}`
   }
+  if (event.type.startsWith('file.change')) {
+    const fileChangeID = fileChangeGroupID(event)
+    if (fileChangeID) return `file-change-${fileChangeID}`
+  }
   if (isPlanEvent(event)) {
     const planID = planItemID(event)
     if (planID) return `plan-${planID}`
@@ -719,6 +737,13 @@ function toolGroupID(event: AgentEvent) {
     return ''
   }
   return payloadString(event.payload, ['tool_call_id', 'call_id', 'item_id', 'process_id', 'tool_id', 'id'])
+}
+
+function fileChangeGroupID(event: AgentEvent) {
+  if (!event.type.startsWith('file.change')) {
+    return ''
+  }
+  return payloadString(event.payload, ['file_change_id', 'change_id', 'item_id', 'tool_call_id', 'call_id', 'id'])
 }
 
 function payloadItemID(payload: unknown) {
@@ -739,6 +764,16 @@ function clearsActiveThinking(event: AgentEvent) {
 
 function nearbyToolGroup(previous: EventGroup | undefined, event: AgentEvent) {
   if (!previous || previous.kind !== 'tool-call') {
+    return null
+  }
+  if (event.seq - previous.endSeq > 2) {
+    return null
+  }
+  return previous
+}
+
+function nearbyFileChangeGroup(previous: EventGroup | undefined, event: AgentEvent) {
+  if (!previous || previous.kind !== 'file-change') {
     return null
   }
   if (event.seq - previous.endSeq > 2) {

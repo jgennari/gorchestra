@@ -1,5 +1,15 @@
 import { Check, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Copy, FileText, Loader2 } from 'lucide-react'
-import { isValidElement, useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
+import {
+  isValidElement,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+  type UIEvent,
+} from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AgentEvent } from '@/lib/api'
@@ -16,6 +26,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
+const scrollIntentKeys = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])
 
 type Props = {
   events: AgentEvent[]
@@ -47,6 +58,8 @@ export function ChatTranscript({
   const scrollIdleTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const autoLoadOlderRef = useRef(false)
   const autoScrollPausedRef = useRef(false)
+  const lastScrollTopRef = useRef(0)
+  const userScrollIntentRef = useRef(false)
   const [scrolling, setScrolling] = useState(false)
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
   const lastSeq = timeline.at(-1)?.endSeq ?? 0
@@ -58,9 +71,10 @@ export function ChatTranscript({
 
   function scrollToBottom(element: HTMLDivElement) {
     element.scrollTop = element.scrollHeight
+    lastScrollTopRef.current = element.scrollTop
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = scrollRef.current
     if (!element) {
       return
@@ -96,8 +110,26 @@ export function ChatTranscript({
       window.clearTimeout(scrollIdleTimer.current)
     }
     scrollIdleTimer.current = window.setTimeout(() => setScrolling(false), 900)
-    setAutoScrollPausedState(!isScrolledNearBottom(event.currentTarget))
+    const nearBottom = isScrolledNearBottom(event.currentTarget)
+    const scrolledUp = event.currentTarget.scrollTop < lastScrollTopRef.current - 1
+    if (nearBottom) {
+      userScrollIntentRef.current = false
+      setAutoScrollPausedState(false)
+    } else if (scrolledUp || userScrollIntentRef.current || autoScrollPausedRef.current) {
+      setAutoScrollPausedState(true)
+    }
+    lastScrollTopRef.current = event.currentTarget.scrollTop
     maybeLoadOlderFromScroll(event.currentTarget)
+  }
+
+  function markUserScrollIntent() {
+    userScrollIntentRef.current = true
+  }
+
+  function handleScrollKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (scrollIntentKeys.has(event.key)) {
+      markUserScrollIntent()
+    }
   }
 
   function resumeAutoScroll() {
@@ -152,6 +184,8 @@ export function ChatTranscript({
     )
   }
 
+  const latestMessageIndex = timeline.reduce((latest, item, index) => (item.kind === 'message' ? index : latest), -1)
+
   return (
     <div className="chat-canvas relative h-full min-h-0 overflow-hidden">
       <ScrollArea
@@ -159,6 +193,9 @@ export function ChatTranscript({
         className="chat-scroll-area h-full min-h-0"
         data-scrolling={scrolling ? 'true' : undefined}
         onScroll={handleScroll}
+        onWheel={markUserScrollIntent}
+        onTouchMove={markUserScrollIntent}
+        onKeyDown={handleScrollKeyDown}
         role="log"
         aria-label="Chat messages"
         aria-live="polite"
@@ -180,7 +217,11 @@ export function ChatTranscript({
               key={item.id}
               className={timelineRowSpacing(item, timeline[index - 1], index > 0 || hasOlderEvents || loadingOlderEvents)}
             >
-              <ChatTimelineRow item={item} onOpenFilePath={onOpenFilePath} />
+              <ChatTimelineRow
+                item={item}
+                collapseExtraTools={item.kind === 'message' && index < latestMessageIndex}
+                onOpenFilePath={onOpenFilePath}
+              />
             </div>
           ))}
         </div>
@@ -247,9 +288,11 @@ function LoadOlderEventsButton({ loading, onLoad }: { loading: boolean; onLoad?:
 
 function ChatTimelineRow({
   item,
+  collapseExtraTools,
   onOpenFilePath,
 }: {
   item: ChatTimelineItem
+  collapseExtraTools: boolean
   onOpenFilePath?: (path: string) => Promise<void> | void
 }) {
   if (item.kind === 'action') {
@@ -258,7 +301,13 @@ function ChatTimelineRow({
   if (item.kind === 'debug') {
     return <DebugEventRow event={item.event} />
   }
-  return <ChatMessageRow message={item.message} onOpenFilePath={onOpenFilePath} />
+  return (
+    <ChatMessageRow
+      message={item.message}
+      collapseExtraTools={collapseExtraTools}
+      onOpenFilePath={onOpenFilePath}
+    />
+  )
 }
 
 function ActionBreakRow({ action }: { action: ChatActionBreak }) {
@@ -279,15 +328,18 @@ function ActionBreakRow({ action }: { action: ChatActionBreak }) {
 
 function ChatMessageRow({
   message,
+  collapseExtraTools,
   onOpenFilePath,
 }: {
   message: ChatTranscriptMessage
+  collapseExtraTools: boolean
   onOpenFilePath?: (path: string) => Promise<void> | void
 }) {
   const user = message.role === 'user'
   const plan = message.variant === 'plan'
   const [showAllTools, setShowAllTools] = useState(false)
-  const visibleTools = showAllTools ? message.tools : message.tools.slice(0, 3)
+  const shouldCollapseTools = collapseExtraTools && message.tools.length > 3
+  const visibleTools = !shouldCollapseTools || showAllTools ? message.tools : message.tools.slice(0, 3)
   const hasHiddenTools = message.tools.length > visibleTools.length
   const timestamp = formatMessageTimestamp(message.createdAt)
 
@@ -348,7 +400,7 @@ function ChatMessageRow({
             {visibleTools.map((tool) => (
               <ToolCallRow key={tool.id} tool={tool} onOpenFilePath={onOpenFilePath} />
             ))}
-            {message.tools.length > 3 ? (
+            {shouldCollapseTools ? (
               <button
                 type="button"
                 className="inline-flex items-center gap-0.5 rounded py-0 text-[10px] font-normal leading-none text-muted-foreground/65 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

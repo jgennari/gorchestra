@@ -172,6 +172,7 @@ test('pauses auto-scroll when scrolled up and resumes from the latest pill', asy
   const log = screen.getByRole('log', { name: 'Chat messages' })
 
   setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1000, clientHeight: 400 })
+  fireEvent.wheel(log)
   fireEvent.scroll(log)
 
   expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
@@ -205,6 +206,30 @@ test('pauses auto-scroll when scrolled up and resumes from the latest pill', asy
   )
 
   await waitFor(() => expect(log.scrollTop).toBe(1400))
+})
+
+test('keeps auto-scroll active when content growth emits a scroll event', async () => {
+  const { rerender } = render(
+    <ChatTranscript events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]} />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 600, scrollHeight: 1200, clientHeight: 400 })
+  fireEvent.scroll(log)
+
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+
+  rerender(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' }),
+        event(2, 'tool.call.started', 'assistant', 'started', { item_id: 'tool_1', command: 'pwd' }),
+      ]}
+    />,
+  )
+
+  await waitFor(() => expect(log.scrollTop).toBe(1200))
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 })
 
 test('copies fenced code blocks from user and assistant messages', async () => {
@@ -368,8 +393,7 @@ test('shows web search query details in expandable tool output', async () => {
   expect(screen.getByText(/- weather: 33445, United States/)).toBeInTheDocument()
 })
 
-test('shows three tool calls by default and expands to more', async () => {
-  const user = userEvent.setup()
+test('shows all tool calls for the latest message bubble', () => {
   const events = [
     event(1, 'agent.message.completed', 'assistant', 'completed', { item_id: 'msg_1', text: 'Working through tools.' }),
   ]
@@ -388,10 +412,44 @@ test('shows three tool calls by default and expands to more', async () => {
 
   render(<ChatTranscript events={events} />)
 
+  expect(screen.getByText('tool-1')).toBeInTheDocument()
+  expect(screen.getByText('tool-3')).toBeInTheDocument()
+  expect(screen.getByText('tool-4')).toBeInTheDocument()
+  expect(screen.getByText('tool-5')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /show \d+ more/i })).not.toBeInTheDocument()
+})
+
+test('collapses extra tool calls after the next message bubble appears', async () => {
+  const user = userEvent.setup()
+  const events = [
+    event(1, 'agent.message.completed', 'assistant', 'completed', { item_id: 'msg_1', text: 'Working through tools.' }),
+  ]
+  for (let index = 1; index <= 5; index += 1) {
+    events.push(
+      event(index * 2, 'tool.call.started', 'assistant', 'started', {
+        item_id: `tool_${index}`,
+        command: `tool-${index}`,
+      }),
+      event(index * 2 + 1, 'tool.call.completed', 'assistant', 'completed', {
+        item_id: `tool_${index}`,
+        output: `output-${index}`,
+      }),
+    )
+  }
+  events.push(
+    event(20, 'agent.message.completed', 'assistant', 'completed', {
+      item_id: 'msg_2',
+      text: 'Done with the tools.',
+    }),
+  )
+
+  render(<ChatTranscript events={events} />)
+
   expect(screen.queryByText('Tool Calls (5)')).not.toBeInTheDocument()
   expect(screen.getByText('tool-1')).toBeInTheDocument()
   expect(screen.getByText('tool-3')).toBeInTheDocument()
   expect(screen.queryByText('tool-4')).not.toBeInTheDocument()
+  expect(screen.getByText('Done with the tools.')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: /show 2 more/i })).toBeInTheDocument()
 
   await user.click(screen.getByRole('button', { name: /show 2 more/i }))

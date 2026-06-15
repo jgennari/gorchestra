@@ -32,93 +32,28 @@ Gorchestra gives coding agents a durable runtime: a local Go server, a React com
 
 ## Why It Exists
 
-Gorchestra coordinates coding agents from a local Go server and stores every important thing they do as ordered events in SQLite. The browser connects to that event stream, replays anything it missed, and renders a live operational view of the session.
+Coding agents are useful, but long runs are hard to follow when all you have is a chat window. Gorchestra gives each run a local control room: start a session, watch what the agent is doing, inspect file changes, and keep the full history after refreshes or restarts.
 
-The result is a runtime where you can:
+It is built for getting work done locally:
 
-- Start agent sessions against specific workspaces.
-- Watch messages, tool calls, file edits, logs, status changes, and errors as they happen.
-- Reconnect or refresh without losing session history.
-- Inspect and edit files in the same UI where the agent is working.
-- Keep provider-specific behavior behind adapters instead of coupling the platform to one CLI.
+- Pick a workspace and start Codex.
+- Watch messages, thinking, tool calls, logs, errors, and file edits as they happen.
+- Open changed files, review diffs, and edit Markdown or text without leaving the app.
+- Come back later and see the same ordered session history.
 
-## Runtime Tour
+## Quick Tour
 
-### Launch And Control Sessions
+Start a session, choose a workspace, and let the agent run. Gorchestra keeps the live transcript, workspace tools, and session controls together so you do not have to bounce between terminal tabs, editor windows, and logs.
 
-- Create sessions with a title, agent type, and workspace directory.
-- Browse allowed workspace roots during session creation.
-- See session status, event counts, tool counts, latest activity, and stream state at a glance.
-- Rename sessions inline and archive completed sessions.
-- Cancel running work when a session needs to stop.
-- Recover interrupted runs after server restart by marking them failed with a visible event trail.
-
-### Stream The Work
-
-The event stream is the source of truth. Gorchestra persists events before broadcasting them, assigns each event a monotonically increasing sequence number, and uses Server-Sent Events for live delivery.
-
-- Replays missed events after reconnect using `after_seq`.
-- Supports historical reads by `after_seq`, `before_seq`, or tail queries.
-- Sends stream heartbeats to keep live connections healthy.
-- Groups raw events into readable transcript rows for messages, thinking, tool calls, file changes, logs, and provider debug output.
-- Includes a debug mode for inspecting provider and internal events directly.
-
-### Codex, But Not Codex-Locked
-
-Codex is the first real adapter, with a fake agent available for development and tests.
-
-- Continue Codex threads across prompts through persisted provider session IDs.
-- Select Codex model, reasoning effort, service tier, fast mode, and planning mode per prompt.
-- Configure Codex shell network access and native web search mode from binary flags.
-- Start a Codex session with `run_dangerously` when you intentionally want no approval prompts and no sandbox restrictions.
-- Keep core orchestration provider-agnostic through a shared agent interface.
-
-### Transcript Built For Real Work
-
-The transcript is built for watching work unfold, not just reading chat bubbles.
-
-- Streams assistant messages and thinking state live.
-- Collapses tool calls under assistant activity with expandable details.
-- Shows command output, aggregated Codex tool output, errors, and debug payloads.
-- Renders file-change events as readable labels with unified diff highlighting when patches are available.
-- Provides copy buttons for code blocks and tool output.
-- Adds a `Show in File Editor` action on file-change diffs so edited files can be opened directly in the middle pane.
+- Tune Codex options like model, reasoning effort, service tier, planning mode, and dangerous mode.
+- Follow messages, thinking, tool calls, command output, file edits, errors, and debug events in one transcript.
+- Keep typing while a run is active, attach images, and answer agent-requested prompts when a run needs input.
+- Browse, search, preview, and edit workspace files from the side rail.
+- Review file-change diffs and jump straight into the editor for the changed file.
+- Refresh or reconnect without losing the session history.
 
 > [!TIP]
 > Screenshot slot: file-change diff with the floating file-editor action and Monaco editor overlay.
-
-### Workspace, Diffs, And Editor
-
-Gorchestra treats the session workspace as part of the runtime, not a side panel bolted onto chat.
-
-- Browse session files from the activity rail.
-- Search within the session workspace.
-- Show git status markers next to file entries.
-- Preview text and Markdown files in the middle pane.
-- Edit UTF-8 files with Monaco and save changes back to disk.
-- Keep binary or oversized files read-only.
-- Open changed files from agent file-change diffs without hunting through the explorer.
-
-### Prompting That Keeps Up
-
-- Prompt drafts are stored per session in local browser storage.
-- Press `Enter` to submit and `Ctrl+Enter` for a newline.
-- Attach up to eight images, 5 MB each, by file picker or drag and drop.
-- Keep typing the next message while a run is active.
-- Answer agent-requested user input with structured controls when a provider pauses for a decision.
-- Toggle debug events from the composer when deeper inspection is needed.
-
-### Run Health At A Glance
-
-The right rail summarizes the current run:
-
-- Live connection state.
-- Current activity metrics.
-- Latest event label and timestamp.
-- Token usage when the provider reports it.
-- Workspace file browser and archive action.
-
-The main message window uses a minimal scrollbar that stays out of the way until scrolling, and the panes can be resized for longer monitoring sessions.
 
 ## Install
 
@@ -230,74 +165,6 @@ Run the source-built binary:
 ```
 
 Staged assets under `internal/webassets/dist` are committed so `go test ./...` and `go build ./cmd/app` work from a checkout. `bun run build` refreshes that directory from the latest Vite output before compiling the release binary.
-
-## Runtime API
-
-The runtime API is intentionally simple and event-oriented:
-
-- `GET /api/health`
-- `GET /api/agents/{agentType}/options`
-- `GET /api/workspaces/roots`
-- `GET /api/workspaces/browse`
-- `POST /api/sessions`
-- `GET /api/sessions`
-- `GET /api/sessions/{sessionId}`
-- `PATCH /api/sessions/{sessionId}`
-- `POST /api/sessions/{sessionId}/archive`
-- `POST /api/sessions/{sessionId}/messages`
-- `POST /api/sessions/{sessionId}/cancel`
-- `POST /api/sessions/{sessionId}/requests/{requestId}/answer`
-- `GET /api/sessions/{sessionId}/events`
-- `GET /api/sessions/{sessionId}/events/stream`
-- `GET /api/sessions/{sessionId}/files`
-- `GET /api/sessions/{sessionId}/files/search`
-- `GET /api/sessions/{sessionId}/files/content`
-- `PUT /api/sessions/{sessionId}/files/content`
-
-## Under The Hood
-
-Gorchestra is split into a small Go runtime and a React operational UI.
-
-Backend:
-
-- `internal/store` manages SQLite sessions, events, migrations, provider session IDs, workspace paths, and session agent options.
-- `internal/events` appends durable events and broadcasts live subscribers.
-- `internal/session` tracks active runs, cancellation, and pending user-input requests.
-- `internal/agents` defines the provider interface, with Codex and fake adapters.
-- `internal/httpapi` exposes sessions, streaming, workspace browsing, file content, and agent options.
-- `cmd/app` wires the runtime, CLI flags, startup recovery, and HTTP server.
-
-Frontend:
-
-- React and Vite power the single-page UI.
-- The app derives display state from server sessions and events.
-- The transcript groups raw events into messages, thinking, tool calls, file changes, logs, and debug rows.
-- The workspace overlay renders Markdown, previews text, and edits files with Monaco.
-- The activity rail combines session metrics, token usage, archive controls, and file browsing.
-
-Packaging direction:
-
-- Production builds produce a single lightweight executable with embedded frontend assets.
-- The development loop still runs Go and Vite side by side for fast iteration.
-
-Release/Homebrew shape:
-
-- Local artifact: `dist/gorchestra`
-- Checksums: `dist/SHA256SUMS`
-- Release artifact naming: `gorchestra_<version>_<os>_<arch>.tar.gz` for macOS/Linux and `gorchestra_<version>_windows_<arch>.zip` for Windows
-- Supported release targets: `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `linux/arm64`, `windows/amd64`, and `windows/arm64`
-- Release workflow: `.github/workflows/release.yml` publishes archives when a `v*.*.*` tag is pushed.
-- Homebrew install command: `brew install jgennari/tap/gorchestra`
-
-Homebrew formula shape:
-
-- Download the versioned source archive from GitHub Releases.
-- Verify the SHA-256 checksum.
-- Build and install the `gorchestra` binary into `bin`.
-- The current formula lives in `jgennari/homebrew-tap`.
-- The template in `packaging/homebrew/gorchestra.rb.template` is kept as a starter for future tap updates.
-
-More release and Homebrew notes live in [Distribution](docs/distribution.md).
 
 ## Tests
 
