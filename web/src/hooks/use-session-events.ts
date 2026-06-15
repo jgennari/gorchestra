@@ -8,6 +8,7 @@ export type StreamState = 'idle' | 'loading' | 'connected' | 'reconnecting' | 'd
 type Options = {
   onEvent?: (event: AgentEvent) => void
   reconnectDelayMs?: number
+  refreshKey?: number
 }
 
 export function useSessionEvents(sessionID: string | null, options: Options = {}) {
@@ -20,6 +21,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const loadingOlderEventsRef = useRef(false)
   const onEventRef = useRef(options.onEvent)
   const reconnectDelayMs = options.reconnectDelayMs ?? 1000
+  const refreshKey = options.refreshKey ?? 0
   const [hasOlderEvents, setHasOlderEvents] = useState(false)
   const [loadingOlderEvents, setLoadingOlderEvents] = useState(false)
 
@@ -130,7 +132,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       }
       setStreamState('disconnected')
     }
-  }, [reconnectDelayMs, sessionID])
+  }, [reconnectDelayMs, refreshKey, sessionID])
 
   const loadOlderEvents = useCallback(async () => {
     if (!sessionID || loadingOlderEventsRef.current) {

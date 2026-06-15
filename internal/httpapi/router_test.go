@@ -649,6 +649,49 @@ func TestSSEFlushesHeadersBeforeWaitingForEvents(t *testing.T) {
 	}
 }
 
+func TestSessionActivityStreamSendsAllLiveSessionEvents(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+
+	subscriber := &fakeSubscriber{}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/activity/stream", nil)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewRouter(Dependencies{Store: store, Events: subscriber}).ServeHTTP(rec, req)
+	}()
+
+	waitFor(t, func() bool {
+		return subscriber.subscribeAllCount() == 1
+	})
+
+	subscriber.sendAll(testEvent(1, "agent.input.requested"))
+	subscriber.closeAll()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("activity stream did not exit after subscriber closed")
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, ": connected\n\n") {
+		t.Fatalf("expected initial connected comment in stream body:\n%s", body)
+	}
+	if !strings.Contains(body, "event: agent.input.requested\n") {
+		t.Fatalf("expected input requested event in body:\n%s", body)
+	}
+	response := firstSSEData(t, body)
+	if response.SessionID != testSessionID || response.Type != "agent.input.requested" {
+		t.Fatalf("expected activity event for %s, got %#v", testSessionID, response)
+	}
+}
+
 func TestSSESkipsDuplicateLiveEventsAlreadySentDuringReplay(t *testing.T) {
 	store := newFakeHTTPStore()
 	store.addSession(testSessionID)
@@ -1145,9 +1188,12 @@ func isTestTerminalSessionStatus(status store.SessionStatus) bool {
 type fakeSubscriber struct {
 	mu sync.Mutex
 
-	channels     []chan store.Event
-	subscribes   int
-	unsubscribes int
+	channels        []chan store.Event
+	allChannels     []chan store.Event
+	subscribes      int
+	allSubscribes   int
+	unsubscribes    int
+	allUnsubscribes int
 }
 
 func (s *fakeSubscriber) Subscribe(string) (<-chan store.Event, func()) {
@@ -1171,6 +1217,27 @@ func (s *fakeSubscriber) Subscribe(string) (<-chan store.Event, func()) {
 	return ch, unsubscribe
 }
 
+func (s *fakeSubscriber) SubscribeAll() (<-chan store.Event, func()) {
+	ch := make(chan store.Event, 16)
+
+	s.mu.Lock()
+	s.allSubscribes++
+	s.allChannels = append(s.allChannels, ch)
+	s.mu.Unlock()
+
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+
+			s.allUnsubscribes++
+		})
+	}
+
+	return ch, unsubscribe
+}
+
 func (s *fakeSubscriber) Append(context.Context, eventservice.AppendParams) (store.Event, error) {
 	return store.Event{}, nil
 }
@@ -1180,12 +1247,21 @@ func (s *fakeSubscriber) send(event store.Event) {
 	ch <- event
 }
 
+func (s *fakeSubscriber) sendAll(event store.Event) {
+	ch := s.lastAllChannel()
+	ch <- event
+}
+
 func (s *fakeSubscriber) closeAll() {
 	s.mu.Lock()
 	channels := append([]chan store.Event(nil), s.channels...)
+	allChannels := append([]chan store.Event(nil), s.allChannels...)
 	s.mu.Unlock()
 
 	for _, ch := range channels {
+		close(ch)
+	}
+	for _, ch := range allChannels {
 		close(ch)
 	}
 }
@@ -1197,11 +1273,25 @@ func (s *fakeSubscriber) subscribeCount() int {
 	return s.subscribes
 }
 
+func (s *fakeSubscriber) subscribeAllCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.allSubscribes
+}
+
 func (s *fakeSubscriber) unsubscribeCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.unsubscribes
+}
+
+func (s *fakeSubscriber) unsubscribeAllCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.allUnsubscribes
 }
 
 func (s *fakeSubscriber) lastChannel() chan store.Event {
@@ -1213,6 +1303,17 @@ func (s *fakeSubscriber) lastChannel() chan store.Event {
 	}
 
 	return s.channels[len(s.channels)-1]
+}
+
+func (s *fakeSubscriber) lastAllChannel() chan store.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.allChannels) == 0 {
+		panic("no all-subscriber channel")
+	}
+
+	return s.allChannels[len(s.allChannels)-1]
 }
 
 func testEvent(seq int64, eventType string) store.Event {

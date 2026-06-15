@@ -294,6 +294,71 @@ func TestCreateSessionStoresCodexRunDangerouslyOption(t *testing.T) {
 	}
 }
 
+func TestListSessionsExposesPendingInputActivity(t *testing.T) {
+	ctx := context.Background()
+	dbStore, events, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Needs input",
+		AgentType: "fake",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: store.SessionStatusRunning,
+	}); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	if _, err := events.Append(ctx, eventservice.AppendParams{
+		SessionID: session.ID,
+		Type:      "agent.input.requested",
+		Role:      "assistant",
+		Status:    store.EventStatusStarted,
+		Payload:   json.RawMessage(`{"request_id":"call_test","questions":[{"id":"question_test","question":"Pick one"}]}`),
+	}); err != nil {
+		t.Fatalf("append input requested: %v", err)
+	}
+
+	rec := get(handler, "/api/sessions")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response listSessionsResponse
+	decodeJSON(t, rec, &response)
+	if len(response.Sessions) != 1 {
+		t.Fatalf("expected one session, got %#v", response.Sessions)
+	}
+	if !response.Sessions[0].PendingInput {
+		t.Fatalf("expected pending_input true, got %#v", response.Sessions[0])
+	}
+	if response.Sessions[0].LastEventSeq != 1 {
+		t.Fatalf("expected last_event_seq 1, got %d", response.Sessions[0].LastEventSeq)
+	}
+
+	if _, err := events.Append(ctx, eventservice.AppendParams{
+		SessionID: session.ID,
+		Type:      "agent.input.answered",
+		Role:      "user",
+		Status:    store.EventStatusCompleted,
+		Payload:   json.RawMessage(`{"request_id":"call_test"}`),
+	}); err != nil {
+		t.Fatalf("append input answered: %v", err)
+	}
+
+	rec = get(handler, "/api/sessions")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	decodeJSON(t, rec, &response)
+	if response.Sessions[0].PendingInput {
+		t.Fatalf("expected pending_input false after answer, got %#v", response.Sessions[0])
+	}
+	if response.Sessions[0].LastEventSeq != 2 {
+		t.Fatalf("expected last_event_seq 2, got %d", response.Sessions[0].LastEventSeq)
+	}
+}
+
 func TestCreateSessionReturnsUnavailableForRegisteredUnavailableAgent(t *testing.T) {
 	ctx := context.Background()
 	codexAgent := availabilityAgent{agentType: "codex", availableErr: agents.ErrUnavailable}

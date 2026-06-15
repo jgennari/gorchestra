@@ -1,6 +1,6 @@
-import { Activity, Archive, Clock3, Eraser, FileText, Folder, Gauge, Loader2, Minimize2, RefreshCw, Search } from 'lucide-react'
+import { Activity, Archive, Clock3, Eraser, FileText, Folder, Gauge, Loader2, Minimize2, RefreshCw, Search, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AgentEvent, Session, WorkspaceEntry, WorkspaceFileContent, WorkspaceSearchResult } from '@/lib/api'
 import { getSessionFileContent, listSessionFiles, searchSessionFiles } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
@@ -141,6 +141,7 @@ function FileExplorer({
   const [searching, setSearching] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const [error, setError] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const sessionID = session?.id ?? ''
   const displayEntries = query.trim() ? results : entries
   const refreshing = loading || searching
@@ -151,6 +152,14 @@ function FileExplorer({
     setCurrentPath(path)
     setQuery('')
     setError('')
+  }
+
+  function clearSearch() {
+    setQuery('')
+    setResults([])
+    setSearching(false)
+    setError('')
+    searchInputRef.current?.focus()
   }
 
   useEffect(() => {
@@ -194,6 +203,7 @@ function FileExplorer({
     const trimmed = query.trim()
     if (!sessionID || !trimmed) {
       setResults([])
+      setSearching(false)
       return
     }
 
@@ -262,9 +272,10 @@ function FileExplorer({
         </Button>
       </div>
 
-      <div className="mt-2 flex items-center gap-1.5 rounded border border-border/70 bg-background/55 px-2 py-1.5">
+      <div className="mt-2 flex h-8 items-center gap-1.5 rounded border border-border/70 bg-background/55 px-2">
         <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <input
+          ref={searchInputRef}
           aria-label="Search files and contents"
           value={query}
           disabled={!sessionID}
@@ -273,6 +284,18 @@ function FileExplorer({
           className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
         />
         {searching ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-hidden="true" /> : null}
+        {query ? (
+          <button
+            type="button"
+            className="inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-surface-muted/80 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+            disabled={!sessionID}
+            onClick={clearSearch}
+            aria-label="Clear file search"
+            title="Clear file search"
+          >
+            <X className="size-3" aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
 
       <p className="mt-2 truncate text-[11px] text-muted-foreground" title={session?.workspace_path || undefined}>

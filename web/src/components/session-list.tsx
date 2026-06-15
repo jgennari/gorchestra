@@ -4,7 +4,7 @@ import type { Session } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { StatusBadge } from '@/components/status-badge'
+import { StatusBadge, type SessionAttention } from '@/components/status-badge'
 import { ThemeToggle } from '@/components/theme-toggle'
 import type { ResolvedTheme, ThemePreference } from '@/hooks/use-theme'
 import { cn } from '@/lib/utils'
@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils'
 type Props = {
   sessions: Session[]
   selectedSessionID: string | null
-  connectedSessionID?: string | null
+  lastSeenSeqBySession?: Record<string, number>
   onSelect: (sessionID: string) => void
   onCreate: () => void
   themePreference: ThemePreference
@@ -23,7 +23,7 @@ type Props = {
 export function SessionList({
   sessions,
   selectedSessionID,
-  connectedSessionID = null,
+  lastSeenSeqBySession = {},
   onSelect,
   onCreate,
   themePreference,
@@ -83,7 +83,7 @@ export function SessionList({
                   selectedSessionID === session.id && 'border-primary/30 bg-background/80 shadow-sm',
                 )}
               >
-                <StatusBadge status={session.status} connected={connectedSessionID === session.id} />
+                <StatusBadge status={session.status} attention={sessionAttention(session, lastSeenSeqBySession)} />
                 <span className="min-w-0 truncate text-sm font-medium">
                   {session.title || 'Untitled session'}
                 </span>
@@ -97,6 +97,20 @@ export function SessionList({
       </ScrollArea>
     </aside>
   )
+}
+
+function sessionAttention(session: Session, lastSeenSeqBySession: Record<string, number>): SessionAttention | null {
+  if (session.pending_input) {
+    return 'pending-input'
+  }
+  if (session.status === 'idle' && latestSessionSeq(session) > (lastSeenSeqBySession[session.id] ?? 0)) {
+    return 'unseen-idle'
+  }
+  return null
+}
+
+function latestSessionSeq(session: Session) {
+  return Math.max(session.last_event_seq ?? 0, session.event_count ?? 0)
 }
 
 function filterSessions(sessions: Session[], query: string) {

@@ -37,6 +37,7 @@ type Service struct {
 	mu               sync.Mutex
 	buffers          map[string][]store.Event
 	subscribers      map[string]map[uint64]chan store.Event
+	allSubscribers   map[uint64]chan store.Event
 	appendLocks      map[string]*sync.Mutex
 	nextSubscriberID uint64
 }
@@ -52,6 +53,7 @@ func NewService(eventStore Store, options ...Option) (*Service, error) {
 		subscriberBufferSize: DefaultSubscriberBufferSize,
 		buffers:              make(map[string][]store.Event),
 		subscribers:          make(map[string]map[uint64]chan store.Event),
+		allSubscribers:       make(map[uint64]chan store.Event),
 		appendLocks:          make(map[string]*sync.Mutex),
 	}
 
@@ -142,6 +144,25 @@ func (s *Service) Subscribe(sessionID string) (<-chan store.Event, func()) {
 	return ch, unsubscribe
 }
 
+func (s *Service) SubscribeAll() (<-chan store.Event, func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.nextSubscriberID++
+	id := s.nextSubscriberID
+	ch := make(chan store.Event, s.subscriberBufferSize)
+	s.allSubscribers[id] = ch
+
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			s.unsubscribeAll(id)
+		})
+	}
+
+	return ch, unsubscribe
+}
+
 func (s *Service) Recent(sessionID string) []store.Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -172,21 +193,28 @@ func (s *Service) appendToBufferLocked(event store.Event) {
 
 func (s *Service) broadcastLocked(event store.Event) {
 	sessionSubscribers := s.subscribers[event.SessionID]
-	if len(sessionSubscribers) == 0 {
-		return
+	if len(sessionSubscribers) > 0 {
+		for id, ch := range sessionSubscribers {
+			select {
+			case ch <- event:
+			default:
+				close(ch)
+				delete(sessionSubscribers, id)
+			}
+		}
+
+		if len(sessionSubscribers) == 0 {
+			delete(s.subscribers, event.SessionID)
+		}
 	}
 
-	for id, ch := range sessionSubscribers {
+	for id, ch := range s.allSubscribers {
 		select {
 		case ch <- event:
 		default:
 			close(ch)
-			delete(sessionSubscribers, id)
+			delete(s.allSubscribers, id)
 		}
-	}
-
-	if len(sessionSubscribers) == 0 {
-		delete(s.subscribers, event.SessionID)
 	}
 }
 
@@ -210,4 +238,17 @@ func (s *Service) unsubscribe(sessionID string, id uint64) {
 	if len(sessionSubscribers) == 0 {
 		delete(s.subscribers, sessionID)
 	}
+}
+
+func (s *Service) unsubscribeAll(id uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ch, ok := s.allSubscribers[id]
+	if !ok {
+		return
+	}
+
+	close(ch)
+	delete(s.allSubscribers, id)
 }

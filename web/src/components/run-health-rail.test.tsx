@@ -441,6 +441,73 @@ test('run health rail file explorer searches file contents with snippets', async
   expect(screen.getByText('src/main.go:4 println("needle")')).toBeInTheDocument()
 })
 
+test('run health rail file explorer clears search and restores the file list', async () => {
+  const user = userEvent.setup()
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    switch (String(url)) {
+      case '/api/sessions/sess_1/files':
+        return jsonResponse({
+          root_path: '/repo',
+          path: '',
+          entries: [
+            {
+              name: 'README.md',
+              path: 'README.md',
+              type: 'file',
+              size_bytes: 128,
+              modified_at: '2026-06-12T16:00:00Z',
+            },
+          ],
+        })
+      case '/api/sessions/sess_1/files/search?q=needle':
+        return jsonResponse({
+          query: 'needle',
+          path: '',
+          results: [
+            {
+              name: 'main.go',
+              path: 'src/main.go',
+              type: 'file',
+              size_bytes: 48,
+              modified_at: '2026-06-12T16:00:00Z',
+              match_type: 'content',
+              line_number: 4,
+              line_text: 'println("needle")',
+            },
+          ],
+        })
+      default:
+        throw new Error(`unexpected URL ${String(url)}`)
+    }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onArchive={async () => undefined}
+    />,
+  )
+
+  expect(await screen.findByRole('button', { name: /README\.md/i })).toBeInTheDocument()
+
+  const searchInput = screen.getByRole('textbox', { name: 'Search files and contents' })
+  await user.type(searchInput, 'needle')
+
+  expect(await screen.findByRole('button', { name: /main\.go/i })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /README\.md/i })).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Clear file search' }))
+
+  expect(searchInput).toHaveValue('')
+  expect(screen.queryByRole('button', { name: /main\.go/i })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /README\.md/i })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Clear file search' })).not.toBeInTheDocument()
+})
+
 test('run health rail file explorer sends file content to the viewer', async () => {
   const user = userEvent.setup()
   const onOpenFile = vi.fn()

@@ -53,7 +53,9 @@ type sessionResponse struct {
 	WorkspacePath     string  `json:"workspace_path"`
 	AgentOptions      any     `json:"agent_options"`
 	EventCount        int64   `json:"event_count"`
+	LastEventSeq      int64   `json:"last_event_seq"`
 	ToolCount         int64   `json:"tool_count"`
+	PendingInput      bool    `json:"pending_input"`
 	CreatedAt         string  `json:"created_at"`
 	UpdatedAt         string  `json:"updated_at"`
 	CompletedAt       *string `json:"completed_at"`
@@ -133,7 +135,13 @@ func (api API) listSessionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, listSessionsResponse{Sessions: sessionResponses(sessions)})
+	responses, err := api.sessionResponses(r.Context(), sessions)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load session activity")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, listSessionsResponse{Sessions: responses})
 }
 
 func (api API) getSessionHandler(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +156,13 @@ func (api API) getSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, sessionResponseFromStore(session))
+	response, err := api.sessionResponse(r.Context(), session)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load session activity")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (api API) createSessionHandler(w http.ResponseWriter, r *http.Request) {
@@ -268,7 +282,13 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, sessionResponseFromStore(session))
+	response, err := api.sessionResponse(r.Context(), session)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load session activity")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (api API) archiveSessionHandler(w http.ResponseWriter, r *http.Request) {
@@ -302,18 +322,40 @@ func (api API) archiveSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, sessionResponseFromStore(archived))
+	response, err := api.sessionResponse(r.Context(), archived)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load session activity")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
-func sessionResponses(sessions []store.Session) []sessionResponse {
+func (api API) sessionResponses(ctx context.Context, sessions []store.Session) ([]sessionResponse, error) {
 	responses := make([]sessionResponse, 0, len(sessions))
 	for _, session := range sessions {
-		responses = append(responses, sessionResponseFromStore(session))
+		response, err := api.sessionResponse(ctx, session)
+		if err != nil {
+			return nil, err
+		}
+		responses = append(responses, response)
 	}
-	return responses
+	return responses, nil
 }
 
-func sessionResponseFromStore(session store.Session) sessionResponse {
+func (api API) sessionResponse(ctx context.Context, session store.Session) (sessionResponse, error) {
+	pendingInput := false
+	if session.Status == store.SessionStatusRunning {
+		var err error
+		pendingInput, err = api.sessionHasPendingInput(ctx, session.ID)
+		if err != nil {
+			return sessionResponse{}, err
+		}
+	}
+	return sessionResponseFromStore(session, pendingInput), nil
+}
+
+func sessionResponseFromStore(session store.Session, pendingInput bool) sessionResponse {
 	var completedAt *string
 	if session.CompletedAt != nil {
 		formatted := session.CompletedAt.UTC().Format(time.RFC3339Nano)
@@ -339,12 +381,90 @@ func sessionResponseFromStore(session store.Session) sessionResponse {
 		WorkspacePath:     session.WorkspacePath,
 		AgentOptions:      agentOptions,
 		EventCount:        session.EventCount,
+		LastEventSeq:      session.EventCount,
 		ToolCount:         session.ToolCount,
+		PendingInput:      pendingInput,
 		CreatedAt:         session.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:         session.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		CompletedAt:       completedAt,
 		ArchivedAt:        archivedAt,
 	}
+}
+
+func (api API) sessionHasPendingInput(ctx context.Context, sessionID string) (bool, error) {
+	events, err := api.eventsSinceLatestTerminal(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+
+	pending := make(map[string]bool)
+	for _, event := range events {
+		switch event.Type {
+		case "agent.input.requested":
+			requestID := rawPayloadString(event.Payload, "request_id")
+			if requestID != "" {
+				pending[requestID] = true
+			}
+		case "agent.input.answered":
+			requestID := rawPayloadString(event.Payload, "request_id")
+			if requestID != "" {
+				delete(pending, requestID)
+			}
+		default:
+			if isTerminalRunEvent(event.Type) {
+				clear(pending)
+			}
+		}
+	}
+
+	return len(pending) > 0, nil
+}
+
+func (api API) eventsSinceLatestTerminal(ctx context.Context, sessionID string) ([]store.Event, error) {
+	collected := make([]store.Event, 0)
+	beforeSeq := int64(0)
+
+	for {
+		var (
+			page []store.Event
+			err  error
+		)
+		if beforeSeq == 0 {
+			page, err = api.store.ListRecentEvents(ctx, sessionID, maxEventLimit)
+		} else {
+			page, err = api.store.ListEventsBefore(ctx, sessionID, beforeSeq, maxEventLimit)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return collected, nil
+		}
+
+		for i := len(page) - 1; i >= 0; i-- {
+			if isTerminalRunEvent(page[i].Type) {
+				return append(append([]store.Event(nil), page[i+1:]...), collected...), nil
+			}
+		}
+
+		collected = append(append([]store.Event(nil), page...), collected...)
+		if page[0].Seq <= 1 {
+			return collected, nil
+		}
+		beforeSeq = page[0].Seq
+	}
+}
+
+func rawPayloadString(payload json.RawMessage, key string) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return ""
+	}
+	value, _ := decoded[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func createSessionAgentOptions(agentType string, options *createAgentOptions) (json.RawMessage, error) {

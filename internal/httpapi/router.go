@@ -46,6 +46,7 @@ type Store interface {
 type EventService interface {
 	Append(ctx context.Context, params eventservice.AppendParams) (store.Event, error)
 	Subscribe(sessionID string) (<-chan store.Event, func())
+	SubscribeAll() (<-chan store.Event, func())
 }
 
 type AgentRegistry interface {
@@ -145,6 +146,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	}
 	if api.store != nil && api.events != nil {
 		r.Get("/api/sessions/{sessionId}/events/stream", api.eventStreamHandler)
+		r.Get("/api/sessions/activity/stream", api.sessionActivityStreamHandler)
 	}
 	r.NotFound(api.notFoundHandler)
 
@@ -366,6 +368,51 @@ func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			flusher.Flush()
 			highestSeqSent = event.Seq
+		}
+	}
+}
+
+func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming is not supported")
+		return
+	}
+
+	liveEvents, unsubscribe := api.events.SubscribeAll()
+	defer unsubscribe()
+
+	headers := w.Header()
+	headers.Set("Content-Type", "text/event-stream")
+	headers.Set("Cache-Control", "no-cache")
+	headers.Set("Connection", "keep-alive")
+	headers.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if err := writeSSEComment(w, "connected"); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(streamHeartbeat)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			if err := writeSSEComment(w, "heartbeat"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case event, ok := <-liveEvents:
+			if !ok {
+				return
+			}
+			if err := writeSSE(w, event); err != nil {
+				return
+			}
+			flusher.Flush()
 		}
 	}
 }

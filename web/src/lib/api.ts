@@ -10,7 +10,9 @@ export type Session = {
   workspace_path: string
   agent_options?: SessionAgentOptions
   event_count: number
+  last_event_seq?: number
   tool_count: number
+  pending_input?: boolean
   created_at: string
   updated_at: string
   completed_at: string | null
@@ -401,6 +403,10 @@ export async function listEventsBefore(sessionID: string, beforeSeq: number, lim
 
 export function eventStreamURL(sessionID: string, afterSeq: number) {
   return `/api/sessions/${encodeURIComponent(sessionID)}/events/stream?after_seq=${afterSeq}`
+}
+
+export function sessionActivityStreamURL() {
+  return '/api/sessions/activity/stream'
 }
 
 function withQuery(path: string, params: URLSearchParams) {

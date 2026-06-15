@@ -16,6 +16,7 @@ import {
   listSessionFiles,
   listWorkspaceRoots,
   searchSessionFiles,
+  sessionActivityStreamURL,
   submitMessage,
   updateSessionAgentOptions,
   updateSessionFileContent,
@@ -46,6 +47,7 @@ test('session API helpers build the expected URLs', async () => {
   await listEventsBefore('sess_1', 100, 25)
 
   expect(eventStreamURL('sess_1', 4)).toBe('/api/sessions/sess_1/events/stream?after_seq=4')
+  expect(sessionActivityStreamURL()).toBe('/api/sessions/activity/stream')
 })
 
 test('session list helper includes status filters', async () => {

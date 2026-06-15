@@ -37,12 +37,13 @@ import {
   getSession,
   getSessionFileContent,
   listSessions,
+  sessionActivityStreamURL,
   submitMessage,
   updateSessionAgentOptions,
   updateSessionFileContent,
   updateSessionTitle,
 } from '@/lib/api'
-import { isTerminalEvent, shouldRefreshWorkspaceFilesForEvent, statusFromEvent } from '@/lib/events'
+import { isTerminalEvent, knownEventTypes, lastSeq, shouldRefreshWorkspaceFilesForEvent, statusFromEvent } from '@/lib/events'
 import { nextSessionIDAfterArchive } from '@/lib/sessions'
 import { useSessionEvents } from '@/hooks/use-session-events'
 import { useTheme } from '@/hooks/use-theme'
@@ -74,6 +75,7 @@ type PendingSessionAction = {
 
 const debugStorageKeyPrefix = 'gorchestra.session-debug.'
 const paneWidthsStorageKey = 'gorchestra.pane-widths.v1'
+const sessionSeenSeqStorageKey = 'gorchestra.session-seen-seq.v1'
 const defaultPaneWidths: PaneWidths = { left: 348, right: 344 }
 const paneLimits = {
   leftMin: 272,
@@ -100,7 +102,10 @@ function App() {
   const [paneWidths, setPaneWidths] = useState<PaneWidths>(() => loadPaneWidths())
   const [openWorkspaceFile, setOpenWorkspaceFile] = useState<WorkspaceFileContent | null>(null)
   const [fileRefreshKey, setFileRefreshKey] = useState(0)
+  const [eventRefreshKey, setEventRefreshKey] = useState(0)
+  const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
+  const sessionsRef = useRef<Session[]>([])
   const paneWidthsRef = useRef(paneWidths)
 
   const selectedSession = useMemo(
@@ -135,9 +140,27 @@ function App() {
     [applySession],
   )
 
+  const markSessionSeen = useCallback((sessionID: string, seq: number) => {
+    if (!sessionID || seq <= 0) {
+      return
+    }
+    setLastSeenSeqBySession((current) => {
+      if ((current[sessionID] ?? 0) >= seq) {
+        return current
+      }
+      const next = { ...current, [sessionID]: seq }
+      saveSessionSeenSeqs(next)
+      return next
+    })
+  }, [])
+
   useEffect(() => {
     selectedSessionIDRef.current = selectedSessionID
   }, [selectedSessionID])
+
+  useEffect(() => {
+    sessionsRef.current = sessions
+  }, [sessions])
 
   useEffect(() => {
     paneWidthsRef.current = paneWidths
@@ -160,14 +183,23 @@ function App() {
     setOpenWorkspaceFile(null)
   }, [selectedSessionID])
 
-  const handleSessionEvent = useCallback(
+  const applySessionActivityEvent = useCallback(
     (event: AgentEvent) => {
       const status = statusFromEvent(event)
       setSessions((current) =>
-        current.map((session) =>
-          session.id === event.session_id ? applySessionEvent(session, event, status) : session,
+        sortSessions(
+          current.map((session) =>
+            session.id === event.session_id ? applySessionEvent(session, event, status) : session,
+          ),
         ),
       )
+    },
+    [],
+  )
+
+  const handleSessionEvent = useCallback(
+    (event: AgentEvent) => {
+      applySessionActivityEvent(event)
       if (shouldRefreshWorkspaceFilesForEvent(event) && event.session_id === selectedSessionIDRef.current) {
         setFileRefreshKey((value) => value + 1)
       }
@@ -177,7 +209,20 @@ function App() {
         }, 250)
       }
     },
-    [refreshSession],
+    [applySessionActivityEvent, refreshSession],
+  )
+
+  const handleActivityEvent = useCallback(
+    (event: AgentEvent) => {
+      applySessionActivityEvent(event)
+      const knownSession = sessionsRef.current.some((session) => session.id === event.session_id)
+      if (!knownSession || (isTerminalEvent(event.type) && event.session_id !== selectedSessionIDRef.current)) {
+        window.setTimeout(() => {
+          void refreshSession(event.session_id)
+        }, 250)
+      }
+    },
+    [applySessionActivityEvent, refreshSession],
   )
 
   const {
@@ -189,11 +234,22 @@ function App() {
     loadOlderEvents,
   } = useSessionEvents(selectedSessionID, {
     onEvent: handleSessionEvent,
+    refreshKey: eventRefreshKey,
   })
 
-  const loadSessions = useCallback(async () => {
-    setLoadingSessions(true)
-    setError('')
+  useEffect(() => {
+    if (!selectedSessionID) {
+      return
+    }
+    markSessionSeen(selectedSessionID, Math.max(lastSeq(events), latestSessionSeq(selectedSession)))
+  }, [events, markSessionSeen, selectedSession, selectedSessionID])
+
+  const loadSessions = useCallback(async (options: { showLoading?: boolean } = {}) => {
+    const showLoading = options.showLoading ?? true
+    if (showLoading) {
+      setLoadingSessions(true)
+      setError('')
+    }
     try {
       const nextSessions = await listSessions()
       const selectedID = selectedSessionIDRef.current
@@ -206,11 +262,63 @@ function App() {
       setSessions(sortSessions(mergedSessions))
       selectSession(nextSelectedID, 'replace')
     } catch (loadError) {
-      setError(messageFromError(loadError))
+      if (showLoading) {
+        setError(messageFromError(loadError))
+      }
     } finally {
-      setLoadingSessions(false)
+      if (showLoading) {
+        setLoadingSessions(false)
+      }
     }
   }, [selectSession])
+
+  useEffect(() => {
+    let closed = false
+    let source: EventSource | null = null
+    let reconnectTimer: number | undefined
+
+    function closeSource() {
+      source?.close()
+      source = null
+    }
+
+    function handleActivityMessage(message: MessageEvent<string>) {
+      try {
+        handleActivityEvent(JSON.parse(message.data) as AgentEvent)
+      } catch {
+        // A malformed sidebar event should not interrupt the selected transcript stream.
+      }
+    }
+
+    function connect() {
+      if (closed) {
+        return
+      }
+      source = new EventSource(sessionActivityStreamURL())
+      source.onerror = () => {
+        if (closed) {
+          return
+        }
+        closeSource()
+        reconnectTimer = window.setTimeout(() => {
+          void loadSessions({ showLoading: false }).finally(connect)
+        }, 1000)
+      }
+      for (const eventType of knownEventTypes) {
+        source.addEventListener(eventType, handleActivityMessage)
+      }
+    }
+
+    connect()
+
+    return () => {
+      closed = true
+      if (reconnectTimer !== undefined) {
+        window.clearTimeout(reconnectTimer)
+      }
+      closeSource()
+    }
+  }, [handleActivityEvent, loadSessions])
 
   useEffect(() => {
     void loadSessions()
@@ -277,6 +385,7 @@ function App() {
       ),
     )
     setNotice('')
+    setEventRefreshKey((value) => value + 1)
   }
 
   async function handleCancel() {
@@ -491,7 +600,7 @@ function App() {
     <SessionList
       sessions={sessions}
       selectedSessionID={selectedSessionID}
-      connectedSessionID={streamState === 'connected' && !streamError ? selectedSessionID : null}
+      lastSeenSeqBySession={lastSeenSeqBySession}
       onSelect={(sessionID) => {
         selectSession(sessionID, 'push')
         setMobileListOpen(false)
@@ -1100,13 +1209,21 @@ async function includeSelectedSession(sessions: Session[], selectedSessionID: st
 }
 
 function applySessionEvent(session: Session, event: AgentEvent, status: SessionStatus | null) {
+  const currentLastSeq = latestSessionSeq(session)
+  if (event.seq <= currentLastSeq) {
+    return session
+  }
+  const nextLastSeq = Math.max(currentLastSeq, event.seq)
   const eventCount = Math.max(session.event_count ?? 0, event.seq)
   const toolCount = (session.tool_count ?? 0) + (isToolActivityEvent(event) ? 1 : 0)
+  const pendingInput = pendingInputFromEvent(session.pending_input ?? false, event)
   if (!status) {
     return {
       ...session,
       event_count: eventCount,
+      last_event_seq: nextLastSeq,
       tool_count: toolCount,
+      pending_input: pendingInput,
     }
   }
 
@@ -1120,10 +1237,29 @@ function applySessionEvent(session: Session, event: AgentEvent, status: SessionS
     ...session,
     status,
     event_count: eventCount,
+    last_event_seq: nextLastSeq,
     tool_count: toolCount,
+    pending_input: pendingInput,
     updated_at: updatedAt,
     completed_at: completedAt,
   }
+}
+
+function latestSessionSeq(session: Session | null) {
+  if (!session) {
+    return 0
+  }
+  return Math.max(session.last_event_seq ?? 0, session.event_count ?? 0)
+}
+
+function pendingInputFromEvent(current: boolean, event: AgentEvent) {
+  if (event.type === 'agent.input.requested') {
+    return true
+  }
+  if (event.type === 'agent.input.answered' || isTerminalEvent(event.type)) {
+    return false
+  }
+  return current
 }
 
 function isToolActivityEvent(event: AgentEvent) {
@@ -1290,6 +1426,40 @@ function saveSessionDebugPreference(sessionID: string | null, showDebugEvents: b
     window.localStorage.setItem(debugStorageKey(sessionID), String(showDebugEvents))
   } catch {
     // Keep the UI functional when storage is unavailable.
+  }
+}
+
+function loadSessionSeenSeqs(): Record<string, number> {
+  if (typeof window === 'undefined') {
+    return {}
+  }
+  try {
+    const raw = window.localStorage.getItem(sessionSeenSeqStorageKey)
+    if (!raw) {
+      return {}
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const seen: Record<string, number> = {}
+    for (const [sessionID, value] of Object.entries(parsed)) {
+      const seq = Number(value)
+      if (sessionID && Number.isFinite(seq) && seq > 0) {
+        seen[sessionID] = seq
+      }
+    }
+    return seen
+  } catch {
+    return {}
+  }
+}
+
+function saveSessionSeenSeqs(seenSeqs: Record<string, number>) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(sessionSeenSeqStorageKey, JSON.stringify(seenSeqs))
+  } catch {
+    // Seen state is best-effort and browser-local.
   }
 }
 

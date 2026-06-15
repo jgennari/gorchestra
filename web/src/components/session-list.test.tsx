@@ -78,19 +78,45 @@ test('session rows show status as a dot indicator', () => {
   expect(screen.queryByText('running')).not.toBeInTheDocument()
 })
 
-test('selected connected session row shows a backend connection dot', () => {
+test('selected session row still shows the session status indicator', () => {
   render(
     <SessionList
       {...baseProps()}
       selectedSessionID="sess_running"
-      connectedSessionID="sess_running"
     />,
   )
 
-  expect(screen.getByRole('img', { name: 'Session connected to backend' })).toHaveClass(
+  expect(screen.getByRole('img', { name: 'Session status: running' })).toHaveClass(
     'animate-pulse',
     'bg-[hsl(var(--success))]',
   )
+})
+
+test('session rows show pending input with a pulsing yellow indicator', () => {
+  render(
+    <SessionList
+      {...baseProps()}
+      sessions={[{ ...sessions[0], pending_input: true }]}
+    />,
+  )
+
+  expect(screen.getByRole('img', { name: 'Session pending user input' })).toHaveClass(
+    'animate-pulse',
+    'bg-[hsl(var(--warning))]',
+  )
+})
+
+test('idle session rows show unseen results with a solid yellow indicator', () => {
+  render(
+    <SessionList
+      {...baseProps()}
+      sessions={[{ ...sessions[0], status: 'idle', event_count: 8, last_event_seq: 8 }]}
+      lastSeenSeqBySession={{ sess_running: 4 }}
+    />,
+  )
+
+  expect(screen.getByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]')
+  expect(screen.getByRole('img', { name: 'Session has unseen results' })).not.toHaveClass('animate-pulse')
 })
 
 test('session list exposes the global theme toggle', async () => {

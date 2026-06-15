@@ -62,15 +62,15 @@
 }
 
 .command-composer {
-  background: linear-gradient(180deg, hsl(var(--surface) / 0.58), hsl(var(--background) / 0.7));
-  backdrop-filter: blur(22px) saturate(1.25);
-  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+  background: linear-gradient(180deg, hsl(var(--surface) / 0.78), hsl(var(--background) / 0.86));
+  backdrop-filter: blur(28px) saturate(1.12);
+  -webkit-backdrop-filter: blur(28px) saturate(1.12);
 }
 
 .command-chat-header {
-  background: linear-gradient(180deg, hsl(var(--surface) / 0.58), hsl(var(--background) / 0.7));
-  backdrop-filter: blur(22px) saturate(1.25);
-  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+  background: linear-gradient(180deg, hsl(var(--surface) / 0.78), hsl(var(--background) / 0.86));
+  backdrop-filter: blur(28px) saturate(1.12);
+  -webkit-backdrop-filter: blur(28px) saturate(1.12);
 }
 
 .command-file-overlay {

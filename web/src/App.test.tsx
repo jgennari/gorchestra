@@ -76,6 +76,85 @@ test('initial session load fetches the recent event window and streams after the
   )
 })
 
+test('successful prompt submit reloads persisted events when the live stream is stale', async () => {
+  const user = userEvent.setup()
+  const fetch = fetchMock({
+    events: [event(40, 'agent.message.completed', { text: 'Previous answer' })],
+    submittedEvents: [
+      event(40, 'agent.message.completed', { text: 'Previous answer' }),
+      event(41, 'user.message.completed', { text: 'Fresh prompt' }),
+    ],
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_1/events?tail=true&limit=500',
+      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+  expect(screen.queryByText('Fresh prompt')).not.toBeInTheDocument()
+
+  await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_1/messages',
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+  expect(await screen.findByText('Fresh prompt')).toBeInTheDocument()
+  await waitFor(() =>
+    expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&limit=500')).toHaveLength(
+      2,
+    ),
+  )
+  expect(FakeEventSource.instances.some((source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=41'))
+    .toBe(true)
+})
+
+test('global activity stream marks another session pending input', async () => {
+  const runningSecondSession: Session = { ...secondSession, status: 'running', last_event_seq: 4, event_count: 4 }
+  vi.stubGlobal('fetch', fetchMock({ sessions: [firstSession, runningSecondSession] }))
+
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit(
+      event(5, 'agent.input.requested', { request_id: 'call_test', questions: [] }, 'sess_2'),
+    )
+  })
+
+  expect(await screen.findByRole('img', { name: 'Session pending user input' })).toHaveClass(
+    'animate-pulse',
+    'bg-[hsl(var(--warning))]',
+  )
+})
+
+test('global activity stream marks finished unselected sessions as unseen until selected', async () => {
+  const runningSecondSession: Session = { ...secondSession, status: 'running', last_event_seq: 4, event_count: 4 }
+  vi.stubGlobal('fetch', fetchMock({ sessions: [firstSession, runningSecondSession] }))
+  const user = userEvent.setup()
+
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit(
+      event(5, 'session.status.updated', { status: 'idle', updated_at: '2026-06-12T16:12:00Z' }, 'sess_2'),
+    )
+  })
+
+  expect(await screen.findByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]')
+
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+
+  await waitFor(() => expect(screen.queryByRole('img', { name: 'Session has unseen results' })).not.toBeInTheDocument())
+})
+
 test('load older events fetches the previous event page', async () => {
   const user = userEvent.setup()
   const fetch = fetchMock({
@@ -222,10 +301,10 @@ test('streamed mutating git commands refresh the file browser', async () => {
 
   await screen.findByRole('button', { name: /main\.go/i })
   await waitFor(() => expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files')).toHaveLength(1))
-  await waitFor(() => expect(FakeEventSource.instances.length).toBeGreaterThan(0))
+  const sessionSource = await findEventSource('/api/sessions/sess_1/events/stream')
 
   act(() => {
-    FakeEventSource.instances[0].emit(
+    sessionSource.emit(
       event(41, 'tool.call.completed', {
         item_id: 'tool_1',
         item_type: 'commandExecution',
@@ -296,6 +375,7 @@ function fetchMock({
   fileName = 'main.go',
   fileContent = 'package main\n',
   events = [],
+  submittedEvents = events,
   olderEvents = [],
   sessions = [firstSession, secondSession],
 }: {
@@ -303,10 +383,12 @@ function fetchMock({
   fileName?: string
   fileContent?: string
   events?: AgentEvent[]
+  submittedEvents?: AgentEvent[]
   olderEvents?: AgentEvent[]
   sessions?: Session[]
 } = {}) {
   let currentContent = fileContent
+  let recentEvents = events
   return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const path = String(url)
     if (path === '/api/health') {
@@ -328,6 +410,10 @@ function fetchMock({
     if (path === '/api/sessions/sess_1/compact' && init?.method === 'POST') {
       return jsonResponse({ session_id: 'sess_1', status: 'running' })
     }
+    if (path === '/api/sessions/sess_1/messages' && init?.method === 'POST') {
+      recentEvents = submittedEvents
+      return jsonResponse({ session_id: 'sess_1', status: 'running' })
+    }
     const archiveMatch = path.match(/^\/api\/sessions\/([^/?]+)\/archive$/)
     if (archiveMatch && init?.method === 'POST') {
       const matchedSession = sessions.find((session) => session.id === decodeURIComponent(archiveMatch[1]))
@@ -340,7 +426,7 @@ function fetchMock({
       }
     }
     if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
-      return jsonResponse({ events })
+      return jsonResponse({ events: recentEvents })
     }
     if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
       return jsonResponse({ events: [] })
@@ -432,6 +518,15 @@ class FakeEventSource {
   close() {}
 }
 
+async function findEventSource(urlPrefix: string) {
+  await waitFor(() => expect(findExistingEventSource(urlPrefix)).toBeTruthy())
+  return findExistingEventSource(urlPrefix)!
+}
+
+function findExistingEventSource(urlPrefix: string) {
+  return FakeEventSource.instances.find((source) => source.url.startsWith(urlPrefix))
+}
+
 function matchMediaMock(query: string): MediaQueryList {
   return {
     media: query,
@@ -461,10 +556,10 @@ function session(id: string, title: string, updatedAt: string): Session {
   }
 }
 
-function event(seq: number, type: string, payload: Record<string, unknown>): AgentEvent {
+function event(seq: number, type: string, payload: Record<string, unknown>, sessionID = 'sess_1'): AgentEvent {
   return {
     id: `evt_${seq}`,
-    session_id: 'sess_1',
+    session_id: sessionID,
     seq,
     type,
     role: 'assistant',

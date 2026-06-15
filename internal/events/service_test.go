@@ -100,6 +100,30 @@ func TestSubscribersReceiveOnlyTheirSessionEvents(t *testing.T) {
 	}
 }
 
+func TestAllSubscribersReceiveEverySessionEvent(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeStore()
+	service := newTestService(t, fake)
+	ch, unsubscribe := service.SubscribeAll()
+	defer unsubscribe()
+
+	first, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	if err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	second, err := service.Append(ctx, appendParams("sess_two", "agent.message.delta"))
+	if err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+
+	if delivered := receiveEvent(t, ch); delivered.ID != first.ID {
+		t.Fatalf("expected first event %q, got %q", first.ID, delivered.ID)
+	}
+	if delivered := receiveEvent(t, ch); delivered.ID != second.ID {
+		t.Fatalf("expected second event %q, got %q", second.ID, delivered.ID)
+	}
+}
+
 func TestEventsAreDeliveredInAppendOrder(t *testing.T) {
 	ctx := context.Background()
 	fake := newFakeStore()
@@ -182,6 +206,37 @@ func TestFullSubscriberChannelIsRemovedAndClosed(t *testing.T) {
 	defer service.mu.Unlock()
 	if got := len(service.subscribers["sess_one"]); got != 0 {
 		t.Fatalf("expected full subscriber to be removed, got %d subscribers", got)
+	}
+}
+
+func TestFullAllSubscriberChannelIsRemovedAndClosed(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeStore()
+	service := newTestService(t, fake, WithSubscriberBufferSize(1))
+	ch, unsubscribe := service.SubscribeAll()
+	defer unsubscribe()
+
+	first, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	if err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	if _, err := service.Append(ctx, appendParams("sess_two", "agent.message.delta")); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+
+	delivered, ok := <-ch
+	if !ok {
+		t.Fatal("expected buffered first event before channel close")
+	}
+	if delivered.ID != first.ID {
+		t.Fatalf("expected first event %q, got %q", first.ID, delivered.ID)
+	}
+	assertClosed(t, ch)
+
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if got := len(service.allSubscribers); got != 0 {
+		t.Fatalf("expected full all-subscriber to be removed, got %d subscribers", got)
 	}
 }
 
