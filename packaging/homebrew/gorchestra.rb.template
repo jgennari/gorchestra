@@ -11,7 +11,7 @@ class Gorchestra < Formula
   def install
     system "go", "build",
       *std_go_args(
-        output: bin/"gorchestra",
+        output:  bin/"gorchestra",
         ldflags: "-s -w -X main.version=#{version}",
       ),
       "./cmd/app"

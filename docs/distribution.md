@@ -1,11 +1,11 @@
 # Distribution
 
-Gorchestra has two planned distribution paths: GitHub release downloads and a
-Homebrew tap.
+Gorchestra has two distribution paths: GitHub release downloads and the
+`jgennari/homebrew-tap` Homebrew tap.
 
 ## GitHub Releases
 
-Publishing a tag that looks like `v0.1.0` runs `.github/workflows/release.yml`.
+Publishing a tag that looks like `v0.1.2` runs `.github/workflows/release.yml`.
 The workflow builds the frontend, stages the embedded assets, runs backend
 tests, cross-compiles release binaries, packages them as tarballs, writes
 `SHA256SUMS`, and publishes everything to a GitHub release.
@@ -47,23 +47,34 @@ The generated tarballs and `SHA256SUMS` are written to `dist/`.
 
 ## Homebrew
 
-The starter formula lives at `packaging/homebrew/gorchestra.rb.template`.
-For the first tap release:
+The published formula lives in `jgennari/homebrew-tap`:
 
-1. Create a `jgennari/homebrew-tap` repository.
-2. Copy the template to `Formula/gorchestra.rb`.
-3. Replace `{{VERSION}}` with the release version without the leading `v`.
-4. Replace `{{SOURCE_SHA256}}` with the SHA-256 of the GitHub source archive:
+```sh
+brew install jgennari/tap/gorchestra
+brew test jgennari/tap/gorchestra
+brew audit --strict --online jgennari/tap/gorchestra
+```
+
+The starter formula template lives at `packaging/homebrew/gorchestra.rb.template`.
+The release workflow updates the tap automatically after a successful tagged
+release using the `HOMEBREW_TAP_TOKEN` Actions secret.
+
+For a manual tap update:
+
+1. Copy or update the template in `Formula/gorchestra.rb`.
+2. Replace `{{VERSION}}` with the release version without the leading `v`.
+3. Replace `{{SOURCE_SHA256}}` with the SHA-256 of the GitHub source archive:
 
    ```sh
-   curl -L https://github.com/jgennari/gorchestra/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
+   VERSION=0.1.2
+   curl -L "https://github.com/jgennari/gorchestra/archive/refs/tags/v${VERSION}.tar.gz" | shasum -a 256
    ```
 
-5. Run `brew audit --strict --online gorchestra` and `brew test gorchestra`
-   from the tap checkout.
+4. Commit and push the tap.
+5. Run `brew update`, `brew test jgennari/tap/gorchestra`, and
+   `brew audit --strict --online jgennari/tap/gorchestra`.
 
 The formula builds from source with Go and uses the embedded frontend assets
 committed in this repository. It does not require Bun during installation.
 
-Later, the release workflow can update the tap automatically after a successful
-release, and macOS artifacts can be signed and notarized.
+Later, macOS artifacts can be signed and notarized.
