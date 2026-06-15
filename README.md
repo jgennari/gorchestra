@@ -1,160 +1,139 @@
 # Gorchestra
 
-Gorchestra is a self-contained AI coding agent orchestration platform built in Go.
+<p align="center">
+  <strong>The control room for long-running AI coding agents.</strong>
+</p>
 
-Its purpose is to coordinate, monitor, and persist long-running coding agent sessions while providing real-time visibility into everything the agents are doing.
+<p align="center">
+  Launch sessions. Stream every event. Inspect diffs. Edit files. Recover the full story from SQLite.
+</p>
+
+<p align="center">
+  <img alt="Go runtime" src="https://img.shields.io/badge/runtime-Go-00ADD8?style=for-the-badge&logo=go&logoColor=white" />
+  <img alt="React UI" src="https://img.shields.io/badge/ui-React-149ECA?style=for-the-badge&logo=react&logoColor=white" />
+  <img alt="SQLite persistence" src="https://img.shields.io/badge/storage-SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white" />
+  <img alt="SSE streaming" src="https://img.shields.io/badge/streaming-SSE-111827?style=for-the-badge" />
+  <img alt="Codex adapter" src="https://img.shields.io/badge/agent-Codex-111827?style=for-the-badge" />
+</p>
 
 > Agents perform work. Gorchestra conducts the performance.
 
-## Vision
+Gorchestra gives coding agents a durable runtime: a local Go server, a React command center, a SQLite-backed event log, workspace-aware file tools, and enough visibility to see what actually happened during a long autonomous run.
 
-Modern coding agents are increasingly capable of working independently for extended periods of time. As more agents become available, developers need a single orchestration layer that can:
+> [!NOTE]
+> Screenshot slot: main session view with live transcript, activity rail, file explorer, and prompt composer.
 
-- Launch and manage agent sessions
-- Stream progress in real time
-- Persist all activity
-- Recover seamlessly from disconnects
-- Support multiple agent providers
-- Remain deployable as a single lightweight application
+## The Runtime At A Glance
 
-Gorchestra is the conductor coordinating a collection of autonomous workers.
+| Run | Watch | Inspect | Remember |
+| --- | --- | --- | --- |
+| Launch Codex sessions from a local Go server. | Stream events, thinking, tool calls, and diffs live. | Browse, search, preview, and edit files in-session. | Store sessions and ordered events in SQLite. |
+| Tune model, reasoning, service tier, and execution mode. | Reconnect with replay instead of losing context. | Jump from file-change diffs straight into Monaco. | Recover refreshes, restarts, and historical runs. |
 
-## Core Architecture
+## Why It Exists
 
-Gorchestra is planned as:
+Gorchestra coordinates coding agents from a local Go server and stores every important thing they do as ordered events in SQLite. The browser connects to that event stream, replays anything it missed, and renders a live operational view of the session.
 
-- Go backend orchestration engine
-- React frontend
-- SQLite persistence layer
-- In-memory event streaming system
-- Pluggable agent adapter framework
-- Codex as the initial supported agent
+The result is a runtime where you can:
 
-The application should be packaged as a single executable with embedded frontend assets.
+- Start agent sessions against specific workspaces.
+- Watch messages, tool calls, file edits, logs, status changes, and errors as they happen.
+- Reconnect or refresh without losing session history.
+- Inspect and edit files in the same UI where the agent is working.
+- Keep provider-specific behavior behind adapters instead of coupling the platform to one CLI.
 
-## Design Principles
+## Runtime Tour
 
-### Event-Driven Foundation
+### Launch And Control Sessions
 
-Everything in Gorchestra is represented as an event:
+- Create sessions with a title, agent type, and workspace directory.
+- Browse allowed workspace roots during session creation.
+- See session status, event counts, tool counts, latest activity, and stream state at a glance.
+- Rename sessions inline and archive completed sessions.
+- Cancel running work when a session needs to stop.
+- Recover interrupted runs after server restart by marking them failed with a visible event trail.
 
-- User prompts
-- Agent responses
-- Tool invocations
-- Command execution
-- File modifications
-- Status changes
-- Errors
-- Completion notifications
+### Stream The Work
 
-Events are streamed live and persisted durably. The event stream is the canonical representation of a session.
+The event stream is the source of truth. Gorchestra persists events before broadcasting them, assigns each event a monotonically increasing sequence number, and uses Server-Sent Events for live delivery.
 
-### Server-Owned State
+- Replays missed events after reconnect using `after_seq`.
+- Supports historical reads by `after_seq`, `before_seq`, or tail queries.
+- Sends stream heartbeats to keep live connections healthy.
+- Groups raw events into readable transcript rows for messages, thinking, tool calls, file changes, logs, and provider debug output.
+- Includes a debug mode for inspecting provider and internal events directly.
 
-The backend is the source of truth. The frontend maintains only temporary UI state and rendering concerns.
+### Codex, But Not Codex-Locked
 
-Session reconstruction, replay, recovery, and synchronization are all driven from the server.
+Codex is the first real adapter, with a fake agent available for development and tests.
 
-### Replayable Sessions
+- Continue Codex threads across prompts through persisted provider session IDs.
+- Select Codex model, reasoning effort, service tier, fast mode, and planning mode per prompt.
+- Configure Codex shell network access and native web search mode from the backend CLI.
+- Start a Codex session with `run_dangerously` when you intentionally want no approval prompts and no sandbox restrictions.
+- Keep core orchestration provider-agnostic through a shared agent interface.
 
-Every event within a session receives a monotonically increasing sequence number.
+### Transcript Built For Real Work
 
-Clients track the highest sequence number they have received. If a connection is interrupted:
+The transcript is built for watching work unfold, not just reading chat bubbles.
 
-1. The client reconnects.
-2. The client sends its last known sequence number.
-3. Gorchestra replays all missing events.
-4. Live streaming resumes.
+- Streams assistant messages and thinking state live.
+- Collapses tool calls under assistant activity with expandable details.
+- Shows command output, aggregated Codex tool output, errors, and debug payloads.
+- Renders file-change events as readable labels with unified diff highlighting when patches are available.
+- Provides copy buttons for code blocks and tool output.
+- Adds a `Show in File Editor` action on file-change diffs so edited files can be opened directly in the middle pane.
 
-This guarantees lossless recovery while keeping synchronization logic simple.
+> [!TIP]
+> Screenshot slot: file-change diff with the floating file-editor action and Monaco editor overlay.
 
-### Real-Time First
+### Workspace, Diffs, And Editor
 
-Users should see work as it happens. Agent output is streamed incrementally rather than withheld until completion.
+Gorchestra treats the session workspace as part of the runtime, not a side panel bolted onto chat.
 
-The experience should feel closer to observing a live terminal session than interacting with a traditional chat application.
+- Browse session files from the activity rail.
+- Search within the session workspace.
+- Show git status markers next to file entries.
+- Preview text and Markdown files in the middle pane.
+- Edit UTF-8 files with Monaco and save changes back to disk.
+- Keep binary or oversized files read-only.
+- Open changed files from agent file-change diffs without hunting through the explorer.
 
-### Transparency Over Magic
+### Prompting That Keeps Up
 
-Users should be able to see what agents are doing, including current activity, tool calls, command execution, intermediate output, progress updates, errors, and completion state.
+- Prompt drafts are stored per session in local browser storage.
+- Press `Enter` to submit and `Ctrl+Enter` for a newline.
+- Attach up to eight images, 5 MB each, by file picker or drag and drop.
+- Keep typing the next message while a run is active.
+- Answer agent-requested user input with structured controls when a provider pauses for a decision.
+- Toggle debug events from the composer when deeper inspection is needed.
 
-Failures should be visible and understandable. Automatic retries are intentionally excluded from the initial design.
+### Run Health At A Glance
 
-## Agent Abstraction
+The right rail summarizes the current run:
 
-Gorchestra must not become tightly coupled to a single provider. All orchestration logic operates through a common agent interface.
+- Live connection state.
+- Current activity metrics.
+- Latest event label and timestamp.
+- Token usage when the provider reports it.
+- Workspace file browser and archive action.
 
-Planned agent implementations include:
+The main message window uses a minimal scrollbar that stays out of the way until scrolling, and the panes can be resized for longer monitoring sessions.
 
-- Codex
-- Claude
-- OpenAI Responses API
-- Local agents
-- Future providers
+## Get It Running
 
-Codex will be the first implementation, but the orchestration engine remains provider-agnostic.
-
-## Streaming Model
-
-The initial implementation uses Server-Sent Events.
-
-Requirements:
-
-- Live event delivery
-- Automatic reconnection
-- Event replay
-- Low operational complexity
-
-The architecture should permit migration to WebSockets later without requiring major backend changes.
-
-## Persistence Model
-
-All sessions and events are stored in SQLite.
-
-Events are persisted before being broadcast to connected clients.
-
-Persistence supports:
-
-- Session history
-- Event replay
-- Session reconstruction
-- Future analytics
-- Future observability
-
-SQLite is chosen initially for simplicity, portability, and local-first deployment.
-
-## Frontend Goals
-
-The frontend should provide:
-
-- Session management
-- Live event viewing
-- Session history
-- Agent status visualization
-- Reconnection handling
-- Responsive mobile support
-
-The interface should prioritize visibility into agent activity rather than mimicking a traditional chatbot experience.
-
-## Documentation
-
-- [Roadmap](docs/roadmap.md) - target architecture, milestones, API shape, event model, and build order.
-- [Sprint 1](docs/sprint-1.md) - project skeleton checklist and completion criteria.
-- [Sprint 2](docs/sprint-2.md) - SQLite session and event store checklist and completion criteria.
-- [Sprint 3](docs/sprint-3.md) - internal event pipeline checklist and completion criteria.
-
-## Local Development
-
-Prerequisites:
+### Prerequisites
 
 - Go 1.23 or newer
 - Bun 1.3 or newer
+- Codex CLI on `PATH` for real Codex sessions
 
 Install frontend dependencies:
 
 ```sh
 cd web
 bun install
+cd ..
 ```
 
 Run the backend and frontend together with hot reload:
@@ -170,7 +149,9 @@ This starts:
 - Backend restart on Go source changes
 - React HMR through Vite
 
-Set `PORT`, `WEB_PORT`, or `GORCHESTRA_DB` to override the default ports and development database path.
+Set `PORT`, `WEB_PORT`, `GORCHESTRA_DB`, or `GORCHESTRA_WORKSPACE` to override the default ports, development database path, or workspace.
+
+### Tailnet Development
 
 Run the same development stack for tailnet access:
 
@@ -190,7 +171,9 @@ The script prints the detected Tailscale IPv4 address when `tailscale` is availa
 VITE_ALLOWED_HOSTS=your-machine.your-tailnet.ts.net bun run dev:tailnet
 ```
 
-Run a persistent human dev server in tmux:
+### Persistent Human Dev Server
+
+Run a stable development server in tmux:
 
 ```sh
 bun run dev:human
@@ -213,21 +196,30 @@ bun run dev:human:reset
 bun run dev:human:stop
 ```
 
-Override defaults with `GORCHESTRA_HUMAN_PORT`, `GORCHESTRA_HUMAN_WEB_PORT`, `GORCHESTRA_HUMAN_DB`, or `GORCHESTRA_HUMAN_TMUX`.
+Override defaults with `GORCHESTRA_HUMAN_PORT`, `GORCHESTRA_HUMAN_WEB_PORT`, `GORCHESTRA_HUMAN_DB`, `GORCHESTRA_HUMAN_WORKSPACE`, or `GORCHESTRA_HUMAN_TMUX`.
 
-Backend:
+## Backend Flags
 
 ```sh
 go run ./cmd/app
 ```
 
-The backend listens on port `8080` and uses `./sessions.db` by default. Set `PORT` or pass `--db` to override them:
+The backend listens on port `8080` and uses `./sessions.db` by default.
+
+Common options:
 
 ```sh
 PORT=8081 go run ./cmd/app --db .tmp/sessions.db
+go run ./cmd/app --workspace /path/to/repo
+go run ./cmd/app --workspace-root /path/to/allowed/root
+go run ./cmd/app --codex-bin /path/to/codex
+go run ./cmd/app --codex-model gpt-5
+go run ./cmd/app --codex-sandbox workspace-write
+go run ./cmd/app --codex-network-access=false
+go run ./cmd/app --codex-web-search=cached
 ```
 
-Codex shell commands run with network access enabled by default. Use `--codex-network-access=false` to disable command-line network access for Codex turns. Codex native web search runs in live mode by default; use `--codex-web-search=cached` or `--codex-web-search=disabled` to change it.
+Codex shell commands run with network access enabled by default. Codex native web search runs in live mode by default; use `--codex-web-search=cached` or `--codex-web-search=disabled` to change it.
 
 Health check:
 
@@ -235,7 +227,69 @@ Health check:
 curl http://localhost:8080/api/health
 ```
 
-Backend tests:
+## Frontend Commands
+
+```sh
+cd web
+bun dev
+bun run test
+bun run build
+```
+
+The Vite dev server proxies `/api` requests to `http://localhost:8080`.
+
+## Runtime API
+
+The runtime API is intentionally simple and event-oriented:
+
+- `GET /api/health`
+- `GET /api/agents/{agentType}/options`
+- `GET /api/workspaces/roots`
+- `GET /api/workspaces/browse`
+- `POST /api/sessions`
+- `GET /api/sessions`
+- `GET /api/sessions/{sessionId}`
+- `PATCH /api/sessions/{sessionId}`
+- `POST /api/sessions/{sessionId}/archive`
+- `POST /api/sessions/{sessionId}/messages`
+- `POST /api/sessions/{sessionId}/cancel`
+- `POST /api/sessions/{sessionId}/requests/{requestId}/answer`
+- `GET /api/sessions/{sessionId}/events`
+- `GET /api/sessions/{sessionId}/events/stream`
+- `GET /api/sessions/{sessionId}/files`
+- `GET /api/sessions/{sessionId}/files/search`
+- `GET /api/sessions/{sessionId}/files/content`
+- `PUT /api/sessions/{sessionId}/files/content`
+
+## Under The Hood
+
+Gorchestra is split into a small Go runtime and a React operational UI.
+
+Backend:
+
+- `internal/store` manages SQLite sessions, events, migrations, provider session IDs, workspace paths, and session agent options.
+- `internal/events` appends durable events and broadcasts live subscribers.
+- `internal/session` tracks active runs, cancellation, and pending user-input requests.
+- `internal/agents` defines the provider interface, with Codex and fake adapters.
+- `internal/httpapi` exposes sessions, streaming, workspace browsing, file content, and agent options.
+- `cmd/app` wires the runtime, CLI flags, startup recovery, and HTTP server.
+
+Frontend:
+
+- React and Vite power the single-page UI.
+- The app derives display state from server sessions and events.
+- The transcript groups raw events into messages, thinking, tool calls, file changes, logs, and debug rows.
+- The workspace overlay renders Markdown, previews text, and edits files with Monaco.
+- The activity rail combines session metrics, token usage, archive controls, and file browsing.
+
+Packaging direction:
+
+- The target shape is a single lightweight executable with embedded frontend assets.
+- The current development loop runs Go and Vite side by side for fast iteration.
+
+## Tests
+
+Backend:
 
 ```sh
 go test ./...
@@ -245,31 +299,14 @@ Frontend:
 
 ```sh
 cd web
-bun dev
-```
-
-The Vite dev server proxies `/api` requests to `http://localhost:8080`.
-
-Frontend build:
-
-```sh
-cd web
+bun run test
 bun run build
 ```
 
-## Initial Success Criteria
+## Project Trail
 
-The first version of Gorchestra is successful when:
-
-1. A user can create a session.
-2. A prompt can be submitted.
-3. Codex can execute work.
-4. Events stream live to connected browsers.
-5. Events are persisted to SQLite.
-6. Browser refreshes and reconnects recover automatically.
-7. Session history survives application restarts.
-8. The system remains deployable as a single executable.
-
-## Status
-
-Sprint 1 project skeleton is scaffolded with a Go backend health endpoint and a Vite React frontend service monitor.
+- [Roadmap](docs/roadmap.md) - target architecture, milestones, API shape, event model, and build order.
+- [Sprint 1](docs/sprint-1.md) - project skeleton checklist and completion criteria.
+- [Sprint 2](docs/sprint-2.md) - SQLite session and event store checklist and completion criteria.
+- [Sprint 3](docs/sprint-3.md) - internal event pipeline checklist and completion criteria.
+- [Sprint 4](docs/sprint-4.md) through [Sprint 10](docs/sprint-10.md) - follow-on implementation notes.

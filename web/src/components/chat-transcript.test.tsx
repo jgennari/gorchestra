@@ -40,19 +40,20 @@ test('renders markdown in chat messages', () => {
 })
 
 test('renders legacy raw Codex plan messages with a plan label', () => {
-  render(
+  const planText = 'Review `README.md` before running:\n\n```sh\nbun test\n```\n'
+  const { container } = render(
     <ChatTranscript
       events={[
         event(1, 'provider.codex.event', 'system', 'completed', {
           provider_event_type: 'item/plan/delta',
-          raw: { threadId: 'thread_1', turnId: 'turn_1', itemId: 'plan_1', delta: 'Review the session tail.\n' },
+          raw: { threadId: 'thread_1', turnId: 'turn_1', itemId: 'plan_1', delta: planText },
         }),
         event(2, 'provider.codex.event', 'system', 'completed', {
           provider_event_type: 'item/completed',
           raw: {
             threadId: 'thread_1',
             turnId: 'turn_1',
-            item: { type: 'plan', id: 'plan_1', text: 'Review the session tail.\n' },
+            item: { type: 'plan', id: 'plan_1', text: planText },
           },
         }),
       ]}
@@ -60,8 +61,11 @@ test('renders legacy raw Codex plan messages with a plan label', () => {
   )
 
   expect(screen.getByText('Plan')).toBeInTheDocument()
-  expect(screen.getByText('Review the session tail.')).toBeInTheDocument()
+  expect(screen.getByText('README.md')).toHaveClass('bg-amber-100/85')
+  expect(screen.getByText(/bun test/)).toHaveClass('bg-amber-100/80')
   expect(screen.queryByText('item/plan/delta')).not.toBeInTheDocument()
+  expect(screen.getByText('Plan').closest('article')).toHaveAttribute('data-message-variant', 'plan')
+  expect(container.querySelector('.border-l-amber-400')).toBeInTheDocument()
 })
 
 test('load older control invokes the older event loader', async () => {

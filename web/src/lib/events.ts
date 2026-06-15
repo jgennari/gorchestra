@@ -82,6 +82,7 @@ export type ChatTranscriptMessage = {
   id: string
   role: 'user' | 'assistant'
   label: string
+  variant: 'default' | 'plan'
   text: string
   attachments: ChatTranscriptAttachment[]
   status: string
@@ -692,6 +693,7 @@ function chatMessageFromGroup(role: ChatTranscriptMessage['role'], group: EventG
     id: `chat-${role}-${group.startSeq}`,
     role,
     label: messageLabel(role, group.kind),
+    variant: messageVariant(role, group.kind),
     text: group.text,
     attachments: chatAttachmentsFromGroup(group),
     status: group.status,
@@ -711,6 +713,10 @@ function messageLabel(role: ChatTranscriptMessage['role'], kind: EventGroupKind)
     return 'Plan'
   }
   return 'Assistant'
+}
+
+function messageVariant(role: ChatTranscriptMessage['role'], kind: EventGroupKind): ChatTranscriptMessage['variant'] {
+  return role === 'assistant' && kind === 'plan' ? 'plan' : 'default'
 }
 
 function chatAttachmentsFromGroup(group: EventGroup): ChatTranscriptAttachment[] {
@@ -782,6 +788,7 @@ function assistantMessageForGroup(
 function mergeAssistantMessage(message: ChatTranscriptMessage, group: EventGroup) {
   if (group.kind === 'plan') {
     message.label = 'Plan'
+    message.variant = 'plan'
   }
   message.text = mergeChatText(message.text, group.text)
   message.status = group.status

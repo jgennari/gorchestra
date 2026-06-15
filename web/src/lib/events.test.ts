@@ -256,6 +256,7 @@ test('chat transcript renders structured plan events as visible plan messages', 
   expect(transcript[0]).toMatchObject({
     role: 'assistant',
     label: 'Plan',
+    variant: 'plan',
     text: '# Plan\n- Check the transcript\n',
     streaming: false,
   })
@@ -285,6 +286,7 @@ test('chat transcript renders legacy raw Codex plan provider events', () => {
   expect(transcript[0]).toMatchObject({
     role: 'assistant',
     label: 'Plan',
+    variant: 'plan',
     text: '# Plan\n- Check the transcript\n',
   })
 })

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, FileText, Loader2 } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Copy, FileText, Loader2 } from 'lucide-react'
 import { isValidElement, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -172,29 +172,37 @@ function ChatMessageRow({
   onOpenFilePath?: (path: string) => Promise<void> | void
 }) {
   const user = message.role === 'user'
+  const plan = message.variant === 'plan'
   const [showAllTools, setShowAllTools] = useState(false)
   const visibleTools = showAllTools ? message.tools : message.tools.slice(0, 3)
   const hasHiddenTools = message.tools.length > visibleTools.length
   const timestamp = formatMessageTimestamp(message.createdAt)
 
   return (
-    <article className={cn('flex', user ? 'justify-end' : 'justify-start')}>
+    <article className={cn('flex', user ? 'justify-end' : 'justify-start')} data-message-variant={message.variant}>
       <div className="max-w-[min(48rem,90%)]">
         <div
           className={cn(
             'rounded-lg px-3.5 py-3 text-sm shadow-sm',
             user
               ? 'border border-primary/30 bg-primary text-primary-foreground shadow-[0_12px_30px_hsl(var(--primary)/0.16)]'
-              : 'command-card border text-card-foreground',
+              : plan
+                ? 'border border-l-4 border-amber-300/75 border-l-amber-400 bg-amber-50/85 text-amber-950 shadow-[0_12px_30px_hsl(43_96%_56%/0.12)] dark:border-amber-400/35 dark:border-l-amber-300 dark:bg-amber-400/10 dark:text-amber-100'
+                : 'command-card border text-card-foreground',
           )}
         >
           <div
             className={cn(
               'mb-1 flex items-center justify-between gap-4 text-xs font-medium',
-              user ? 'text-primary-foreground/80' : 'text-muted-foreground',
+              user
+                ? 'text-primary-foreground/80'
+                : plan
+                  ? 'text-amber-800 dark:text-amber-200'
+                  : 'text-muted-foreground',
             )}
           >
             <span className="flex min-w-0 items-center gap-2">
+              {plan ? <ClipboardList className="size-3.5 shrink-0" aria-hidden="true" /> : null}
               <span>{message.label}</span>
             </span>
             {timestamp ? (
@@ -207,14 +215,19 @@ function ChatMessageRow({
           {message.attachments.length > 0 ? <MessageAttachments attachments={message.attachments} /> : null}
 
           {message.text ? (
-            <MarkdownContent content={message.text} inverted={user} />
+            <MarkdownContent content={message.text} variant={user ? 'inverted' : plan ? 'plan' : 'default'} />
           ) : user && message.attachments.length > 0 ? null : (
             <p className="text-muted-foreground">Working...</p>
           )}
         </div>
 
         {message.tools.length > 0 ? (
-          <div className="mt-2 space-y-1 border-l border-border/80 pl-3">
+          <div
+            className={cn(
+              'mt-2 space-y-1 border-l pl-3',
+              plan ? 'border-amber-300/70 dark:border-amber-400/35' : 'border-border/80',
+            )}
+          >
             {visibleTools.map((tool) => (
               <ToolCallRow key={tool.id} tool={tool} onOpenFilePath={onOpenFilePath} />
             ))}
@@ -273,7 +286,12 @@ function formatMessageTimestamp(value: string) {
   }).format(date)
 }
 
-function MarkdownContent({ content, inverted }: { content: string; inverted: boolean }) {
+type MarkdownVariant = 'default' | 'inverted' | 'plan'
+
+function MarkdownContent({ content, variant }: { content: string; variant: MarkdownVariant }) {
+  const inverted = variant === 'inverted'
+  const plan = variant === 'plan'
+
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -286,7 +304,10 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
             href={href}
             target="_blank"
             rel="noreferrer"
-            className={cn('underline underline-offset-2', inverted ? 'text-primary-foreground' : 'text-primary')}
+            className={cn(
+              'underline underline-offset-2',
+              inverted ? 'text-primary-foreground' : plan ? 'text-amber-700 dark:text-amber-200' : 'text-primary',
+            )}
           >
             {children}
           </a>
@@ -298,7 +319,11 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
           <blockquote
             className={cn(
               'my-2 border-l-2 pl-3 italic',
-              inverted ? 'border-primary-foreground/50' : 'border-border text-muted-foreground',
+              inverted
+                ? 'border-primary-foreground/50'
+                : plan
+                  ? 'border-amber-400/70 text-amber-900/80 dark:border-amber-300/50 dark:text-amber-100/80'
+                  : 'border-border text-muted-foreground',
             )}
           >
             {children}
@@ -309,7 +334,7 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
           const block = className?.startsWith('language-') || code.endsWith('\n')
           if (block) {
             return (
-              <CodeBlock code={code} className={className} inverted={inverted}>
+              <CodeBlock code={code} className={className} variant={variant}>
                 {children}
               </CodeBlock>
             )
@@ -317,8 +342,12 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
           return (
             <code
               className={cn(
-                'rounded px-1 py-0.5 font-mono text-[0.85em]',
-                inverted ? 'bg-primary-foreground/15' : 'bg-muted',
+                'rounded border px-1 py-0.5 font-mono text-[0.85em]',
+                inverted
+                  ? 'border-primary-foreground/20 bg-primary-foreground/15'
+                  : plan
+                    ? 'border-amber-300/70 bg-amber-100/85 text-amber-950 dark:border-amber-300/35 dark:bg-amber-300/14 dark:text-amber-50'
+                    : 'border-transparent bg-muted',
               )}
             >
               {children}
@@ -329,7 +358,14 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
         h1: ({ children }) => <h3 className="mb-2 mt-3 text-base font-semibold first:mt-0">{children}</h3>,
         h2: ({ children }) => <h3 className="mb-2 mt-3 text-base font-semibold first:mt-0">{children}</h3>,
         h3: ({ children }) => <h3 className="mb-2 mt-3 text-sm font-semibold first:mt-0">{children}</h3>,
-        hr: () => <hr className={cn('my-3 border-t', inverted ? 'border-primary-foreground/30' : 'border-border')} />,
+        hr: () => (
+          <hr
+            className={cn(
+              'my-3 border-t',
+              inverted ? 'border-primary-foreground/30' : plan ? 'border-amber-300/70' : 'border-border',
+            )}
+          />
+        ),
         table: ({ children }) => (
           <div className="my-2 overflow-auto">
             <table className="w-full border-collapse text-xs">{children}</table>
@@ -347,22 +383,26 @@ function MarkdownContent({ content, inverted }: { content: string; inverted: boo
 function CodeBlock({
   code,
   className,
-  inverted,
+  variant,
   children,
 }: {
   code: string
   className?: string
-  inverted: boolean
+  variant: MarkdownVariant
   children: ReactNode
 }) {
   return (
     <div className="group/code relative my-2">
-      <FloatingCopyButton label="Copy code" value={code} inverted={inverted} />
+      <FloatingCopyButton label="Copy code" value={code} variant={variant} />
       <pre className="overflow-auto rounded-md">
         <code
           className={cn(
-            'block min-w-full whitespace-pre p-3 pr-12 font-mono text-xs',
-            inverted ? 'bg-primary-foreground/15' : 'bg-muted',
+            'block min-w-full whitespace-pre border p-3 pr-12 font-mono text-xs',
+            variant === 'inverted'
+              ? 'border-primary-foreground/20 bg-primary-foreground/15'
+              : variant === 'plan'
+                ? 'border-amber-300/70 bg-amber-100/80 text-amber-950 dark:border-amber-300/35 dark:bg-amber-300/12 dark:text-amber-50'
+                : 'border-transparent bg-muted',
             className,
           )}
         >
@@ -373,7 +413,15 @@ function CodeBlock({
   )
 }
 
-function FloatingCopyButton({ label, value, inverted = false }: { label: string; value: string; inverted?: boolean }) {
+function FloatingCopyButton({
+  label,
+  value,
+  variant = 'default',
+}: {
+  label: string
+  value: string
+  variant?: MarkdownVariant
+}) {
   const [copied, setCopied] = useState(false)
 
   async function handleCopy() {
@@ -393,9 +441,11 @@ function FloatingCopyButton({ label, value, inverted = false }: { label: string;
       onClick={() => void handleCopy()}
       className={cn(
         'absolute right-2 top-2 z-10 inline-flex size-7 items-center justify-center rounded-md border text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        inverted
+        variant === 'inverted'
           ? 'border-primary-foreground/20 bg-primary-foreground/12 text-primary-foreground hover:bg-primary-foreground/20'
-          : 'border-border/70 bg-background/90 text-muted-foreground hover:bg-background hover:text-foreground',
+          : variant === 'plan'
+            ? 'border-amber-300/70 bg-amber-50/95 text-amber-800 hover:bg-amber-100 dark:border-amber-300/35 dark:bg-amber-950/80 dark:text-amber-100 dark:hover:bg-amber-900'
+            : 'border-border/70 bg-background/90 text-muted-foreground hover:bg-background hover:text-foreground',
       )}
     >
       {copied ? <Check className="size-3.5" aria-hidden="true" /> : <Copy className="size-3.5" aria-hidden="true" />}
