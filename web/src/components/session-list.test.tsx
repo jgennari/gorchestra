@@ -130,6 +130,14 @@ test('session list exposes the global theme toggle', async () => {
   expect(onThemeToggle).toHaveBeenCalledOnce()
 })
 
+test('full session list uses the app icon instead of the text header', () => {
+  render(<SessionList {...baseProps()} />)
+
+  expect(screen.getByRole('img', { name: 'Gorchestra' })).toHaveAttribute('src', '/icon.svg')
+  expect(screen.queryByText('Gorchestra')).not.toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Sessions' })).not.toBeInTheDocument()
+})
+
 test('embedded session list hides desktop header controls', () => {
   render(<SessionList {...baseProps()} variant="embedded" />)
 

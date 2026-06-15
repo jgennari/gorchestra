@@ -16,6 +16,16 @@
   container-type: inline-size;
 }
 
+.sidebar-logo-mark {
+  border-radius: var(--radius-md);
+}
+
+:root[data-theme='dark'] .sidebar-logo-mark {
+  filter:
+    drop-shadow(0 0 8px hsl(var(--primary) / 0.46))
+    drop-shadow(0 0 18px hsl(var(--glow) / 0.24));
+}
+
 @container (max-width: 271px) {
   .session-row {
     grid-template-columns: auto minmax(0, 1fr);
