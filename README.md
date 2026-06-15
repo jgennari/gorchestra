@@ -68,6 +68,16 @@ gorchestra --open
 
 The published tap is `jgennari/homebrew-tap`; the formula builds Gorchestra from the tagged source archive with Go and installs the `gorchestra` binary.
 
+Run Gorchestra as a background service:
+
+```sh
+brew services start jgennari/tap/gorchestra
+open http://127.0.0.1:15173
+brew services stop jgennari/tap/gorchestra
+```
+
+The Homebrew service reads `$(brew --prefix)/etc/gorchestra/gorchestra.env`. Edit that file and restart the service to change the port, data directory, workspace roots, or Codex binary path.
+
 ### Direct Download
 
 Download the archive for your platform from GitHub Releases, unpack it, and run the binary.
@@ -111,6 +121,7 @@ Common options:
 
 ```sh
 gorchestra --host 127.0.0.1 --port 8081
+gorchestra --config ~/.config/gorchestra/gorchestra.env
 gorchestra --data-dir ~/.gorchestra-dev
 gorchestra --workspace /path/to/repo
 gorchestra --workspace-root /path/to/allowed/root
@@ -133,6 +144,20 @@ Linux fallback: ~/.local/share/gorchestra/gorchestra.db
 ```
 
 Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
+
+Config files use the same env-style names:
+
+```txt
+GORCHESTRA_HOST=127.0.0.1
+GORCHESTRA_PORT=15173
+GORCHESTRA_DATA_DIR=/opt/homebrew/var/gorchestra
+GORCHESTRA_WORKSPACE=~
+GORCHESTRA_WORKSPACE_ROOTS=~
+GORCHESTRA_OPEN=false
+GORCHESTRA_CODEX_BIN=codex
+```
+
+`GORCHESTRA_CONFIG` is the environment equivalent of `--config`. `GORCHESTRA_WORKSPACE_ROOTS` accepts multiple paths separated by the OS path-list separator (`:` on macOS/Linux).
 
 Remove local app data:
 

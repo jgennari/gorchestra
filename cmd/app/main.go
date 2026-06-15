@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,7 @@ const databaseFileName = "gorchestra.db"
 var version = "dev"
 
 type config struct {
+	configPath     string
 	host           string
 	port           string
 	dataDir        string
@@ -155,6 +157,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	var workspaceRoots repeatedStringFlag
 	flags := flag.NewFlagSet("gorchestra", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	flags.StringVar(&cfg.configPath, "config", "", "path to an env-style configuration file")
 	flags.StringVar(&cfg.host, "host", "", "host interface for the HTTP server")
 	flags.StringVar(&cfg.port, "port", "", "port for the HTTP server")
 	flags.StringVar(&cfg.dataDir, "data-dir", "", "directory for Gorchestra runtime data")
@@ -171,6 +174,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	if err := flags.Parse(args); err != nil {
 		return config{}, err
 	}
+	configFlag := flagWasSet(flags, "config")
 	hostFlag := flagWasSet(flags, "host")
 	portFlag := flagWasSet(flags, "port")
 	dataDirFlag := flagWasSet(flags, "data-dir")
@@ -182,42 +186,55 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	codexSearchFlag := flagWasSet(flags, "codex-web-search")
 	codexModelFlag := flagWasSet(flags, "codex-model")
 	openFlag := flagWasSet(flags, "open")
+	workspaceRootsFlag := flagWasSet(flags, "workspace-root")
 	if cfg.showVersion {
 		return cfg, nil
 	}
 
+	if !configFlag {
+		cfg.configPath = envOr(getenv, "GORCHESTRA_CONFIG", "")
+	}
+	configEnv, err := loadConfigEnvFile(cfg.configPath)
+	if err != nil {
+		return config{}, err
+	}
+	configGetenv := mergedGetenv(getenv, configEnv)
+
 	if !hostFlag {
-		cfg.host = envOr(getenv, "GORCHESTRA_HOST", "127.0.0.1")
+		cfg.host = envOr(configGetenv, "GORCHESTRA_HOST", "127.0.0.1")
 	}
 	if !portFlag {
-		cfg.port = envOrAny(getenv, []string{"GORCHESTRA_PORT", "PORT"}, "8080")
+		cfg.port = envOrAny(configGetenv, []string{"GORCHESTRA_PORT", "PORT"}, "8080")
 	}
 	if !dataDirFlag {
-		cfg.dataDir = envOr(getenv, "GORCHESTRA_DATA_DIR", "")
+		cfg.dataDir = envOr(configGetenv, "GORCHESTRA_DATA_DIR", "")
 	}
 	if !dbFlag && !dataDirFlag {
-		cfg.db = envOr(getenv, "GORCHESTRA_DB", "")
+		cfg.db = envOr(configGetenv, "GORCHESTRA_DB", "")
 	}
 	if !workspaceFlag {
-		cfg.workspace = envOr(getenv, "GORCHESTRA_WORKSPACE", "")
+		cfg.workspace = envOr(configGetenv, "GORCHESTRA_WORKSPACE", "")
+	}
+	if !workspaceRootsFlag {
+		workspaceRoots = workspaceRootsFromEnv(configGetenv("GORCHESTRA_WORKSPACE_ROOTS"))
 	}
 	if !codexBinFlag {
-		cfg.codexBin = envOr(getenv, "GORCHESTRA_CODEX_BIN", "codex")
+		cfg.codexBin = envOr(configGetenv, "GORCHESTRA_CODEX_BIN", "codex")
 	}
 	if !codexSandboxFlag {
-		cfg.codexSandbox = envOr(getenv, "GORCHESTRA_CODEX_SANDBOX", "workspace-write")
+		cfg.codexSandbox = envOr(configGetenv, "GORCHESTRA_CODEX_SANDBOX", "workspace-write")
 	}
 	if !codexNetworkFlag {
-		cfg.codexNetwork = envBool(getenv, "GORCHESTRA_CODEX_NETWORK_ACCESS", true)
+		cfg.codexNetwork = envBool(configGetenv, "GORCHESTRA_CODEX_NETWORK_ACCESS", true)
 	}
 	if !codexSearchFlag {
-		cfg.codexSearch = envOr(getenv, "GORCHESTRA_CODEX_WEB_SEARCH", "live")
+		cfg.codexSearch = envOr(configGetenv, "GORCHESTRA_CODEX_WEB_SEARCH", "live")
 	}
 	if !codexModelFlag {
-		cfg.codexModel = envOr(getenv, "GORCHESTRA_CODEX_MODEL", "")
+		cfg.codexModel = envOr(configGetenv, "GORCHESTRA_CODEX_MODEL", "")
 	}
 	if !openFlag {
-		cfg.open = envBool(getenv, "GORCHESTRA_OPEN", false)
+		cfg.open = envBool(configGetenv, "GORCHESTRA_OPEN", false)
 	}
 
 	if cfg.db == "" {
@@ -244,7 +261,11 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 		}
 		cfg.workspace = workspace
 	}
-	workspace, err := filepath.Abs(cfg.workspace)
+	expandedWorkspace, err := expandHome(cfg.workspace)
+	if err != nil {
+		return config{}, err
+	}
+	workspace, err := filepath.Abs(expandedWorkspace)
 	if err != nil {
 		return config{}, fmt.Errorf("resolve workspace %q: %w", cfg.workspace, err)
 	}
@@ -256,7 +277,11 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 		if root == "" {
 			continue
 		}
-		workspaceRoot, err := existingDirectory("workspace root", root)
+		expandedRoot, err := expandHome(root)
+		if err != nil {
+			return config{}, err
+		}
+		workspaceRoot, err := existingDirectory("workspace root", expandedRoot)
 		if err != nil {
 			return config{}, err
 		}
@@ -285,6 +310,100 @@ func (f *repeatedStringFlag) String() string {
 func (f *repeatedStringFlag) Set(value string) error {
 	*f = append(*f, value)
 	return nil
+}
+
+func loadConfigEnvFile(path string) (map[string]string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	expandedPath, err := expandHome(path)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(expandedPath)
+	if err != nil {
+		return nil, fmt.Errorf("open config file %q: %w", path, err)
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Printf("config file close failed: %v", err)
+		}
+	}()
+
+	values := make(map[string]string)
+	scanner := bufio.NewScanner(file)
+	lineNumber := 0
+	for scanner.Scan() {
+		lineNumber++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("parse config file %q line %d: expected KEY=value", path, lineNumber)
+		}
+		key = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(key), "export "))
+		if !validConfigKey(key) {
+			return nil, fmt.Errorf("parse config file %q line %d: invalid key %q", path, lineNumber, key)
+		}
+		values[key] = trimConfigValue(value)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read config file %q: %w", path, err)
+	}
+	return values, nil
+}
+
+func validConfigKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for index, char := range key {
+		if char == '_' || char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || index > 0 && char >= '0' && char <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func trimConfigValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 {
+		return value
+	}
+	first := value[0]
+	last := value[len(value)-1]
+	if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+		return value[1 : len(value)-1]
+	}
+	return value
+}
+
+func mergedGetenv(getenv func(string) string, configEnv map[string]string) func(string) string {
+	return func(key string) string {
+		if value := getenv(key); value != "" {
+			return value
+		}
+		return configEnv[key]
+	}
+}
+
+func workspaceRootsFromEnv(value string) repeatedStringFlag {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	roots := repeatedStringFlag{}
+	for _, root := range filepath.SplitList(value) {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		roots = append(roots, root)
+	}
+	return roots
 }
 
 func envOr(getenv func(string) string, key string, fallback string) string {

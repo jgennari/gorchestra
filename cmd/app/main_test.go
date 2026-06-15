@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -84,9 +86,102 @@ func TestParseConfigDataDirFlagOverridesEnvironmentDB(t *testing.T) {
 	}
 }
 
+func TestParseConfigLoadsConfigFile(t *testing.T) {
+	workspace := t.TempDir()
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeConfigFile(t, fmt.Sprintf(`
+GORCHESTRA_HOST=0.0.0.0
+GORCHESTRA_PORT=15173
+GORCHESTRA_DATA_DIR=%s
+GORCHESTRA_WORKSPACE=%s
+GORCHESTRA_WORKSPACE_ROOTS=%s%c%s
+GORCHESTRA_CODEX_BIN=/opt/codex/bin/codex
+GORCHESTRA_CODEX_SANDBOX=read-only
+GORCHESTRA_CODEX_NETWORK_ACCESS=false
+GORCHESTRA_CODEX_WEB_SEARCH=cached
+GORCHESTRA_CODEX_MODEL=gpt-test
+GORCHESTRA_OPEN=true
+`, dataDir, workspace, firstRoot, os.PathListSeparator, secondRoot))
+
+	cfg, err := parseConfigArgs([]string{"--config", configPath}, emptyEnv)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	if cfg.host != "0.0.0.0" || cfg.port != "15173" {
+		t.Fatalf("expected host/port from config, got %s:%s", cfg.host, cfg.port)
+	}
+	if cfg.dataDir != dataDir || cfg.db != filepath.Join(dataDir, databaseFileName) {
+		t.Fatalf("expected data dir database from config, got data_dir=%q db=%q", cfg.dataDir, cfg.db)
+	}
+	wantWorkspace, err := existingDirectory("workspace", workspace)
+	if err != nil {
+		t.Fatalf("resolve expected workspace: %v", err)
+	}
+	firstResolvedRoot, err := existingDirectory("workspace root", firstRoot)
+	if err != nil {
+		t.Fatalf("resolve first workspace root: %v", err)
+	}
+	secondResolvedRoot, err := existingDirectory("workspace root", secondRoot)
+	if err != nil {
+		t.Fatalf("resolve second workspace root: %v", err)
+	}
+	if cfg.workspace != wantWorkspace {
+		t.Fatalf("expected workspace %q, got %q", wantWorkspace, cfg.workspace)
+	}
+	if len(cfg.workspaceRoots) != 2 || cfg.workspaceRoots[0] != firstResolvedRoot || cfg.workspaceRoots[1] != secondResolvedRoot {
+		t.Fatalf("expected workspace roots from config, got %#v", cfg.workspaceRoots)
+	}
+	if cfg.codexBin != "/opt/codex/bin/codex" || cfg.codexSandbox != "read-only" || cfg.codexSearch != "cached" || cfg.codexModel != "gpt-test" {
+		t.Fatalf("expected codex config values, got %#v", cfg)
+	}
+	if cfg.codexNetwork || !cfg.open {
+		t.Fatalf("expected boolean config values, got network=%v open=%v", cfg.codexNetwork, cfg.open)
+	}
+}
+
+func TestParseConfigFlagsAndEnvironmentOverrideConfigFile(t *testing.T) {
+	workspace := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeConfigFile(t, fmt.Sprintf(`
+GORCHESTRA_HOST=0.0.0.0
+GORCHESTRA_PORT=15173
+GORCHESTRA_DATA_DIR=%s
+GORCHESTRA_WORKSPACE=%s
+`, dataDir, workspace))
+
+	cfg, err := parseConfigArgs([]string{
+		"--config", configPath,
+		"--port", "19090",
+	}, envMap(map[string]string{
+		"GORCHESTRA_HOST": "127.0.0.2",
+		"GORCHESTRA_PORT": "18080",
+	}))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	if cfg.host != "127.0.0.2" {
+		t.Fatalf("expected environment host to override config, got %q", cfg.host)
+	}
+	if cfg.port != "19090" {
+		t.Fatalf("expected flag port to override environment and config, got %q", cfg.port)
+	}
+}
+
+func TestParseConfigMissingConfigFileFails(t *testing.T) {
+	_, err := parseConfigArgs([]string{"--config", filepath.Join(t.TempDir(), "missing.env")}, emptyEnv)
+	if err == nil {
+		t.Fatal("expected missing config file error")
+	}
+}
+
 func TestParseConfigVersionSkipsFilesystemValidation(t *testing.T) {
 	cfg, err := parseConfigArgs([]string{
 		"--version",
+		"--config", filepath.Join(t.TempDir(), "missing.env"),
 		"--workspace", filepath.Join(t.TempDir(), "missing"),
 	}, emptyEnv)
 	if err != nil {
@@ -211,4 +306,13 @@ func envMap(values map[string]string) func(string) string {
 	return func(key string) string {
 		return values[key]
 	}
+}
+
+func writeConfigFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gorchestra.env")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+	return path
 }
