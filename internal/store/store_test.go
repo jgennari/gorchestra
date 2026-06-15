@@ -533,6 +533,23 @@ func TestUpdateSessionTitleAllowsEmptyTitle(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionAgentOptions(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	updated, err := store.UpdateSessionAgentOptions(ctx, UpdateSessionAgentOptionsParams{
+		ID:           session.ID,
+		AgentOptions: json.RawMessage(`{"codex":{"run_dangerously":true}}`),
+	})
+	if err != nil {
+		t.Fatalf("update agent options: %v", err)
+	}
+	if string(updated.AgentOptions) != `{"codex":{"run_dangerously":true}}` {
+		t.Fatalf("expected agent options to be updated, got %s", updated.AgentOptions)
+	}
+}
+
 func TestUpdateSessionTitleReturnsNotFoundForMissingSession(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)

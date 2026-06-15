@@ -260,6 +260,13 @@ export async function updateSessionTitle(sessionID: string, title: string) {
   })
 }
 
+export async function updateSessionAgentOptions(sessionID: string, agentOptions: SessionAgentOptions) {
+  return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ agent_options: agentOptions }),
+  })
+}
+
 export async function archiveSession(sessionID: string) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}/archive`, {
     method: 'POST',

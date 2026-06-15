@@ -199,6 +199,44 @@ func (s *Store) UpdateSessionTitle(ctx context.Context, params UpdateSessionTitl
 	return s.GetSession(ctx, params.ID)
 }
 
+func (s *Store) UpdateSessionAgentOptions(ctx context.Context, params UpdateSessionAgentOptionsParams) (Session, error) {
+	sessionID := strings.TrimSpace(params.ID)
+	if sessionID == "" {
+		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	agentOptions := params.AgentOptions
+	if len(agentOptions) == 0 {
+		agentOptions = json.RawMessage(`{}`)
+	}
+	if !json.Valid(agentOptions) {
+		return Session{}, fmt.Errorf("%w: agent_options must be valid JSON", ErrInvalidArgument)
+	}
+
+	now := s.now()
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE sessions
+		 SET agent_options_json = ?, updated_at = ?
+		 WHERE id = ?`,
+		string(agentOptions),
+		formatTime(now),
+		sessionID,
+	)
+	if err != nil {
+		return Session{}, fmt.Errorf("update session agent_options: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, fmt.Errorf("check updated session agent_options rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, sessionID)
+	}
+
+	return s.GetSession(ctx, sessionID)
+}
+
 func (s *Store) ArchiveSession(ctx context.Context, params ArchiveSessionParams) (Session, error) {
 	if strings.TrimSpace(params.ID) == "" {
 		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)

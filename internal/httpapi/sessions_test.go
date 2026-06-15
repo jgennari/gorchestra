@@ -514,6 +514,84 @@ func TestUpdateSessionTitleTrimsAndReturnsSession(t *testing.T) {
 	}
 }
 
+func TestUpdateCodexSessionAgentOptions(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Codex",
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := patchJSON(handler, "/api/sessions/"+session.ID, `{
+		"agent_options":{"codex":{"run_dangerously":true}}
+	}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response sessionResponse
+	decodeJSON(t, rec, &response)
+	responseOptions, ok := response.AgentOptions.(map[string]any)
+	if !ok {
+		t.Fatalf("expected response options map, got %#v", response.AgentOptions)
+	}
+	codexOptions, ok := responseOptions["codex"].(map[string]any)
+	if !ok || codexOptions["run_dangerously"] != true {
+		t.Fatalf("expected run_dangerously option, got %#v", response.AgentOptions)
+	}
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	options := decodeAgentOptions(t, updated.AgentOptions)
+	if options["codex"]["run_dangerously"] != true {
+		t.Fatalf("expected persisted run_dangerously option, got %#v", options)
+	}
+}
+
+func TestUpdateCodexSessionAgentOptionsCanClearRunDangerously(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:        "Codex",
+		AgentType:    "codex",
+		AgentOptions: json.RawMessage(`{"codex":{"run_dangerously":true}}`),
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := patchJSON(handler, "/api/sessions/"+session.ID, `{
+		"agent_options":{"codex":{"run_dangerously":false}}
+	}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response sessionResponse
+	decodeJSON(t, rec, &response)
+	responseOptions, ok := response.AgentOptions.(map[string]any)
+	if !ok {
+		t.Fatalf("expected response options map, got %#v", response.AgentOptions)
+	}
+	if _, ok := responseOptions["codex"]; ok {
+		t.Fatalf("expected codex options to be cleared, got %#v", response.AgentOptions)
+	}
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	options := decodeAgentOptions(t, updated.AgentOptions)
+	if _, ok := options["codex"]; ok {
+		t.Fatalf("expected persisted codex options to be cleared, got %#v", options)
+	}
+}
+
 func TestUpdateSessionTitleReturnsNotFound(t *testing.T) {
 	ctx := context.Background()
 	_, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
@@ -1878,4 +1956,16 @@ func (a optionsAgent) Options(context.Context) (agents.Options, error) {
 
 func (a optionsAgent) Run(context.Context, agents.AgentInput, agents.EmitFunc) error {
 	return nil
+}
+
+func decodeAgentOptions(t *testing.T, raw json.RawMessage) map[string]map[string]any {
+	t.Helper()
+	options := map[string]map[string]any{}
+	if len(raw) == 0 {
+		return options
+	}
+	if err := json.Unmarshal(raw, &options); err != nil {
+		t.Fatalf("decode agent options: %v", err)
+	}
+	return options
 }

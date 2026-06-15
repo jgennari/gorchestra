@@ -1,6 +1,13 @@
 import { Check, Copy, Ellipsis, RefreshCcw } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AgentEvent, MessageAttachment, Session, SubmitAgentOptions, UserInputAnswers } from '@/lib/api'
+import type {
+  AgentEvent,
+  MessageAttachment,
+  Session,
+  SessionAgentOptions,
+  SubmitAgentOptions,
+  UserInputAnswers,
+} from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -34,6 +41,7 @@ type Props = {
   onCancel: () => Promise<void>
   onRefresh: () => void
   onUpdateTitle: (title: string) => Promise<void>
+  onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onOpenFilePath?: (path: string) => Promise<void> | void
   onErrorMessageChange?: (message: string) => void
 }
@@ -55,6 +63,7 @@ export function SessionDetail({
   onCancel,
   onRefresh,
   onUpdateTitle,
+  onUpdateAgentOptions,
   onOpenFilePath,
   onErrorMessageChange,
 }: Props) {
@@ -133,10 +142,13 @@ export function SessionDetail({
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 p-3">
           <ChatSessionHeader
             sessionID={session.id}
+            agentType={session.agent_type}
             workspacePath={session.workspace_path}
+            agentOptions={session.agent_options}
             title={session.title}
             errorMessage={errorMessage}
             onUpdateTitle={onUpdateTitle}
+            onUpdateAgentOptions={onUpdateAgentOptions}
           />
         </div>
       </div>
@@ -164,16 +176,22 @@ export function SessionDetail({
 
 function ChatSessionHeader({
   sessionID,
+  agentType,
   workspacePath,
+  agentOptions,
   title,
   errorMessage,
   onUpdateTitle,
+  onUpdateAgentOptions,
 }: {
   sessionID: string
+  agentType: Session['agent_type']
   workspacePath: string
+  agentOptions?: SessionAgentOptions
   title: string
   errorMessage: string
   onUpdateTitle: (title: string) => Promise<void>
+  onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
 }) {
   return (
     <div className="pointer-events-auto">
@@ -186,7 +204,13 @@ function ChatSessionHeader({
         <div className="min-w-0 flex-1">
           <SessionTitleEditor title={title} onSave={onUpdateTitle} />
         </div>
-        <SessionDetailsMenu sessionID={sessionID} workspacePath={workspacePath} />
+        <SessionDetailsMenu
+          sessionID={sessionID}
+          agentType={agentType}
+          workspacePath={workspacePath}
+          agentOptions={agentOptions}
+          onUpdateAgentOptions={onUpdateAgentOptions}
+        />
       </div>
       {errorMessage ? (
         <div
@@ -200,10 +224,24 @@ function ChatSessionHeader({
   )
 }
 
-function SessionDetailsMenu({ sessionID, workspacePath }: { sessionID: string; workspacePath: string }) {
+function SessionDetailsMenu({
+  sessionID,
+  agentType,
+  workspacePath,
+  agentOptions,
+  onUpdateAgentOptions,
+}: {
+  sessionID: string
+  agentType: Session['agent_type']
+  workspacePath: string
+  agentOptions?: SessionAgentOptions
+  onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
+}) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [copiedField, setCopiedField] = useState<'session' | 'workspace' | null>(null)
+  const [savingRunDangerously, setSavingRunDangerously] = useState(false)
+  const runDangerously = agentOptions?.codex?.run_dangerously === true
 
   useEffect(() => {
     if (!open) return
@@ -235,6 +273,15 @@ function SessionDetailsMenu({ sessionID, workspacePath }: { sessionID: string; w
       window.setTimeout(() => setCopiedField(null), 1200)
     } catch {
       setCopiedField(null)
+    }
+  }
+
+  async function handleRunDangerouslyChange(checked: boolean) {
+    setSavingRunDangerously(true)
+    try {
+      await onUpdateAgentOptions({ codex: { run_dangerously: checked } })
+    } finally {
+      setSavingRunDangerously(false)
     }
   }
 
@@ -274,6 +321,27 @@ function SessionDetailsMenu({ sessionID, workspacePath }: { sessionID: string; w
               copied={copiedField === 'workspace'}
               onCopy={() => void handleCopy(workspacePath, 'workspace')}
             />
+            {agentType === 'codex' ? (
+              <label
+                className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"
+                htmlFor="session-run-dangerously"
+              >
+                <input
+                  id="session-run-dangerously"
+                  type="checkbox"
+                  className="mt-0.5 size-4 shrink-0 accent-[hsl(var(--danger))]"
+                  checked={runDangerously}
+                  disabled={savingRunDangerously}
+                  onChange={(event) => void handleRunDangerouslyChange(event.target.checked)}
+                />
+                <span className="min-w-0">
+                  <span className="block font-medium text-destructive">Run dangerously</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Save this session to run Codex without approval prompts or sandbox restrictions on the next run.
+                  </span>
+                </span>
+              </label>
+            ) : null}
           </div>
         </div>
       ) : null}

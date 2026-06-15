@@ -34,6 +34,7 @@ type Store interface {
 	ListSessions(ctx context.Context, params store.ListSessionsParams) ([]store.Session, error)
 	ArchiveSession(ctx context.Context, params store.ArchiveSessionParams) (store.Session, error)
 	UpdateSessionTitle(ctx context.Context, params store.UpdateSessionTitleParams) (store.Session, error)
+	UpdateSessionAgentOptions(ctx context.Context, params store.UpdateSessionAgentOptionsParams) (store.Session, error)
 	UpdateSessionStatus(ctx context.Context, params store.UpdateSessionStatusParams) (store.Session, error)
 	SetSessionProviderSessionID(ctx context.Context, params store.SetSessionProviderSessionIDParams) (store.Session, error)
 	ClearSessionProviderSessionID(ctx context.Context, params store.ClearSessionProviderSessionIDParams) (store.Session, error)

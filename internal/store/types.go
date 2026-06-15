@@ -67,6 +67,11 @@ type UpdateSessionTitleParams struct {
 	Title string
 }
 
+type UpdateSessionAgentOptionsParams struct {
+	ID           string
+	AgentOptions json.RawMessage
+}
+
 type ArchiveSessionParams struct {
 	ID string
 }

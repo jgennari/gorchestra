@@ -922,6 +922,22 @@ func (s *fakeHTTPStore) UpdateSessionTitle(_ context.Context, params store.Updat
 	return session, nil
 }
 
+func (s *fakeHTTPStore) UpdateSessionAgentOptions(_ context.Context, params store.UpdateSessionAgentOptionsParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[params.ID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+
+	session.AgentOptions = params.AgentOptions
+	session.UpdatedAt = testCreatedAt
+	s.sessions[params.ID] = session
+
+	return session, nil
+}
+
 func (s *fakeHTTPStore) ArchiveSession(_ context.Context, params store.ArchiveSessionParams) (store.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

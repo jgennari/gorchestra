@@ -28,7 +28,8 @@ type createSessionRequest struct {
 }
 
 type updateSessionRequest struct {
-	Title string `json:"title"`
+	Title        *string             `json:"title,omitempty"`
+	AgentOptions *createAgentOptions `json:"agent_options,omitempty"`
 }
 
 type createAgentOptions struct {
@@ -207,21 +208,64 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := api.store.UpdateSessionTitle(r.Context(), store.UpdateSessionTitleParams{
-		ID:    sessionID,
-		Title: request.Title,
-	})
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "session not found")
+	if request.Title == nil && request.AgentOptions == nil {
+		writeError(w, http.StatusBadRequest, "session update requires title or agent_options")
+		return
+	}
+
+	var session store.Session
+	var err error
+	if request.Title != nil {
+		session, err = api.store.UpdateSessionTitle(r.Context(), store.UpdateSessionTitleParams{
+			ID:    sessionID,
+			Title: *request.Title,
+		})
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "session not found")
+				return
+			}
+			if errors.Is(err, store.ErrInvalidArgument) {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to update session")
 			return
 		}
-		if errors.Is(err, store.ErrInvalidArgument) {
+	} else {
+		session, err = api.store.GetSession(r.Context(), sessionID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "session not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to load session")
+			return
+		}
+	}
+
+	if request.AgentOptions != nil {
+		agentOptions, err := createSessionAgentOptions(session.AgentType, request.AgentOptions)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to update session")
-		return
+		session, err = api.store.UpdateSessionAgentOptions(r.Context(), store.UpdateSessionAgentOptionsParams{
+			ID:           sessionID,
+			AgentOptions: agentOptions,
+		})
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "session not found")
+				return
+			}
+			if errors.Is(err, store.ErrInvalidArgument) {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to update session")
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, sessionResponseFromStore(session))

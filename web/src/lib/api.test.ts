@@ -17,6 +17,7 @@ import {
   listWorkspaceRoots,
   searchSessionFiles,
   submitMessage,
+  updateSessionAgentOptions,
   updateSessionFileContent,
   updateSessionTitle,
 } from '@/lib/api'
@@ -81,6 +82,33 @@ test('title update helper patches the session title', async () => {
   const session = await updateSessionTitle('sess_1', 'New title')
 
   expect(session.title).toBe('New title')
+})
+
+test('agent options update helper patches the session options', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1')
+    expect(init?.method).toBe('PATCH')
+    expect(init?.body).toBe(JSON.stringify({ agent_options: { codex: { run_dangerously: true } } }))
+    return jsonResponse({
+      id: 'sess_1',
+      title: 'Codex',
+      agent_type: 'codex',
+      status: 'idle',
+      workspace_path: '/repo',
+      agent_options: { codex: { run_dangerously: true } },
+      event_count: 0,
+      tool_count: 0,
+      created_at: '2026-06-12T16:00:00Z',
+      updated_at: '2026-06-12T16:01:00Z',
+      completed_at: null,
+      archived_at: null,
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const session = await updateSessionAgentOptions('sess_1', { codex: { run_dangerously: true } })
+
+  expect(session.agent_options?.codex?.run_dangerously).toBe(true)
 })
 
 test('create session posts agent type and optional title', async () => {

@@ -107,6 +107,39 @@ test('floating chat header shows session details and copies the session key', as
   expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
 })
 
+test('floating chat header updates run dangerously for codex sessions', async () => {
+  const user = userEvent.setup()
+  const onUpdateAgentOptions = vi.fn(async () => undefined)
+
+  renderDetail({
+    session: {
+      ...baseSession,
+      agent_type: 'codex',
+      agent_options: { codex: { run_dangerously: false } },
+    },
+    onUpdateAgentOptions,
+  })
+
+  await user.click(screen.getByRole('button', { name: 'Session details' }))
+  const checkbox = screen.getByRole('checkbox', { name: /run dangerously/i })
+
+  expect(checkbox).not.toBeChecked()
+
+  await user.click(checkbox)
+
+  expect(onUpdateAgentOptions).toHaveBeenCalledWith({ codex: { run_dangerously: true } })
+})
+
+test('floating chat header hides run dangerously for non-codex sessions', async () => {
+  const user = userEvent.setup()
+
+  renderDetail()
+
+  await user.click(screen.getByRole('button', { name: 'Session details' }))
+
+  expect(screen.queryByRole('checkbox', { name: /run dangerously/i })).not.toBeInTheDocument()
+})
+
 test('floating chat header owns session errors', () => {
   renderDetail({
     streamError: 'HTTP 502',
@@ -155,6 +188,7 @@ function props(overrides: Partial<SessionDetailProps>): SessionDetailProps {
     onCancel: async () => undefined,
     onRefresh: () => undefined,
     onUpdateTitle: async () => undefined,
+    onUpdateAgentOptions: async () => undefined,
     ...overrides,
   }
 }

@@ -38,6 +38,7 @@ import {
   getSessionFileContent,
   listSessions,
   submitMessage,
+  updateSessionAgentOptions,
   updateSessionFileContent,
   updateSessionTitle,
 } from '@/lib/api'
@@ -310,6 +311,19 @@ function App() {
     applySession(updated)
   }
 
+  async function handleUpdateAgentOptions(agentOptions: SessionAgentOptions) {
+    if (!selectedSessionID) {
+      return
+    }
+    try {
+      const updated = await updateSessionAgentOptions(selectedSessionID, agentOptions)
+      applySession(updated)
+      setError('')
+    } catch (optionsError) {
+      setError(messageFromError(optionsError))
+    }
+  }
+
   function requestArchiveSession() {
     if (!selectedSessionID) {
       return
@@ -559,6 +573,7 @@ function App() {
             onAnswerUserInput={handleAnswerUserInput}
             onCancel={handleCancel}
             onUpdateTitle={handleUpdateTitle}
+            onUpdateAgentOptions={handleUpdateAgentOptions}
             onRefresh={handleRefresh}
             onOpenFilePath={handleOpenWorkspacePath}
             onErrorMessageChange={setError}
