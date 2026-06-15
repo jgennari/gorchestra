@@ -18,6 +18,7 @@ Release archives are named:
 
 ```txt
 gorchestra_<version>_<os>_<arch>.tar.gz
+gorchestra_<version>_windows_<arch>.zip
 ```
 
 Initial targets:
@@ -26,6 +27,8 @@ Initial targets:
 - `darwin/amd64`
 - `linux/arm64`
 - `linux/amd64`
+- `windows/arm64`
+- `windows/amd64`
 
 Build the same release archives locally:
 

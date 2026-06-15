@@ -8,12 +8,20 @@ const releaseDir = join(repoRoot, 'dist')
 const workDir = join(releaseDir, '.release-work')
 const version = normalizeVersion(process.env.VERSION ?? Bun.argv[2] ?? '')
 
+type Target = {
+  goos: string
+  goarch: string
+  archive: 'tar.gz' | 'zip'
+}
+
 const targets = [
-  { goos: 'darwin', goarch: 'arm64' },
-  { goos: 'darwin', goarch: 'amd64' },
-  { goos: 'linux', goarch: 'arm64' },
-  { goos: 'linux', goarch: 'amd64' },
-] as const
+  { goos: 'darwin', goarch: 'arm64', archive: 'tar.gz' },
+  { goos: 'darwin', goarch: 'amd64', archive: 'tar.gz' },
+  { goos: 'linux', goarch: 'arm64', archive: 'tar.gz' },
+  { goos: 'linux', goarch: 'amd64', archive: 'tar.gz' },
+  { goos: 'windows', goarch: 'arm64', archive: 'zip' },
+  { goos: 'windows', goarch: 'amd64', archive: 'zip' },
+] satisfies Target[]
 
 async function main() {
   if (!version) {
@@ -24,17 +32,18 @@ async function main() {
   await mkdir(workDir, { recursive: true })
 
   for (const target of targets) {
-    await buildTarget(target.goos, target.goarch)
+    await buildTarget(target)
   }
 
   await rm(workDir, { force: true, recursive: true })
   await writeChecksums()
 }
 
-async function buildTarget(goos: string, goarch: string) {
+async function buildTarget(target: Target) {
+  const { goos, goarch } = target
   const packageName = `gorchestra_${version}_${goos}_${goarch}`
   const packageDir = join(workDir, packageName)
-  const binaryPath = join(packageDir, 'gorchestra')
+  const binaryPath = join(packageDir, binaryName(goos))
 
   await mkdir(packageDir, { recursive: true })
   await run(
@@ -58,15 +67,19 @@ async function buildTarget(goos: string, goarch: string) {
   await cp(join(repoRoot, 'README.md'), join(packageDir, 'README.md'))
   await cp(join(repoRoot, 'LICENSE'), join(packageDir, 'LICENSE'))
 
-  const archivePath = join(releaseDir, `${packageName}.tar.gz`)
-  await run(['tar', '-C', packageDir, '-czf', archivePath, '.'])
+  const archivePath = join(releaseDir, `${packageName}.${target.archive}`)
+  if (target.archive === 'zip') {
+    await run(['zip', '-qr', archivePath, '.'], {}, packageDir)
+  } else {
+    await run(['tar', '-C', packageDir, '-czf', archivePath, '.'])
+  }
   console.log(`[release] wrote ${relative(repoRoot, archivePath)}`)
 }
 
 async function writeChecksums() {
   const entries = await readdir(releaseDir, { withFileTypes: true })
   const files = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.tar.gz'))
+    .filter((entry) => entry.isFile() && (entry.name.endsWith('.tar.gz') || entry.name.endsWith('.zip')))
     .map((entry) => join(releaseDir, entry.name))
     .sort()
 
@@ -82,10 +95,10 @@ async function writeChecksums() {
   console.log(`[release] wrote ${relative(repoRoot, join(releaseDir, 'SHA256SUMS'))}`)
 }
 
-async function run(args: string[], env: Record<string, string> = {}) {
+async function run(args: string[], env: Record<string, string> = {}, cwd = repoRoot) {
   console.log(`[release] ${args.join(' ')}`)
   const proc = Bun.spawn(args, {
-    cwd: repoRoot,
+    cwd,
     env: {
       ...process.env,
       ...env,
@@ -101,6 +114,10 @@ async function run(args: string[], env: Record<string, string> = {}) {
 
 function normalizeVersion(value: string) {
   return value.trim().replace(/^v/, '')
+}
+
+function binaryName(goos: string) {
+  return goos === 'windows' ? 'gorchestra.exe' : 'gorchestra'
 }
 
 main().catch((error) => {

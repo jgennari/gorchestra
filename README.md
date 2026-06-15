@@ -136,11 +136,20 @@ The first tap release can copy that template into `jgennari/homebrew-tap` and fi
 
 ### Direct Download
 
-Download the archive for your platform from GitHub Releases, unpack it, and run the binary:
+Download the archive for your platform from GitHub Releases, unpack it, and run the binary.
+
+macOS and Linux:
 
 ```sh
 tar -xzf gorchestra_<version>_<os>_<arch>.tar.gz
 ./gorchestra --open
+```
+
+Windows:
+
+```powershell
+Expand-Archive .\gorchestra_<version>_windows_<arch>.zip -DestinationPath .\gorchestra
+.\gorchestra\gorchestra.exe --open
 ```
 
 Initial release targets:
@@ -149,6 +158,8 @@ Initial release targets:
 - `darwin/amd64`
 - `linux/amd64`
 - `linux/arm64`
+- `windows/amd64`
+- `windows/arm64`
 
 Real Codex sessions require the Codex CLI to be available on `PATH`, or configured with `--codex-bin`.
 
@@ -274,8 +285,8 @@ Release/Homebrew shape:
 
 - Local artifact: `dist/gorchestra`
 - Checksums: `dist/SHA256SUMS`
-- Release artifact naming: `gorchestra_<version>_<os>_<arch>.tar.gz`
-- Supported release targets: `darwin/arm64`, `darwin/amd64`, `linux/amd64`, and `linux/arm64`
+- Release artifact naming: `gorchestra_<version>_<os>_<arch>.tar.gz` for macOS/Linux and `gorchestra_<version>_windows_<arch>.zip` for Windows
+- Supported release targets: `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `linux/arm64`, `windows/amd64`, and `windows/arm64`
 - Release workflow: `.github/workflows/release.yml` publishes archives when a `v*.*.*` tag is pushed.
 - Expected install command: `brew install jgennari/tap/gorchestra`
 - Optional service command: `brew services start gorchestra`
