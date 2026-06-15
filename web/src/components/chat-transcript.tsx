@@ -756,7 +756,7 @@ function ToolCallRow({
           <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
         )}
         {statusDotClassName ? (
-          <span className={cn('size-2 shrink-0 rounded-full', statusDotClassName)} aria-hidden="true" />
+          <span className={cn('mr-1 size-2 shrink-0 rounded-full', statusDotClassName)} aria-hidden="true" />
         ) : null}
         <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
       </button>
