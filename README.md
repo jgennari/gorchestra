@@ -69,7 +69,7 @@ Codex is the first real adapter, with a fake agent available for development and
 
 - Continue Codex threads across prompts through persisted provider session IDs.
 - Select Codex model, reasoning effort, service tier, fast mode, and planning mode per prompt.
-- Configure Codex shell network access and native web search mode from the backend CLI.
+- Configure Codex shell network access and native web search mode from binary flags.
 - Start a Codex session with `run_dangerously` when you intentionally want no approval prompts and no sandbox restrictions.
 - Keep core orchestration provider-agnostic through a shared agent interface.
 
@@ -120,123 +120,105 @@ The right rail summarizes the current run:
 
 The main message window uses a minimal scrollbar that stays out of the way until scrolling, and the panes can be resized for longer monitoring sessions.
 
-## Get It Running
+## Install
 
-### Prerequisites
+Gorchestra is meant to run as one local binary with the React UI embedded inside it.
 
-- Go 1.23 or newer
-- Bun 1.3 or newer
-- Codex CLI on `PATH` for real Codex sessions
-
-Install frontend dependencies:
+### Homebrew
 
 ```sh
-cd web
-bun install
-cd ..
+brew install jgennari/tap/gorchestra
+gorchestra --open
 ```
 
-Run the backend and frontend together with hot reload:
+Homebrew packaging is planned. The formula will install the `gorchestra` binary and may add an optional `brew services` entry later.
+
+### Direct Download
+
+Download the archive for your platform from GitHub releases, unpack it, and run the binary:
 
 ```sh
-bun run dev
+tar -xzf gorchestra_<version>_<os>_<arch>.tar.gz
+./gorchestra --open
 ```
 
-This starts:
+Initial release targets:
 
-- Go backend on `http://localhost:8080`
-- Vite frontend on `http://127.0.0.1:5173`
-- Backend restart on Go source changes
-- React HMR through Vite
+- `darwin/arm64`
+- `darwin/amd64`
+- `linux/amd64`
+- `linux/arm64`
 
-Set `PORT`, `WEB_PORT`, `GORCHESTRA_DB`, or `GORCHESTRA_WORKSPACE` to override the default ports, development database path, or workspace.
+Real Codex sessions require the Codex CLI to be available on `PATH`, or configured with `--codex-bin`.
 
-### Tailnet Development
+## Use
 
-Run the same development stack for tailnet access:
+Start Gorchestra and open the browser:
 
 ```sh
-bun run dev:tailnet
+gorchestra --open
 ```
 
-Tailnet mode binds Vite to `0.0.0.0` while keeping API requests proxied to the local Go backend. From another tailnet machine, open:
-
-```txt
-http://<tailscale-ip>:5173
-```
-
-The script prints the detected Tailscale IPv4 address when `tailscale` is available. For MagicDNS hostnames, allow the hostname explicitly:
-
-```sh
-VITE_ALLOWED_HOSTS=your-machine.your-tailnet.ts.net bun run dev:tailnet
-```
-
-### Persistent Human Dev Server
-
-Run a stable development server in tmux:
-
-```sh
-bun run dev:human
-```
-
-This starts the tailnet dev stack in a `gorchestra-human` tmux session with stable defaults:
-
-- Backend: `http://localhost:18080`
-- Frontend: `http://127.0.0.1:15173`
-- Database: `.tmp/human/sessions.db`
-
-Useful commands:
-
-```sh
-bun run dev:human:status
-bun run dev:human:logs
-bun run dev:human:attach
-bun run dev:human:restart
-bun run dev:human:reset
-bun run dev:human:stop
-```
-
-Override defaults with `GORCHESTRA_HUMAN_PORT`, `GORCHESTRA_HUMAN_WEB_PORT`, `GORCHESTRA_HUMAN_DB`, `GORCHESTRA_HUMAN_WORKSPACE`, or `GORCHESTRA_HUMAN_TMUX`.
-
-## Backend Flags
-
-```sh
-go run ./cmd/app
-```
-
-The backend listens on port `8080` and uses `./sessions.db` by default.
+By default, Gorchestra binds to `127.0.0.1:8080` and stores SQLite data in the OS app data location.
 
 Common options:
 
 ```sh
-PORT=8081 go run ./cmd/app --db .tmp/sessions.db
-go run ./cmd/app --workspace /path/to/repo
-go run ./cmd/app --workspace-root /path/to/allowed/root
-go run ./cmd/app --codex-bin /path/to/codex
-go run ./cmd/app --codex-model gpt-5
-go run ./cmd/app --codex-sandbox workspace-write
-go run ./cmd/app --codex-network-access=false
-go run ./cmd/app --codex-web-search=cached
+gorchestra --host 127.0.0.1 --port 8081
+gorchestra --data-dir ~/.gorchestra-dev
+gorchestra --workspace /path/to/repo
+gorchestra --workspace-root /path/to/allowed/root
+gorchestra --codex-bin /path/to/codex
+gorchestra --codex-model gpt-5
+gorchestra --codex-sandbox workspace-write
+gorchestra --codex-network-access=false
+gorchestra --codex-web-search=cached
+gorchestra --version
+```
+
+`--data-dir` creates the directory if needed and stores SQLite at `<data-dir>/gorchestra.db`. `--db` is still available as an exact SQLite path override and takes precedence over `--data-dir`.
+
+Default data paths:
+
+```txt
+macOS: ~/Library/Application Support/Gorchestra/gorchestra.db
+Linux: $XDG_DATA_HOME/gorchestra/gorchestra.db
+Linux fallback: ~/.local/share/gorchestra/gorchestra.db
+```
+
+Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
+
+Remove local app data:
+
+```sh
+rm -rf "$HOME/Library/Application Support/Gorchestra"
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/gorchestra"
 ```
 
 Codex shell commands run with network access enabled by default. Codex native web search runs in live mode by default; use `--codex-web-search=cached` or `--codex-web-search=disabled` to change it.
 
-Health check:
+## Build From Source
+
+Prerequisites:
+
+- Go 1.23 or newer
+- Bun 1.3 or newer
+
+Build the release binary with embedded frontend assets:
 
 ```sh
-curl http://localhost:8080/api/health
-```
-
-## Frontend Commands
-
-```sh
-cd web
-bun dev
-bun run test
 bun run build
 ```
 
-The Vite dev server proxies `/api` requests to `http://localhost:8080`.
+This installs frontend dependencies with Bun, builds the Vite app, stages `web/dist` into `internal/webassets/dist`, runs `go test ./...`, builds `dist/gorchestra`, and writes `dist/SHA256SUMS`.
+
+Run the source-built binary:
+
+```sh
+./dist/gorchestra --open
+```
+
+Staged assets under `internal/webassets/dist` are committed so `go test ./...` and `go build ./cmd/app` work from a checkout. `bun run build` refreshes that directory from the latest Vite output before compiling the release binary.
 
 ## Runtime API
 
@@ -284,8 +266,24 @@ Frontend:
 
 Packaging direction:
 
-- The target shape is a single lightweight executable with embedded frontend assets.
-- The current development loop runs Go and Vite side by side for fast iteration.
+- Production builds produce a single lightweight executable with embedded frontend assets.
+- The development loop still runs Go and Vite side by side for fast iteration.
+
+Release/Homebrew shape:
+
+- Local artifact: `dist/gorchestra`
+- Checksums: `dist/SHA256SUMS`
+- Release artifact naming: `gorchestra_<version>_<os>_<arch>.tar.gz`
+- Supported release targets: `darwin/arm64`, `darwin/amd64`, `linux/amd64`, and `linux/arm64`
+- Expected install command: `brew install jgennari/tap/gorchestra`
+- Optional service command: `brew services start gorchestra`
+
+Homebrew formula requirements:
+
+- Download the versioned tarball from GitHub releases.
+- Verify the SHA-256 checksum.
+- Install the `gorchestra` binary into `bin`.
+- Include an optional service stanza that runs `gorchestra` with a persistent data directory.
 
 ## Tests
 
@@ -302,6 +300,15 @@ cd web
 bun run test
 bun run build
 ```
+
+Production:
+
+```sh
+bun run build
+./dist/gorchestra --version
+```
+
+`dist/SHA256SUMS` contains SHA-256 checksums for local release artifacts.
 
 ## Project Trail
 

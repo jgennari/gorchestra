@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	eventservice "github.com/jgennari/gorchestra/internal/events"
@@ -37,6 +38,77 @@ func TestHealthRoute(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("expected content type application/json, got %q", got)
 	}
+}
+
+func TestStaticAssetsServeIndexAndFrontendRoutes(t *testing.T) {
+	handler := NewRouter(Dependencies{StaticAssets: testStaticAssets()})
+
+	for _, route := range []string{"/", "/sessions/sess_123", "/sessions/sess_123/files/src/main.go"} {
+		t.Run(route, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, route, nil)
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+			}
+			if got := rec.Body.String(); !strings.Contains(got, `<div id="root"></div>`) {
+				t.Fatalf("expected index.html body, got %q", got)
+			}
+			if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+				t.Fatalf("expected text/html content type, got %q", got)
+			}
+		})
+	}
+}
+
+func TestStaticAssetsServeFilesWithContentTypes(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{StaticAssets: testStaticAssets()}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); !strings.Contains(got, "console.log") {
+		t.Fatalf("expected javascript body, got %q", got)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "javascript") {
+		t.Fatalf("expected javascript content type, got %q", got)
+	}
+}
+
+func TestStaticAssetsDoNotFallbackForMissingAssetFiles(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{StaticAssets: testStaticAssets()}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusNotFound, rec.Code, rec.Body.String())
+	}
+}
+
+func TestAPIRoutePrecedenceAndMissingAPIRoute(t *testing.T) {
+	handler := NewRouter(Dependencies{StaticAssets: testStaticAssets()})
+
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if health.Code != http.StatusOK {
+		t.Fatalf("expected health status %d, got %d", http.StatusOK, health.Code)
+	}
+	if got := strings.TrimSpace(health.Body.String()); got != `{"status":"ok"}` {
+		t.Fatalf("expected API health response, got %q", got)
+	}
+
+	missing := httptest.NewRecorder()
+	handler.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/does-not-exist", nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("expected missing API status %d, got %d", http.StatusNotFound, missing.Code)
+	}
+	assertErrorResponse(t, missing, "not found")
 }
 
 func TestListSessionsReturnsMostRecentlyUpdatedFirst(t *testing.T) {
@@ -79,6 +151,17 @@ func TestListSessionsReturnsMostRecentlyUpdatedFirst(t *testing.T) {
 	}
 	if response.Sessions[0].UpdatedAt != newUpdatedAt.UTC().Format(time.RFC3339Nano) {
 		t.Fatalf("expected UTC updated_at, got %q", response.Sessions[0].UpdatedAt)
+	}
+}
+
+func testStaticAssets() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html": {
+			Data: []byte(`<!doctype html><html><body><div id="root"></div><script type="module" src="/assets/app.js"></script></body></html>`),
+		},
+		"assets/app.js": {
+			Data: []byte(`console.log("gorchestra")`),
+		},
 	}
 }
 

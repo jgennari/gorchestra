@@ -205,7 +205,7 @@ All error states should include enough detail for debugging without exposing sec
 
 ## Mobile Polish
 
-- [ ] Validate the layout at 375px width.
+- [x] Validate the layout at 375px width.
 - [x] Keep top toolbar controls on one or two stable rows without overlap.
 - [x] Keep session sheet scrolling independent from the event stream.
 - [x] Keep composer reachable when the virtual keyboard is open.
@@ -241,14 +241,16 @@ All error states should include enough detail for debugging without exposing sec
 - [x] `cd web && bun run lint` passes if lint remains configured.
 - [x] Frontend tests pass.
 - [x] `go test ./...` passes.
-- [ ] Start a fake session and confirm event grouping.
-- [ ] Start a Codex session and confirm logs/tools/errors remain scannable.
-- [ ] Scroll up during a run and confirm auto-follow pauses.
-- [ ] Use `Jump to latest` and confirm it resumes following.
-- [ ] Disconnect/reconnect the backend or network and confirm UI states are visible.
-- [ ] Edit a session title and confirm the list and detail update.
-- [ ] Test mobile layout at 375px.
-- [ ] Navigate core workflows by keyboard.
+- [x] Start a fake session and confirm event grouping.
+- [x] Start a Codex session and confirm logs/tools/errors remain scannable.
+- [x] Scroll up during a run and confirm auto-follow pauses.
+- [x] Use `Jump to latest` and confirm it resumes following.
+- [x] Disconnect/reconnect the backend or network and confirm UI states are visible.
+- [x] Edit a session title and confirm the list and detail update.
+- [x] Test mobile layout at 375px.
+- [x] Navigate core workflows by keyboard.
+
+Completion note: The session console polish has been validated through browser dogfooding and focused automated coverage for transcript grouping, jump-to-latest behavior, title editing, session row keyboard selection, cancellation affordances, and error rendering.
 
 ### Version Control
 

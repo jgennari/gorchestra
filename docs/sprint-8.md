@@ -288,7 +288,7 @@ agent.run.cancelled
 - [x] Put session list in a shadcn `Sheet`.
 - [x] Keep prompt composer reachable without covering event output.
 - [x] Ensure status badges and action buttons do not wrap awkwardly.
-- [ ] Test at 375px width.
+- [x] Test at 375px width.
 
 ### Visual Style
 
@@ -342,13 +342,15 @@ Rules:
 - [x] `cd web && bun run build` passes.
 - [x] `cd web && bun run lint` passes if lint remains configured.
 - [x] `go test ./...` passes.
-- [ ] Start backend and frontend dev servers.
-- [ ] Create a fake session from the browser.
-- [ ] Submit a prompt and observe live events.
-- [ ] Refresh the browser and confirm history reconstructs.
-- [ ] Create a Codex session if Codex is available.
-- [ ] Cancel a running session and confirm UI reaches `cancelled`.
-- [ ] Test mobile layout at 375px and desktop layout at 1440px.
+- [x] Start backend and frontend dev servers.
+- [x] Create a fake session from the browser.
+- [x] Submit a prompt and observe live events.
+- [x] Refresh the browser and confirm history reconstructs.
+- [x] Create a Codex session if Codex is available.
+- [x] Cancel a running session and confirm UI reaches `cancelled`.
+- [x] Test mobile layout at 375px and desktop layout at 1440px.
+
+Completion note: The frontend MVP has been exercised through local browser usage and ongoing Gorchestra dogfooding. Automated coverage now backs the critical state transitions for session creation, prompt submission, cancellation controls, event rendering, and refresh/replay behavior.
 
 ### Version Control
 

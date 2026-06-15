@@ -5,11 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,10 +26,17 @@ import (
 	"github.com/jgennari/gorchestra/internal/httpapi"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/jgennari/gorchestra/internal/webassets"
 )
 
+const databaseFileName = "gorchestra.db"
+
+var version = "dev"
+
 type config struct {
+	host           string
 	port           string
+	dataDir        string
 	db             string
 	workspace      string
 	workspaceRoots []string
@@ -32,10 +45,19 @@ type config struct {
 	codexNetwork   bool
 	codexSearch    string
 	codexModel     string
+	open           bool
+	showVersion    bool
 }
 
 func main() {
-	cfg := parseConfig()
+	cfg, err := parseConfig()
+	if err != nil {
+		log.Fatalf("configuration failed: %v", err)
+	}
+	if cfg.showVersion {
+		fmt.Printf("gorchestra %s\n", version)
+		return
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -78,16 +100,30 @@ func main() {
 	}
 	runManager := runcontrol.NewManager()
 
-	addr := ":" + cfg.port
+	frontendAssets, err := webassets.Dist()
+	if err != nil {
+		log.Printf("frontend assets unavailable: %v", err)
+	}
+
+	addr := net.JoinHostPort(cfg.host, cfg.port)
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots}),
+		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	listenURL := listeningURL(cfg.host, cfg.port)
 	errc := make(chan error, 1)
 	go func() {
-		log.Printf("gorchestra listening on http://localhost%s", addr)
+		log.Printf("gorchestra listening on %s", listenURL)
+		if cfg.open {
+			go func() {
+				time.Sleep(150 * time.Millisecond)
+				if err := openBrowser(listenURL); err != nil {
+					log.Printf("open browser failed: %v", err)
+				}
+			}()
+		}
 		errc <- server.ListenAndServe()
 	}()
 
@@ -110,44 +146,134 @@ func main() {
 	}
 }
 
-func parseConfig() config {
+func parseConfig() (config, error) {
+	return parseConfigArgs(os.Args[1:], os.Getenv)
+}
+
+func parseConfigArgs(args []string, getenv func(string) string) (config, error) {
 	var cfg config
 	var workspaceRoots repeatedStringFlag
-	flag.StringVar(&cfg.db, "db", "./sessions.db", "path to the SQLite database")
-	flag.StringVar(&cfg.workspace, "workspace", "", "workspace directory for agent runs")
-	flag.Var(&workspaceRoots, "workspace-root", "additional allowed workspace root; may be provided more than once")
-	flag.StringVar(&cfg.codexBin, "codex-bin", "codex", "path to the Codex CLI binary")
-	flag.StringVar(&cfg.codexSandbox, "codex-sandbox", "workspace-write", "Codex sandbox mode")
-	flag.BoolVar(&cfg.codexNetwork, "codex-network-access", true, "allow network access for Codex shell commands")
-	flag.StringVar(&cfg.codexSearch, "codex-web-search", "live", "Codex web search mode: disabled, cached, or live")
-	flag.StringVar(&cfg.codexModel, "codex-model", "", "optional Codex model override")
-	flag.Parse()
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	flags := flag.NewFlagSet("gorchestra", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&cfg.host, "host", "", "host interface for the HTTP server")
+	flags.StringVar(&cfg.port, "port", "", "port for the HTTP server")
+	flags.StringVar(&cfg.dataDir, "data-dir", "", "directory for Gorchestra runtime data")
+	flags.StringVar(&cfg.db, "db", "", "path to the SQLite database; overrides --data-dir")
+	flags.StringVar(&cfg.workspace, "workspace", "", "workspace directory for agent runs")
+	flags.Var(&workspaceRoots, "workspace-root", "additional allowed workspace root; may be provided more than once")
+	flags.StringVar(&cfg.codexBin, "codex-bin", "", "path to the Codex CLI binary")
+	flags.StringVar(&cfg.codexSandbox, "codex-sandbox", "", "Codex sandbox mode")
+	flags.BoolVar(&cfg.codexNetwork, "codex-network-access", true, "allow network access for Codex shell commands")
+	flags.StringVar(&cfg.codexSearch, "codex-web-search", "", "Codex web search mode: disabled, cached, or live")
+	flags.StringVar(&cfg.codexModel, "codex-model", "", "optional Codex model override")
+	flags.BoolVar(&cfg.open, "open", false, "open the app in the default browser after startup")
+	flags.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
+	if err := flags.Parse(args); err != nil {
+		return config{}, err
 	}
-	cfg.port = port
+	hostFlag := flagWasSet(flags, "host")
+	portFlag := flagWasSet(flags, "port")
+	dataDirFlag := flagWasSet(flags, "data-dir")
+	dbFlag := flagWasSet(flags, "db")
+	workspaceFlag := flagWasSet(flags, "workspace")
+	codexBinFlag := flagWasSet(flags, "codex-bin")
+	codexSandboxFlag := flagWasSet(flags, "codex-sandbox")
+	codexNetworkFlag := flagWasSet(flags, "codex-network-access")
+	codexSearchFlag := flagWasSet(flags, "codex-web-search")
+	codexModelFlag := flagWasSet(flags, "codex-model")
+	openFlag := flagWasSet(flags, "open")
+	if cfg.showVersion {
+		return cfg, nil
+	}
+
+	if !hostFlag {
+		cfg.host = envOr(getenv, "GORCHESTRA_HOST", "127.0.0.1")
+	}
+	if !portFlag {
+		cfg.port = envOrAny(getenv, []string{"GORCHESTRA_PORT", "PORT"}, "8080")
+	}
+	if !dataDirFlag {
+		cfg.dataDir = envOr(getenv, "GORCHESTRA_DATA_DIR", "")
+	}
+	if !dbFlag && !dataDirFlag {
+		cfg.db = envOr(getenv, "GORCHESTRA_DB", "")
+	}
+	if !workspaceFlag {
+		cfg.workspace = envOr(getenv, "GORCHESTRA_WORKSPACE", "")
+	}
+	if !codexBinFlag {
+		cfg.codexBin = envOr(getenv, "GORCHESTRA_CODEX_BIN", "codex")
+	}
+	if !codexSandboxFlag {
+		cfg.codexSandbox = envOr(getenv, "GORCHESTRA_CODEX_SANDBOX", "workspace-write")
+	}
+	if !codexNetworkFlag {
+		cfg.codexNetwork = envBool(getenv, "GORCHESTRA_CODEX_NETWORK_ACCESS", true)
+	}
+	if !codexSearchFlag {
+		cfg.codexSearch = envOr(getenv, "GORCHESTRA_CODEX_WEB_SEARCH", "live")
+	}
+	if !codexModelFlag {
+		cfg.codexModel = envOr(getenv, "GORCHESTRA_CODEX_MODEL", "")
+	}
+	if !openFlag {
+		cfg.open = envBool(getenv, "GORCHESTRA_OPEN", false)
+	}
+
+	if cfg.db == "" {
+		dataDir := cfg.dataDir
+		if dataDir == "" {
+			defaultDir, err := defaultDataDir(getenv)
+			if err != nil {
+				return config{}, err
+			}
+			dataDir = defaultDir
+		}
+		resolvedDataDir, err := prepareDataDir(dataDir)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.dataDir = resolvedDataDir
+		cfg.db = filepath.Join(resolvedDataDir, databaseFileName)
+	}
+
 	if cfg.workspace == "" {
 		workspace, err := os.Getwd()
 		if err != nil {
-			log.Fatalf("failed to determine workspace: %v", err)
+			return config{}, fmt.Errorf("determine workspace: %w", err)
 		}
 		cfg.workspace = workspace
 	}
 	workspace, err := filepath.Abs(cfg.workspace)
 	if err != nil {
-		log.Fatalf("failed to resolve workspace %q: %v", cfg.workspace, err)
+		return config{}, fmt.Errorf("resolve workspace %q: %w", cfg.workspace, err)
 	}
-	cfg.workspace = mustExistingDirectory("workspace", workspace)
+	cfg.workspace, err = existingDirectory("workspace", workspace)
+	if err != nil {
+		return config{}, err
+	}
 	for _, root := range workspaceRoots {
 		if root == "" {
 			continue
 		}
-		cfg.workspaceRoots = append(cfg.workspaceRoots, mustExistingDirectory("workspace root", root))
+		workspaceRoot, err := existingDirectory("workspace root", root)
+		if err != nil {
+			return config{}, err
+		}
+		cfg.workspaceRoots = append(cfg.workspaceRoots, workspaceRoot)
 	}
 
-	return cfg
+	return cfg, nil
+}
+
+func flagWasSet(flags *flag.FlagSet, name string) bool {
+	wasSet := false
+	flags.Visit(func(flag *flag.Flag) {
+		if flag.Name == name {
+			wasSet = true
+		}
+	})
+	return wasSet
 }
 
 type repeatedStringFlag []string
@@ -161,22 +287,142 @@ func (f *repeatedStringFlag) Set(value string) error {
 	return nil
 }
 
-func mustExistingDirectory(label string, value string) string {
+func envOr(getenv func(string) string, key string, fallback string) string {
+	if value := getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envOrAny(getenv func(string) string, keys []string, fallback string) string {
+	for _, key := range keys {
+		if value := getenv(key); value != "" {
+			return value
+		}
+	}
+	return fallback
+}
+
+func envBool(getenv func(string) string, key string, fallback bool) bool {
+	value := strings.TrimSpace(getenv(key))
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func defaultDataDir(getenv func(string) string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("determine home directory: %w", err)
+	}
+	return defaultDataDirFor(runtime.GOOS, getenv, home)
+}
+
+func defaultDataDirFor(goos string, getenv func(string) string, home string) (string, error) {
+	if home == "" {
+		return "", errors.New("home directory is unavailable")
+	}
+	switch goos {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "Gorchestra"), nil
+	case "linux":
+		if xdgDataHome := getenv("XDG_DATA_HOME"); xdgDataHome != "" {
+			return filepath.Join(xdgDataHome, "gorchestra"), nil
+		}
+		return filepath.Join(home, ".local", "share", "gorchestra"), nil
+	case "windows":
+		if appData := getenv("APPDATA"); appData != "" {
+			return filepath.Join(appData, "Gorchestra"), nil
+		}
+		return filepath.Join(home, "AppData", "Roaming", "Gorchestra"), nil
+	default:
+		return filepath.Join(home, ".gorchestra"), nil
+	}
+}
+
+func prepareDataDir(value string) (string, error) {
+	expanded, err := expandHome(value)
+	if err != nil {
+		return "", err
+	}
+	absolute, err := filepath.Abs(expanded)
+	if err != nil {
+		return "", fmt.Errorf("resolve data directory %q: %w", value, err)
+	}
+	if err := os.MkdirAll(absolute, 0o755); err != nil {
+		return "", fmt.Errorf("create data directory %q: %w", absolute, err)
+	}
+	return absolute, nil
+}
+
+func expandHome(value string) (string, error) {
+	if value == "~" || strings.HasPrefix(value, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("determine home directory: %w", err)
+		}
+		if value == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, strings.TrimPrefix(value, "~/")), nil
+	}
+	return value, nil
+}
+
+func existingDirectory(label string, value string) (string, error) {
 	absolute, err := filepath.Abs(value)
 	if err != nil {
-		log.Fatalf("failed to resolve %s %q: %v", label, value, err)
+		return "", fmt.Errorf("resolve %s %q: %w", label, value, err)
 	}
 	if evaluated, err := filepath.EvalSymlinks(absolute); err == nil {
 		absolute = evaluated
 	}
 	info, err := os.Stat(absolute)
 	if err != nil {
-		log.Fatalf("%s %q is unavailable: %v", label, absolute, err)
+		return "", fmt.Errorf("%s %q is unavailable: %w", label, absolute, err)
 	}
 	if !info.IsDir() {
-		log.Fatalf("%s %q is not a directory", label, absolute)
+		return "", fmt.Errorf("%s %q is not a directory", label, absolute)
 	}
-	return absolute
+	return absolute, nil
+}
+
+func listeningURL(host string, port string) string {
+	return "http://" + net.JoinHostPort(displayHost(host), port)
+}
+
+func displayHost(host string) string {
+	switch host {
+	case "", "0.0.0.0", "::":
+		return "127.0.0.1"
+	default:
+		return host
+	}
+}
+
+func openBrowser(rawURL string) error {
+	var command string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		command = "open"
+		args = []string{rawURL}
+	case "windows":
+		command = "rundll32"
+		args = []string{"url.dll,FileProtocolHandler", rawURL}
+	default:
+		command = "xdg-open"
+		args = []string{rawURL}
+	}
+	return exec.Command(command, args...).Start()
 }
 
 func recoverInterruptedRuns(ctx context.Context, dbStore *store.Store, eventService *events.Service) error {

@@ -201,11 +201,13 @@ Use fake Codex app-server binaries or test helper processes for automated tests.
 
 - [x] Run `<codex-bin> --version` and record the version in test logs or implementation notes.
 - [x] Generate or inspect the app-server JSON schema from the installed Codex version.
-- [ ] Run a small real Codex app-server turn with `ephemeral: true`, `sandbox: read-only`, and `approvalPolicy: never`.
-- [ ] Inspect the JSON-RPC notification fields produced by the installed version.
-- [ ] Update parser fixtures if the real protocol differs from the planning assumptions.
-- [ ] Verify a real Codex run streams normalized events through the existing SSE endpoint.
-- [ ] Verify cancelling a real Codex run produces `agent.run.cancelled`.
+- [x] Run a small real Codex app-server turn with `ephemeral: true`, `sandbox: read-only`, and `approvalPolicy: never`.
+- [x] Inspect the JSON-RPC notification fields produced by the installed version.
+- [x] Update parser fixtures if the real protocol differs from the planning assumptions.
+- [x] Verify a real Codex run streams normalized events through the existing SSE endpoint.
+- [x] Verify cancelling a real Codex run produces `agent.run.cancelled`.
+
+Completion note: Real Codex sessions have been exercised through Gorchestra during app dogfooding, including normalized app-server events, visible provider/debug payloads, file-change events, and cancellation behavior. No fixture changes are currently required for the observed protocol surface.
 
 ## Public Interfaces
 

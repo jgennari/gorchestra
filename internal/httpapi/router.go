@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -64,15 +67,17 @@ type Dependencies struct {
 	Runs           RunManager
 	Workdir        string
 	WorkspaceRoots []string
+	StaticAssets   fs.FS
 }
 
 type API struct {
-	store      Store
-	events     EventService
-	agents     AgentRegistry
-	runs       RunManager
-	workdir    string
-	workspaces workspaceConfig
+	store        Store
+	events       EventService
+	agents       AgentRegistry
+	runs         RunManager
+	workdir      string
+	workspaces   workspaceConfig
+	staticAssets fs.FS
 }
 
 var _ RunManager = (*runcontrol.Manager)(nil)
@@ -109,6 +114,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.runs = deps[0].Runs
 		api.workdir = deps[0].Workdir
 		api.workspaces = newWorkspaceConfig(deps[0].Workdir, deps[0].WorkspaceRoots)
+		api.staticAssets = deps[0].StaticAssets
 	}
 
 	r := chi.NewRouter()
@@ -139,12 +145,70 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	if api.store != nil && api.events != nil {
 		r.Get("/api/sessions/{sessionId}/events/stream", api.eventStreamHandler)
 	}
+	r.NotFound(api.notFoundHandler)
 
 	return r
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
+}
+
+func (api API) notFoundHandler(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if api.staticAssets == nil {
+		http.NotFound(w, r)
+		return
+	}
+	serveStaticAsset(api.staticAssets, w, r)
+}
+
+func serveStaticAsset(assets fs.FS, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+	if name == "." || name == "" {
+		name = "index.html"
+	}
+	if staticAssetExists(assets, name) {
+		serveStaticFile(assets, name, w, r)
+		return
+	}
+	if isFrontendAssetPath(name) {
+		http.NotFound(w, r)
+		return
+	}
+	serveStaticFile(assets, "index.html", w, r)
+}
+
+func isFrontendAssetPath(name string) bool {
+	return strings.HasPrefix(name, "assets/") || name == "favicon.svg"
+}
+
+func staticAssetExists(assets fs.FS, name string) bool {
+	info, err := fs.Stat(assets, name)
+	return err == nil && !info.IsDir()
+}
+
+func serveStaticFile(assets fs.FS, name string, w http.ResponseWriter, r *http.Request) {
+	info, err := fs.Stat(assets, name)
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	content, err := fs.ReadFile(assets, name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeContent(w, r, name, info.ModTime(), bytes.NewReader(content))
 }
 
 func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {

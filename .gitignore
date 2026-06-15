@@ -23,6 +23,9 @@ web/node_modules/
 web/dist/
 web/build/
 web/.vite/
+!internal/webassets/
+!internal/webassets/dist/
+!internal/webassets/dist/**
 
 # Local runtime state
 *.db

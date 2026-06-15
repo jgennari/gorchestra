@@ -51,6 +51,15 @@ export function ChatTranscript({
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
   const lastSeq = timeline.at(-1)?.endSeq ?? 0
 
+  function setAutoScrollPausedState(paused: boolean) {
+    autoScrollPausedRef.current = paused
+    setAutoScrollPaused((current) => (current === paused ? current : paused))
+  }
+
+  function scrollToBottom(element: HTMLDivElement) {
+    element.scrollTop = element.scrollHeight
+  }
+
   useEffect(() => {
     const element = scrollRef.current
     if (!element) {
@@ -89,15 +98,6 @@ export function ChatTranscript({
     scrollIdleTimer.current = window.setTimeout(() => setScrolling(false), 900)
     setAutoScrollPausedState(!isScrolledNearBottom(event.currentTarget))
     maybeLoadOlderFromScroll(event.currentTarget)
-  }
-
-  function setAutoScrollPausedState(paused: boolean) {
-    autoScrollPausedRef.current = paused
-    setAutoScrollPaused((current) => (current === paused ? current : paused))
-  }
-
-  function scrollToBottom(element: HTMLDivElement) {
-    element.scrollTop = element.scrollHeight
   }
 
   function resumeAutoScroll() {

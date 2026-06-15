@@ -527,12 +527,12 @@ brew services start gorchestra
 Production build:
 
 ```txt
-cd web && bun install --frozen-lockfile && bun run build
-go test ./...
-go build -o dist/gorchestra ./cmd/app
+bun run build
 ```
 
-Go embeds the frontend build output. The embed package must live at or above the asset directory according to Go `embed` rules; one acceptable layout is to copy Vite output into an internal package before building:
+`bun run build` installs frontend dependencies with Bun, builds the Vite app, stages `web/dist` into the embed package, runs backend tests, builds `dist/gorchestra`, and writes `dist/SHA256SUMS`.
+
+Go embeds the frontend build output from an internal package:
 
 ```txt
 internal/webassets/
@@ -545,8 +545,8 @@ internal/webassets/
 Example embed shape:
 
 ```go
-//go:embed dist/*
-var webAssets embed.FS
+//go:embed dist
+var assets embed.FS
 ```
 
 Runtime behavior:
@@ -576,18 +576,19 @@ gorchestra --version
 Final local artifact:
 
 ```txt
-gorchestra
+dist/gorchestra
 ```
 
 Local run shape:
 
 ```bash
-./gorchestra --data-dir ./data --port 8080
+./dist/gorchestra --data-dir ./data --port 8080
 ```
 
 Homebrew release requirements:
 
-- Versioned GitHub release artifacts for supported platforms.
+- Versioned GitHub release artifacts named `gorchestra_<version>_<os>_<arch>.tar.gz`.
+- Initial supported targets: `darwin/arm64`, `darwin/amd64`, `linux/amd64`, and `linux/arm64`.
 - Checksums for each release artifact.
 - A Homebrew formula that installs the binary.
 - Optional service definition for `brew services`.

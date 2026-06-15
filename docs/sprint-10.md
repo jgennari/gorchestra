@@ -68,25 +68,25 @@ Out of scope:
 
 ### Frontend Build And Asset Staging
 
-- [ ] Confirm `cd web && bun install --frozen-lockfile` works.
-- [ ] Confirm `cd web && bun run build` writes production assets to `web/dist`.
-- [ ] Add a repeatable staging step that copies `web/dist` into `internal/webassets/dist`.
-- [ ] Ensure staged assets are available to `go:embed`.
-- [ ] Ensure old staged assets are removed before copying new ones.
-- [ ] Keep `web/node_modules` and temporary build artifacts out of git.
-- [ ] Decide whether `internal/webassets/dist` is committed or generated during release; document the decision.
+- [x] Confirm `cd web && bun install --frozen-lockfile` works.
+- [x] Confirm `cd web && bun run build` writes production assets to `web/dist`.
+- [x] Add a repeatable staging step that copies `web/dist` into `internal/webassets/dist`.
+- [x] Ensure staged assets are available to `go:embed`.
+- [x] Ensure old staged assets are removed before copying new ones.
+- [x] Keep `web/node_modules` and temporary build artifacts out of git.
+- [x] Decide whether `internal/webassets/dist` is committed or generated during release; document the decision.
 
 ### Go Embed And Static Serving
 
-- [ ] Add `internal/webassets`.
-- [ ] Embed staged frontend assets with `go:embed`.
-- [ ] Serve static assets from the embedded filesystem.
-- [ ] Preserve all `/api/*` routes as backend routes.
-- [ ] Serve `index.html` for non-API browser routes.
-- [ ] Return 404 for missing API routes.
-- [ ] Set reasonable content types for embedded assets.
-- [ ] Ensure browser refresh works on frontend routes.
-- [ ] Add tests for API route precedence and SPA fallback.
+- [x] Add `internal/webassets`.
+- [x] Embed staged frontend assets with `go:embed`.
+- [x] Serve static assets from the embedded filesystem.
+- [x] Preserve all `/api/*` routes as backend routes.
+- [x] Serve `index.html` for non-API browser routes.
+- [x] Return 404 for missing API routes.
+- [x] Set reasonable content types for embedded assets.
+- [x] Ensure browser refresh works on frontend routes.
+- [x] Add tests for API route precedence and SPA fallback.
 
 Example embed shape:
 
@@ -107,15 +107,15 @@ internal/webassets/
 
 ### Runtime Configuration
 
-- [ ] Add `--host`.
-- [ ] Add `--port`.
-- [ ] Add `--data-dir`.
-- [ ] Add `--open`.
-- [ ] Add `--version`.
-- [ ] Preserve existing flags from earlier sprints.
-- [ ] Add environment variable equivalents where already consistent with the config package style.
-- [ ] Print the listening URL on startup.
-- [ ] Avoid logging secrets, tokens, auth files, or full environment dumps.
+- [x] Add `--host`.
+- [x] Add `--port`.
+- [x] Add `--data-dir`.
+- [x] Add `--open`.
+- [x] Add `--version`.
+- [x] Preserve existing flags from earlier sprints.
+- [x] Add environment variable equivalents where already consistent with the config package style.
+- [x] Print the listening URL on startup.
+- [x] Avoid logging secrets, tokens, auth files, or full environment dumps.
 
 Expected CLI shape:
 
@@ -126,23 +126,23 @@ gorchestra --version
 
 ### Default Data Paths
 
-- [ ] On macOS, default to `~/Library/Application Support/Gorchestra`.
-- [ ] On Linux with `XDG_DATA_HOME`, default to `$XDG_DATA_HOME/gorchestra`.
-- [ ] On Linux without `XDG_DATA_HOME`, default to `~/.local/share/gorchestra`.
-- [ ] Create the data directory if it does not exist.
-- [ ] Store SQLite at `<data-dir>/gorchestra.db`.
-- [ ] Keep explicit `--db` behavior working if it already exists.
-- [ ] Document how `--db` and `--data-dir` interact if both are provided.
+- [x] On macOS, default to `~/Library/Application Support/Gorchestra`.
+- [x] On Linux with `XDG_DATA_HOME`, default to `$XDG_DATA_HOME/gorchestra`.
+- [x] On Linux without `XDG_DATA_HOME`, default to `~/.local/share/gorchestra`.
+- [x] Create the data directory if it does not exist.
+- [x] Store SQLite at `<data-dir>/gorchestra.db`.
+- [x] Keep explicit `--db` behavior working if it already exists.
+- [x] Document how `--db` and `--data-dir` interact if both are provided.
 
 ### Build And Release Commands
 
-- [ ] Add a top-level build command or script for production.
-- [ ] Add a clean command or script that removes generated release output.
-- [ ] Ensure build commands work from a clean checkout with Bun and Go installed.
-- [ ] Create `dist/` if missing.
-- [ ] Output `dist/gorchestra`.
-- [ ] Add checksums for release artifacts.
-- [ ] Document supported OS/architecture targets.
+- [x] Add a top-level build command or script for production.
+- [x] Add a clean command or script that removes generated release output.
+- [x] Ensure build commands work from a clean checkout with Bun and Go installed.
+- [x] Create `dist/` if missing.
+- [x] Output `dist/gorchestra`.
+- [x] Add checksums for release artifacts.
+- [x] Document supported OS/architecture targets.
 
 Suggested local release flow:
 
@@ -155,38 +155,38 @@ go build -o dist/gorchestra ./cmd/app
 
 ### Smoke Checks
 
-- [ ] Start `dist/gorchestra` with a temporary data directory.
-- [ ] Verify `GET /api/health`.
-- [ ] Verify the root path serves the React app.
-- [ ] Verify a frontend route refresh serves `index.html`.
-- [ ] Verify an empty database initializes automatically.
-- [ ] Verify session history survives binary restart.
-- [ ] Verify no local test database is written outside the configured data directory.
+- [x] Start `dist/gorchestra` with a temporary data directory.
+- [x] Verify `GET /api/health`.
+- [x] Verify the root path serves the React app.
+- [x] Verify a frontend route refresh serves `index.html`.
+- [x] Verify an empty database initializes automatically.
+- [x] Verify session history survives binary restart.
+- [x] Verify no local test database is written outside the configured data directory.
 
 ### Documentation
 
-- [ ] Update README with production build commands.
-- [ ] Update README with local run commands.
-- [ ] Document default data paths.
-- [ ] Document `--host`, `--port`, `--data-dir`, `--db`, `--open`, and `--version`.
-- [ ] Align roadmap packaging commands with Bun.
-- [ ] Document Homebrew install target shape.
-- [ ] Document how to remove local app data during development.
+- [x] Update README with production build commands.
+- [x] Update README with local run commands.
+- [x] Document default data paths.
+- [x] Document `--host`, `--port`, `--data-dir`, `--db`, `--open`, and `--version`.
+- [x] Align roadmap packaging commands with Bun.
+- [x] Document Homebrew install target shape.
+- [x] Document how to remove local app data during development.
 
 ### Homebrew Readiness
 
-- [ ] Define release artifact naming.
-- [ ] Define checksum generation.
-- [ ] Draft Homebrew formula requirements.
-- [ ] Include optional service shape for `brew services`.
-- [ ] Document expected install command:
+- [x] Define release artifact naming.
+- [x] Define checksum generation.
+- [x] Draft Homebrew formula requirements.
+- [x] Include optional service shape for `brew services`.
+- [x] Document expected install command:
 
 ```bash
 brew install jgennari/tap/gorchestra
 gorchestra
 ```
 
-- [ ] Document optional service command:
+- [x] Document optional service command:
 
 ```bash
 brew services start gorchestra
@@ -231,18 +231,18 @@ Fallback: ~/.local/share/gorchestra/gorchestra.db
 
 ## Tests And Verification
 
-- [ ] `cd web && bun install --frozen-lockfile` passes.
-- [ ] `cd web && bun run build` passes.
-- [ ] Frontend tests pass if configured.
-- [ ] `go test ./...` passes.
-- [ ] Production binary builds at `dist/gorchestra`.
-- [ ] `dist/gorchestra --version` exits successfully.
-- [ ] `dist/gorchestra --data-dir <tempdir>` starts successfully.
-- [ ] `GET /api/health` returns HTTP 200.
-- [ ] `GET /` returns the embedded frontend.
-- [ ] `GET /some/frontend/route` returns the embedded frontend.
-- [ ] `GET /api/does-not-exist` returns HTTP 404.
-- [ ] Restarting the binary preserves SQLite session history in the configured data directory.
+- [x] `cd web && bun install --frozen-lockfile` passes.
+- [x] `cd web && bun run build` passes.
+- [x] Frontend tests pass if configured.
+- [x] `go test ./...` passes.
+- [x] Production binary builds at `dist/gorchestra`.
+- [x] `dist/gorchestra --version` exits successfully.
+- [x] `dist/gorchestra --data-dir <tempdir>` starts successfully.
+- [x] `GET /api/health` returns HTTP 200.
+- [x] `GET /` returns the embedded frontend.
+- [x] `GET /some/frontend/route` returns the embedded frontend.
+- [x] `GET /api/does-not-exist` returns HTTP 404.
+- [x] Restarting the binary preserves SQLite session history in the configured data directory.
 
 ## Completion Criteria
 
