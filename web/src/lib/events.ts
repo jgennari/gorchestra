@@ -476,6 +476,25 @@ export function payloadError(payload: unknown) {
   return typeof value === 'string' ? value : ''
 }
 
+export function shouldRefreshWorkspaceFilesForEvent(event: AgentEvent) {
+  if (event.type === 'file.change.completed') {
+    return true
+  }
+  if (event.type !== 'tool.call.completed') {
+    return false
+  }
+  const command = payloadString(event.payload, ['command'])
+  return Boolean(command && isWorkspaceMutatingGitCommand(command))
+}
+
+function isWorkspaceMutatingGitCommand(command: string) {
+  const cleaned = cleanShellCommand(command)
+  return workspaceMutatingGitCommandPattern.test(cleaned)
+}
+
+const workspaceMutatingGitCommandPattern =
+  /(?:^|[;&|(\n])\s*(?:sudo\s+|command\s+|env\s+(?:\S+=\S+\s+)*)?(?:[./\w-]+\/)?git(?:\s+-(?:C|c|[A-Za-z-]+)(?:[=\s]+(?:"[^"]*"|'[^']*'|[^\s;&|()]+))?)*\s+(?:add|am|apply|checkout|cherry-pick|clean|clone|commit|fetch|init|merge|mv|pull|push|rebase|reset|restore|revert|rm|stash|submodule|switch|tag|worktree)\b/i
+
 function groupText(event: AgentEvent, kind: EventGroupKind) {
   if (kind === 'plan') {
     return planText(event)

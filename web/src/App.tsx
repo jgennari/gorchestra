@@ -42,7 +42,7 @@ import {
   updateSessionFileContent,
   updateSessionTitle,
 } from '@/lib/api'
-import { isTerminalEvent, statusFromEvent } from '@/lib/events'
+import { isTerminalEvent, shouldRefreshWorkspaceFilesForEvent, statusFromEvent } from '@/lib/events'
 import { nextSessionIDAfterArchive } from '@/lib/sessions'
 import { useSessionEvents } from '@/hooks/use-session-events'
 import { useTheme } from '@/hooks/use-theme'
@@ -168,7 +168,7 @@ function App() {
           session.id === event.session_id ? applySessionEvent(session, event, status) : session,
         ),
       )
-      if (event.type === 'file.change.completed' && event.session_id === selectedSessionIDRef.current) {
+      if (shouldRefreshWorkspaceFilesForEvent(event) && event.session_id === selectedSessionIDRef.current) {
         setFileRefreshKey((value) => value + 1)
       }
       if (isTerminalEvent(event.type)) {

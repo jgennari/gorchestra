@@ -9,6 +9,7 @@ import {
   lastSeq,
   latestTokenUsage,
   pendingUserInputRequest,
+  shouldRefreshWorkspaceFilesForEvent,
   statusFromEvent,
 } from '@/lib/events'
 
@@ -110,6 +111,55 @@ test('failed and unknown provider event groups use the expected default disclosu
 test('session status update events expose their payload status', () => {
   expect(statusFromEvent(event(1, 'session.status.updated', { status: 'idle' }))).toBe('idle')
   expect(statusFromEvent(event(2, 'session.status.updated', { status: 'bogus' }))).toBeNull()
+})
+
+test('workspace file refreshes are derived from file changes and mutating git commands', () => {
+  expect(shouldRefreshWorkspaceFilesForEvent(event(1, 'file.change.completed', { paths: ['web/src/App.tsx'] }))).toBe(
+    true,
+  )
+
+  expect(
+    shouldRefreshWorkspaceFilesForEvent(
+      event(2, 'tool.call.completed', {
+        item_type: 'commandExecution',
+        command: `/bin/zsh -lc "git add web/src/App.tsx && git commit -F - <<'EOF'
+Refresh files after git commands
+EOF
+git push"`,
+      }),
+    ),
+  ).toBe(true)
+
+  expect(
+    shouldRefreshWorkspaceFilesForEvent(
+      event(3, 'tool.call.completed', {
+        item_type: 'commandExecution',
+        command: "/bin/zsh -lc 'cd /repo && git pull --rebase'",
+      }),
+    ),
+  ).toBe(true)
+
+  expect(
+    shouldRefreshWorkspaceFilesForEvent(
+      event(4, 'tool.call.completed', {
+        item_type: 'commandExecution',
+        command: `/bin/zsh -lc 'git tag -fa v0.1.1 -m "Gorchestra v0.1.1" && git push --force origin v0.1.1'`,
+      }),
+    ),
+  ).toBe(true)
+
+  expect(
+    shouldRefreshWorkspaceFilesForEvent(
+      event(5, 'tool.call.completed', {
+        item_type: 'commandExecution',
+        command: "/bin/zsh -lc 'git status --short && git log --oneline --decorate -7 && git rev-parse HEAD'",
+      }),
+    ),
+  ).toBe(false)
+
+  expect(
+    shouldRefreshWorkspaceFilesForEvent(event(6, 'tool.call.started', { command: "/bin/zsh -lc 'git pull'" })),
+  ).toBe(false)
 })
 
 test('pending user input request is derived from replayed events', () => {

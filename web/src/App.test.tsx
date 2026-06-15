@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from '@/App'
 import type { AgentEvent, Session } from '@/lib/api'
@@ -213,6 +213,30 @@ test('file change diff actions open absolute paths in the file editor', async ()
   expect(within(dialog).getByLabelText('File editor')).toHaveValue('package main\n')
 })
 
+test('streamed mutating git commands refresh the file browser', async () => {
+  const fetch = fetchMock({ fileEntry: true })
+  vi.stubGlobal('fetch', fetch)
+  const requestedURLs = () => fetch.mock.calls.map(([url]) => String(url))
+
+  render(<App />)
+
+  await screen.findByRole('button', { name: /main\.go/i })
+  await waitFor(() => expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files')).toHaveLength(1))
+  await waitFor(() => expect(FakeEventSource.instances.length).toBeGreaterThan(0))
+
+  act(() => {
+    FakeEventSource.instances[0].emit(
+      event(41, 'tool.call.completed', {
+        item_id: 'tool_1',
+        item_type: 'commandExecution',
+        command: "/bin/zsh -lc 'git pull --rebase'",
+      }),
+    )
+  })
+
+  await waitFor(() => expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files')).toHaveLength(2))
+})
+
 test('codex session actions require dialog confirmation', async () => {
   const user = userEvent.setup()
   const codexSession: Session = { ...firstSession, agent_type: 'codex', provider_session_id: 'thread_1' }
@@ -378,6 +402,7 @@ class FakeEventSource {
   url: string
   onopen: ((event: Event) => void) | null = null
   onerror: ((event: Event) => void) | null = null
+  private listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>()
 
   constructor(url: string) {
     this.url = url
@@ -385,7 +410,24 @@ class FakeEventSource {
     window.setTimeout(() => this.onopen?.(new Event('open')), 0)
   }
 
-  addEventListener() {}
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+    const nextListeners = this.listeners.get(type) ?? []
+    nextListeners.push((event) => {
+      if (typeof listener === 'function') {
+        listener(event)
+      } else {
+        listener.handleEvent(event)
+      }
+    })
+    this.listeners.set(type, nextListeners)
+  }
+
+  emit(event: AgentEvent) {
+    const message = new MessageEvent(event.type, { data: JSON.stringify(event) })
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      listener(message)
+    }
+  }
 
   close() {}
 }
