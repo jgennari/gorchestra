@@ -11,6 +11,7 @@ import {
   Zap,
 } from 'lucide-react'
 import {
+  type ClipboardEvent,
   type DragEvent,
   type ChangeEvent,
   useEffect,
@@ -280,11 +281,24 @@ export function PromptComposer({
     void handleFiles(event.dataTransfer.files)
   }
 
+  function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
+    if (inputDisabled) {
+      return
+    }
+    const imageFiles = clipboardImageFiles(event.clipboardData)
+    if (imageFiles.length === 0) {
+      return
+    }
+    event.preventDefault()
+    void handleFiles(imageFiles)
+  }
+
   return (
     <form onSubmit={(event) => void handleSubmit(event)} className="relative shrink-0 p-3">
       {thinking ? <ThinkingIndicator /> : null}
       <div
         data-testid="prompt-composer-dropzone"
+        onPaste={handlePaste}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -405,6 +419,21 @@ function ImageAttachmentPreview({ attachment, onRemove }: { attachment: Composer
 
 function hasDraggedFiles(event: DragEvent<HTMLDivElement>) {
   return Array.from(event.dataTransfer.types).includes('Files')
+}
+
+function clipboardImageFiles(data: DataTransfer) {
+  const directFiles = Array.from(data.files ?? []).filter((file) => file.type.startsWith('image/'))
+  if (directFiles.length > 0) {
+    return directFiles
+  }
+
+  return Array.from(data.items ?? []).flatMap((item) => {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) {
+      return []
+    }
+    const file = item.getAsFile()
+    return file ? [file] : []
+  })
 }
 
 async function fileToAttachment(file: File): Promise<ComposerAttachment> {

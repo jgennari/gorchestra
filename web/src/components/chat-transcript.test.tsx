@@ -206,6 +206,8 @@ test('opens file-change diffs in the file editor', async () => {
   )
 
   await user.click(screen.getByRole('button', { name: /expand main\.go/i }))
+  expect(screen.getByText('-old')).toHaveClass('min-w-full', 'w-max')
+  expect(screen.getByText('+new')).toHaveClass('min-w-full', 'w-max')
   await user.click(screen.getByRole('button', { name: 'Show in File Editor' }))
 
   expect(onOpenFilePath).toHaveBeenCalledWith('/repo/src/main.go')
@@ -370,6 +372,11 @@ test('hides debug-only events unless enabled', () => {
 
 test('renders compact debug rows with expandable payloads', async () => {
   const user = userEvent.setup()
+  const writeText = vi.fn(async () => undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  })
 
   render(
     <ChatTranscript
@@ -386,10 +393,16 @@ test('renders compact debug rows with expandable payloads', async () => {
   expect(screen.getByText('Session status')).toBeInTheDocument()
   expect(screen.getByText('Log')).toBeInTheDocument()
   expect(screen.getByText('debug line')).toBeInTheDocument()
+  expect(screen.getByText('Session status').closest('article')?.parentElement).toHaveClass('mt-2')
+  expect(screen.getByText('Log').closest('article')?.parentElement).toHaveClass('mt-1')
 
   await user.click(screen.getByRole('button', { name: /expand session status/i }))
 
   expect(screen.getByText(/"status": "running"/)).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Copy debug payload' }))
+
+  expect(writeText).toHaveBeenCalledWith(expect.stringContaining('"status": "running"'))
 })
 
 test('labels provider debug rows with provider event type', () => {

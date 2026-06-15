@@ -95,6 +95,41 @@ test('attaches image files with previews, removal, and submit payloads', async (
   expect(screen.queryByAltText('second.jpg')).not.toBeInTheDocument()
 })
 
+test('pastes image clipboard items into attachments', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn(async () => undefined)
+  const pastedImage = new File(['pasted'], 'pasted.png', { type: 'image/png' })
+
+  render(<PromptComposer disabled={false} disabledReason="" onSubmit={onSubmit} />)
+
+  fireEvent.paste(screen.getByLabelText('Prompt'), {
+    clipboardData: {
+      files: [],
+      items: [
+        {
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => pastedImage,
+        },
+      ],
+    },
+  })
+
+  expect(await screen.findByAltText('pasted.png')).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Submit prompt' }))
+
+  await waitFor(() => {
+    expect(onSubmit).toHaveBeenCalledWith('', undefined, [
+      expect.objectContaining({
+        name: 'pasted.png',
+        media_type: 'image/png',
+        size_bytes: pastedImage.size,
+      }),
+    ])
+  })
+})
+
 test('prompt composer shows cancellation action while running', async () => {
   const user = userEvent.setup()
   const onSubmit = vi.fn(async () => undefined)

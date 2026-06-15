@@ -100,8 +100,10 @@ test('floating chat header shows session details and copies the session key', as
   expect(within(popover).getByText('/repo')).toBeInTheDocument()
 
   await user.click(within(popover).getByRole('button', { name: 'Copy session key' }))
+  await user.click(within(popover).getByRole('button', { name: 'Copy workspace path' }))
 
   expect(writeText).toHaveBeenCalledWith('sess_1')
+  expect(writeText).toHaveBeenCalledWith('/repo')
   expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
 })
 

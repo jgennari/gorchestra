@@ -203,7 +203,7 @@ function ChatSessionHeader({
 function SessionDetailsMenu({ sessionID, workspacePath }: { sessionID: string; workspacePath: string }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [copiedField, setCopiedField] = useState<'session' | 'workspace' | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -228,13 +228,13 @@ function SessionDetailsMenu({ sessionID, workspacePath }: { sessionID: string; w
     }
   }, [open])
 
-  async function handleCopy() {
+  async function handleCopy(value: string, field: 'session' | 'workspace') {
     try {
-      await navigator.clipboard.writeText(sessionID)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
+      await navigator.clipboard.writeText(value)
+      setCopiedField(field)
+      window.setTimeout(() => setCopiedField(null), 1200)
     } catch {
-      setCopied(false)
+      setCopiedField(null)
     }
   }
 
@@ -259,40 +259,70 @@ function SessionDetailsMenu({ sessionID, workspacePath }: { sessionID: string; w
           className="absolute right-0 top-full z-50 mt-2 w-96 max-w-[calc(100vw-2rem)] rounded-lg border border-border/80 bg-popover p-3 text-popover-foreground shadow-lg"
         >
           <div className="space-y-3">
-            <div>
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                  Session key
-                </p>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground [&_svg]:size-3.5"
-                  aria-label="Copy session key"
-                  onClick={() => void handleCopy()}
-                >
-                  {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-                </Button>
-              </div>
-              <code className="mt-1 block overflow-x-auto whitespace-nowrap rounded-md bg-surface-muted/75 px-2 py-1.5 font-mono text-xs text-foreground">
-                {sessionID}
-              </code>
-            </div>
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                Workspace path
-              </p>
-              <code
-                className="mt-1 block max-h-24 overflow-auto rounded-md bg-surface-muted/75 px-2 py-1.5 font-mono text-xs text-foreground break-all"
-                title={workspacePath || undefined}
-              >
-                {workspacePath || 'Unavailable'}
-              </code>
-            </div>
+            <CopyableDetailBox
+              label="Session key"
+              value={sessionID}
+              copyLabel="Copy session key"
+              copied={copiedField === 'session'}
+              onCopy={() => void handleCopy(sessionID, 'session')}
+              scrollX
+            />
+            <CopyableDetailBox
+              label="Workspace path"
+              value={workspacePath}
+              copyLabel="Copy workspace path"
+              copied={copiedField === 'workspace'}
+              onCopy={() => void handleCopy(workspacePath, 'workspace')}
+            />
           </div>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+function CopyableDetailBox({
+  label,
+  value,
+  copyLabel,
+  copied,
+  onCopy,
+  scrollX = false,
+}: {
+  label: string
+  value: string
+  copyLabel: string
+  copied: boolean
+  onCopy: () => void
+  scrollX?: boolean
+}) {
+  const displayValue = value || 'Unavailable'
+
+  return (
+    <div>
+      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{label}</p>
+      <div className="relative mt-1 rounded-md bg-surface-muted/75">
+        <code
+          className={cn(
+            'block px-2 py-1.5 pr-10 font-mono text-xs text-foreground',
+            scrollX ? 'overflow-x-auto whitespace-nowrap' : 'max-h-24 overflow-auto break-all',
+          )}
+          title={value || undefined}
+        >
+          {displayValue}
+        </code>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="absolute right-1 top-1 h-6 w-6 bg-surface-muted/90 text-muted-foreground hover:bg-background/80 hover:text-foreground [&_svg]:size-3.5"
+          aria-label={copyLabel}
+          disabled={!value}
+          onClick={onCopy}
+        >
+          {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+        </Button>
+      </div>
     </div>
   )
 }

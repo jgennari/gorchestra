@@ -108,7 +108,7 @@ export function ChatTranscript({
       >
         <div
           className={cn(
-            'space-y-5 p-4',
+            'p-4',
             topInset === 'sessionHeader' && 'pt-24',
             topInset === 'sessionHeaderAlert' && 'pt-36',
             bottomInset === 'question' ? 'pb-80' : 'pb-44',
@@ -117,13 +117,31 @@ export function ChatTranscript({
           {hasOlderEvents || loadingOlderEvents ? (
             <LoadOlderEventsButton loading={loadingOlderEvents} onLoad={onLoadOlderEvents} />
           ) : null}
-          {timeline.map((item) => (
-            <ChatTimelineRow key={item.id} item={item} onOpenFilePath={onOpenFilePath} />
+          {timeline.map((item, index) => (
+            <div
+              key={item.id}
+              className={timelineRowSpacing(item, timeline[index - 1], index > 0 || hasOlderEvents || loadingOlderEvents)}
+            >
+              <ChatTimelineRow item={item} onOpenFilePath={onOpenFilePath} />
+            </div>
           ))}
         </div>
       </ScrollArea>
     </div>
   )
+}
+
+function timelineRowSpacing(item: ChatTimelineItem, previous: ChatTimelineItem | undefined, hasPriorRow: boolean) {
+  if (!hasPriorRow) {
+    return ''
+  }
+  if (item.kind === 'debug' && previous?.kind === 'debug') {
+    return 'mt-1'
+  }
+  if (item.kind === 'debug' || previous?.kind === 'debug') {
+    return 'mt-2'
+  }
+  return 'mt-5'
 }
 
 function LoadOlderEventsButton({ loading, onLoad }: { loading: boolean; onLoad?: () => Promise<void> | void }) {
@@ -455,7 +473,7 @@ function FloatingCopyButton({
       aria-label={label}
       onClick={() => void handleCopy()}
       className={cn(
-        'absolute right-2 top-2 z-10 inline-flex size-7 items-center justify-center rounded-md border text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        'absolute right-4 top-2 z-10 inline-flex size-7 items-center justify-center rounded-md border text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         variant === 'inverted'
           ? 'border-primary-foreground/20 bg-primary-foreground/12 text-primary-foreground hover:bg-primary-foreground/20'
           : variant === 'plan'
@@ -588,7 +606,10 @@ function ToolOutput({
       )}
     >
       {output.split('\n').map((line, index) => (
-        <span key={`${index}-${line}`} className={cn('block min-h-[1.25em] whitespace-pre', diffLineClassName(line))}>
+        <span
+          key={`${index}-${line}`}
+          className={cn('block min-h-[1.25em] min-w-full w-max whitespace-pre', diffLineClassName(line))}
+        >
           {line || ' '}
         </span>
       ))}
@@ -660,9 +681,12 @@ function DebugEventRow({ event }: { event: ChatDebugEvent }) {
           </p>
         ) : null}
         {open ? (
-          <pre className="ml-5 mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-surface-muted/70 p-2 font-mono leading-relaxed text-muted-foreground">
-            {payload}
-          </pre>
+          <div className="relative ml-5 mt-1">
+            <FloatingCopyButton label="Copy debug payload" value={payload} />
+            <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-surface-muted/70 p-2 pr-12 font-mono leading-relaxed text-muted-foreground">
+              {payload}
+            </pre>
+          </div>
         ) : null}
       </div>
     </article>
