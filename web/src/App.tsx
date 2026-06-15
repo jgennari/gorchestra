@@ -46,6 +46,7 @@ import {
 import { isTerminalEvent, knownEventTypes, lastSeq, shouldRefreshWorkspaceFilesForEvent, statusFromEvent } from '@/lib/events'
 import { nextSessionIDAfterArchive } from '@/lib/sessions'
 import { useSessionEvents } from '@/hooks/use-session-events'
+import { useFavicon } from '@/hooks/use-favicon'
 import { useTheme } from '@/hooks/use-theme'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -55,6 +56,7 @@ import { RunHealthRail } from '@/components/run-health-rail'
 import { SessionDetail } from '@/components/session-detail'
 import { SessionList } from '@/components/session-list'
 import { StatusBadge } from '@/components/status-badge'
+import { hasSessionAttention, latestSessionSeq } from '@/lib/session-attention'
 import { sessionIDFromPathname, sessionPath } from '@/lib/routes'
 import { cn } from '@/lib/utils'
 
@@ -112,7 +114,12 @@ function App() {
     () => sessions.find((session) => session.id === selectedSessionID) ?? null,
     [selectedSessionID, sessions],
   )
+  const hasFaviconAttention = useMemo(
+    () => hasSessionAttention(sessions, lastSeenSeqBySession),
+    [lastSeenSeqBySession, sessions],
+  )
   const theme = useTheme()
+  useFavicon(hasFaviconAttention)
 
   const applySession = useCallback((session: Session) => {
     setSessions((current) => {
@@ -1243,13 +1250,6 @@ function applySessionEvent(session: Session, event: AgentEvent, status: SessionS
     updated_at: updatedAt,
     completed_at: completedAt,
   }
-}
-
-function latestSessionSeq(session: Session | null) {
-  if (!session) {
-    return 0
-  }
-  return Math.max(session.last_event_seq ?? 0, session.event_count ?? 0)
 }
 
 function pendingInputFromEvent(current: boolean, event: AgentEvent) {

@@ -19,6 +19,7 @@ const secondSession = session('sess_2', 'Write docs', '2026-06-12T16:01:00Z')
 beforeEach(() => {
   window.history.replaceState({}, '', '/')
   window.localStorage.clear()
+  document.head.innerHTML = '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />'
   FakeEventSource.instances = []
   vi.stubGlobal('fetch', fetchMock())
   vi.stubGlobal('EventSource', FakeEventSource)
@@ -132,6 +133,7 @@ test('global activity stream marks another session pending input', async () => {
     'animate-pulse',
     'bg-[hsl(var(--warning))]',
   )
+  await waitFor(() => expect(faviconPath()).toBe('/favicon-notify.svg'))
 })
 
 test('global activity stream marks finished unselected sessions as unseen until selected', async () => {
@@ -149,10 +151,12 @@ test('global activity stream marks finished unselected sessions as unseen until 
   })
 
   expect(await screen.findByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]')
+  await waitFor(() => expect(faviconPath()).toBe('/favicon-notify.svg'))
 
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
 
   await waitFor(() => expect(screen.queryByRole('img', { name: 'Session has unseen results' })).not.toBeInTheDocument())
+  await waitFor(() => expect(faviconPath()).toBe('/favicon.svg'))
 })
 
 test('load older events fetches the previous event page', async () => {
@@ -538,6 +542,11 @@ function matchMediaMock(query: string): MediaQueryList {
     removeListener: vi.fn(),
     dispatchEvent: vi.fn(),
   }
+}
+
+function faviconPath() {
+  const href = document.querySelector<HTMLLinkElement>('link[rel~="icon"]')?.href
+  return href ? new URL(href).pathname : ''
 }
 
 function session(id: string, title: string, updatedAt: string): Session {

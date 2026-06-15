@@ -4,9 +4,10 @@ import type { Session } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { StatusBadge, type SessionAttention } from '@/components/status-badge'
+import { StatusBadge } from '@/components/status-badge'
 import { ThemeToggle } from '@/components/theme-toggle'
 import type { ResolvedTheme, ThemePreference } from '@/hooks/use-theme'
+import { sessionAttention } from '@/lib/session-attention'
 import { cn } from '@/lib/utils'
 
 type Props = {
@@ -107,20 +108,6 @@ export function SessionList({
       </ScrollArea>
     </aside>
   )
-}
-
-function sessionAttention(session: Session, lastSeenSeqBySession: Record<string, number>): SessionAttention | null {
-  if (session.pending_input) {
-    return 'pending-input'
-  }
-  if (session.status === 'idle' && latestSessionSeq(session) > (lastSeenSeqBySession[session.id] ?? 0)) {
-    return 'unseen-idle'
-  }
-  return null
-}
-
-function latestSessionSeq(session: Session) {
-  return Math.max(session.last_event_seq ?? 0, session.event_count ?? 0)
 }
 
 function filterSessions(sessions: Session[], query: string) {

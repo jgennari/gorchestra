@@ -1,7 +1,6 @@
 import type { SessionStatus } from '@/lib/api'
+import type { SessionAttention } from '@/lib/session-attention'
 import { cn } from '@/lib/utils'
-
-export type SessionAttention = 'pending-input' | 'unseen-idle'
 
 type Props = {
   status: SessionStatus
