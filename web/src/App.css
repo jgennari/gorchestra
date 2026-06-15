@@ -12,6 +12,20 @@
   background: linear-gradient(180deg, hsl(var(--sidebar)), hsl(var(--surface)));
 }
 
+.session-list-rows {
+  container-type: inline-size;
+}
+
+@container (max-width: 271px) {
+  .session-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .session-row-meta {
+    display: none;
+  }
+}
+
 .command-rail {
   background: linear-gradient(180deg, hsl(var(--rail)), hsl(var(--surface-muted)));
   box-shadow:

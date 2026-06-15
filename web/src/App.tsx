@@ -78,7 +78,7 @@ const paneWidthsStorageKey = 'gorchestra.pane-widths.v1'
 const sessionSeenSeqStorageKey = 'gorchestra.session-seen-seq.v1'
 const defaultPaneWidths: PaneWidths = { left: 348, right: 344 }
 const paneLimits = {
-  leftMin: 272,
+  leftMin: 224,
   leftMax: 560,
   rightMin: 300,
   rightMax: 640,
@@ -596,22 +596,22 @@ function App() {
     )
   }
 
-  const list = (
-    <SessionList
-      sessions={sessions}
-      selectedSessionID={selectedSessionID}
-      lastSeenSeqBySession={lastSeenSeqBySession}
-      onSelect={(sessionID) => {
-        selectSession(sessionID, 'push')
-        setMobileListOpen(false)
-        setNotice('')
-      }}
-      onCreate={() => setCreateOpen(true)}
-      themePreference={theme.preference}
-      resolvedTheme={theme.resolvedTheme}
-      onThemeToggle={theme.nextPreference}
-    />
-  )
+  const sessionListProps = {
+    sessions,
+    selectedSessionID,
+    lastSeenSeqBySession,
+    onSelect: (sessionID: string) => {
+      selectSession(sessionID, 'push')
+      setMobileListOpen(false)
+      setNotice('')
+    },
+    onCreate: () => setCreateOpen(true),
+    themePreference: theme.preference,
+    resolvedTheme: theme.resolvedTheme,
+    onThemeToggle: theme.nextPreference,
+  }
+  const list = <SessionList {...sessionListProps} />
+  const mobileList = <SessionList {...sessionListProps} variant="embedded" />
   const confirmActionPending =
     pendingSessionAction !== null &&
     confirmSessionAction !== null &&
@@ -650,7 +650,7 @@ function App() {
               <SheetHeader>
                 <SheetTitle>Sessions</SheetTitle>
               </SheetHeader>
-              <div className="min-h-0 flex-1">{list}</div>
+              <div className="min-h-0 flex-1">{mobileList}</div>
             </SheetContent>
           </Sheet>
           <div className="flex min-w-0 flex-1 items-center gap-2">

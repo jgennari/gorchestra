@@ -130,6 +130,15 @@ test('session list exposes the global theme toggle', async () => {
   expect(onThemeToggle).toHaveBeenCalledOnce()
 })
 
+test('embedded session list hides desktop header controls', () => {
+  render(<SessionList {...baseProps()} variant="embedded" />)
+
+  expect(screen.queryByRole('heading', { name: 'Sessions' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Create session' })).not.toBeInTheDocument()
+  expect(screen.getByRole('textbox', { name: 'Search sessions' })).toBeInTheDocument()
+})
+
 function baseProps() {
   return {
     sessions,

@@ -83,17 +83,12 @@ test('thinking indicator follows active reasoning events while running', () => {
   expect(screen.getByRole('status', { name: /thinking/i })).toBeInTheDocument()
 })
 
-test('mobile header shows status as a dot indicator', () => {
-  renderDetail({ session: { ...baseSession, status: 'failed' } })
-
-  expect(screen.getByRole('img', { name: 'Session status: failed' })).toBeInTheDocument()
-  expect(screen.queryByText('failed')).not.toBeInTheDocument()
-})
-
-test('mobile header shows the agent chip without date metadata', () => {
+test('mobile-only session detail headers stay hidden under the app header', () => {
   renderDetail()
 
-  expect(screen.getByLabelText('Agent: fake')).toHaveTextContent('fake')
+  expect(screen.getByTestId('session-detail-mobile-header')).toHaveClass('hidden')
+  expect(screen.getByTestId('floating-session-header')).toHaveClass('hidden')
+  expect(screen.getByTestId('floating-session-header')).toHaveClass('lg:block')
   expect(screen.queryByText(/Created:/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Updated:/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Last event:/)).not.toBeInTheDocument()

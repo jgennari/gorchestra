@@ -205,8 +205,8 @@ export function ChatTranscript({
         <div
           className={cn(
             'p-4',
-            topInset === 'sessionHeader' && 'pt-24',
-            topInset === 'sessionHeaderAlert' && 'pt-36',
+            topInset === 'sessionHeader' && 'lg:pt-24',
+            topInset === 'sessionHeaderAlert' && 'lg:pt-36',
             bottomInset === 'question' ? 'pb-80' : 'pb-44',
           )}
         >

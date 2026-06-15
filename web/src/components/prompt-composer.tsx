@@ -332,14 +332,25 @@ export function PromptComposer({
         />
         <div className="mt-2 flex min-h-9 items-center gap-2">
           {codexToolbarVisible ? (
-            <CodexToolbar
-              options={codexOptions}
-              selection={codexSelection}
-              loading={codexOptionsLoading}
-              error={codexOptionsError}
-              disabled={codexControlsDisabled}
-              onChange={setCodexSelection}
-            />
+            <>
+              <CodexToolbar
+                options={codexOptions}
+                selection={codexSelection}
+                loading={codexOptionsLoading}
+                error={codexOptionsError}
+                disabled={codexControlsDisabled}
+                onChange={setCodexSelection}
+                className="hidden sm:flex"
+              />
+              <MobileCodexOptions
+                options={codexOptions}
+                selection={codexSelection}
+                loading={codexOptionsLoading}
+                error={codexOptionsError}
+                disabled={codexControlsDisabled}
+                onChange={setCodexSelection}
+              />
+            </>
           ) : null}
           <div className="ml-auto flex items-center gap-2">
             <input
@@ -352,15 +363,17 @@ export function PromptComposer({
               onChange={handleFileInputChange}
             />
             {onShowDebugEventsChange ? (
-              <ToggleControl
-                label="Debug"
-                icon={<Bug className="size-4" aria-hidden="true" />}
-                active={showDebugEvents}
-                disabled={false}
-                iconOnly
-                activeClassName="bg-orange-100 text-orange-800 dark:bg-orange-400/18 dark:text-orange-200"
-                onClick={() => onShowDebugEventsChange(!showDebugEvents)}
-              />
+              <span className="hidden sm:inline-flex">
+                <ToggleControl
+                  label="Debug"
+                  icon={<Bug className="size-4" aria-hidden="true" />}
+                  active={showDebugEvents}
+                  disabled={false}
+                  iconOnly
+                  activeClassName="bg-orange-100 text-orange-800 dark:bg-orange-400/18 dark:text-orange-200"
+                  onClick={() => onShowDebugEventsChange(!showDebugEvents)}
+                />
+              </span>
             ) : null}
             <Button
               type="button"
@@ -475,6 +488,7 @@ function CodexToolbar({
   error,
   disabled,
   onChange,
+  className,
 }: {
   options: CodexAgentOptions | null
   selection: CodexSelection
@@ -482,6 +496,7 @@ function CodexToolbar({
   error: string
   disabled: boolean
   onChange: (selection: CodexSelection) => void
+  className?: string
 }) {
   const [openMenu, setOpenMenu] = useState<'model' | 'reasoning' | null>(null)
   const model = selectedModel(options, selection.model)
@@ -490,15 +505,15 @@ function CodexToolbar({
   const planAvailable = Boolean(options?.collaboration_modes.some((mode) => mode.mode === 'plan'))
 
   if (loading && !options) {
-    return <span className="text-xs font-medium text-muted-foreground">Loading Codex options...</span>
+    return <span className={cn('text-xs font-medium text-muted-foreground', className)}>Loading Codex options...</span>
   }
 
   if (error && !options) {
-    return <span className="text-xs font-medium text-destructive">Codex options unavailable</span>
+    return <span className={cn('text-xs font-medium text-destructive', className)}>Codex options unavailable</span>
   }
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-sm font-medium text-muted-foreground">
+    <div className={cn('flex min-w-0 flex-wrap items-center gap-1.5 text-sm font-medium text-muted-foreground', className)}>
       <SlidersHorizontal className="size-4 shrink-0" aria-hidden="true" />
       <OptionMenu
         label="Model"
@@ -547,6 +562,173 @@ function CodexToolbar({
   )
 }
 
+function MobileCodexOptions({
+  options,
+  selection,
+  loading,
+  error,
+  disabled,
+  onChange,
+}: {
+  options: CodexAgentOptions | null
+  selection: CodexSelection
+  loading: boolean
+  error: string
+  disabled: boolean
+  onChange: (selection: CodexSelection) => void
+}) {
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [openMenu, setOpenMenu] = useState<'model' | 'reasoning' | null>(null)
+  const model = selectedModel(options, selection.model)
+  const reasoningOptions = model?.supported_reasoning_efforts ?? []
+  const fastTier = fastTierForModel(model)
+  const planAvailable = Boolean(options?.collaboration_modes.some((mode) => mode.mode === 'plan'))
+  const hasActiveMode = (selection.fast_mode && Boolean(fastTier)) || (selection.planning_mode && planAvailable)
+  const summary = mobileCodexSummary({
+    loading,
+    error,
+    options,
+    modelName: model?.display_name || selection.model,
+    reasoningEffort: selection.reasoning_effort || model?.default_reasoning_effort,
+  })
+
+  useEffect(() => {
+    if (!open) {
+      setOpenMenu(null)
+      return
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div ref={menuRef} className="relative sm:hidden">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label="Composer options"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className={cn(
+          'h-8 w-8 text-muted-foreground hover:text-foreground',
+          hasActiveMode && 'bg-primary/12 text-primary hover:bg-primary/16 hover:text-primary',
+        )}
+      >
+        <SlidersHorizontal aria-hidden="true" />
+      </Button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label="Composer options"
+          className="absolute bottom-full left-0 z-50 mb-2 w-[min(20rem,calc(100vw-2rem))] rounded-lg border border-border/80 bg-popover p-3 text-popover-foreground shadow-lg"
+        >
+          <div className="mb-3 flex min-w-0 items-center justify-between gap-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Options</p>
+            <p className="min-w-0 truncate text-right text-xs text-muted-foreground">{summary}</p>
+          </div>
+          {loading && !options ? (
+            <p className="text-sm text-muted-foreground">Loading Codex options...</p>
+          ) : error && !options ? (
+            <p className="text-sm text-destructive">Codex options unavailable</p>
+          ) : (
+            <div className="space-y-2">
+              <OptionMenu
+                label="Model"
+                value={model?.display_name || selection.model || 'Model'}
+                open={openMenu === 'model'}
+                onOpenChange={(nextOpen) => setOpenMenu(nextOpen ? 'model' : null)}
+                disabled={disabled || !options?.models.length}
+                options={(options?.models ?? []).map((item) => ({ value: item.model, label: item.display_name }))}
+                onSelect={(modelValue) => {
+                  onChange(reconcileCodexSelection({ ...selection, model: modelValue }, options))
+                }}
+                buttonClassName="w-full justify-between rounded-md border border-border/80 bg-surface-muted/40 px-2"
+                valueClassName="max-w-[13rem]"
+                menuLayout="inline"
+              />
+              <OptionMenu
+                label="Reasoning"
+                value={selection.reasoning_effort || model?.default_reasoning_effort || 'Reasoning'}
+                open={openMenu === 'reasoning'}
+                onOpenChange={(nextOpen) => setOpenMenu(nextOpen ? 'reasoning' : null)}
+                disabled={disabled || reasoningOptions.length === 0}
+                options={reasoningOptions.map((item) => ({
+                  value: item.reasoning_effort,
+                  label: item.reasoning_effort,
+                  description: item.description,
+                }))}
+                onSelect={(reasoningEffort) => onChange({ ...selection, reasoning_effort: reasoningEffort })}
+                buttonClassName="w-full justify-between rounded-md border border-border/80 bg-surface-muted/40 px-2"
+                valueClassName="max-w-[13rem]"
+                menuLayout="inline"
+              />
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <ToggleControl
+                  label="Fast"
+                  icon={<Zap className="size-4" aria-hidden="true" />}
+                  active={selection.fast_mode && Boolean(fastTier)}
+                  disabled={disabled || !fastTier}
+                  onClick={() => onChange({ ...selection, fast_mode: fastTier ? !selection.fast_mode : false })}
+                />
+                <SwitchControl
+                  label="Plan"
+                  active={selection.planning_mode && planAvailable}
+                  disabled={disabled || !planAvailable}
+                  onClick={() =>
+                    onChange({ ...selection, planning_mode: planAvailable ? !selection.planning_mode : false })
+                  }
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function mobileCodexSummary({
+  loading,
+  error,
+  options,
+  modelName,
+  reasoningEffort,
+}: {
+  loading: boolean
+  error: string
+  options: CodexAgentOptions | null
+  modelName: string
+  reasoningEffort: string | undefined
+}) {
+  if (loading && !options) {
+    return 'Loading'
+  }
+  if (error && !options) {
+    return 'Unavailable'
+  }
+  return [modelName || 'Model', reasoningEffort].filter(Boolean).join(' / ')
+}
+
 function OptionMenu({
   label,
   value,
@@ -555,6 +737,9 @@ function OptionMenu({
   options,
   disabled,
   onSelect,
+  buttonClassName,
+  valueClassName,
+  menuLayout = 'floating',
 }: {
   label: string
   value: string
@@ -563,6 +748,9 @@ function OptionMenu({
   options: { value: string; label: string; description?: string }[]
   disabled: boolean
   onSelect: (value: string) => void
+  buttonClassName?: string
+  valueClassName?: string
+  menuLayout?: 'floating' | 'inline'
 }) {
   return (
     <div className="relative">
@@ -573,16 +761,24 @@ function OptionMenu({
         aria-expanded={open}
         disabled={disabled}
         onClick={() => onOpenChange(!open)}
-        className="inline-flex h-8 items-center gap-1 rounded-md px-1.5 text-sm font-semibold text-foreground/78 transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+        className={cn(
+          'inline-flex h-8 items-center gap-1 rounded-md px-1.5 text-sm font-semibold text-foreground/78 transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50',
+          buttonClassName,
+        )}
       >
-        <span className="max-w-40 truncate">{value}</span>
+        <span className={cn('max-w-40 truncate', valueClassName)}>{value}</span>
         <ChevronDown className="size-4 text-muted-foreground" aria-hidden="true" />
       </button>
       {open ? (
         <div
           role="listbox"
           aria-label={label}
-          className="absolute bottom-full left-0 z-50 mb-2 max-h-72 min-w-48 overflow-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-lg ring-1 ring-border/70"
+          className={cn(
+            'z-50 overflow-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-lg ring-1 ring-border/70',
+            menuLayout === 'inline'
+              ? 'mt-1 max-h-52 w-full'
+              : 'absolute bottom-full left-0 mb-2 max-h-72 min-w-48',
+          )}
         >
           {options.map((option) => (
             <button

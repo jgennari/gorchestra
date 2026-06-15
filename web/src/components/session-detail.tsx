@@ -98,7 +98,10 @@ export function SessionDetail({
 
   return (
     <section className="relative flex h-full w-full min-h-0 flex-col overflow-hidden bg-transparent">
-      <header className="shrink-0 border-b border-border/70 bg-background/62 px-4 py-2 backdrop-blur lg:hidden">
+      <header
+        data-testid="session-detail-mobile-header"
+        className="hidden shrink-0 border-b border-border/70 bg-background/62 px-4 py-2 backdrop-blur"
+      >
         <div className="flex min-h-10 items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <StatusBadge status={session.status} />
@@ -139,7 +142,7 @@ export function SessionDetail({
           onLoadOlderEvents={onLoadOlderEvents}
           onOpenFilePath={onOpenFilePath}
         />
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 p-3">
+        <div data-testid="floating-session-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
           <ChatSessionHeader
             sessionID={session.id}
             agentType={session.agent_type}

@@ -1,5 +1,5 @@
 import { afterEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { PromptComposer } from '@/components/prompt-composer'
 
@@ -172,6 +172,39 @@ test('debug toggle uses orange active styling', async () => {
   await user.click(debug)
 
   expect(onShowDebugEventsChange).toHaveBeenCalledWith(false)
+})
+
+test('codex composer exposes compact mobile options and hides debug on mobile', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => jsonResponse(codexOptionsResponse())),
+  )
+
+  render(
+    <PromptComposer
+      agentType="codex"
+      disabled={false}
+      disabledReason=""
+      showDebugEvents
+      onShowDebugEventsChange={() => undefined}
+      onSubmit={async () => undefined}
+    />,
+  )
+
+  expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5.5')
+
+  const debug = screen.getByRole('button', { name: 'Debug' })
+  expect(debug.parentElement).toHaveClass('hidden')
+  expect(debug.parentElement).toHaveClass('sm:inline-flex')
+
+  const optionsButton = screen.getByRole('button', { name: 'Composer options', hidden: true })
+  expect(optionsButton.parentElement).toHaveClass('sm:hidden')
+
+  fireEvent.click(optionsButton)
+
+  const dialog = screen.getByRole('dialog', { name: 'Composer options', hidden: true })
+  expect(within(dialog).getByRole('button', { name: 'Model', hidden: true })).toHaveTextContent('GPT-5.5')
+  expect(within(dialog).getByRole('button', { name: 'Reasoning', hidden: true })).toHaveTextContent('medium')
 })
 
 test('draft messages persist per session', async () => {
