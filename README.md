@@ -131,11 +131,12 @@ brew install jgennari/tap/gorchestra
 gorchestra --open
 ```
 
-Homebrew packaging is planned. The formula will install the `gorchestra` binary and may add an optional `brew services` entry later.
+Homebrew packaging starts from the formula template in `packaging/homebrew/gorchestra.rb.template`.
+The first tap release can copy that template into `jgennari/homebrew-tap` and fill in the release version and source archive checksum.
 
 ### Direct Download
 
-Download the archive for your platform from GitHub releases, unpack it, and run the binary:
+Download the archive for your platform from GitHub Releases, unpack it, and run the binary:
 
 ```sh
 tar -xzf gorchestra_<version>_<os>_<arch>.tar.gz
@@ -275,15 +276,18 @@ Release/Homebrew shape:
 - Checksums: `dist/SHA256SUMS`
 - Release artifact naming: `gorchestra_<version>_<os>_<arch>.tar.gz`
 - Supported release targets: `darwin/arm64`, `darwin/amd64`, `linux/amd64`, and `linux/arm64`
+- Release workflow: `.github/workflows/release.yml` publishes archives when a `v*.*.*` tag is pushed.
 - Expected install command: `brew install jgennari/tap/gorchestra`
 - Optional service command: `brew services start gorchestra`
 
 Homebrew formula requirements:
 
-- Download the versioned tarball from GitHub releases.
+- Download the versioned source archive from GitHub Releases.
 - Verify the SHA-256 checksum.
-- Install the `gorchestra` binary into `bin`.
+- Build and install the `gorchestra` binary into `bin`.
 - Include an optional service stanza that runs `gorchestra` with a persistent data directory.
+
+More release and Homebrew notes live in [Distribution](docs/distribution.md).
 
 ## Tests
 

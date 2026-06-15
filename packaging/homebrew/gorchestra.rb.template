@@ -1,0 +1,23 @@
+class Gorchestra < Formula
+  desc "Self-contained AI coding agent orchestration runtime"
+  homepage "https://github.com/jgennari/gorchestra"
+  url "https://github.com/jgennari/gorchestra/archive/refs/tags/v{{VERSION}}.tar.gz"
+  sha256 "{{SOURCE_SHA256}}"
+  license "MIT"
+  head "https://github.com/jgennari/gorchestra.git", branch: "main"
+
+  depends_on "go" => :build
+
+  def install
+    system "go", "build",
+      *std_go_args(
+        output: bin/"gorchestra",
+        ldflags: "-s -w -X main.version=#{version}",
+      ),
+      "./cmd/app"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/gorchestra --version")
+  end
+end

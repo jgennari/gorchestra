@@ -7,6 +7,7 @@
     "build:stage": "bun run scripts/build.ts stage",
     "build:clean": "bun run scripts/build.ts clean",
     "build:checksums": "bun run scripts/build.ts checksums",
+    "release:archives": "bun run scripts/release.ts",
     "dev": "bun run scripts/dev.ts",
     "dev:tailnet": "bun run scripts/dev.ts --tailnet",
     "dev:human": "bun run scripts/human-dev.ts start",
