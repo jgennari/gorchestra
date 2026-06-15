@@ -150,13 +150,11 @@ function App() {
   const handleSessionEvent = useCallback(
     (event: AgentEvent) => {
       const status = statusFromEvent(event)
-      if (status) {
-        setSessions((current) =>
-          current.map((session) =>
-            session.id === event.session_id ? applyStatusEvent(session, event, status) : session,
-          ),
-        )
-      }
+      setSessions((current) =>
+        current.map((session) =>
+          session.id === event.session_id ? applySessionEvent(session, event, status) : session,
+        ),
+      )
       if (isTerminalEvent(event.type)) {
         window.setTimeout(() => {
           void refreshSession(event.session_id)
@@ -864,7 +862,17 @@ async function includeSelectedSession(sessions: Session[], selectedSessionID: st
   }
 }
 
-function applyStatusEvent(session: Session, event: AgentEvent, status: SessionStatus) {
+function applySessionEvent(session: Session, event: AgentEvent, status: SessionStatus | null) {
+  const eventCount = Math.max(session.event_count ?? 0, event.seq)
+  const toolCount = (session.tool_count ?? 0) + (isToolActivityEvent(event) ? 1 : 0)
+  if (!status) {
+    return {
+      ...session,
+      event_count: eventCount,
+      tool_count: toolCount,
+    }
+  }
+
   const updatedAt = payloadString(event.payload, 'updated_at') ?? event.created_at
   const completedAt =
     status === 'running' || status === 'idle'
@@ -874,9 +882,15 @@ function applyStatusEvent(session: Session, event: AgentEvent, status: SessionSt
   return {
     ...session,
     status,
+    event_count: eventCount,
+    tool_count: toolCount,
     updated_at: updatedAt,
     completed_at: completedAt,
   }
+}
+
+function isToolActivityEvent(event: AgentEvent) {
+  return event.type === 'tool.call.started' || event.type === 'file.change.started'
 }
 
 function payloadString(payload: unknown, key: string) {

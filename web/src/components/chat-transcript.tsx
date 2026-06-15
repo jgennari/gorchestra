@@ -195,7 +195,7 @@ function ChatMessageRow({
             )}
           >
             <span className="flex min-w-0 items-center gap-2">
-              <span>{user ? 'You' : 'Assistant'}</span>
+              <span>{message.label}</span>
             </span>
             {timestamp ? (
               <time className="shrink-0 text-right font-normal tabular-nums" dateTime={message.createdAt}>

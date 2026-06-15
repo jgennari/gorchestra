@@ -250,6 +250,9 @@ func TestCreateSessionPersistsIdleSession(t *testing.T) {
 	if persisted.WorkspacePath != "/tmp/gorchestra-workspace" {
 		t.Fatalf("expected persisted workspace path, got %q", persisted.WorkspacePath)
 	}
+	if persisted.EventCount != 0 {
+		t.Fatalf("expected no events for new session, got %d", persisted.EventCount)
+	}
 }
 
 func TestCreateSessionRejectsEmptyAgentType(t *testing.T) {
@@ -702,6 +705,37 @@ func TestListEventsReturnsEventsOrderedByAscendingSequence(t *testing.T) {
 	assertSeqs(t, events, []int64{1, 2, 3})
 }
 
+func TestSessionReadsIncludeActivityCounts(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	appendTestEvent(t, ctx, store, session.ID, `{"text":"one"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "tool.call.started", `{"item_id":"tool_1"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "tool.call.completed", `{"item_id":"tool_1"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "file.change.started", `{"item_id":"edit_1"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "file.change.completed", `{"item_id":"edit_1"}`)
+
+	persisted, err := store.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if persisted.EventCount != 5 {
+		t.Fatalf("expected event count 5, got %d", persisted.EventCount)
+	}
+	if persisted.ToolCount != 2 {
+		t.Fatalf("expected tool count 2, got %d", persisted.ToolCount)
+	}
+
+	sessions, err := store.ListSessions(ctx, ListSessionsParams{})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].EventCount != 5 || sessions[0].ToolCount != 2 {
+		t.Fatalf("expected listed session activity counts, got %#v", sessions)
+	}
+}
+
 func TestListEventsHonorsAfterSeq(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)
@@ -916,10 +950,15 @@ func hasSessionID(sessions []Session, id string) bool {
 
 func appendTestEvent(t *testing.T, ctx context.Context, store *Store, sessionID string, payload string) Event {
 	t.Helper()
+	return appendTestEventWithType(t, ctx, store, sessionID, "agent.message.delta", payload)
+}
+
+func appendTestEventWithType(t *testing.T, ctx context.Context, store *Store, sessionID string, eventType string, payload string) Event {
+	t.Helper()
 
 	event, err := store.AppendEvent(ctx, AppendEventParams{
 		SessionID: sessionID,
-		Type:      "agent.message.delta",
+		Type:      eventType,
 		Role:      "assistant",
 		Status:    EventStatusDelta,
 		Payload:   json.RawMessage(payload),

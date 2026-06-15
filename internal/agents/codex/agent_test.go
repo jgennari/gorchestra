@@ -127,6 +127,23 @@ func TestCommandFixtureNormalizesToolEvents(t *testing.T) {
 	}
 }
 
+func TestPlanFixtureNormalizesPlanEvents(t *testing.T) {
+	events := normalizeFixture(t, "plan.jsonl")
+	assertAgentEventTypes(t, events, []string{
+		"agent.plan.delta",
+		"agent.plan.delta",
+		"agent.plan.completed",
+	})
+
+	payload := events[2].Payload.(map[string]any)
+	if payload["item_type"] != "plan" {
+		t.Fatalf("expected plan item type, got %#v", payload["item_type"])
+	}
+	if payload["text"] != "# Plan\n- Check the current transcript\n" {
+		t.Fatalf("expected completed plan text, got %#v", payload["text"])
+	}
+}
+
 func TestUnknownFixtureNormalizesProviderEvent(t *testing.T) {
 	events := normalizeFixture(t, "unknown.jsonl")
 	assertAgentEventTypes(t, events, []string{"provider.codex.event"})

@@ -9,6 +9,8 @@ const session: Session = {
   agent_type: 'fake',
   status: 'running',
   workspace_path: '/repo',
+  event_count: 1209,
+  tool_count: 1209,
   created_at: '2026-06-12T16:00:00Z',
   updated_at: '2026-06-12T16:01:00Z',
   completed_at: null,
@@ -62,6 +64,7 @@ test('run health rail shows metrics and active chat status without session ident
   expect(screen.queryByRole('tab', { name: /debug/i })).not.toBeInTheDocument()
   expect(screen.getByText('Events')).toBeInTheDocument()
   expect(screen.getByText('Tools')).toBeInTheDocument()
+  expect(screen.getAllByText('1.2k')).toHaveLength(2)
   expect(screen.getByText('Agent message')).toBeInTheDocument()
   expect(screen.queryByText('Connection')).not.toBeInTheDocument()
   expect(screen.queryByText('Live')).not.toBeInTheDocument()

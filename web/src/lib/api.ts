@@ -9,6 +9,8 @@ export type Session = {
   provider_session_id?: string
   workspace_path: string
   agent_options?: SessionAgentOptions
+  event_count: number
+  tool_count: number
   created_at: string
   updated_at: string
   completed_at: string | null
@@ -191,7 +193,7 @@ type ListSessionsOptions = {
   status?: SessionStatus
 }
 
-export const defaultEventWindowLimit = 250
+export const defaultEventWindowLimit = 500
 
 export class APIError extends Error {
   status: number

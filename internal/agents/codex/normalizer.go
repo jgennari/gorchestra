@@ -67,6 +67,10 @@ func (n *normalizer) normalize(method string, params json.RawMessage) []normaliz
 		payload := basePayload(method, params)
 		payload["text"] = stringAt(params, "delta")
 		return []normalizedEvent{{Event: event("agent.thinking.delta", "assistant", "delta", payload)}}
+	case "item/plan/delta":
+		payload := basePayload(method, params)
+		payload["text"] = stringAt(params, "delta")
+		return []normalizedEvent{{Event: event("agent.plan.delta", "assistant", "delta", payload)}}
 	case "item/started":
 		return n.normalizeItemLifecycle(method, params, true)
 	case "item/completed":
@@ -126,6 +130,9 @@ func (n *normalizer) normalizeItemLifecycle(method string, params json.RawMessag
 	case "reasoning":
 		payload["text"] = reasoningText(item)
 		return []normalizedEvent{{Event: event("agent.thinking.completed", "assistant", "completed", payload)}}
+	case "plan":
+		payload["text"] = stringFromMap(item, "text")
+		return []normalizedEvent{{Event: event("agent.plan.completed", "assistant", "completed", payload)}}
 	case "commandExecution", "mcpToolCall", "dynamicToolCall", "webSearch", "collabAgentToolCall":
 		return []normalizedEvent{{Event: event("tool.call.completed", "assistant", eventStatusFromItem(item), payload)}}
 	case "fileChange":

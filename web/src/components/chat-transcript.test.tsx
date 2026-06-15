@@ -39,6 +39,31 @@ test('renders markdown in chat messages', () => {
   expect(screen.getByText('First item')).toBeInTheDocument()
 })
 
+test('renders legacy raw Codex plan messages with a plan label', () => {
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'provider.codex.event', 'system', 'completed', {
+          provider_event_type: 'item/plan/delta',
+          raw: { threadId: 'thread_1', turnId: 'turn_1', itemId: 'plan_1', delta: 'Review the session tail.\n' },
+        }),
+        event(2, 'provider.codex.event', 'system', 'completed', {
+          provider_event_type: 'item/completed',
+          raw: {
+            threadId: 'thread_1',
+            turnId: 'turn_1',
+            item: { type: 'plan', id: 'plan_1', text: 'Review the session tail.\n' },
+          },
+        }),
+      ]}
+    />,
+  )
+
+  expect(screen.getByText('Plan')).toBeInTheDocument()
+  expect(screen.getByText('Review the session tail.')).toBeInTheDocument()
+  expect(screen.queryByText('item/plan/delta')).not.toBeInTheDocument()
+})
+
 test('load older control invokes the older event loader', async () => {
   const user = userEvent.setup()
   const onLoadOlderEvents = vi.fn()

@@ -7,6 +7,8 @@ export const knownEventTypes = [
   'agent.status.started',
   'agent.message.delta',
   'agent.message.completed',
+  'agent.plan.delta',
+  'agent.plan.completed',
   'agent.thinking.delta',
   'agent.thinking.completed',
   'agent.log.delta',
@@ -33,6 +35,7 @@ export type DisplayEvent = AgentEvent & {
 export type EventGroupKind =
   | 'user-message'
   | 'agent-message'
+  | 'plan'
   | 'thinking'
   | 'tool-call'
   | 'file-change'
@@ -78,6 +81,7 @@ export type ChatTranscriptAttachment = {
 export type ChatTranscriptMessage = {
   id: string
   role: 'user' | 'assistant'
+  label: string
   text: string
   attachments: ChatTranscriptAttachment[]
   status: string
@@ -199,6 +203,16 @@ export function groupEvents(events: AgentEvent[]) {
     }
 
     if (
+      isPlanDeltaEvent(event) &&
+      previous?.kind === 'plan' &&
+      previous.events[previous.events.length - 1] &&
+      isPlanDeltaEvent(previous.events[previous.events.length - 1])
+    ) {
+      appendToGroup(previous, event)
+      continue
+    }
+
+    if (
       event.type === 'agent.thinking.delta' &&
       previous?.kind === 'thinking' &&
       previous.events[previous.events.length - 1]?.type === 'agent.thinking.delta'
@@ -257,7 +271,7 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
       continue
     }
 
-    if (group.kind === 'agent-message') {
+    if (group.kind === 'agent-message' || group.kind === 'plan') {
       currentAssistant = assistantMessageForGroup(messages, currentAssistant, assistantMessagesByItemID, group)
       mergeAssistantMessage(currentAssistant, group)
       syncMessageTimelineItem(items, currentAssistant)
@@ -380,10 +394,12 @@ export function eventLabel(eventOrType: AgentEvent | string) {
   const type = typeof eventOrType === 'string' ? eventOrType : eventOrType.type
   const providerEventType =
     typeof eventOrType === 'string' ? '' : payloadString(eventOrType.payload, ['provider_event_type'])
+  if (typeof eventOrType !== 'string' && isPlanEvent(eventOrType)) return 'Plan'
   if (providerEventType && type.startsWith('provider.')) return providerEventType
   if (type === 'session.status.updated') return 'Session status'
   if (type.startsWith('user.message')) return 'User message'
   if (type.startsWith('agent.message')) return 'Agent message'
+  if (type.startsWith('agent.plan')) return 'Plan'
   if (type.startsWith('agent.thinking')) return 'Thinking'
   if (type.startsWith('tool.call')) return 'Tool call'
   if (type.startsWith('file.change')) return 'File change'
@@ -418,6 +434,85 @@ export function payloadError(payload: unknown) {
   }
   const value = payload.error ?? payload.message
   return typeof value === 'string' ? value : ''
+}
+
+function groupText(event: AgentEvent, kind: EventGroupKind) {
+  if (kind === 'plan') {
+    return planText(event)
+  }
+  return payloadText(event.payload)
+}
+
+function planText(event: AgentEvent) {
+  const direct = payloadText(event.payload)
+  if (direct) {
+    return direct
+  }
+  const raw = legacyProviderRaw(event)
+  if (!raw) {
+    return ''
+  }
+  const delta = payloadLiteralString(raw, ['delta'])
+  if (delta) {
+    return delta
+  }
+  return isRecord(raw.item) ? payloadLiteralString(raw.item, ['text']) : ''
+}
+
+function isPlanEvent(event: AgentEvent) {
+  return event.type.startsWith('agent.plan') || isLegacyProviderPlanEvent(event)
+}
+
+function isPlanDeltaEvent(event: AgentEvent) {
+  return event.type === 'agent.plan.delta' || legacyProviderPlanKind(event) === 'delta'
+}
+
+function isLegacyProviderPlanEvent(event: AgentEvent) {
+  return legacyProviderPlanKind(event) !== ''
+}
+
+function legacyProviderPlanKind(event: AgentEvent) {
+  if (event.type !== 'provider.codex.event') {
+    return ''
+  }
+  const providerEventType = payloadString(event.payload, ['provider_event_type'])
+  if (providerEventType === 'item/plan/delta') {
+    return 'delta'
+  }
+  if (providerEventType !== 'item/completed') {
+    return ''
+  }
+  const raw = legacyProviderRaw(event)
+  if (!raw || !isRecord(raw.item)) {
+    return ''
+  }
+  return payloadString(raw.item, ['type']) === 'plan' ? 'completed' : ''
+}
+
+function legacyProviderRaw(event: AgentEvent) {
+  if (!isRecord(event.payload) || !isRecord(event.payload.raw)) {
+    return null
+  }
+  return event.payload.raw
+}
+
+function planItemID(event: AgentEvent | undefined) {
+  if (!event) {
+    return ''
+  }
+  const direct = payloadItemID(event.payload)
+  if (direct) {
+    return direct
+  }
+  const raw = legacyProviderRaw(event)
+  if (!raw) {
+    return ''
+  }
+  const itemID = payloadString(raw, ['itemId'])
+  if (itemID) {
+    return itemID
+  }
+  return isRecord(raw.item) ? payloadString(raw.item, ['id']) : ''
 }
 
 export function statusFromEvent(eventOrType: AgentEvent | string): SessionStatus | null {
@@ -484,7 +579,7 @@ function newGroup(event: AgentEvent): EventGroup {
     startSeq: event.seq,
     endSeq: event.seq,
     events: [event],
-    text: payloadText(event.payload),
+    text: groupText(event, kind),
     error: payloadError(event.payload),
     paths: payloadPaths(event.payload),
     defaultOpen: defaultOpen(kind, event),
@@ -497,7 +592,7 @@ function appendToGroup(group: EventGroup, event: AgentEvent) {
   group.events.push(event)
   group.endSeq = event.seq
   group.status = event.status
-  group.text = joinGroupText(group.text, payloadText(event.payload))
+  group.text = joinGroupText(group.text, groupText(event, group.kind))
   group.error = group.error || payloadError(event.payload)
   group.paths = uniqueStrings([...group.paths, ...payloadPaths(event.payload)])
   if (group.kind === 'tool-call') {
@@ -515,6 +610,7 @@ function groupKind(event: AgentEvent): EventGroupKind {
   if (isErrorEvent(event.type, event.status)) return 'error'
   if (event.type === 'user.message.completed') return 'user-message'
   if (event.type.startsWith('agent.message')) return 'agent-message'
+  if (isPlanEvent(event)) return 'plan'
   if (event.type.startsWith('agent.thinking')) return 'thinking'
   if (event.type.startsWith('tool.call')) return 'tool-call'
   if (event.type.startsWith('file.change')) return 'file-change'
@@ -551,6 +647,10 @@ function groupID(event: AgentEvent) {
     const toolID = toolGroupID(event)
     if (toolID) return `tool-${toolID}`
   }
+  if (isPlanEvent(event)) {
+    const planID = planItemID(event)
+    if (planID) return `plan-${planID}`
+  }
   return `${groupKind(event)}-${event.seq}`
 }
 
@@ -568,6 +668,8 @@ function payloadItemID(payload: unknown) {
 function clearsActiveThinking(event: AgentEvent) {
   return (
     event.type.startsWith('agent.message') ||
+    event.type.startsWith('agent.plan') ||
+    isLegacyProviderPlanEvent(event) ||
     event.type.startsWith('tool.call') ||
     event.type.startsWith('file.change') ||
     event.type === 'agent.input.requested' ||
@@ -589,6 +691,7 @@ function chatMessageFromGroup(role: ChatTranscriptMessage['role'], group: EventG
   return {
     id: `chat-${role}-${group.startSeq}`,
     role,
+    label: messageLabel(role, group.kind),
     text: group.text,
     attachments: chatAttachmentsFromGroup(group),
     status: group.status,
@@ -598,6 +701,16 @@ function chatMessageFromGroup(role: ChatTranscriptMessage['role'], group: EventG
     startSeq: group.startSeq,
     endSeq: group.endSeq,
   }
+}
+
+function messageLabel(role: ChatTranscriptMessage['role'], kind: EventGroupKind) {
+  if (role === 'user') {
+    return 'You'
+  }
+  if (kind === 'plan') {
+    return 'Plan'
+  }
+  return 'Assistant'
 }
 
 function chatAttachmentsFromGroup(group: EventGroup): ChatTranscriptAttachment[] {
@@ -667,9 +780,14 @@ function assistantMessageForGroup(
 }
 
 function mergeAssistantMessage(message: ChatTranscriptMessage, group: EventGroup) {
+  if (group.kind === 'plan') {
+    message.label = 'Plan'
+  }
   message.text = mergeChatText(message.text, group.text)
   message.status = group.status
-  message.streaming = group.events.some((event) => event.type === 'agent.message.delta') && group.status !== 'completed'
+  message.streaming =
+    group.events.some((event) => event.type === 'agent.message.delta' || isPlanDeltaEvent(event)) &&
+    group.status !== 'completed'
   updateMessageRange(message, group)
 }
 
@@ -932,6 +1050,7 @@ function isHiddenDebugGroup(group: EventGroup) {
   switch (group.kind) {
     case 'user-message':
     case 'agent-message':
+    case 'plan':
     case 'tool-call':
     case 'file-change':
     case 'error':
@@ -987,6 +1106,9 @@ function unquoteShellArg(value: string) {
 }
 
 function chatGroupItemID(group: EventGroup) {
+  if (group.kind === 'plan') {
+    return planItemID(group.events[0])
+  }
   return payloadString(group.events[0]?.payload, ['item_id', 'message_id', 'id'])
 }
 
@@ -1176,6 +1298,19 @@ function payloadString(payload: unknown, keys: string[]) {
     }
     if (typeof value === 'number') {
       return String(value)
+    }
+  }
+  return ''
+}
+
+function payloadLiteralString(payload: unknown, keys: string[]) {
+  if (!isRecord(payload)) {
+    return ''
+  }
+  for (const key of keys) {
+    const value = payload[key]
+    if (typeof value === 'string' && value) {
+      return value
     }
   }
   return ''

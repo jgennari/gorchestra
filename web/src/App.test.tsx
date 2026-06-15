@@ -66,7 +66,7 @@ test('initial session load fetches the recent event window and streams after the
 
   await waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/sess_1/events?tail=true&limit=250',
+      '/api/sessions/sess_1/events?tail=true&limit=500',
       expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
@@ -90,7 +90,7 @@ test('load older events fetches the previous event page', async () => {
 
   await waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/sess_1/events?before_seq=251&limit=250',
+      '/api/sessions/sess_1/events?before_seq=251&limit=500',
       expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
@@ -241,13 +241,13 @@ function fetchMock({
     if (path === '/api/sessions/sess_2') {
       return jsonResponse(secondSession)
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&limit=250') {
+    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
       return jsonResponse({ events })
     }
-    if (path === '/api/sessions/sess_2/events?tail=true&limit=250') {
+    if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
       return jsonResponse({ events: [] })
     }
-    if (path === '/api/sessions/sess_1/events?before_seq=251&limit=250') {
+    if (path === '/api/sessions/sess_1/events?before_seq=251&limit=500') {
       return jsonResponse({ events: olderEvents })
     }
     if (path === '/api/sessions/sess_1/files') {
@@ -336,6 +336,8 @@ function session(id: string, title: string, updatedAt: string): Session {
     agent_type: 'fake',
     status: 'idle',
     workspace_path: '/repo',
+    event_count: 0,
+    tool_count: 0,
     created_at: '2026-06-12T16:00:00Z',
     updated_at: updatedAt,
     completed_at: null,

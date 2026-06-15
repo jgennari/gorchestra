@@ -462,6 +462,7 @@ function CodexToolbar({
   disabled: boolean
   onChange: (selection: CodexSelection) => void
 }) {
+  const [openMenu, setOpenMenu] = useState<'model' | 'reasoning' | null>(null)
   const model = selectedModel(options, selection.model)
   const reasoningOptions = model?.supported_reasoning_efforts ?? []
   const fastTier = fastTierForModel(model)
@@ -481,6 +482,8 @@ function CodexToolbar({
       <OptionMenu
         label="Model"
         value={model?.display_name || selection.model || 'Model'}
+        open={openMenu === 'model'}
+        onOpenChange={(open) => setOpenMenu(open ? 'model' : null)}
         disabled={disabled || !options?.models.length}
         options={(options?.models ?? []).map((item) => ({ value: item.model, label: item.display_name }))}
         onSelect={(modelValue) => {
@@ -493,6 +496,8 @@ function CodexToolbar({
       <OptionMenu
         label="Reasoning"
         value={selection.reasoning_effort || model?.default_reasoning_effort || 'Reasoning'}
+        open={openMenu === 'reasoning'}
+        onOpenChange={(open) => setOpenMenu(open ? 'reasoning' : null)}
         disabled={disabled || reasoningOptions.length === 0}
         options={reasoningOptions.map((item) => ({
           value: item.reasoning_effort,
@@ -511,12 +516,10 @@ function CodexToolbar({
         disabled={disabled || !fastTier}
         onClick={() => onChange({ ...selection, fast_mode: fastTier ? !selection.fast_mode : false })}
       />
-      <ToggleControl
+      <SwitchControl
         label="Plan"
-        icon={<ClipboardList className="size-4" aria-hidden="true" />}
         active={selection.planning_mode && planAvailable}
         disabled={disabled || !planAvailable}
-        activeClassName="bg-amber-100 text-amber-800 dark:bg-amber-400/18 dark:text-amber-200"
         onClick={() => onChange({ ...selection, planning_mode: planAvailable ? !selection.planning_mode : false })}
       />
     </div>
@@ -526,18 +529,20 @@ function CodexToolbar({
 function OptionMenu({
   label,
   value,
+  open,
+  onOpenChange,
   options,
   disabled,
   onSelect,
 }: {
   label: string
   value: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
   options: { value: string; label: string; description?: string }[]
   disabled: boolean
   onSelect: (value: string) => void
 }) {
-  const [open, setOpen] = useState(false)
-
   return (
     <div className="relative">
       <button
@@ -546,7 +551,7 @@ function OptionMenu({
         aria-haspopup="listbox"
         aria-expanded={open}
         disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => onOpenChange(!open)}
         className="inline-flex h-8 items-center gap-1 rounded-md px-1.5 text-sm font-semibold text-foreground/78 transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
       >
         <span className="max-w-40 truncate">{value}</span>
@@ -566,7 +571,7 @@ function OptionMenu({
               aria-selected={option.label === value}
               onClick={() => {
                 onSelect(option.value)
-                setOpen(false)
+                onOpenChange(false)
               }}
               className="flex w-full flex-col rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/70"
             >
@@ -614,6 +619,50 @@ function ToggleControl({
     >
       {icon}
       {iconOnly ? null : <span>{label}</span>}
+    </button>
+  )
+}
+
+function SwitchControl({
+  label,
+  active,
+  disabled,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={active}
+      aria-pressed={active}
+      disabled={disabled}
+      onClick={onClick}
+      className="inline-flex h-8 items-center gap-2 rounded-full px-2 text-sm font-semibold text-foreground/72 transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+    >
+      <ClipboardList className="size-4" aria-hidden="true" />
+      <span>{label}</span>
+      <span
+        className={cn(
+          'relative inline-flex h-4 w-7 shrink-0 rounded-full border transition-colors',
+          active
+            ? 'border-amber-500/50 bg-amber-400 dark:bg-amber-400/70'
+            : 'border-border/80 bg-surface-muted',
+        )}
+        aria-hidden="true"
+      >
+        <span
+          className={cn(
+            'absolute top-1/2 size-3 -translate-y-1/2 rounded-full bg-background shadow-sm transition-transform',
+            active ? 'translate-x-3.5' : 'translate-x-0.5',
+          )}
+        />
+      </span>
     </button>
   )
 }

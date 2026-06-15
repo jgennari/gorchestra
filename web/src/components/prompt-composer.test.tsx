@@ -232,9 +232,9 @@ test('codex toolbar submits selected options with the prompt', async () => {
   expect(screen.getByRole('button', { name: 'Reasoning' })).toHaveTextContent('medium')
 
   await user.click(screen.getByRole('button', { name: 'Fast' }))
-  await user.click(screen.getByRole('button', { name: 'Plan' }))
+  await user.click(screen.getByRole('switch', { name: 'Plan' }))
 
-  expect(screen.getByRole('button', { name: 'Plan' })).toHaveClass('bg-amber-100')
+  expect(screen.getByRole('switch', { name: 'Plan' })).toHaveAttribute('aria-checked', 'true')
   expect(screen.getByLabelText('Prompt').closest('.codex-plan-composer')).toBeInTheDocument()
 
   await user.type(screen.getByLabelText('Prompt'), 'Hello Codex{enter}')
@@ -272,12 +272,12 @@ test('codex toolbar settings persist per session', async () => {
   await user.click(screen.getByRole('button', { name: 'Reasoning' }))
   await user.click(screen.getByRole('option', { name: /xhigh/ }))
   await user.click(screen.getByRole('button', { name: 'Fast' }))
-  await user.click(screen.getByRole('button', { name: 'Plan' }))
+  await user.click(screen.getByRole('switch', { name: 'Plan' }))
 
   expect(screen.getByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5 Mini')
   expect(screen.getByRole('button', { name: 'Reasoning' })).toHaveTextContent('xhigh')
   expect(screen.getByRole('button', { name: 'Fast' })).toHaveAttribute('aria-pressed', 'true')
-  expect(screen.getByRole('button', { name: 'Plan' })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('switch', { name: 'Plan' })).toHaveAttribute('aria-checked', 'true')
   first.unmount()
 
   const second = render(
@@ -292,7 +292,7 @@ test('codex toolbar settings persist per session', async () => {
   expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5.5')
   expect(screen.getByRole('button', { name: 'Reasoning' })).toHaveTextContent('medium')
   expect(screen.getByRole('button', { name: 'Fast' })).toHaveAttribute('aria-pressed', 'false')
-  expect(screen.getByRole('button', { name: 'Plan' })).toHaveAttribute('aria-pressed', 'false')
+  expect(screen.getByRole('switch', { name: 'Plan' })).toHaveAttribute('aria-checked', 'false')
   second.unmount()
 
   render(
@@ -307,7 +307,35 @@ test('codex toolbar settings persist per session', async () => {
   expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5 Mini')
   expect(screen.getByRole('button', { name: 'Reasoning' })).toHaveTextContent('xhigh')
   expect(screen.getByRole('button', { name: 'Fast' })).toHaveAttribute('aria-pressed', 'true')
-  expect(screen.getByRole('button', { name: 'Plan' })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('switch', { name: 'Plan' })).toHaveAttribute('aria-checked', 'true')
+})
+
+test('codex model and reasoning menus are mutually exclusive', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(codexOptionsResponse())))
+
+  render(
+    <PromptComposer
+      sessionID="sess_codex"
+      agentType="codex"
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+    />,
+  )
+
+  await user.click(await screen.findByRole('button', { name: 'Model' }))
+  expect(screen.getByRole('listbox', { name: 'Model' })).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Reasoning' }))
+
+  expect(screen.queryByRole('listbox', { name: 'Model' })).not.toBeInTheDocument()
+  expect(screen.getByRole('listbox', { name: 'Reasoning' })).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Model' }))
+
+  expect(screen.getByRole('listbox', { name: 'Model' })).toBeInTheDocument()
+  expect(screen.queryByRole('listbox', { name: 'Reasoning' })).not.toBeInTheDocument()
 })
 
 function codexOptionsResponse() {

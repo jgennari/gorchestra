@@ -245,6 +245,50 @@ test('chat transcript merges streaming assistant deltas with completion text', (
   expect(transcript[1]).toMatchObject({ role: 'assistant', text: 'Hi there', streaming: false })
 })
 
+test('chat transcript renders structured plan events as visible plan messages', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'agent.plan.delta', { item_id: 'plan_1', text: '# Plan\n' }),
+    event(2, 'agent.plan.delta', { item_id: 'plan_1', text: '- Check the transcript\n' }),
+    event(3, 'agent.plan.completed', { item_id: 'plan_1', text: '# Plan\n- Check the transcript\n' }),
+  ])
+
+  expect(transcript).toHaveLength(1)
+  expect(transcript[0]).toMatchObject({
+    role: 'assistant',
+    label: 'Plan',
+    text: '# Plan\n- Check the transcript\n',
+    streaming: false,
+  })
+})
+
+test('chat transcript renders legacy raw Codex plan provider events', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'provider.codex.event', {
+      provider_event_type: 'item/plan/delta',
+      raw: { threadId: 'thread_1', turnId: 'turn_1', itemId: 'plan_1', delta: '# Plan\n' },
+    }),
+    event(2, 'provider.codex.event', {
+      provider_event_type: 'item/plan/delta',
+      raw: { threadId: 'thread_1', turnId: 'turn_1', itemId: 'plan_1', delta: '- Check the transcript\n' },
+    }),
+    event(3, 'provider.codex.event', {
+      provider_event_type: 'item/completed',
+      raw: {
+        threadId: 'thread_1',
+        turnId: 'turn_1',
+        item: { type: 'plan', id: 'plan_1', text: '# Plan\n- Check the transcript\n' },
+      },
+    }),
+  ])
+
+  expect(transcript).toHaveLength(1)
+  expect(transcript[0]).toMatchObject({
+    role: 'assistant',
+    label: 'Plan',
+    text: '# Plan\n- Check the transcript\n',
+  })
+})
+
 test('chat transcript groups tool calls under the assistant message', () => {
   const transcript = buildChatTranscript([
     event(1, 'user.message.completed', { text: 'Run tests' }),

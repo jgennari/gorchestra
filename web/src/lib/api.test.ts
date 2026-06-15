@@ -66,6 +66,8 @@ test('title update helper patches the session title', async () => {
       agent_type: 'fake',
       status: 'idle',
       workspace_path: '/repo',
+      event_count: 0,
+      tool_count: 0,
       created_at: '2026-06-12T16:00:00Z',
       updated_at: '2026-06-12T16:01:00Z',
       completed_at: null,
@@ -93,6 +95,8 @@ test('create session posts agent type and optional title', async () => {
         agent_type: 'fake',
         status: 'idle',
         workspace_path: '/repo',
+        event_count: 0,
+        tool_count: 0,
         created_at: '2026-06-12T16:00:00Z',
         updated_at: '2026-06-12T16:00:00Z',
         completed_at: null,
@@ -131,6 +135,8 @@ test('create session can post agent options', async () => {
         status: 'idle',
         workspace_path: '/repo',
         agent_options: { codex: { run_dangerously: true } },
+        event_count: 0,
+        tool_count: 0,
         created_at: '2026-06-12T16:00:00Z',
         updated_at: '2026-06-12T16:00:00Z',
         completed_at: null,
@@ -147,6 +153,8 @@ test('create session can post agent options', async () => {
   })
 
   expect(session.agent_options?.codex?.run_dangerously).toBe(true)
+  expect(session.event_count).toBe(0)
+  expect(session.tool_count).toBe(0)
 })
 
 test('archive session posts to the archive endpoint', async () => {
@@ -159,6 +167,8 @@ test('archive session posts to the archive endpoint', async () => {
       agent_type: 'fake',
       status: 'idle',
       workspace_path: '/repo',
+      event_count: 0,
+      tool_count: 0,
       created_at: '2026-06-12T16:00:00Z',
       updated_at: '2026-06-12T16:05:00Z',
       completed_at: null,

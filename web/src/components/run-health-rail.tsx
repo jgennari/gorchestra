@@ -28,9 +28,11 @@ export function RunHealthRail({
   onOpenFile,
   archivePending = false,
 }: Props) {
-  const toolCount = groupEvents(events).filter((group) => group.kind === 'tool-call' || group.kind === 'file-change').length
   const latestEvent = events.at(-1)
   const tokenUsage = latestTokenUsage(events)
+  const totalEventCount = Math.max(session?.event_count ?? 0, events.length)
+  const loadedToolCount = groupEvents(events).filter((group) => group.kind === 'tool-call' || group.kind === 'file-change').length
+  const totalToolCount = Math.max(session?.tool_count ?? 0, loadedToolCount)
 
   return (
     <aside className="command-rail flex h-full w-full shrink-0 flex-col px-3 py-4">
@@ -46,8 +48,8 @@ export function RunHealthRail({
             />
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <Metric label="Events" value={events.length} />
-            <Metric label="Tools" value={toolCount} />
+            <Metric label="Events" value={totalEventCount} />
+            <Metric label="Tools" value={totalToolCount} />
           </div>
         </RailPanel>
 
@@ -316,8 +318,8 @@ function RailSectionTitle({ icon: Icon, label }: { icon: LucideIcon; label: stri
 
 function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded bg-surface-muted/72 px-2 py-2">
-      <p className="text-lg font-semibold tabular-nums leading-none">{value}</p>
+    <div className="rounded bg-surface-muted/72 px-2 py-2 text-center">
+      <p className="text-lg font-semibold tabular-nums leading-none">{formatCompactCount(value)}</p>
       <p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
     </div>
   )
@@ -472,6 +474,12 @@ function tokenPressureBarClassName(percent: number) {
 function formatTokenCount(value: number) {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 10_000) return `${Math.round(value / 1_000)}k`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
+  return String(value)
+}
+
+function formatCompactCount(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
   return String(value)
 }

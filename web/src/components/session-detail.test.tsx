@@ -10,6 +10,8 @@ const baseSession: Session = {
   agent_type: 'fake',
   status: 'idle',
   workspace_path: '/repo',
+  event_count: 0,
+  tool_count: 0,
   created_at: '2026-06-12T16:00:00Z',
   updated_at: '2026-06-12T16:00:00Z',
   completed_at: null,

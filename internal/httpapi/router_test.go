@@ -197,6 +197,14 @@ func TestGetSessionReturnsSession(t *testing.T) {
 		CreatedAt: testCreatedAt,
 		UpdatedAt: testCreatedAt,
 	})
+	fakeStore.setEvents(
+		testSessionID,
+		testEvent(1, "agent.message.delta"),
+		testEvent(2, "tool.call.started"),
+		testEvent(3, "tool.call.completed"),
+		testEvent(4, "file.change.started"),
+		testEvent(5, "file.change.completed"),
+	)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID, nil)
 	rec := httptest.NewRecorder()
@@ -214,6 +222,12 @@ func TestGetSessionReturnsSession(t *testing.T) {
 	}
 	if response.CompletedAt != nil {
 		t.Fatalf("expected no completed_at for idle session, got %#v", response.CompletedAt)
+	}
+	if response.EventCount != 5 {
+		t.Fatalf("expected event_count 5, got %d", response.EventCount)
+	}
+	if response.ToolCount != 2 {
+		t.Fatalf("expected tool_count 2, got %d", response.ToolCount)
 	}
 }
 
@@ -754,6 +768,7 @@ func (s *fakeHTTPStore) GetSession(_ context.Context, stringID string) (store.Se
 	if !ok {
 		return store.Session{}, store.ErrNotFound
 	}
+	s.applySessionCounts(&session)
 
 	return session, nil
 }
@@ -775,6 +790,7 @@ func (s *fakeHTTPStore) ListSessions(_ context.Context, params store.ListSession
 		if params.Status != "" && session.Status != params.Status {
 			continue
 		}
+		s.applySessionCounts(&session)
 		sessions = append(sessions, session)
 	}
 	sort.Slice(sessions, func(i, j int) bool {
@@ -789,6 +805,22 @@ func (s *fakeHTTPStore) ListSessions(_ context.Context, params store.ListSession
 	}
 
 	return append([]store.Session(nil), sessions...), nil
+}
+
+func (s *fakeHTTPStore) applySessionCounts(session *store.Session) {
+	events := s.events[session.ID]
+	session.EventCount = int64(len(events))
+	session.ToolCount = int64(countToolActivityEvents(events))
+}
+
+func countToolActivityEvents(events []store.Event) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == "tool.call.started" || event.Type == "file.change.started" {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *fakeHTTPStore) UpdateSessionTitle(_ context.Context, params store.UpdateSessionTitleParams) (store.Session, error) {

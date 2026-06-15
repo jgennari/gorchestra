@@ -51,6 +51,8 @@ type sessionResponse struct {
 	ProviderSessionID string  `json:"provider_session_id,omitempty"`
 	WorkspacePath     string  `json:"workspace_path"`
 	AgentOptions      any     `json:"agent_options"`
+	EventCount        int64   `json:"event_count"`
+	ToolCount         int64   `json:"tool_count"`
 	CreatedAt         string  `json:"created_at"`
 	UpdatedAt         string  `json:"updated_at"`
 	CompletedAt       *string `json:"completed_at"`
@@ -292,6 +294,8 @@ func sessionResponseFromStore(session store.Session) sessionResponse {
 		ProviderSessionID: session.ProviderSessionID,
 		WorkspacePath:     session.WorkspacePath,
 		AgentOptions:      agentOptions,
+		EventCount:        session.EventCount,
+		ToolCount:         session.ToolCount,
 		CreatedAt:         session.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:         session.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		CompletedAt:       completedAt,

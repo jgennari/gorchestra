@@ -31,6 +31,8 @@ type Session struct {
 	ProviderSessionID string
 	WorkspacePath     string
 	AgentOptions      json.RawMessage
+	EventCount        int64
+	ToolCount         int64
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	CompletedAt       *time.Time
