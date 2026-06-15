@@ -11,6 +11,7 @@ export const knownEventTypes = [
   'agent.message.completed',
   'agent.plan.delta',
   'agent.plan.completed',
+  'agent.thinking.started',
   'agent.thinking.delta',
   'agent.thinking.completed',
   'agent.log.delta',
@@ -399,7 +400,7 @@ export function activeThinking(events: AgentEvent[]) {
       continue
     }
 
-    if (event.type === 'agent.thinking.delta') {
+    if (event.type === 'agent.thinking.started' || event.type === 'agent.thinking.delta') {
       const itemID = payloadItemID(event.payload)
       if (itemID) {
         activeThinkingItems.add(itemID)

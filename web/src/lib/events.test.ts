@@ -232,6 +232,32 @@ test('active thinking tracks reasoning item deltas by item id', () => {
   ).toBe(false)
 })
 
+test('active thinking restarts when a new reasoning item starts after completion', () => {
+  expect(
+    activeThinking([
+      event(1, 'agent.status.started', { provider_event_type: 'turn/started' }),
+      event(2, 'agent.thinking.completed', {
+        provider_event_type: 'item/completed',
+        item_type: 'reasoning',
+        item_id: 'rs_1',
+        text: '',
+      }),
+      event(3, 'agent.thinking.started', {
+        provider_event_type: 'item/started',
+        item_type: 'reasoning',
+        item_id: 'rs_2',
+      }),
+    ]),
+  ).toBe(true)
+
+  expect(
+    activeThinking([
+      event(1, 'agent.thinking.started', { item_id: 'rs_2' }),
+      event(2, 'agent.thinking.completed', { item_id: 'rs_2', text: '' }),
+    ]),
+  ).toBe(false)
+})
+
 test('chat transcript merges streaming assistant deltas with completion text', () => {
   const transcript = buildChatTranscript([
     event(1, 'user.message.completed', { text: 'Hello' }),

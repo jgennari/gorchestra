@@ -18,6 +18,7 @@ type Props = {
   onCompact?: () => Promise<void>
   onArchive: () => Promise<void>
   onOpenFile?: (file: WorkspaceFileContent) => void
+  fileRefreshKey?: number
   clearPending?: boolean
   compactPending?: boolean
   archivePending?: boolean
@@ -32,6 +33,7 @@ export function RunHealthRail({
   onCompact = async () => undefined,
   onArchive,
   onOpenFile,
+  fileRefreshKey = 0,
   clearPending = false,
   compactPending = false,
   archivePending = false,
@@ -85,7 +87,7 @@ export function RunHealthRail({
       </div>
 
       <div className="mt-3 min-h-0 flex-1">
-        <FileExplorer session={session} onOpenFile={onOpenFile} />
+        <FileExplorer session={session} refreshKey={fileRefreshKey} onOpenFile={onOpenFile} />
       </div>
 
       <div className="mt-auto space-y-3 pt-3">
@@ -124,9 +126,11 @@ export function RunHealthRail({
 
 function FileExplorer({
   session,
+  refreshKey,
   onOpenFile = () => undefined,
 }: {
   session: Session | null
+  refreshKey: number
   onOpenFile?: (file: WorkspaceFileContent) => void
 }) {
   const [currentPath, setCurrentPath] = useState('')
@@ -184,7 +188,7 @@ function FileExplorer({
     return () => {
       cancelled = true
     }
-  }, [currentPath, reloadKey, sessionID])
+  }, [currentPath, refreshKey, reloadKey, sessionID])
 
   useEffect(() => {
     const trimmed = query.trim()
@@ -217,7 +221,7 @@ function FileExplorer({
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [currentPath, query, reloadKey, sessionID])
+  }, [currentPath, query, refreshKey, reloadKey, sessionID])
 
   async function openEntry(entry: WorkspaceEntry) {
     if (!sessionID) {

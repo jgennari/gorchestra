@@ -61,6 +61,26 @@ test('thinking indicator follows active reasoning events while running', () => {
   })
 
   expect(screen.queryByRole('status', { name: /thinking/i })).not.toBeInTheDocument()
+
+  rerenderDetail(rerender, {
+    session: { ...baseSession, status: 'running' },
+    events: [
+      event(1, 'agent.status.started', { provider_event_type: 'turn/started' }),
+      event(2, 'agent.thinking.completed', {
+        provider_event_type: 'item/completed',
+        item_type: 'reasoning',
+        item_id: 'rs_1',
+        text: '',
+      }),
+      event(3, 'agent.thinking.started', {
+        provider_event_type: 'item/started',
+        item_type: 'reasoning',
+        item_id: 'rs_2',
+      }),
+    ],
+  })
+
+  expect(screen.getByRole('status', { name: /thinking/i })).toBeInTheDocument()
 })
 
 test('mobile header shows status as a dot indicator', () => {

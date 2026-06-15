@@ -110,6 +110,28 @@ func TestSuccessFixtureNormalizesExpectedEvents(t *testing.T) {
 	}
 }
 
+func TestReasoningItemStartedNormalizesThinkingStarted(t *testing.T) {
+	events := newNormalizer().normalize("item/started", json.RawMessage(`{
+		"threadId":"thread_1",
+		"turnId":"turn_1",
+		"item":{"type":"reasoning","id":"rs_1","status":"inProgress"}
+	}`))
+
+	if len(events) != 1 {
+		t.Fatalf("expected one event, got %#v", events)
+	}
+	if events[0].Event.Type != "agent.thinking.started" {
+		t.Fatalf("expected thinking started event, got %q", events[0].Event.Type)
+	}
+	payload, ok := events[0].Event.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload map, got %#v", events[0].Event.Payload)
+	}
+	if payload["item_id"] != "rs_1" || payload["provider_event_type"] != "item/started" {
+		t.Fatalf("expected reasoning item payload, got %#v", payload)
+	}
+}
+
 func TestCommandFixtureNormalizesToolEvents(t *testing.T) {
 	events := normalizeFixture(t, "command.jsonl")
 	assertAgentEventTypes(t, events, []string{

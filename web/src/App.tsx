@@ -99,6 +99,7 @@ function App() {
   const [pendingSessionAction, setPendingSessionAction] = useState<PendingSessionAction | null>(null)
   const [paneWidths, setPaneWidths] = useState<PaneWidths>(() => loadPaneWidths())
   const [openWorkspaceFile, setOpenWorkspaceFile] = useState<WorkspaceFileContent | null>(null)
+  const [fileRefreshKey, setFileRefreshKey] = useState(0)
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
   const paneWidthsRef = useRef(paneWidths)
 
@@ -167,6 +168,9 @@ function App() {
           session.id === event.session_id ? applySessionEvent(session, event, status) : session,
         ),
       )
+      if (event.type === 'file.change.completed' && event.session_id === selectedSessionIDRef.current) {
+        setFileRefreshKey((value) => value + 1)
+      }
       if (isTerminalEvent(event.type)) {
         window.setTimeout(() => {
           void refreshSession(event.session_id)
@@ -605,6 +609,7 @@ function App() {
           events={events}
           streamState={streamState}
           streamError={streamError}
+          fileRefreshKey={fileRefreshKey}
           onClear={() => {
             requestSessionAction('clear')
             return Promise.resolve()

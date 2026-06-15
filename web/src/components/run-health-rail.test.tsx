@@ -255,6 +255,70 @@ test('run health rail file explorer refresh reloads the current folder', async (
   )
 })
 
+test('run health rail file explorer external refresh preserves the current folder', async () => {
+  const user = userEvent.setup()
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    switch (String(url)) {
+      case '/api/sessions/sess_1/files':
+        return jsonResponse({
+          root_path: '/repo',
+          path: '',
+          entries: [
+            {
+              name: 'src',
+              path: 'src',
+              type: 'directory',
+              size_bytes: 0,
+              modified_at: '2026-06-12T16:00:00Z',
+            },
+          ],
+        })
+      case '/api/sessions/sess_1/files?path=src':
+        return jsonResponse({
+          root_path: '/repo',
+          path: 'src',
+          entries: [
+            {
+              name: 'main.go',
+              path: 'src/main.go',
+              type: 'file',
+              size_bytes: 10,
+              modified_at: '2026-06-12T16:00:00Z',
+            },
+          ],
+        })
+      default:
+        throw new Error(`unexpected URL ${String(url)}`)
+    }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const requestedURLs = () => fetchMock.mock.calls.map(([url]) => String(url))
+  const renderRail = (fileRefreshKey: number) => (
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      fileRefreshKey={fileRefreshKey}
+      onArchive={async () => undefined}
+    />
+  )
+
+  const { rerender } = render(renderRail(0))
+
+  await user.click(await screen.findByRole('button', { name: 'src' }))
+  await screen.findByRole('button', { name: 'main.go' })
+  await waitFor(() =>
+    expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files?path=src')).toHaveLength(1),
+  )
+
+  rerender(renderRail(1))
+
+  await waitFor(() =>
+    expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files?path=src')).toHaveLength(2),
+  )
+})
+
 test('run health rail file explorer dot folders hide at root and navigate from subfolders', async () => {
   const user = userEvent.setup()
   const fetchMock = vi.fn(async (url: RequestInfo | URL) => {

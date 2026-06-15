@@ -110,6 +110,9 @@ func (n *normalizer) normalizeItemLifecycle(method string, params json.RawMessag
 
 	if started {
 		switch itemType {
+		case "reasoning":
+			copyItemFields(payload, item)
+			return []normalizedEvent{{Event: event("agent.thinking.started", "assistant", "started", payload)}}
 		case "commandExecution", "mcpToolCall", "dynamicToolCall", "webSearch", "collabAgentToolCall":
 			copyItemFields(payload, item)
 			return []normalizedEvent{{Event: event("tool.call.started", "assistant", "started", payload)}}
