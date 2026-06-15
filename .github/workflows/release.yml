@@ -63,9 +63,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            dist/*.tar.gz \
-            dist/SHA256SUMS \
-            --verify-tag \
-            --title "Gorchestra ${{ steps.version.outputs.tag }}" \
-            --generate-notes
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            gh release upload "${{ steps.version.outputs.tag }}" \
+              dist/*.tar.gz \
+              dist/*.zip \
+              dist/SHA256SUMS \
+              --clobber
+          else
+            gh release create "${{ steps.version.outputs.tag }}" \
+              dist/*.tar.gz \
+              dist/*.zip \
+              dist/SHA256SUMS \
+              --verify-tag \
+              --title "Gorchestra ${{ steps.version.outputs.tag }}" \
+              --generate-notes
+          fi
