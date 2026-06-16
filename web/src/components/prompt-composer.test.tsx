@@ -44,7 +44,7 @@ test('submit errors are reported to the parent instead of rendering under the co
   expect(screen.queryByText('HTTP 502')).not.toBeInTheDocument()
 })
 
-test('ctrl enter inserts a newline without submitting', async () => {
+test('shift enter inserts a newline without submitting', async () => {
   const user = userEvent.setup()
   const onSubmit = vi.fn(async () => undefined)
 
@@ -52,11 +52,47 @@ test('ctrl enter inserts a newline without submitting', async () => {
 
   const prompt = screen.getByLabelText('Prompt')
   await user.type(prompt, 'Line one')
-  await user.keyboard('{Control>}{Enter}{/Control}')
+  await user.keyboard('{Shift>}{Enter}{/Shift}')
   await user.type(prompt, 'Line two')
 
   expect(onSubmit).not.toHaveBeenCalled()
   expect(prompt).toHaveValue('Line one\nLine two')
+})
+
+test('cmd or ctrl shift enter queues the draft without submitting', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn(async () => undefined)
+
+  render(<PromptComposer disabled={false} disabledReason="" onSubmit={onSubmit} />)
+
+  const prompt = screen.getByLabelText('Prompt')
+  await user.type(prompt, 'Queued prompt')
+  await user.keyboard('{Meta>}{Shift>}{Enter}{/Shift}{/Meta}')
+
+  expect(onSubmit).not.toHaveBeenCalled()
+  expect(prompt).toHaveValue('')
+  expect(screen.getByText('Queued prompt')).toBeInTheDocument()
+})
+
+test('queue button enqueues up to five drafts and allows removal', async () => {
+  const user = userEvent.setup()
+
+  render(<PromptComposer disabled={false} disabledReason="" onSubmit={async () => undefined} />)
+
+  const prompt = screen.getByLabelText('Prompt')
+  for (let index = 1; index <= 5; index += 1) {
+    await user.type(prompt, `Queued ${index}`)
+    await user.click(screen.getByRole('button', { name: /queue message/i }))
+  }
+
+  expect(screen.getAllByRole('button', { name: /remove queued message/i })).toHaveLength(5)
+  expect(screen.getByText('Queued 5')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /queue message/i })).toBeDisabled()
+
+  await user.click(screen.getByRole('button', { name: 'Remove queued message 3' }))
+
+  expect(screen.queryByText('Queued 3')).not.toBeInTheDocument()
+  expect(screen.getAllByRole('button', { name: /remove queued message/i })).toHaveLength(4)
 })
 
 test('attaches image files with previews, removal, and submit payloads', async () => {
@@ -151,6 +187,21 @@ test('prompt composer shows cancellation action while running', async () => {
   expect(onCancel).toHaveBeenCalledOnce()
 })
 
+test('queue shortcut reports an error when attachments are present', async () => {
+  const user = userEvent.setup()
+  const onError = vi.fn()
+  const image = new File(['first'], 'first.png', { type: 'image/png' })
+
+  render(<PromptComposer disabled={false} disabledReason="" onSubmit={async () => undefined} onError={onError} />)
+
+  await user.upload(screen.getByLabelText('Image attachments'), image)
+  await user.type(screen.getByLabelText('Prompt'), 'Queued prompt')
+  await user.keyboard('{Control>}{Shift>}{Enter}{/Shift}{/Control}')
+
+  expect(onError).toHaveBeenCalledWith('Queued messages cannot include image attachments.')
+  expect(screen.getByLabelText('Prompt')).toHaveValue('Queued prompt')
+})
+
 test('debug toggle uses orange active styling', async () => {
   const user = userEvent.setup()
   const onShowDebugEventsChange = vi.fn()
@@ -213,9 +264,12 @@ test('draft messages persist per session', async () => {
   const first = render(
     <PromptComposer sessionID="sess_1" disabled={false} disabledReason="" onSubmit={async () => undefined} />,
   )
+  await user.type(screen.getByLabelText('Prompt'), 'Queued draft')
+  await user.click(screen.getByRole('button', { name: /queue message/i }))
   await user.type(screen.getByLabelText('Prompt'), 'First draft')
   await waitFor(() => {
     expect(window.localStorage.getItem('gorchestra.session-composer.sess_1')).toContain('First draft')
+    expect(window.localStorage.getItem('gorchestra.session-composer.sess_1')).toContain('Queued draft')
   })
   first.unmount()
 
@@ -229,6 +283,102 @@ test('draft messages persist per session', async () => {
   render(<PromptComposer sessionID="sess_1" disabled={false} disabledReason="" onSubmit={async () => undefined} />)
 
   expect(screen.getByLabelText('Prompt')).toHaveValue('First draft')
+  expect(screen.getByText('Queued draft')).toBeInTheDocument()
+})
+
+test('auto-submits the next queued message after a completed run', async () => {
+  const onSubmit = vi.fn(async () => undefined)
+  window.localStorage.setItem(
+    'gorchestra.session-composer.__default__',
+    JSON.stringify({ queuedMessages: ['Queued follow-up'] }),
+  )
+  const { rerender } = render(
+    <PromptComposer
+      disabled
+      disabledReason="This session is running."
+      sessionStatus="running"
+      onSubmit={onSubmit}
+    />,
+  )
+
+  rerender(
+    <PromptComposer
+      disabled={false}
+      disabledReason=""
+      sessionStatus="idle"
+      latestTerminalEvent={{
+        id: 'evt_9',
+        session_id: 'sess_1',
+        seq: 9,
+        type: 'agent.run.completed',
+        role: 'assistant',
+        status: 'completed',
+        payload: {},
+        created_at: '2026-06-12T16:00:00Z',
+      }}
+      onSubmit={onSubmit}
+    />,
+  )
+
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('Queued follow-up'))
+})
+
+test('does not auto-submit queued messages after failed or cancelled runs, or while input is pending', async () => {
+  const onSubmit = vi.fn(async () => undefined)
+  const terminalBase = {
+    id: 'evt_10',
+    session_id: 'sess_1',
+    role: 'assistant' as const,
+    payload: {},
+    created_at: '2026-06-12T16:00:00Z',
+  }
+
+  window.localStorage.setItem(
+    'gorchestra.session-composer.__default__',
+    JSON.stringify({ queuedMessages: ['Queued follow-up'] }),
+  )
+  const { rerender } = render(
+    <PromptComposer
+      disabled
+      disabledReason="This session is running."
+      sessionStatus="running"
+      onSubmit={onSubmit}
+    />,
+  )
+
+  rerender(
+    <PromptComposer
+      disabled={false}
+      disabledReason=""
+      sessionStatus="failed"
+      latestTerminalEvent={{ ...terminalBase, seq: 10, type: 'agent.run.failed', status: 'failed' }}
+      onSubmit={onSubmit}
+    />,
+  )
+
+  await waitFor(() => expect(onSubmit).not.toHaveBeenCalled())
+
+  rerender(
+    <PromptComposer
+      disabled
+      disabledReason="This session is running."
+      sessionStatus="running"
+      onSubmit={onSubmit}
+    />,
+  )
+
+  rerender(
+    <PromptComposer
+      disabled={false}
+      disabledReason=""
+      sessionStatus="idle"
+      hasPendingUserInput
+      latestTerminalEvent={{ ...terminalBase, seq: 11, type: 'agent.run.completed', status: 'completed' }}
+      onSubmit={onSubmit}
+    />,
+  )
+
+  await waitFor(() => expect(onSubmit).not.toHaveBeenCalled())
 })
 
 test('codex toolbar submits selected options with the prompt', async () => {

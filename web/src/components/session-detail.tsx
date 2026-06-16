@@ -1,5 +1,5 @@
 import { Check, Copy, Ellipsis, RefreshCcw } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   AgentEvent,
   MessageAttachment,
@@ -17,7 +17,7 @@ import { PromptComposer } from '@/components/prompt-composer'
 import { SessionTitleEditor } from '@/components/session-title-editor'
 import { UserInputCard } from '@/components/user-input-card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { activeThinking, pendingUserInputRequest } from '@/lib/events'
+import { activeThinking, latestTerminalEvent, pendingUserInputRequest } from '@/lib/events'
 import { cn } from '@/lib/utils'
 
 type Props = {
@@ -75,6 +75,33 @@ export function SessionDetail({
     () => session?.status === 'running' && !userInputRequest && activeThinking(events),
     [events, session?.status, userInputRequest],
   )
+  const latestTerminal = useMemo(() => latestTerminalEvent(events), [events])
+  const bottomStackRef = useRef<HTMLDivElement>(null)
+  const [bottomInsetHeight, setBottomInsetHeight] = useState(176)
+
+  useLayoutEffect(() => {
+    const element = bottomStackRef.current
+    if (!element) {
+      return
+    }
+    const target = element
+
+    function updateHeight() {
+      const nextHeight = Math.ceil(target.getBoundingClientRect().height)
+      setBottomInsetHeight((current) => (current === nextHeight ? current : nextHeight))
+    }
+
+    updateHeight()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateHeight)
+      return () => window.removeEventListener('resize', updateHeight)
+    }
+
+    const observer = new ResizeObserver(() => updateHeight())
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [session?.id, userInputRequest])
 
   if (!session) {
     return (
@@ -135,7 +162,7 @@ export function SessionDetail({
           loading={streamState === 'loading'}
           error=""
           topInset={errorMessage ? 'sessionHeaderAlert' : 'sessionHeader'}
-          bottomInset={userInputRequest ? 'question' : 'composer'}
+          bottomInsetHeight={bottomInsetHeight}
           thinking={thinking}
           showDebugEvents={showDebugEvents}
           hasOlderEvents={hasOlderEvents}
@@ -157,12 +184,15 @@ export function SessionDetail({
         </div>
       </div>
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
-        <div className="pointer-events-auto relative">
+        <div ref={bottomStackRef} className="pointer-events-auto relative">
           <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
           <PromptComposer
             key={session.id}
             sessionID={session.id}
             agentType={session.agent_type}
+            sessionStatus={session.status}
+            hasPendingUserInput={Boolean(userInputRequest)}
+            latestTerminalEvent={latestTerminal}
             disabled={composerDisabled}
             disabledReason={disabledReason}
             showDebugEvents={showDebugEvents}

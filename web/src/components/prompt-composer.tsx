@@ -25,6 +25,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import {
+  type AgentEvent,
   fetchAgentOptions,
   type AgentType,
   type CodexAgentOptions,
@@ -41,6 +42,8 @@ const composerStorageKeyPrefix = 'gorchestra.session-composer.'
 const defaultComposerStorageID = '__default__'
 const maxImageAttachmentBytes = 5 * 1024 * 1024
 const maxImageAttachmentCount = 8
+const maxQueuedMessages = 5
+const queueShortcutLabel = 'Cmd/Ctrl+Shift+Enter'
 const claudeModelOptions = [
   { value: '', label: 'Default' },
   { value: 'opus', label: 'Opus' },
@@ -51,6 +54,9 @@ const claudeEffortOptions = ['low', 'medium', 'high', 'xhigh', 'max'].map((value
 type Props = {
   sessionID?: string
   agentType?: AgentType
+  sessionStatus?: 'idle' | 'running' | 'failed'
+  hasPendingUserInput?: boolean
+  latestTerminalEvent?: AgentEvent | null
   disabled: boolean
   disabledReason: string
   showDebugEvents?: boolean
@@ -75,6 +81,7 @@ type ClaudeSelection = {
 
 type ComposerStorageValue = {
   draft?: string
+  queuedMessages?: string[]
   codexSelection?: Partial<CodexSelection>
   claudeSelection?: Partial<ClaudeSelection>
 }
@@ -86,6 +93,9 @@ type ComposerAttachment = MessageAttachment & {
 export function PromptComposer({
   sessionID,
   agentType = 'fake',
+  sessionStatus = 'idle',
+  hasPendingUserInput = false,
+  latestTerminalEvent = null,
   disabled,
   disabledReason,
   showDebugEvents = false,
@@ -96,7 +106,10 @@ export function PromptComposer({
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const lastAutoAdvanceSeqRef = useRef(0)
+  const awaitingQueueAdvanceRef = useRef(false)
   const [content, setContent] = useState(() => loadDraft(sessionID))
+  const [queuedMessages, setQueuedMessages] = useState(() => loadQueuedMessages(sessionID))
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [dragActive, setDragActive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -108,6 +121,9 @@ export function PromptComposer({
   const [claudeSelection, setClaudeSelection] = useState<ClaudeSelection>(() => loadClaudeSelection(sessionID))
   const hasAttachments = attachments.length > 0
   const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments)
+  const queueBlockedByAttachments = hasAttachments
+  const canQueue =
+    !submitting && content.trim().length > 0 && !queueBlockedByAttachments && queuedMessages.length < maxQueuedMessages
   const canCancel = disabled && Boolean(onCancel)
   const inputDisabled = submitting
   const promptPlaceholder =
@@ -161,12 +177,73 @@ export function PromptComposer({
   }, [content, sessionID])
 
   useEffect(() => {
+    saveQueuedMessages(sessionID, queuedMessages)
+  }, [queuedMessages, sessionID])
+
+  useEffect(() => {
     saveCodexSelection(sessionID, codexSelection)
   }, [codexSelection, sessionID])
 
   useEffect(() => {
     saveClaudeSelection(sessionID, claudeSelection)
   }, [claudeSelection, sessionID])
+
+  useEffect(() => {
+    if (queuedMessages.length === 0) {
+      awaitingQueueAdvanceRef.current = false
+      return
+    }
+    if (sessionStatus === 'running') {
+      awaitingQueueAdvanceRef.current = true
+    }
+  }, [queuedMessages.length, sessionStatus])
+
+  useEffect(() => {
+    if (!latestTerminalEvent || latestTerminalEvent.type !== 'agent.run.completed') {
+      return
+    }
+    if (latestTerminalEvent.seq <= lastAutoAdvanceSeqRef.current) {
+      return
+    }
+    if (sessionStatus !== 'idle' || hasPendingUserInput || queuedMessages.length === 0 || submitting) {
+      return
+    }
+    if (!awaitingQueueAdvanceRef.current) {
+      return
+    }
+
+    lastAutoAdvanceSeqRef.current = latestTerminalEvent.seq
+    awaitingQueueAdvanceRef.current = false
+    void submitQueuedMessage()
+  }, [hasPendingUserInput, latestTerminalEvent, queuedMessages, sessionStatus, submitting])
+
+  function currentSubmitOptions() {
+    if (codexToolbarVisible) {
+      return submitOptionsForCodex(codexSelection, selectedFastTier)
+    }
+    if (claudeToolbarVisible) {
+      return submitOptionsForClaude(claudeSelection)
+    }
+    return undefined
+  }
+
+  async function submitText(contentToSend: string, submitAttachments: MessageAttachment[] = []) {
+    const submitOptions = currentSubmitOptions()
+
+    if (submitOptions && submitAttachments.length > 0) {
+      await onSubmit(contentToSend, submitOptions, submitAttachments)
+      return
+    }
+    if (submitOptions) {
+      await onSubmit(contentToSend, submitOptions)
+      return
+    }
+    if (submitAttachments.length > 0) {
+      await onSubmit(contentToSend, undefined, submitAttachments)
+      return
+    }
+    await onSubmit(contentToSend)
+  }
 
   async function submitPrompt() {
     if (!canSubmit) {
@@ -182,27 +259,29 @@ export function PromptComposer({
         data_url: attachment.data_url,
         size_bytes: attachment.size_bytes,
       }))
-      if (codexToolbarVisible) {
-        if (submitAttachments.length > 0) {
-          await onSubmit(content.trim(), submitOptionsForCodex(codexSelection, selectedFastTier), submitAttachments)
-        } else {
-          await onSubmit(content.trim(), submitOptionsForCodex(codexSelection, selectedFastTier))
-        }
-      } else if (claudeToolbarVisible) {
-        if (submitAttachments.length > 0) {
-          await onSubmit(content.trim(), submitOptionsForClaude(claudeSelection), submitAttachments)
-        } else {
-          await onSubmit(content.trim(), submitOptionsForClaude(claudeSelection))
-        }
-      } else if (submitAttachments.length > 0) {
-        await onSubmit(content.trim(), undefined, submitAttachments)
-      } else {
-        await onSubmit(content.trim())
-      }
+      await submitText(content.trim(), submitAttachments)
       setContent('')
       setAttachments([])
     } catch (submitError) {
       onError?.(submitError instanceof Error ? submitError.message : 'Failed to submit prompt')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function submitQueuedMessage() {
+    const nextQueuedMessage = queuedMessages[0]
+    if (!nextQueuedMessage) {
+      return
+    }
+
+    setSubmitting(true)
+    onError?.('')
+    try {
+      await submitText(nextQueuedMessage)
+      setQueuedMessages((current) => current.slice(1))
+    } catch (submitError) {
+      onError?.(submitError instanceof Error ? submitError.message : 'Failed to submit queued prompt')
     } finally {
       setSubmitting(false)
     }
@@ -217,7 +296,12 @@ export function PromptComposer({
     if (event.key !== 'Enter') {
       return
     }
-    if (event.ctrlKey) {
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey) {
+      event.preventDefault()
+      enqueueDraft()
+      return
+    }
+    if (event.shiftKey) {
       event.preventDefault()
       insertTextareaNewline(event.currentTarget, setContent)
       return
@@ -240,6 +324,27 @@ export function PromptComposer({
     } finally {
       setCancelling(false)
     }
+  }
+
+  function enqueueDraft() {
+    const trimmed = content.trim()
+    if (!trimmed) {
+      return
+    }
+    if (queueBlockedByAttachments) {
+      onError?.('Queued messages cannot include image attachments.')
+      return
+    }
+    if (queuedMessages.length >= maxQueuedMessages) {
+      onError?.(`Queue up to ${maxQueuedMessages} messages.`)
+      return
+    }
+    if (disabled) {
+      awaitingQueueAdvanceRef.current = true
+    }
+    setQueuedMessages((current) => [...current, trimmed])
+    setContent('')
+    onError?.('')
   }
 
   async function handleFiles(files: FileList | File[]) {
@@ -316,6 +421,26 @@ export function PromptComposer({
 
   return (
     <form onSubmit={(event) => void handleSubmit(event)} className="relative shrink-0 p-3">
+      {queuedMessages.length > 0 ? (
+        <div className="pointer-events-auto relative z-0 mx-3 -mb-3 rounded-t-[20px] border border-border/85 border-b-0 bg-surface-muted/75 px-4 pb-4 pt-2 shadow-[0_10px_24px_hsl(var(--foreground)/0.08)] backdrop-blur">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              Queued {queuedMessages.length}/{maxQueuedMessages}
+            </p>
+            <p className="hidden text-xs text-muted-foreground sm:block">{queueShortcutLabel}</p>
+          </div>
+          <div className="mt-1.5">
+            {queuedMessages.map((message, index) => (
+              <QueuedMessageRow
+                key={`${index}:${message}`}
+                index={index}
+                message={message}
+                onRemove={() => setQueuedMessages((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
       <div
         data-testid="prompt-composer-dropzone"
         onPaste={handlePaste}
@@ -323,7 +448,7 @@ export function PromptComposer({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={cn(
-          'command-composer rounded-xl border border-border/90 p-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)] transition-colors',
+          'command-composer relative z-10 rounded-xl border border-border/90 p-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)] transition-colors',
           ((codexToolbarVisible && codexSelection.planning_mode) ||
             (claudeToolbarVisible && claudeSelection.planning_mode)) &&
             'codex-plan-composer',
@@ -423,6 +548,21 @@ export function PromptComposer({
             >
               <Paperclip />
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!canQueue}
+              onClick={enqueueDraft}
+              title={
+                queueBlockedByAttachments
+                  ? 'Queued messages cannot include image attachments.'
+                  : `Queue message (${queueShortcutLabel})`
+              }
+              aria-label={`Queue message (${queueShortcutLabel})`}
+            >
+              <ClipboardList />
+              <span className="hidden sm:inline">Queue</span>
+            </Button>
             {canCancel ? (
               <Button
                 type="button"
@@ -464,6 +604,38 @@ function ImageAttachmentPreview({ attachment, onRemove }: { attachment: Composer
         <X className="size-3.5" aria-hidden="true" />
       </button>
     </figure>
+  )
+}
+
+function QueuedMessageRow({
+  index,
+  message,
+  onRemove,
+}: {
+  index: number
+  message: string
+  onRemove: () => void
+}) {
+  return (
+    <div
+      className={cn(
+        'flex items-start gap-2 py-1.5 text-sm text-muted-foreground',
+        index > 0 && 'border-t border-border/55',
+      )}
+    >
+      <span className="pt-0.5 text-xs font-semibold tabular-nums text-muted-foreground/75">{index + 1}</span>
+      <p className="min-w-0 flex-1 truncate">{message}</p>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label={`Remove queued message ${index + 1}`}
+        onClick={onRemove}
+        className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+      >
+        <X className="size-3.5" aria-hidden="true" />
+      </Button>
+    </div>
   )
 }
 
@@ -1171,10 +1343,25 @@ function loadDraft(sessionID: string | undefined) {
   return typeof stored.draft === 'string' ? stored.draft : ''
 }
 
+function loadQueuedMessages(sessionID: string | undefined) {
+  const stored = loadComposerStorage(sessionID)
+  if (!Array.isArray(stored.queuedMessages)) {
+    return []
+  }
+  return stored.queuedMessages.filter((message): message is string => typeof message === 'string' && message.trim().length > 0)
+}
+
 function saveDraft(sessionID: string | undefined, draft: string) {
   saveComposerStorage(sessionID, {
     ...loadComposerStorage(sessionID),
     draft,
+  })
+}
+
+function saveQueuedMessages(sessionID: string | undefined, queuedMessages: string[]) {
+  saveComposerStorage(sessionID, {
+    ...loadComposerStorage(sessionID),
+    queuedMessages,
   })
 }
 

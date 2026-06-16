@@ -147,6 +147,17 @@ test('load older control invokes the older event loader', async () => {
   expect(onLoadOlderEvents).toHaveBeenCalledTimes(1)
 })
 
+test('uses the measured bottom inset height for transcript padding', () => {
+  const { container } = render(
+    <ChatTranscript
+      bottomInsetHeight={260}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })]}
+    />,
+  )
+
+  expect(container.querySelector('.p-4')).toHaveStyle({ paddingBottom: '276px' })
+})
+
 test('scrolling to the top auto-loads older events and leaves the manual button', async () => {
   let resolveLoad: () => void = () => undefined
   const onLoadOlderEvents = vi.fn(

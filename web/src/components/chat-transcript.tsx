@@ -35,7 +35,7 @@ type Props = {
   loading?: boolean
   error?: string
   topInset?: 'none' | 'sessionHeader' | 'sessionHeaderAlert'
-  bottomInset?: 'composer' | 'question'
+  bottomInsetHeight?: number
   thinking?: boolean
   showDebugEvents?: boolean
   hasOlderEvents?: boolean
@@ -49,7 +49,7 @@ export function ChatTranscript({
   loading = false,
   error = '',
   topInset = 'none',
-  bottomInset = 'composer',
+  bottomInsetHeight = 176,
   thinking = false,
   showDebugEvents = false,
   hasOlderEvents = false,
@@ -190,6 +190,8 @@ export function ChatTranscript({
   }
 
   const latestMessageIndex = timeline.reduce((latest, item, index) => (item.kind === 'message' ? index : latest), -1)
+  const contentBottomPadding = Math.max(64, bottomInsetHeight + 16)
+  const jumpButtonBottom = Math.max(16, bottomInsetHeight + 12)
 
   return (
     <div className="chat-canvas relative h-full min-h-0 overflow-hidden">
@@ -211,8 +213,8 @@ export function ChatTranscript({
             'p-4',
             topInset === 'sessionHeader' && 'lg:pt-24',
             topInset === 'sessionHeaderAlert' && 'lg:pt-36',
-            bottomInset === 'question' ? 'pb-80' : 'pb-44',
           )}
+          style={{ paddingBottom: `${contentBottomPadding}px` }}
         >
           {hasOlderEvents || loadingOlderEvents ? (
             <LoadOlderEventsButton loading={loadingOlderEvents} onLoad={onLoadOlderEvents} />
@@ -240,8 +242,8 @@ export function ChatTranscript({
         <div
           className={cn(
             'pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4',
-            bottomInset === 'question' ? 'bottom-72' : 'bottom-36',
           )}
+          style={{ bottom: `${jumpButtonBottom}px` }}
         >
           <button
             type="button"

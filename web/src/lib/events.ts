@@ -414,6 +414,16 @@ export function pendingUserInputRequest(events: AgentEvent[]) {
   )
 }
 
+export function latestTerminalEvent(events: AgentEvent[]) {
+  let latest: AgentEvent | null = null
+  for (const event of sortedUniqueEvents(events)) {
+    if (isTerminalEvent(event.type)) {
+      latest = event
+    }
+  }
+  return latest
+}
+
 export function latestTokenUsage(events: AgentEvent[]) {
   let latest: TokenUsageSummary | null = null
   for (const event of sortedUniqueEvents(events)) {
@@ -646,6 +656,9 @@ export function isTerminalEvent(type: string) {
 }
 
 export function isErrorEvent(type: string, status: string) {
+  if (type === 'session.status.updated') {
+    return false
+  }
   return status === 'failed' || type.endsWith('.parse_error') || type === 'agent.run.failed'
 }
 

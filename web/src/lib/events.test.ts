@@ -155,6 +155,16 @@ test('session status update events expose their payload status', () => {
   expect(statusFromEvent(event(2, 'session.status.updated', { status: 'bogus' }))).toBeNull()
 })
 
+test('failed session status updates are not treated as transcript errors', () => {
+  const groups = groupEvents([
+    failedEvent(1, 'agent.run.failed', { error: 'Selected model is at capacity.' }),
+    failedEvent(2, 'session.status.updated', { status: 'failed' }),
+  ])
+
+  expect(groups.map((group) => group.kind)).toEqual(['error', 'unknown'])
+  expect(groups[1]?.label).toBe('Session status')
+})
+
 test('workspace file refreshes are derived from file changes and mutating git commands', () => {
   expect(shouldRefreshWorkspaceFilesForEvent(event(1, 'file.change.completed', { paths: ['web/src/App.tsx'] }))).toBe(
     true,
