@@ -11,6 +11,9 @@ const allowedHosts = (process.env.VITE_ALLOWED_HOSTS ?? '')
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    cssMinify: 'esbuild',
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
