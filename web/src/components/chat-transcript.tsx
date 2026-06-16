@@ -393,14 +393,52 @@ function ChatMessageRow({
   const user = message.role === 'user'
   const plan = message.variant === 'plan'
   const [showAllTools, setShowAllTools] = useState(false)
+  const [messageCopied, setMessageCopied] = useState(false)
   const shouldCollapseTools = collapseExtraTools && message.tools.length > 3
   const visibleTools = !shouldCollapseTools || showAllTools ? message.tools : message.tools.slice(0, 3)
   const hasHiddenTools = message.tools.length > visibleTools.length
   const timestamp = formatMessageTimestamp(message.createdAt)
+  const showMessageCopy = Boolean(message.text && !message.streaming)
+
+  async function handleMessageCopy() {
+    if (!message.text) {
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(message.text)
+      setMessageCopied(true)
+      window.setTimeout(() => setMessageCopied(false), 1200)
+    } catch {
+      setMessageCopied(false)
+    }
+  }
 
   return (
     <article className={cn('flex', user ? 'justify-end' : 'justify-start')} data-message-variant={message.variant}>
-      <div className="max-w-[min(48rem,90%)]">
+      <div className="group relative -mt-8 inline-block max-w-[min(48rem,90%)] overflow-hidden pt-8">
+        {timestamp ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-8 overflow-hidden">
+            <div className="absolute right-1 bottom-0 flex items-center gap-1 translate-y-5 transform-gpu transition-transform duration-250 ease-out will-change-transform group-hover:translate-y-0 group-focus-within:translate-y-0">
+              <time className="text-[11px] font-normal tabular-nums text-muted-foreground/80" dateTime={message.createdAt}>
+                {timestamp}
+              </time>
+              {showMessageCopy ? (
+                <button
+                  type="button"
+                  aria-label="Copy message"
+                  onClick={() => void handleMessageCopy()}
+                  className="pointer-events-auto inline-flex size-5 items-center justify-center rounded border border-border/70 bg-background/90 text-muted-foreground shadow-sm transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {messageCopied ? (
+                    <Check className="size-3" aria-hidden="true" />
+                  ) : (
+                    <Copy className="size-3" aria-hidden="true" />
+                  )}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         <div
           className={cn(
             'rounded-lg px-3.5 py-3 text-sm shadow-sm',
@@ -411,26 +449,12 @@ function ChatMessageRow({
                 : 'command-card border text-card-foreground',
           )}
         >
-          <div
-            className={cn(
-              'mb-1 flex items-center justify-between gap-4 text-xs font-medium',
-              user
-                ? 'text-primary-foreground/80'
-                : plan
-                  ? 'text-amber-800 dark:text-amber-200'
-                  : 'text-muted-foreground',
-            )}
-          >
-            <span className="flex min-w-0 items-center gap-2">
+          {plan ? (
+            <div className="mb-1.5 flex items-center gap-2 text-xs leading-none font-medium text-amber-800/90 dark:text-amber-200/90">
               {plan ? <ClipboardList className="size-3.5 shrink-0" aria-hidden="true" /> : null}
               <span>{message.label}</span>
-            </span>
-            {timestamp ? (
-              <time className="shrink-0 text-right font-normal tabular-nums" dateTime={message.createdAt}>
-                {timestamp}
-              </time>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
 
           {message.attachments.length > 0 ? <MessageAttachments attachments={message.attachments} /> : null}
 

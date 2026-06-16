@@ -17,7 +17,6 @@ test('renders user and assistant messages without duplicating completion text', 
 
   expect(screen.getByText('Hello')).toBeInTheDocument()
   expect(screen.getByText('Hi there')).toBeInTheDocument()
-  expect(screen.getByText('Assistant')).toBeInTheDocument()
   expect(screen.queryByText('Hi thereHi there')).not.toBeInTheDocument()
   expect(container.querySelectorAll('time[datetime="2026-06-12T16:00:00Z"]')).toHaveLength(2)
 })
@@ -59,7 +58,7 @@ test('renders run failures as system error rows instead of assistant text', () =
   expect(alert).toHaveTextContent(errorText)
   expect(alert).toHaveTextContent('#3')
 
-  const assistantMessage = screen.getByText('Assistant').closest('article')
+  const assistantMessage = screen.getByText('I started the change.').closest('article')
   expect(assistantMessage).toHaveTextContent('I started the change.')
   expect(assistantMessage).not.toHaveTextContent(errorText)
 })
@@ -297,6 +296,37 @@ test('copies fenced code blocks from user and assistant messages', async () => {
   expect(writeText).toHaveBeenNthCalledWith(2, expect.stringContaining('const answer = 42'))
 })
 
+test('copies full message text from the timestamp rail and hides copy while streaming', async () => {
+  const user = userEvent.setup()
+  const writeText = vi.fn(async () => undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  })
+
+  const { rerender } = render(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', {
+          text: 'Full answer body',
+        }),
+      ]}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Copy message' }))
+
+  expect(writeText).toHaveBeenCalledWith('Full answer body')
+
+  rerender(
+    <ChatTranscript
+      events={[event(1, 'agent.message.delta', 'assistant', 'delta', { text: 'Streaming body' })]}
+    />,
+  )
+
+  expect(screen.queryByRole('button', { name: 'Copy message' })).not.toBeInTheDocument()
+})
+
 test('groups tool calls under assistant messages with expandable output', async () => {
   const user = userEvent.setup()
   const writeText = vi.fn(async () => undefined)
@@ -517,7 +547,7 @@ test('renders separate assistant items with sequential tools', () => {
   expect(screen.getByText('pwd')).toBeInTheDocument()
   expect(screen.getByText('git status --short')).toBeInTheDocument()
   expect(screen.queryByText(/\/bin\/zsh/)).not.toBeInTheDocument()
-  expect(screen.getAllByText('Assistant')).toHaveLength(2)
+  expect(screen.queryByText('Assistant')).not.toBeInTheDocument()
 })
 
 test('renders streaming assistant messages without a badge', () => {
