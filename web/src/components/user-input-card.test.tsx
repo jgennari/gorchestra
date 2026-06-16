@@ -25,6 +25,22 @@ test('paged answers advance and submit on the final selection', async () => {
   })
 })
 
+test('typing spaces in the other-answer input does not advance the question', async () => {
+  const user = userEvent.setup()
+  const onAnswer = vi.fn(async () => undefined)
+
+  render(<UserInputCard request={requestWithOther()} onAnswer={onAnswer} />)
+
+  const otherInput = screen.getByLabelText('Other answer for Pick a deployment')
+  await user.click(otherInput)
+  await user.keyboard('custom answer with spaces')
+
+  expect(screen.getByText('Pick a deployment')).toBeInTheDocument()
+  expect(screen.queryByText('Pick a scheduler')).not.toBeInTheDocument()
+  expect(otherInput).toHaveValue('custom answer with spaces')
+  expect(onAnswer).not.toHaveBeenCalled()
+})
+
 function request(): PendingUserInputRequest {
   return {
     requestID: 'call_test',
@@ -58,6 +74,23 @@ function request(): PendingUserInputRequest {
           { label: 'Night Train', description: 'Late release queue.' },
         ],
       },
+    ],
+  }
+}
+
+function requestWithOther(): PendingUserInputRequest {
+  return {
+    ...request(),
+    questions: [
+      {
+        id: 'deployment',
+        header: 'Test Choice',
+        question: 'Pick a deployment',
+        is_other: true,
+        is_secret: false,
+        options: [{ label: 'Moon Launch', description: 'Lunar release pipeline.' }],
+      },
+      ...request().questions.slice(1),
     ],
   }
 }

@@ -47,7 +47,7 @@ export function SessionList({
     >
       {showHeader ? (
         <div className="flex items-center justify-between gap-3 border-b border-border/70 p-4">
-          <img src="/icon.svg" alt="Gorchestra" className="sidebar-logo-mark size-[2.0625rem] shrink-0" />
+          <img src="/icon.svg" alt="Gorchestra" className="sidebar-logo-mark h-9 w-9 shrink-0" />
           <div className="flex shrink-0 items-center gap-2">
             <ThemeToggle
               preference={themePreference}

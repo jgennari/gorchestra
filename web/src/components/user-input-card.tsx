@@ -179,6 +179,7 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
                 onClick={(event) => event.stopPropagation()}
                 onChange={(event) => setOtherValues((current) => ({ ...current, [question.id]: event.target.value }))}
                 onKeyDown={(event) => {
+                  event.stopPropagation()
                   if (event.key === 'Enter') {
                     event.preventDefault()
                     void selectAnswer(event.currentTarget.value)
