@@ -523,6 +523,27 @@ test('renders streaming assistant messages without a badge', () => {
   expect(screen.queryByText('Streaming')).not.toBeInTheDocument()
 })
 
+test('renders active thinking inline in the chat log', () => {
+  render(
+    <ChatTranscript
+      thinking
+      events={[event(1, 'user.message.completed', 'user', 'completed', { text: 'Hello' })]}
+    />,
+  )
+
+  const thinkingStatus = screen.getByRole('status', { name: 'Thinking' })
+  expect(thinkingStatus).toBeInTheDocument()
+  expect(screen.getByRole('log', { name: 'Chat messages' })).toContainElement(thinkingStatus)
+  expect(screen.getByText('Hello').compareDocumentPosition(thinkingStatus)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+})
+
+test('renders active thinking instead of the empty transcript state', () => {
+  render(<ChatTranscript thinking events={[]} />)
+
+  expect(screen.getByRole('status', { name: 'Thinking' })).toBeInTheDocument()
+  expect(screen.queryByText('No messages yet. Submit a prompt to start the chat.')).not.toBeInTheDocument()
+})
+
 test('hides debug-only events unless enabled', () => {
   render(
     <ChatTranscript

@@ -102,6 +102,8 @@ GORCHESTRA_CODEX_SANDBOX=read-only
 GORCHESTRA_CODEX_NETWORK_ACCESS=false
 GORCHESTRA_CODEX_WEB_SEARCH=cached
 GORCHESTRA_CODEX_MODEL=gpt-test
+GORCHESTRA_CLAUDE_BIN=/opt/claude/bin/claude
+GORCHESTRA_CLAUDE_MODEL=claude-test
 GORCHESTRA_OPEN=true
 `, dataDir, workspace, firstRoot, os.PathListSeparator, secondRoot))
 
@@ -136,6 +138,9 @@ GORCHESTRA_OPEN=true
 	}
 	if cfg.codexBin != "/opt/codex/bin/codex" || cfg.codexSandbox != "read-only" || cfg.codexSearch != "cached" || cfg.codexModel != "gpt-test" {
 		t.Fatalf("expected codex config values, got %#v", cfg)
+	}
+	if cfg.claudeBin != "/opt/claude/bin/claude" || cfg.claudeModel != "claude-test" {
+		t.Fatalf("expected claude config values, got %#v", cfg)
 	}
 	if cfg.codexNetwork || !cfg.open {
 		t.Fatalf("expected boolean config values, got network=%v open=%v", cfg.codexNetwork, cfg.open)

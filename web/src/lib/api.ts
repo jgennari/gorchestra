@@ -1,5 +1,5 @@
 export type SessionStatus = 'idle' | 'running' | 'failed'
-export type AgentType = 'fake' | 'codex'
+export type AgentType = 'fake' | 'codex' | 'claude'
 
 export type Session = {
   id: string
@@ -21,6 +21,9 @@ export type Session = {
 
 export type SessionAgentOptions = {
   codex?: {
+    run_dangerously?: boolean
+  }
+  claude?: {
     run_dangerously?: boolean
   }
 }
@@ -81,8 +84,15 @@ export type CodexSubmitOptions = {
   service_tier?: string
 }
 
+export type ClaudeSubmitOptions = {
+  model?: string
+  effort?: string
+  planning_mode?: boolean
+}
+
 export type SubmitAgentOptions = {
   codex?: CodexSubmitOptions
+  claude?: ClaudeSubmitOptions
 }
 
 export type MessageAttachment = {
@@ -226,7 +236,7 @@ export class APIError extends Error {
 }
 
 export function isAgentType(value: string): value is AgentType {
-  return value === 'fake' || value === 'codex'
+  return value === 'fake' || value === 'codex' || value === 'claude'
 }
 
 export async function fetchHealth() {

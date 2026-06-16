@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import App from '@/App'
 import type { AgentEvent, Session } from '@/lib/api'
+import { clearSessionEventCacheForTest } from '@/hooks/use-session-events'
 
 vi.mock('@monaco-editor/react', () => ({
   default: ({ value, onChange }: { value?: string; onChange?: (value: string | undefined) => void }) => (
@@ -19,6 +20,7 @@ const secondSession = session('sess_2', 'Write docs', '2026-06-12T16:01:00Z')
 beforeEach(() => {
   window.history.replaceState({}, '', '/')
   window.localStorage.clear()
+  clearSessionEventCacheForTest()
   document.head.innerHTML = '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />'
   FakeEventSource.instances = []
   vi.stubGlobal('fetch', fetchMock())
@@ -106,14 +108,110 @@ test('successful prompt submit reloads persisted events when the live stream is 
       expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
-  expect(await screen.findByText('Fresh prompt')).toBeInTheDocument()
   await waitFor(() =>
     expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&limit=500')).toHaveLength(
       2,
     ),
   )
+  expect(await screen.findByText('Fresh prompt')).toBeInTheDocument()
   expect(FakeEventSource.instances.some((source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=41'))
     .toBe(true)
+})
+
+test('successful prompt submit keeps the current transcript visible while history refresh is pending', async () => {
+  const user = userEvent.setup()
+  let resolveRefresh: (() => void) | undefined
+  let tailRequests = 0
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(url)
+    if (path === '/api/health') {
+      return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions?limit=50') {
+      return jsonResponse({ sessions: [firstSession, secondSession] })
+    }
+    if (path === '/api/sessions/sess_1') {
+      return jsonResponse(firstSession)
+    }
+    if (path === '/api/sessions/sess_1/messages' && init?.method === 'POST') {
+      return jsonResponse({ session_id: 'sess_1', status: 'running' })
+    }
+    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+      tailRequests += 1
+      if (tailRequests === 1) {
+        return jsonResponse({ events: [event(40, 'user.message.completed', { text: 'Previous prompt' })] })
+      }
+      await new Promise<void>((resolve) => {
+        resolveRefresh = resolve
+      })
+      return jsonResponse({
+        events: [
+          event(40, 'user.message.completed', { text: 'Previous prompt' }),
+          event(41, 'user.message.completed', { text: 'Fresh prompt' }),
+        ],
+      })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getByText('Previous prompt')).toBeInTheDocument())
+
+  await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
+
+  await waitFor(() => expect(tailRequests).toBe(2))
+  expect(screen.getByText('Previous prompt')).toBeInTheDocument()
+  expect(screen.queryByText('Loading chat history...')).not.toBeInTheDocument()
+
+  await act(async () => {
+    resolveRefresh?.()
+    await Promise.resolve()
+  })
+  expect(await screen.findByText('Fresh prompt')).toBeInTheDocument()
+  resolveRefresh?.()
+})
+
+test('switching back to a cached session restores transcript before replaying stream updates', async () => {
+  const user = userEvent.setup()
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  const initialSource = await findEventSource('/api/sessions/sess_1/events/stream?after_seq=0')
+  act(() => {
+    initialSource.emit(event(40, 'user.message.completed', { text: 'Cached prompt' }))
+  })
+  expect(await screen.findByText('Cached prompt')).toBeInTheDocument()
+
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
+
+  await user.click(screen.getAllByRole('button', { name: /Inspect repo/ })[0])
+
+  expect(screen.getByText('Cached prompt')).toBeInTheDocument()
+  expect(screen.queryByText('Loading chat history...')).not.toBeInTheDocument()
+  expect(
+    fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&limit=500'),
+  ).toHaveLength(1)
+
+  await waitFor(() =>
+    expect(
+      FakeEventSource.instances.filter(
+        (source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=40',
+      ),
+    ).toHaveLength(1),
+  )
+  const replaySource = FakeEventSource.instances.filter(
+    (source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=40',
+  ).at(-1)
+  act(() => {
+    replaySource?.emit(event(41, 'user.message.completed', { text: 'Replayed update' }))
+  })
+
+  expect(await screen.findByText('Replayed update')).toBeInTheDocument()
 })
 
 test('global activity stream marks another session pending input', async () => {

@@ -1,7 +1,8 @@
-import { Check, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Copy, FileText, Loader2 } from 'lucide-react'
+import { Brain, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Copy, FileText, Loader2 } from 'lucide-react'
 import {
   isValidElement,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -35,6 +36,7 @@ type Props = {
   error?: string
   topInset?: 'none' | 'sessionHeader' | 'sessionHeaderAlert'
   bottomInset?: 'composer' | 'question'
+  thinking?: boolean
   showDebugEvents?: boolean
   hasOlderEvents?: boolean
   loadingOlderEvents?: boolean
@@ -48,6 +50,7 @@ export function ChatTranscript({
   error = '',
   topInset = 'none',
   bottomInset = 'composer',
+  thinking = false,
   showDebugEvents = false,
   hasOlderEvents = false,
   loadingOlderEvents = false,
@@ -64,6 +67,7 @@ export function ChatTranscript({
   const [scrolling, setScrolling] = useState(false)
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
   const lastSeq = timeline.at(-1)?.endSeq ?? 0
+  const bottomAnchorKey = `${lastSeq}:${thinking ? 'thinking' : 'idle'}`
 
   function setAutoScrollPausedState(paused: boolean) {
     autoScrollPausedRef.current = paused
@@ -83,7 +87,7 @@ export function ChatTranscript({
     if (!autoScrollPausedRef.current) {
       scrollToBottom(element)
     }
-  }, [lastSeq])
+  }, [bottomAnchorKey])
 
   useEffect(() => {
     if (events.length === 0) {
@@ -177,7 +181,7 @@ export function ChatTranscript({
     )
   }
 
-  if (timeline.length === 0) {
+  if (timeline.length === 0 && !thinking) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
         No messages yet. Submit a prompt to start the chat.
@@ -225,6 +229,11 @@ export function ChatTranscript({
               />
             </div>
           ))}
+          {thinking ? (
+            <div className={timeline.length > 0 || hasOlderEvents || loadingOlderEvents ? 'mt-5' : ''}>
+              <ThinkingIndicatorRow />
+            </div>
+          ) : null}
         </div>
       </ScrollArea>
       {autoScrollPaused ? (
@@ -246,6 +255,40 @@ export function ChatTranscript({
         </div>
       ) : null}
     </div>
+  )
+}
+
+function ThinkingIndicatorRow() {
+  const gradientId = `thinking-gradient-${useId().replace(/:/g, '')}`
+
+  return (
+    <article className="flex justify-start">
+      <div
+        role="status"
+        aria-label="Thinking"
+        aria-live="polite"
+        className="thinking-indicator inline-flex max-w-[min(48rem,90%)] items-center gap-2 px-1 py-1 text-sm font-medium"
+      >
+        <Brain className="thinking-indicator__icon size-4" aria-hidden="true" stroke={`url(#${gradientId})`}>
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="24" y2="0" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stopColor="hsl(var(--muted-foreground))" />
+              <stop offset="42%" stopColor="hsl(var(--primary))" />
+              <stop offset="58%" stopColor="hsl(var(--glow))" />
+              <stop offset="100%" stopColor="hsl(var(--muted-foreground))" />
+              <animateTransform
+                attributeName="gradientTransform"
+                type="translate"
+                values="-24 0; 24 0; -24 0"
+                dur="2.4s"
+                repeatCount="indefinite"
+              />
+            </linearGradient>
+          </defs>
+        </Brain>
+        <span className="thinking-indicator__text">Thinking</span>
+      </div>
+    </article>
   )
 }
 

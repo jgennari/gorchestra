@@ -109,7 +109,7 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
         agent_type: agentType,
         title: title.trim() || undefined,
         workspace_path: workspacePath || undefined,
-        agent_options: agentType === 'codex' && runDangerously ? { codex: { run_dangerously: true } } : undefined,
+        agent_options: agentOptionsForCreate(agentType, runDangerously),
       })
       setTitle('')
       setAgentType('codex')
@@ -152,10 +152,11 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
               <SelectContent>
                 <SelectItem value="fake">Fake</SelectItem>
                 <SelectItem value="codex">Codex</SelectItem>
+                <SelectItem value="claude">Claude</SelectItem>
               </SelectContent>
             </Select>
           </div>
-          {agentType === 'codex' ? (
+          {agentType === 'codex' || agentType === 'claude' ? (
             <label
               className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"
               htmlFor="run-dangerously"
@@ -170,7 +171,9 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
               <span className="min-w-0">
                 <span className="block font-medium text-destructive">Run dangerously</span>
                 <span className="block text-xs text-muted-foreground">
-                  Start Codex without approval prompts or sandbox restrictions.
+                  {agentType === 'claude'
+                    ? 'Start Claude with permission prompts skipped.'
+                    : 'Start Codex without approval prompts or sandbox restrictions.'}
                 </span>
               </span>
             </label>
@@ -302,6 +305,19 @@ function WorkspaceHelpTooltip() {
       </Tooltip>
     </TooltipProvider>
   )
+}
+
+function agentOptionsForCreate(agentType: AgentType, runDangerously: boolean): SessionAgentOptions | undefined {
+  if (!runDangerously) {
+    return undefined
+  }
+  if (agentType === 'codex') {
+    return { codex: { run_dangerously: true } }
+  }
+  if (agentType === 'claude') {
+    return { claude: { run_dangerously: true } }
+  }
+  return undefined
 }
 
 function joinWorkspacePath(rootPath: string, relativePath: string) {

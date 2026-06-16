@@ -136,6 +136,7 @@ export function SessionDetail({
           error=""
           topInset={errorMessage ? 'sessionHeaderAlert' : 'sessionHeader'}
           bottomInset={userInputRequest ? 'question' : 'composer'}
+          thinking={thinking}
           showDebugEvents={showDebugEvents}
           hasOlderEvents={hasOlderEvents}
           loadingOlderEvents={loadingOlderEvents}
@@ -164,7 +165,6 @@ export function SessionDetail({
             agentType={session.agent_type}
             disabled={composerDisabled}
             disabledReason={disabledReason}
-            thinking={thinking}
             showDebugEvents={showDebugEvents}
             onSubmit={onSubmitPrompt}
             onShowDebugEventsChange={onShowDebugEventsChange}
@@ -244,7 +244,8 @@ function SessionDetailsMenu({
   const [open, setOpen] = useState(false)
   const [copiedField, setCopiedField] = useState<'session' | 'workspace' | null>(null)
   const [savingRunDangerously, setSavingRunDangerously] = useState(false)
-  const runDangerously = agentOptions?.codex?.run_dangerously === true
+  const runDangerously =
+    agentType === 'claude' ? agentOptions?.claude?.run_dangerously === true : agentOptions?.codex?.run_dangerously === true
 
   useEffect(() => {
     if (!open) return
@@ -282,7 +283,9 @@ function SessionDetailsMenu({
   async function handleRunDangerouslyChange(checked: boolean) {
     setSavingRunDangerously(true)
     try {
-      await onUpdateAgentOptions({ codex: { run_dangerously: checked } })
+      await onUpdateAgentOptions(
+        agentType === 'claude' ? { claude: { run_dangerously: checked } } : { codex: { run_dangerously: checked } },
+      )
     } finally {
       setSavingRunDangerously(false)
     }
@@ -324,7 +327,7 @@ function SessionDetailsMenu({
               copied={copiedField === 'workspace'}
               onCopy={() => void handleCopy(workspacePath, 'workspace')}
             />
-            {agentType === 'codex' ? (
+            {agentType === 'codex' || agentType === 'claude' ? (
               <label
                 className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"
                 htmlFor="session-run-dangerously"
@@ -340,7 +343,9 @@ function SessionDetailsMenu({
                 <span className="min-w-0">
                   <span className="block font-medium text-destructive">Run dangerously</span>
                   <span className="block text-xs text-muted-foreground">
-                    Save this session to run Codex without approval prompts or sandbox restrictions on the next run.
+                    {agentType === 'claude'
+                      ? 'Save this session to run Claude with permission prompts skipped on the next run.'
+                      : 'Save this session to run Codex without approval prompts or sandbox restrictions on the next run.'}
                   </span>
                 </span>
               </label>

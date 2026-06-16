@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 
@@ -86,6 +86,40 @@ test('create session form can enable codex dangerous mode', async () => {
     title: undefined,
     workspace_path: '/repo',
     agent_options: { codex: { run_dangerously: true } },
+  })
+})
+
+test('create session form can enable claude dangerous mode', async () => {
+  const user = userEvent.setup()
+  stubWorkspaceFetch()
+  const onCreate = vi.fn(async () => ({
+    id: 'sess_1',
+    title: '',
+    agent_type: 'claude' as const,
+    status: 'idle' as const,
+    workspace_path: '/repo',
+    event_count: 0,
+    tool_count: 0,
+    created_at: '2026-06-12T16:00:00Z',
+    updated_at: '2026-06-12T16:00:00Z',
+    completed_at: null,
+    archived_at: null,
+  }))
+
+  render(<CreateSessionDialog open onOpenChange={() => undefined} onCreate={onCreate} />)
+
+  expect(await screen.findByText('/repo')).toBeInTheDocument()
+  const nativeSelect = document.querySelector('select')
+  if (!nativeSelect) throw new Error('expected native select')
+  fireEvent.change(nativeSelect, { target: { value: 'claude' } })
+  await user.click(screen.getByLabelText(/run dangerously/i))
+  await user.click(screen.getByRole('button', { name: /^create$/i }))
+
+  expect(onCreate).toHaveBeenCalledWith({
+    agent_type: 'claude',
+    title: undefined,
+    workspace_path: '/repo',
+    agent_options: { claude: { run_dangerously: true } },
   })
 })
 

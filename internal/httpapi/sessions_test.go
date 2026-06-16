@@ -300,6 +300,28 @@ func TestCreateSessionAcceptsAvailableCodexAgent(t *testing.T) {
 	}
 }
 
+func TestCreateSessionAcceptsAvailableClaudeAgent(t *testing.T) {
+	ctx := context.Background()
+	claudeAgent := availabilityAgent{agentType: "claude"}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, claudeAgent)
+
+	rec := postJSON(handler, "/api/sessions", `{"agent_type":"claude","title":"Claude run"}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	var response createSessionResponse
+	decodeJSON(t, rec, &response)
+	session, err := dbStore.GetSession(ctx, response.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.AgentType != "claude" {
+		t.Fatalf("expected claude agent type, got %q", session.AgentType)
+	}
+}
+
 func TestCreateSessionStoresCodexRunDangerouslyOption(t *testing.T) {
 	ctx := context.Background()
 	codexAgent := availabilityAgent{agentType: "codex"}
@@ -338,6 +360,48 @@ func TestCreateSessionStoresCodexRunDangerouslyOption(t *testing.T) {
 	}
 	codexOptions, ok := responseOptions["codex"].(map[string]any)
 	if !ok || codexOptions["run_dangerously"] != true {
+		t.Fatalf("expected response run_dangerously option, got %#v", responseOptions)
+	}
+}
+
+func TestCreateSessionStoresClaudeRunDangerouslyOption(t *testing.T) {
+	ctx := context.Background()
+	claudeAgent := availabilityAgent{agentType: "claude"}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, claudeAgent)
+
+	rec := postJSON(handler, "/api/sessions", `{
+		"agent_type":"claude",
+		"title":"Danger run",
+		"agent_options":{"claude":{"run_dangerously":true}}
+	}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	var response createSessionResponse
+	decodeJSON(t, rec, &response)
+	session, err := dbStore.GetSession(ctx, response.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	var options map[string]map[string]any
+	if err := json.Unmarshal(session.AgentOptions, &options); err != nil {
+		t.Fatalf("decode agent options: %v", err)
+	}
+	if options["claude"]["run_dangerously"] != true {
+		t.Fatalf("expected run_dangerously option, got %#v", options)
+	}
+
+	var sessionResponse sessionResponse
+	getRec := get(handler, "/api/sessions/"+response.SessionID)
+	decodeJSON(t, getRec, &sessionResponse)
+	responseOptions, ok := sessionResponse.AgentOptions.(map[string]any)
+	if !ok {
+		t.Fatalf("expected response agent options map, got %#v", sessionResponse.AgentOptions)
+	}
+	claudeOptions, ok := responseOptions["claude"].(map[string]any)
+	if !ok || claudeOptions["run_dangerously"] != true {
 		t.Fatalf("expected response run_dangerously option, got %#v", responseOptions)
 	}
 }
@@ -960,6 +1024,75 @@ func TestMessageSubmissionPassesSessionCodexOptionsToAgentMetadata(t *testing.T)
 	}
 }
 
+func TestMessageSubmissionPassesSessionClaudeOptionsToAgentMetadata(t *testing.T) {
+	ctx := context.Background()
+	agent := newBlockingAgent()
+	agent.agentType = "claude"
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:        "Claude run",
+		AgentType:    "claude",
+		AgentOptions: json.RawMessage(`{"claude":{"run_dangerously":true}}`),
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(agent.release)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Inspect this repo"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	select {
+	case input := <-agent.started:
+		options, ok := input.Metadata["claude_options"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected claude options metadata, got %#v", input.Metadata["claude_options"])
+		}
+		assertMetadataValue(t, options, "run_dangerously", true)
+	case <-time.After(2 * time.Second):
+		t.Fatal("context ended before agent started")
+	}
+}
+
+func TestMessageSubmissionPassesClaudeOptionsToAgentMetadata(t *testing.T) {
+	ctx := context.Background()
+	agent := newBlockingAgent()
+	agent.agentType = "claude"
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Claude run",
+		AgentType: "claude",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(agent.release)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{
+		"content":"Inspect this repo",
+		"agent_options":{"claude":{"model":"opus","effort":"high","planning_mode":true}}
+	}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	select {
+	case input := <-agent.started:
+		options, ok := input.Metadata["claude_options"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected claude options metadata, got %#v", input.Metadata["claude_options"])
+		}
+		assertMetadataValue(t, options, "model", "opus")
+		assertMetadataValue(t, options, "effort", "high")
+		assertMetadataValue(t, options, "planning_mode", true)
+		assertMetadataValue(t, options, "permission_mode", "plan")
+	case <-time.After(2 * time.Second):
+		t.Fatal("context ended before agent started")
+	}
+}
+
 func TestMessageSubmissionPassesProviderSessionIDToCodexAgent(t *testing.T) {
 	ctx := context.Background()
 	agent := newBlockingAgent()
@@ -1023,6 +1156,37 @@ func TestCodexRunStartedPersistsProviderSessionID(t *testing.T) {
 	}
 	if updated.ProviderSessionID != "thread_created" {
 		t.Fatalf("expected provider session id thread_created, got %q", updated.ProviderSessionID)
+	}
+}
+
+func TestClaudeRunStartedPersistsProviderSessionID(t *testing.T) {
+	ctx := context.Background()
+	agent := claudeSessionAgent{sessionID: "2fe74369-4b15-49f9-8025-517ed6e52fed"}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Claude run",
+		AgentType: "claude",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Start"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	waitFor(t, func() bool {
+		session, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && session.Status == store.SessionStatusIdle
+	})
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated.ProviderSessionID != "2fe74369-4b15-49f9-8025-517ed6e52fed" {
+		t.Fatalf("expected provider session id, got %q", updated.ProviderSessionID)
 	}
 }
 
@@ -2027,6 +2191,27 @@ func (a codexThreadAgent) Run(ctx context.Context, input agents.AgentInput, emit
 			"provider":            "codex",
 			"provider_event_type": "thread/start",
 			"thread_id":           a.threadID,
+		},
+	})
+}
+
+type claudeSessionAgent struct {
+	sessionID string
+}
+
+func (a claudeSessionAgent) Type() string {
+	return "claude"
+}
+
+func (a claudeSessionAgent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
+	return emit(ctx, agents.AgentEvent{
+		Type:   "agent.run.started",
+		Role:   "assistant",
+		Status: string(store.EventStatusStarted),
+		Payload: map[string]any{
+			"provider":            "claude",
+			"provider_event_type": "system/init",
+			"provider_session_id": a.sessionID,
 		},
 	})
 }

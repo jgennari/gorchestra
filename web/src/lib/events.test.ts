@@ -291,6 +291,48 @@ test('latest token usage is derived from codex provider events', () => {
   })
 })
 
+test('latest token usage is derived from claude usage payloads', () => {
+  const usage = latestTokenUsage([
+    event(1, 'provider.claude.event', {
+      provider: 'claude',
+      provider_event_type: 'message_delta',
+      usage: {
+        input_tokens: 6,
+        cache_creation_input_tokens: 10246,
+        cache_read_input_tokens: 15713,
+        output_tokens: 15,
+        output_tokens_details: { thinking_tokens: 0 },
+      },
+    }),
+    event(2, 'agent.run.completed', {
+      provider: 'claude',
+      provider_event_type: 'result',
+      usage: {
+        input_tokens: 8,
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 20,
+        output_tokens: 30,
+        output_tokens_details: { thinking_tokens: 4 },
+      },
+      model_usage: {
+        opus: { contextWindow: 1000000 },
+      },
+    }),
+  ])
+
+  expect(usage).toMatchObject({
+    total: {
+      totalTokens: 68,
+      inputTokens: 38,
+      cachedInputTokens: 20,
+      outputTokens: 30,
+      reasoningOutputTokens: 4,
+    },
+    modelContextWindow: 1000000,
+    seq: 2,
+  })
+})
+
 test('active thinking clears when codex reasoning item completes', () => {
   expect(activeThinking([event(1, 'agent.status.started', { provider_event_type: 'turn/started' })])).toBe(true)
 
@@ -361,6 +403,18 @@ test('chat transcript merges streaming assistant deltas with completion text', (
   expect(transcript).toHaveLength(2)
   expect(transcript[0]).toMatchObject({ role: 'user', text: 'Hello' })
   expect(transcript[1]).toMatchObject({ role: 'assistant', text: 'Hi there', streaming: false })
+})
+
+test('chat transcript merges claude completion with prior deltas missing message id', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'user.message.completed', { text: 'Hello' }),
+    event(2, 'agent.message.delta', { text: 'Hi' }),
+    event(3, 'agent.message.delta', { text: '! What can I help you with?' }),
+    event(4, 'agent.message.completed', { message_id: 'msg_1', text: 'Hi! What can I help you with?' }),
+  ])
+
+  expect(transcript).toHaveLength(2)
+  expect(transcript[1]).toMatchObject({ role: 'assistant', text: 'Hi! What can I help you with?', streaming: false })
 })
 
 test('chat timeline renders run failures as non-message error rows', () => {

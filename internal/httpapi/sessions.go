@@ -33,10 +33,15 @@ type updateSessionRequest struct {
 }
 
 type createAgentOptions struct {
-	Codex *createCodexOptions `json:"codex,omitempty"`
+	Codex  *createCodexOptions  `json:"codex,omitempty"`
+	Claude *createClaudeOptions `json:"claude,omitempty"`
 }
 
 type createCodexOptions struct {
+	RunDangerously bool `json:"run_dangerously,omitempty"`
+}
+
+type createClaudeOptions struct {
 	RunDangerously bool `json:"run_dangerously,omitempty"`
 }
 
@@ -73,7 +78,8 @@ type submitMessageRequest struct {
 }
 
 type submitAgentOptions struct {
-	Codex *submitCodexOptions `json:"codex,omitempty"`
+	Codex  *submitCodexOptions  `json:"codex,omitempty"`
+	Claude *submitClaudeOptions `json:"claude,omitempty"`
 }
 
 type submitCodexOptions struct {
@@ -82,6 +88,12 @@ type submitCodexOptions struct {
 	FastMode        bool   `json:"fast_mode,omitempty"`
 	PlanningMode    bool   `json:"planning_mode,omitempty"`
 	ServiceTier     string `json:"service_tier,omitempty"`
+}
+
+type submitClaudeOptions struct {
+	Model        string `json:"model,omitempty"`
+	Effort       string `json:"effort,omitempty"`
+	PlanningMode bool   `json:"planning_mode,omitempty"`
 }
 
 type submitAttachment struct {
@@ -468,20 +480,34 @@ func rawPayloadString(payload json.RawMessage, key string) string {
 }
 
 func createSessionAgentOptions(agentType string, options *createAgentOptions) (json.RawMessage, error) {
-	if options == nil || options.Codex == nil {
+	if options == nil || options.Codex == nil && options.Claude == nil {
 		return json.RawMessage(`{}`), nil
 	}
-	if agentType != "codex" {
+	if options.Codex != nil && agentType != "codex" {
 		return nil, fmt.Errorf("codex options require a codex session")
+	}
+	if options.Claude != nil && agentType != "claude" {
+		return nil, fmt.Errorf("claude options require a claude session")
 	}
 
 	agentOptions := map[string]any{}
-	codexOptions := map[string]any{}
-	if options.Codex.RunDangerously {
-		codexOptions["run_dangerously"] = true
+	if options.Codex != nil {
+		codexOptions := map[string]any{}
+		if options.Codex.RunDangerously {
+			codexOptions["run_dangerously"] = true
+		}
+		if len(codexOptions) > 0 {
+			agentOptions["codex"] = codexOptions
+		}
 	}
-	if len(codexOptions) > 0 {
-		agentOptions["codex"] = codexOptions
+	if options.Claude != nil {
+		claudeOptions := map[string]any{}
+		if options.Claude.RunDangerously {
+			claudeOptions["run_dangerously"] = true
+		}
+		if len(claudeOptions) > 0 {
+			agentOptions["claude"] = claudeOptions
+		}
 	}
 
 	encoded, err := json.Marshal(agentOptions)
@@ -496,6 +522,7 @@ func submitOptionsMetadata(agentType string, sessionAgentOptions json.RawMessage
 		"agent_type": agentType,
 	}
 	codexOptions := map[string]any{}
+	claudeOptions := map[string]any{}
 	if len(sessionAgentOptions) > 0 {
 		var persisted map[string]map[string]any
 		if err := json.Unmarshal(sessionAgentOptions, &persisted); err != nil {
@@ -504,13 +531,42 @@ func submitOptionsMetadata(agentType string, sessionAgentOptions json.RawMessage
 		for key, value := range persisted["codex"] {
 			codexOptions[key] = value
 		}
+		for key, value := range persisted["claude"] {
+			claudeOptions[key] = value
+		}
 	}
-	if options == nil || options.Codex == nil {
-		if len(codexOptions) == 0 {
+	if options == nil || options.Codex == nil && options.Claude == nil {
+		responseOptions := map[string]any{}
+		if len(codexOptions) > 0 {
+			metadata["codex_options"] = codexOptions
+			responseOptions["codex"] = codexOptions
+		}
+		if len(claudeOptions) > 0 {
+			metadata["claude_options"] = claudeOptions
+			responseOptions["claude"] = claudeOptions
+		}
+		if len(responseOptions) == 0 {
 			return metadata, nil, nil
 		}
-		metadata["codex_options"] = codexOptions
-		return metadata, map[string]any{"codex": codexOptions}, nil
+		return metadata, responseOptions, nil
+	}
+	if options.Codex == nil {
+		if options.Claude == nil {
+			return metadata, nil, nil
+		}
+		if agentType != "claude" {
+			return nil, nil, fmt.Errorf("claude options require a claude session")
+		}
+		claudeOptions["model"] = strings.TrimSpace(options.Claude.Model)
+		claudeOptions["effort"] = strings.TrimSpace(options.Claude.Effort)
+		claudeOptions["planning_mode"] = options.Claude.PlanningMode
+		if options.Claude.PlanningMode {
+			claudeOptions["permission_mode"] = "plan"
+		} else {
+			claudeOptions["permission_mode"] = ""
+		}
+		metadata["claude_options"] = claudeOptions
+		return metadata, map[string]any{"claude": claudeOptions}, nil
 	}
 	if agentType != "codex" {
 		return nil, nil, fmt.Errorf("codex options require a codex session")
@@ -1206,22 +1262,32 @@ func (api API) persistProviderSessionIDFromEvent(
 }
 
 func providerSessionIDFromAgentEvent(agentType string, event agents.AgentEvent) string {
-	if agentType != "codex" || event.Type != "agent.run.started" {
+	if event.Type != "agent.run.started" {
 		return ""
 	}
 	payload, ok := event.Payload.(map[string]any)
 	if !ok {
 		return ""
 	}
-	if payloadString(payload, "provider") != "codex" {
-		return ""
-	}
-	switch payloadString(payload, "provider_event_type") {
-	case "thread/start", "thread/resume", "thread/started", "thread/resumed":
+	switch agentType {
+	case "codex":
+		if payloadString(payload, "provider") != "codex" {
+			return ""
+		}
+		switch payloadString(payload, "provider_event_type") {
+		case "thread/start", "thread/resume", "thread/started", "thread/resumed":
+			return payloadString(payload, "thread_id")
+		default:
+			return ""
+		}
+	case "claude":
+		if payloadString(payload, "provider") != "claude" || payloadString(payload, "provider_event_type") != "system/init" {
+			return ""
+		}
+		return payloadString(payload, "provider_session_id")
 	default:
 		return ""
 	}
-	return payloadString(payload, "thread_id")
 }
 
 func payloadString(payload map[string]any, key string) string {

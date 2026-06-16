@@ -45,7 +45,9 @@ test('thinking indicator follows active reasoning events while running', () => {
     events: [event(1, 'agent.status.started', { provider_event_type: 'turn/started' })],
   })
 
-  expect(screen.getByRole('status', { name: /thinking/i })).toBeInTheDocument()
+  const thinkingStatus = screen.getByRole('status', { name: /thinking/i })
+  expect(thinkingStatus).toBeInTheDocument()
+  expect(screen.getByRole('log', { name: 'Chat messages' })).toContainElement(thinkingStatus)
 
   rerenderDetail(rerender, {
     session: { ...baseSession, status: 'running' },
@@ -145,7 +147,30 @@ test('floating chat header updates run dangerously for codex sessions', async ()
   expect(onUpdateAgentOptions).toHaveBeenCalledWith({ codex: { run_dangerously: true } })
 })
 
-test('floating chat header hides run dangerously for non-codex sessions', async () => {
+test('floating chat header updates run dangerously for claude sessions', async () => {
+  const user = userEvent.setup()
+  const onUpdateAgentOptions = vi.fn(async () => undefined)
+
+  renderDetail({
+    session: {
+      ...baseSession,
+      agent_type: 'claude',
+      agent_options: { claude: { run_dangerously: false } },
+    },
+    onUpdateAgentOptions,
+  })
+
+  await user.click(screen.getByRole('button', { name: 'Session details' }))
+  const checkbox = screen.getByRole('checkbox', { name: /run dangerously/i })
+
+  expect(checkbox).not.toBeChecked()
+
+  await user.click(checkbox)
+
+  expect(onUpdateAgentOptions).toHaveBeenCalledWith({ claude: { run_dangerously: true } })
+})
+
+test('floating chat header hides run dangerously for fake sessions', async () => {
   const user = userEvent.setup()
 
   renderDetail()

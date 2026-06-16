@@ -26,6 +26,8 @@ export const knownEventTypes = [
   'provider.codex.event',
   'provider.codex.request',
   'provider.codex.parse_error',
+  'provider.claude.event',
+  'provider.claude.parse_error',
   'agent.run.completed',
   'agent.run.failed',
   'agent.run.cancelled',
@@ -644,7 +646,7 @@ export function isTerminalEvent(type: string) {
 }
 
 export function isErrorEvent(type: string, status: string) {
-  return status === 'failed' || type === 'provider.codex.parse_error' || type === 'agent.run.failed'
+  return status === 'failed' || type.endsWith('.parse_error') || type === 'agent.run.failed'
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -913,6 +915,11 @@ function assistantMessageForGroup(
   const existing = assistantMessagesByItemID.get(itemID)
   if (existing) {
     return existing
+  }
+
+  if (currentAssistant && isSameAssistantTextStream(currentAssistant.text, group.text)) {
+    assistantMessagesByItemID.set(itemID, currentAssistant)
+    return currentAssistant
   }
 
   if (currentAssistant && !currentAssistant.text.trim() && currentAssistant.tools.length > 0) {
@@ -1294,6 +1301,15 @@ function mergeChatText(current: string, next: string) {
   return `${current}\n\n${next}`
 }
 
+function isSameAssistantTextStream(current: string, next: string) {
+  const currentText = current.trim()
+  const nextText = next.trim()
+  if (!currentText || !nextText) {
+    return false
+  }
+  return nextText === currentText || nextText.startsWith(currentText) || currentText.endsWith(nextText)
+}
+
 function payloadPaths(payload: unknown) {
   if (!isRecord(payload)) {
     return []
@@ -1352,6 +1368,11 @@ function userInputRequestFromEvent(event: AgentEvent): PendingUserInputRequest |
 }
 
 function tokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
+  const claudeUsage = claudeTokenUsageFromEvent(event)
+  if (claudeUsage) {
+    return claudeUsage
+  }
+
   if (
     event.type !== 'provider.codex.event' ||
     payloadString(event.payload, ['provider_event_type']) !== 'thread/tokenUsage/updated'
@@ -1381,6 +1402,66 @@ function tokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
     updatedAt: event.created_at,
     seq: event.seq,
   }
+}
+
+function claudeTokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
+  if (!isRecord(event.payload) || event.payload.provider !== 'claude') {
+    return null
+  }
+  const usage = isRecord(event.payload.usage) ? event.payload.usage : null
+  if (!usage) {
+    return null
+  }
+  if (event.type !== 'provider.claude.event' && event.type !== 'agent.run.completed') {
+    return null
+  }
+
+  const snapshot = claudeTokenUsageSnapshot(usage)
+  if (!snapshot) {
+    return null
+  }
+
+  return {
+    total: snapshot,
+    last: snapshot,
+    modelContextWindow: claudeModelContextWindow(event.payload),
+    updatedAt: event.created_at,
+    seq: event.seq,
+  }
+}
+
+function claudeTokenUsageSnapshot(usage: Record<string, unknown>): TokenUsageSnapshot | null {
+  const inputTokens = payloadNumber(usage, ['input_tokens'])
+  const cacheCreationInputTokens = payloadNumber(usage, ['cache_creation_input_tokens'])
+  const cacheReadInputTokens = payloadNumber(usage, ['cache_read_input_tokens'])
+  const outputTokens = payloadNumber(usage, ['output_tokens'])
+  const reasoningOutputTokens = isRecord(usage.output_tokens_details)
+    ? payloadNumber(usage.output_tokens_details, ['thinking_tokens'])
+    : 0
+  const totalInputTokens = inputTokens + cacheCreationInputTokens + cacheReadInputTokens
+  const totalTokens = totalInputTokens + outputTokens
+  if (totalTokens <= 0) {
+    return null
+  }
+  return {
+    totalTokens,
+    inputTokens: totalInputTokens,
+    cachedInputTokens: cacheReadInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+  }
+}
+
+function claudeModelContextWindow(payload: Record<string, unknown>) {
+  const modelUsage = payload.model_usage
+  if (isRecord(modelUsage)) {
+    for (const value of Object.values(modelUsage)) {
+      if (!isRecord(value)) continue
+      const contextWindow = payloadNumber(value, ['contextWindow'])
+      if (contextWindow > 0) return contextWindow
+    }
+  }
+  return 1000000
 }
 
 function tokenUsageSnapshot(value: unknown): TokenUsageSnapshot | null {

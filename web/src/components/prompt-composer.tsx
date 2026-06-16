@@ -1,5 +1,4 @@
 import {
-  Brain,
   Bug,
   ChevronDown,
   ClipboardList,
@@ -15,7 +14,6 @@ import {
   type DragEvent,
   type ChangeEvent,
   useEffect,
-  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -43,13 +41,18 @@ const composerStorageKeyPrefix = 'gorchestra.session-composer.'
 const defaultComposerStorageID = '__default__'
 const maxImageAttachmentBytes = 5 * 1024 * 1024
 const maxImageAttachmentCount = 8
+const claudeModelOptions = [
+  { value: '', label: 'Default' },
+  { value: 'opus', label: 'Opus' },
+  { value: 'sonnet', label: 'Sonnet' },
+]
+const claudeEffortOptions = ['low', 'medium', 'high', 'xhigh', 'max'].map((value) => ({ value, label: value }))
 
 type Props = {
   sessionID?: string
   agentType?: AgentType
   disabled: boolean
   disabledReason: string
-  thinking?: boolean
   showDebugEvents?: boolean
   onSubmit: (content: string, agentOptions?: SubmitAgentOptions, attachments?: MessageAttachment[]) => Promise<void>
   onShowDebugEventsChange?: (showDebugEvents: boolean) => void
@@ -64,9 +67,16 @@ type CodexSelection = {
   planning_mode: boolean
 }
 
+type ClaudeSelection = {
+  model: string
+  effort: string
+  planning_mode: boolean
+}
+
 type ComposerStorageValue = {
   draft?: string
   codexSelection?: Partial<CodexSelection>
+  claudeSelection?: Partial<ClaudeSelection>
 }
 
 type ComposerAttachment = MessageAttachment & {
@@ -78,7 +88,6 @@ export function PromptComposer({
   agentType = 'fake',
   disabled,
   disabledReason,
-  thinking = false,
   showDebugEvents = false,
   onSubmit,
   onShowDebugEventsChange,
@@ -96,6 +105,7 @@ export function PromptComposer({
   const [codexOptionsLoading, setCodexOptionsLoading] = useState(false)
   const [codexOptionsError, setCodexOptionsError] = useState('')
   const [codexSelection, setCodexSelection] = useState<CodexSelection>(() => loadCodexSelection(sessionID))
+  const [claudeSelection, setClaudeSelection] = useState<ClaudeSelection>(() => loadClaudeSelection(sessionID))
   const hasAttachments = attachments.length > 0
   const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments)
   const canCancel = disabled && Boolean(onCancel)
@@ -107,6 +117,7 @@ export function PromptComposer({
         ? disabledReason
         : 'Ask the agent to work on this repository...'
   const codexToolbarVisible = agentType === 'codex'
+  const claudeToolbarVisible = agentType === 'claude'
   const selectedCodexModel = useMemo(
     () => selectedModel(codexOptions, codexSelection.model),
     [codexOptions, codexSelection.model],
@@ -153,6 +164,10 @@ export function PromptComposer({
     saveCodexSelection(sessionID, codexSelection)
   }, [codexSelection, sessionID])
 
+  useEffect(() => {
+    saveClaudeSelection(sessionID, claudeSelection)
+  }, [claudeSelection, sessionID])
+
   async function submitPrompt() {
     if (!canSubmit) {
       return
@@ -172,6 +187,12 @@ export function PromptComposer({
           await onSubmit(content.trim(), submitOptionsForCodex(codexSelection, selectedFastTier), submitAttachments)
         } else {
           await onSubmit(content.trim(), submitOptionsForCodex(codexSelection, selectedFastTier))
+        }
+      } else if (claudeToolbarVisible) {
+        if (submitAttachments.length > 0) {
+          await onSubmit(content.trim(), submitOptionsForClaude(claudeSelection), submitAttachments)
+        } else {
+          await onSubmit(content.trim(), submitOptionsForClaude(claudeSelection))
         }
       } else if (submitAttachments.length > 0) {
         await onSubmit(content.trim(), undefined, submitAttachments)
@@ -295,7 +316,6 @@ export function PromptComposer({
 
   return (
     <form onSubmit={(event) => void handleSubmit(event)} className="relative shrink-0 p-3">
-      {thinking ? <ThinkingIndicator /> : null}
       <div
         data-testid="prompt-composer-dropzone"
         onPaste={handlePaste}
@@ -304,7 +324,9 @@ export function PromptComposer({
         onDrop={handleDrop}
         className={cn(
           'command-composer rounded-xl border border-border/90 p-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)] transition-colors',
-          codexToolbarVisible && codexSelection.planning_mode && 'codex-plan-composer',
+          ((codexToolbarVisible && codexSelection.planning_mode) ||
+            (claudeToolbarVisible && claudeSelection.planning_mode)) &&
+            'codex-plan-composer',
           dragActive && 'border-primary/70 bg-primary/5 ring-2 ring-primary/20',
         )}
       >
@@ -349,6 +371,21 @@ export function PromptComposer({
                 error={codexOptionsError}
                 disabled={codexControlsDisabled}
                 onChange={setCodexSelection}
+              />
+            </>
+          ) : null}
+          {claudeToolbarVisible ? (
+            <>
+              <ClaudeToolbar
+                selection={claudeSelection}
+                disabled={disabled || submitting}
+                onChange={setClaudeSelection}
+                className="hidden sm:flex"
+              />
+              <MobileClaudeOptions
+                selection={claudeSelection}
+                disabled={disabled || submitting}
+                onChange={setClaudeSelection}
               />
             </>
           ) : null}
@@ -729,6 +766,165 @@ function mobileCodexSummary({
   return [modelName || 'Model', reasoningEffort].filter(Boolean).join(' / ')
 }
 
+function ClaudeToolbar({
+  selection,
+  disabled,
+  onChange,
+  className,
+}: {
+  selection: ClaudeSelection
+  disabled: boolean
+  onChange: (selection: ClaudeSelection) => void
+  className?: string
+}) {
+  const [openMenu, setOpenMenu] = useState<'model' | 'effort' | null>(null)
+
+  return (
+    <div className={cn('flex min-w-0 flex-wrap items-center gap-1.5 text-sm font-medium text-muted-foreground', className)}>
+      <SlidersHorizontal className="size-4 shrink-0" aria-hidden="true" />
+      <OptionMenu
+        label="Model"
+        value={claudeModelLabel(selection.model)}
+        open={openMenu === 'model'}
+        onOpenChange={(open) => setOpenMenu(open ? 'model' : null)}
+        disabled={disabled}
+        options={claudeModelOptions}
+        onSelect={(model) => onChange({ ...selection, model })}
+      />
+      <span aria-hidden="true" className="text-muted-foreground/70">
+        ·
+      </span>
+      <OptionMenu
+        label="Effort"
+        value={selection.effort || 'Effort'}
+        open={openMenu === 'effort'}
+        onOpenChange={(open) => setOpenMenu(open ? 'effort' : null)}
+        disabled={disabled}
+        options={claudeEffortOptions}
+        onSelect={(effort) => onChange({ ...selection, effort })}
+      />
+      <SwitchControl
+        label="Plan"
+        active={selection.planning_mode}
+        disabled={disabled}
+        onClick={() => onChange({ ...selection, planning_mode: !selection.planning_mode })}
+      />
+    </div>
+  )
+}
+
+function MobileClaudeOptions({
+  selection,
+  disabled,
+  onChange,
+}: {
+  selection: ClaudeSelection
+  disabled: boolean
+  onChange: (selection: ClaudeSelection) => void
+}) {
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [openMenu, setOpenMenu] = useState<'model' | 'effort' | null>(null)
+  const hasActiveMode = selection.planning_mode
+  const summary = [claudeModelLabel(selection.model), selection.effort].filter(Boolean).join(' / ')
+
+  useEffect(() => {
+    if (!open) {
+      setOpenMenu(null)
+      return
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div ref={menuRef} className="relative sm:hidden">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label="Composer options"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className={cn(
+          'h-8 w-8 text-muted-foreground hover:text-foreground',
+          hasActiveMode && 'bg-primary/12 text-primary hover:bg-primary/16 hover:text-primary',
+        )}
+      >
+        <SlidersHorizontal aria-hidden="true" />
+      </Button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label="Composer options"
+          className="absolute bottom-full left-0 z-50 mb-2 w-[min(20rem,calc(100vw-2rem))] rounded-lg border border-border/80 bg-popover p-3 text-popover-foreground shadow-lg"
+        >
+          <div className="mb-3 flex min-w-0 items-center justify-between gap-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Options</p>
+            <p className="min-w-0 truncate text-right text-xs text-muted-foreground">{summary}</p>
+          </div>
+          <div className="space-y-2">
+            <OptionMenu
+              label="Model"
+              value={claudeModelLabel(selection.model)}
+              open={openMenu === 'model'}
+              onOpenChange={(nextOpen) => setOpenMenu(nextOpen ? 'model' : null)}
+              disabled={disabled}
+              options={claudeModelOptions}
+              onSelect={(model) => onChange({ ...selection, model })}
+              buttonClassName="w-full justify-between rounded-md border border-border/80 bg-surface-muted/40 px-2"
+              valueClassName="max-w-[13rem]"
+              menuLayout="inline"
+            />
+            <OptionMenu
+              label="Effort"
+              value={selection.effort || 'Effort'}
+              open={openMenu === 'effort'}
+              onOpenChange={(nextOpen) => setOpenMenu(nextOpen ? 'effort' : null)}
+              disabled={disabled}
+              options={claudeEffortOptions}
+              onSelect={(effort) => onChange({ ...selection, effort })}
+              buttonClassName="w-full justify-between rounded-md border border-border/80 bg-surface-muted/40 px-2"
+              valueClassName="max-w-[13rem]"
+              menuLayout="inline"
+            />
+            <div className="pt-1">
+              <SwitchControl
+                label="Plan"
+                active={selection.planning_mode}
+                disabled={disabled}
+                onClick={() => onChange({ ...selection, planning_mode: !selection.planning_mode })}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function claudeModelLabel(model: string) {
+  return claudeModelOptions.find((option) => option.value === model)?.label ?? (model || 'Default')
+}
+
 function OptionMenu({
   label,
   value,
@@ -882,38 +1078,6 @@ function SwitchControl({
   )
 }
 
-function ThinkingIndicator() {
-  const gradientId = `thinking-gradient-${useId().replace(/:/g, '')}`
-
-  return (
-    <div
-      role="status"
-      aria-label="Thinking"
-      aria-live="polite"
-      className="thinking-indicator pointer-events-none absolute bottom-[calc(100%-0.625rem)] left-4 z-10 inline-flex items-center gap-2 text-sm font-medium"
-    >
-      <Brain className="thinking-indicator__icon size-4" aria-hidden="true" stroke={`url(#${gradientId})`}>
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="24" y2="0" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="hsl(var(--muted-foreground))" />
-            <stop offset="42%" stopColor="hsl(var(--primary))" />
-            <stop offset="58%" stopColor="hsl(var(--glow))" />
-            <stop offset="100%" stopColor="hsl(var(--muted-foreground))" />
-            <animateTransform
-              attributeName="gradientTransform"
-              type="translate"
-              values="-24 0; 24 0; -24 0"
-              dur="2.4s"
-              repeatCount="indefinite"
-            />
-          </linearGradient>
-        </defs>
-      </Brain>
-      <span className="thinking-indicator__text">Thinking</span>
-    </div>
-  )
-}
-
 function submitOptionsForCodex(selection: CodexSelection, fastTier: CodexServiceTierOption | null): SubmitAgentOptions {
   return {
     codex: {
@@ -922,6 +1086,16 @@ function submitOptionsForCodex(selection: CodexSelection, fastTier: CodexService
       fast_mode: selection.fast_mode,
       planning_mode: selection.planning_mode,
       service_tier: selection.fast_mode ? fastTier?.id : undefined,
+    },
+  }
+}
+
+function submitOptionsForClaude(selection: ClaudeSelection): SubmitAgentOptions {
+  return {
+    claude: {
+      model: selection.model || undefined,
+      effort: selection.effort || undefined,
+      planning_mode: selection.planning_mode,
     },
   }
 }
@@ -1018,6 +1192,22 @@ function saveCodexSelection(sessionID: string | undefined, selection: CodexSelec
   saveComposerStorage(sessionID, {
     ...loadComposerStorage(sessionID),
     codexSelection: selection,
+  })
+}
+
+function loadClaudeSelection(sessionID: string | undefined): ClaudeSelection {
+  const stored = loadComposerStorage(sessionID).claudeSelection ?? {}
+  return {
+    model: typeof stored.model === 'string' ? stored.model : '',
+    effort: typeof stored.effort === 'string' ? stored.effort : 'medium',
+    planning_mode: Boolean(stored.planning_mode),
+  }
+}
+
+function saveClaudeSelection(sessionID: string | undefined, selection: ClaudeSelection) {
+  saveComposerStorage(sessionID, {
+    ...loadComposerStorage(sessionID),
+    claudeSelection: selection,
   })
 }
 

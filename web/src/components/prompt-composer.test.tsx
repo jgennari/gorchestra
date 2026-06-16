@@ -292,6 +292,33 @@ test('codex toolbar submits selected options with the prompt', async () => {
   })
 })
 
+test('claude toolbar submits selected options with the prompt', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn(async () => undefined)
+
+  render(<PromptComposer agentType="claude" disabled={false} disabledReason="" onSubmit={onSubmit} />)
+
+  await user.click(screen.getByRole('button', { name: 'Model' }))
+  await user.click(screen.getByRole('option', { name: 'Opus' }))
+  await user.click(screen.getByRole('button', { name: 'Effort' }))
+  await user.click(screen.getByRole('option', { name: 'high' }))
+  await user.click(screen.getByRole('switch', { name: 'Plan' }))
+
+  expect(screen.getByLabelText('Prompt').closest('.codex-plan-composer')).toBeInTheDocument()
+
+  await user.type(screen.getByLabelText('Prompt'), 'Hello Claude{enter}')
+
+  await waitFor(() => {
+    expect(onSubmit).toHaveBeenCalledWith('Hello Claude', {
+      claude: {
+        model: 'opus',
+        effort: 'high',
+        planning_mode: true,
+      },
+    })
+  })
+})
+
 test('codex toolbar settings persist per session', async () => {
   const user = userEvent.setup()
   vi.stubGlobal(

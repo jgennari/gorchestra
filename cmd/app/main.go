@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/jgennari/gorchestra/internal/agents/claude"
 	"github.com/jgennari/gorchestra/internal/agents/codex"
 	"github.com/jgennari/gorchestra/internal/agents/fake"
 	"github.com/jgennari/gorchestra/internal/events"
@@ -47,6 +48,8 @@ type config struct {
 	codexNetwork   bool
 	codexSearch    string
 	codexModel     string
+	claudeBin      string
+	claudeModel    string
 	open           bool
 	showVersion    bool
 }
@@ -96,7 +99,18 @@ func main() {
 		log.Printf("codex available: %s", version)
 	}
 
-	agentRegistry, err := agents.NewRegistry(fake.New(), codexAgent)
+	claudeAgent := claude.New(
+		claude.WithBinary(cfg.claudeBin),
+		claude.WithModel(cfg.claudeModel),
+		claude.WithWorkspace(cfg.workspace),
+	)
+	if version, err := claudeAgent.CheckAvailability(ctx); err != nil {
+		log.Printf("claude unavailable: %v", err)
+	} else {
+		log.Printf("claude available: %s", version)
+	}
+
+	agentRegistry, err := agents.NewRegistry(fake.New(), codexAgent, claudeAgent)
 	if err != nil {
 		log.Fatalf("agent registry startup failed: %v", err)
 	}
@@ -169,6 +183,8 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	flags.BoolVar(&cfg.codexNetwork, "codex-network-access", true, "allow network access for Codex shell commands")
 	flags.StringVar(&cfg.codexSearch, "codex-web-search", "", "Codex web search mode: disabled, cached, or live")
 	flags.StringVar(&cfg.codexModel, "codex-model", "", "optional Codex model override")
+	flags.StringVar(&cfg.claudeBin, "claude-bin", "", "path to the Claude CLI binary")
+	flags.StringVar(&cfg.claudeModel, "claude-model", "", "optional Claude model override")
 	flags.BoolVar(&cfg.open, "open", false, "open the app in the default browser after startup")
 	flags.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -185,6 +201,8 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	codexNetworkFlag := flagWasSet(flags, "codex-network-access")
 	codexSearchFlag := flagWasSet(flags, "codex-web-search")
 	codexModelFlag := flagWasSet(flags, "codex-model")
+	claudeBinFlag := flagWasSet(flags, "claude-bin")
+	claudeModelFlag := flagWasSet(flags, "claude-model")
 	openFlag := flagWasSet(flags, "open")
 	workspaceRootsFlag := flagWasSet(flags, "workspace-root")
 	if cfg.showVersion {
@@ -232,6 +250,12 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	}
 	if !codexModelFlag {
 		cfg.codexModel = envOr(configGetenv, "GORCHESTRA_CODEX_MODEL", "")
+	}
+	if !claudeBinFlag {
+		cfg.claudeBin = envOr(configGetenv, "GORCHESTRA_CLAUDE_BIN", "claude")
+	}
+	if !claudeModelFlag {
+		cfg.claudeModel = envOr(configGetenv, "GORCHESTRA_CLAUDE_MODEL", "")
 	}
 	if !openFlag {
 		cfg.open = envBool(configGetenv, "GORCHESTRA_OPEN", false)
