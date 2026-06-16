@@ -795,7 +795,7 @@ func fakeAppServerAgent(t *testing.T, mode string, options ...Option) *Agent {
 	t.Setenv("GORCHESTRA_FAKE_CODEX_APP_SERVER", mode)
 	baseOptions := []Option{
 		WithBinary(os.Args[0]),
-		WithInterruptGrace(50 * time.Millisecond),
+		WithInterruptGrace(500 * time.Millisecond),
 		WithVersionChecker(func(context.Context, string) (string, error) {
 			return "codex-cli fake", nil
 		}),

@@ -273,7 +273,7 @@ func (r *streamRun) execute(ctx context.Context) error {
 			if r.normalizer.terminal {
 				return r.terminalReturn()
 			}
-			return r.processExitBeforeTerminal()
+			return r.awaitTerminalAfterProcessExit(ctx)
 		case incoming, ok := <-r.incoming:
 			if !ok {
 				if r.normalizer.terminal {
@@ -293,6 +293,34 @@ func (r *streamRun) execute(ctx context.Context) error {
 			if r.normalizer.terminal {
 				return r.terminalReturn()
 			}
+		}
+	}
+}
+
+func (r *streamRun) awaitTerminalAfterProcessExit(ctx context.Context) error {
+	timer := time.NewTimer(r.agent.interruptGrace)
+	defer timer.Stop()
+
+	for {
+		if r.normalizer.terminal {
+			return r.terminalReturn()
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case incoming, ok := <-r.incoming:
+			if !ok {
+				return r.processExitBeforeTerminal()
+			}
+			if err := r.handleIncoming(ctx, incoming); err != nil {
+				return err
+			}
+			if r.normalizer.terminal {
+				return r.terminalReturn()
+			}
+		case <-timer.C:
+			return r.processExitBeforeTerminal()
 		}
 	}
 }
