@@ -393,12 +393,42 @@ function ChatMessageRow({
   const user = message.role === 'user'
   const plan = message.variant === 'plan'
   const [showAllTools, setShowAllTools] = useState(false)
+  const [showMessageRail, setShowMessageRail] = useState(false)
   const [messageCopied, setMessageCopied] = useState(false)
+  const hoverIntentTimerRef = useRef<number | null>(null)
   const shouldCollapseTools = collapseExtraTools && message.tools.length > 3
   const visibleTools = !shouldCollapseTools || showAllTools ? message.tools : message.tools.slice(0, 3)
   const hasHiddenTools = message.tools.length > visibleTools.length
   const timestamp = formatMessageTimestamp(message.createdAt)
   const showMessageCopy = Boolean(message.text && !message.streaming)
+
+  useEffect(() => {
+    return () => {
+      if (hoverIntentTimerRef.current !== null) {
+        window.clearTimeout(hoverIntentTimerRef.current)
+      }
+    }
+  }, [])
+
+  function clearHoverIntentTimer() {
+    if (hoverIntentTimerRef.current !== null) {
+      window.clearTimeout(hoverIntentTimerRef.current)
+      hoverIntentTimerRef.current = null
+    }
+  }
+
+  function handleRailMouseEnter() {
+    clearHoverIntentTimer()
+    hoverIntentTimerRef.current = window.setTimeout(() => {
+      setShowMessageRail(true)
+      hoverIntentTimerRef.current = null
+    }, 1000)
+  }
+
+  function hideMessageRail() {
+    clearHoverIntentTimer()
+    setShowMessageRail(false)
+  }
 
   async function handleMessageCopy() {
     if (!message.text) {
@@ -415,14 +445,21 @@ function ChatMessageRow({
 
   return (
     <article className={cn('flex', user ? 'justify-end' : 'justify-start')} data-message-variant={message.variant}>
-      <div className="group relative -mt-8 inline-block max-w-[min(48rem,90%)] overflow-hidden pt-8">
+      <div
+        className="relative -mt-8 inline-block max-w-[min(48rem,90%)] overflow-hidden pt-8"
+        onMouseEnter={handleRailMouseEnter}
+        onMouseLeave={hideMessageRail}
+      >
         {timestamp ? (
           <div className="pointer-events-none absolute inset-x-0 top-0 h-8 overflow-hidden">
-            <div className="absolute right-1 bottom-0 flex items-center gap-1 translate-y-5 transform-gpu transition-transform duration-250 ease-out will-change-transform group-hover:translate-y-0 group-focus-within:translate-y-0">
+            <div
+              className="absolute right-1 bottom-0 flex items-center gap-1 transform-gpu transition-transform duration-250 ease-out will-change-transform"
+              style={{ transform: showMessageRail ? 'translateY(0)' : 'translateY(1.25rem)' }}
+            >
               <time className="text-[11px] font-normal tabular-nums text-muted-foreground/80" dateTime={message.createdAt}>
                 {timestamp}
               </time>
-              {showMessageCopy ? (
+              {showMessageRail && showMessageCopy ? (
                 <button
                   type="button"
                   aria-label="Copy message"

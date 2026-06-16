@@ -314,6 +314,11 @@ test('copies full message text from the timestamp rail and hides copy while stre
     />,
   )
 
+  await user.hover(screen.getByText('Full answer body'))
+  expect(screen.queryByRole('button', { name: 'Copy message' })).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument(), {
+    timeout: 1200,
+  })
   await user.click(screen.getByRole('button', { name: 'Copy message' }))
 
   expect(writeText).toHaveBeenCalledWith('Full answer body')
