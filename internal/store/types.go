@@ -76,6 +76,10 @@ type ArchiveSessionParams struct {
 	ID string
 }
 
+type RestoreSessionParams struct {
+	ID string
+}
+
 type SetSessionProviderSessionIDParams struct {
 	ID                string
 	ProviderSessionID string

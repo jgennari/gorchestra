@@ -193,7 +193,8 @@ test('session list can show archived sessions', async () => {
 
   expect(screen.getByText('Archived notes')).toBeInTheDocument()
   expect(screen.getByText('Archived')).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: /archived notes archived/i })).toHaveClass('text-muted-foreground')
+  expect(screen.getByRole('button', { name: /archived notes archived/i })).toHaveClass('border-dashed')
+  expect(screen.getByText('Archived notes')).toHaveClass('line-through')
 })
 
 function baseProps() {

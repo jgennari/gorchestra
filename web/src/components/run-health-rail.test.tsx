@@ -34,7 +34,7 @@ afterEach(() => {
 })
 
 test('run health rail shows metrics and active chat status without session identity', () => {
-  const onArchive = vi.fn(async () => undefined)
+  const onToggleArchive = vi.fn(async () => undefined)
 
   render(
     <RunHealthRail
@@ -47,7 +47,7 @@ test('run health rail shows metrics and active chat status without session ident
       ]}
       streamState="connected"
       streamError=""
-      onArchive={onArchive}
+      onToggleArchive={onToggleArchive}
     />,
   )
 
@@ -77,7 +77,7 @@ test('run health rail shows metrics and active chat status without session ident
 
 test('run health rail archives an idle session from the slice action', async () => {
   const user = userEvent.setup()
-  const onArchive = vi.fn(async () => undefined)
+  const onToggleArchive = vi.fn(async () => undefined)
 
   render(
     <RunHealthRail
@@ -85,13 +85,33 @@ test('run health rail archives an idle session from the slice action', async () 
       events={[]}
       streamState="connected"
       streamError=""
-      onArchive={onArchive}
+      onToggleArchive={onToggleArchive}
     />,
   )
 
   await user.click(screen.getByRole('button', { name: 'Archive selected session' }))
 
-  expect(onArchive).toHaveBeenCalledOnce()
+  expect(onToggleArchive).toHaveBeenCalledOnce()
+})
+
+test('run health rail offers restore for archived sessions', async () => {
+  const user = userEvent.setup()
+  const onToggleArchive = vi.fn(async () => undefined)
+
+  render(
+    <RunHealthRail
+      session={{ ...session, status: 'idle', archived_at: '2026-06-12T16:05:00Z' }}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onToggleArchive={onToggleArchive}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Restore selected session' }))
+
+  expect(onToggleArchive).toHaveBeenCalledOnce()
+  expect(screen.getByRole('button', { name: 'Restore selected session' })).toHaveTextContent('Restore')
 })
 
 test('run health rail exposes codex clear and compact actions', async () => {
@@ -105,7 +125,7 @@ test('run health rail exposes codex clear and compact actions', async () => {
       events={[]}
       streamState="connected"
       streamError=""
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
       onClear={onClear}
       onCompact={onCompact}
     />,
@@ -129,7 +149,7 @@ test('run health rail disables compact until a codex thread exists', () => {
       events={[]}
       streamState="connected"
       streamError=""
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
     />,
   )
 
@@ -144,7 +164,7 @@ test('run health rail latest event shows provider event type', () => {
       events={[event(1, 'provider.codex.event', 'system', 'completed', { provider_event_type: 'turn/completed' })]}
       streamState="connected"
       streamError=""
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
     />,
   )
 
@@ -165,7 +185,7 @@ test('run health rail shows latest token usage summary', () => {
       ]}
       streamState="connected"
       streamError=""
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
     />,
   )
 
@@ -186,7 +206,7 @@ test('run health rail active chat dot shows disconnected state', () => {
       events={[]}
       streamState="disconnected"
       streamError="lost connection"
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
     />,
   )
 
@@ -239,7 +259,7 @@ test('run health rail file explorer refresh reloads the current folder', async (
       events={[]}
       streamState="connected"
       streamError=""
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
     />,
   )
 
@@ -300,7 +320,7 @@ test('run health rail file explorer external refresh preserves the current folde
       streamState="connected"
       streamError=""
       fileRefreshKey={fileRefreshKey}
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
     />
   )
 
@@ -339,7 +359,7 @@ test('run health rail file explorer shows git file summary counts', async () => 
       events={[]}
       streamState="connected"
       streamError=""
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
     />,
   )
 
@@ -400,7 +420,7 @@ test('run health rail file explorer dot folders hide at root and navigate from s
       events={[]}
       streamState="connected"
       streamError=""
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
     />,
   )
 
@@ -461,7 +481,7 @@ test('run health rail file explorer searches file contents with snippets', async
       events={[]}
       streamState="connected"
       streamError=""
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
     />,
   )
 
@@ -518,7 +538,7 @@ test('run health rail file explorer clears search and restores the file list', a
       events={[]}
       streamState="connected"
       streamError=""
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
     />,
   )
 
@@ -580,7 +600,7 @@ test('run health rail file explorer sends file content to the viewer', async () 
       events={[]}
       streamState="connected"
       streamError=""
-      onArchive={async () => undefined}
+      onToggleArchive={async () => undefined}
       onOpenFile={onOpenFile}
     />,
   )

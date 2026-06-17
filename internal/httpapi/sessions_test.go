@@ -858,6 +858,46 @@ func TestArchiveRunningSessionReturnsConflict(t *testing.T) {
 	}
 }
 
+func TestRestoreSessionClearsArchivedAtAndReturnsToList(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+	if _, err := dbStore.ArchiveSession(ctx, store.ArchiveSessionParams{ID: session.ID}); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/restore", ``)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response sessionResponse
+	decodeJSON(t, rec, &response)
+	if response.ID != session.ID {
+		t.Fatalf("expected restored session id %q, got %q", session.ID, response.ID)
+	}
+	if response.ArchivedAt != nil {
+		t.Fatalf("expected restored response archived_at nil, got %v", response.ArchivedAt)
+	}
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated.ArchivedAt != nil {
+		t.Fatalf("expected persisted restored archived_at nil, got %v", updated.ArchivedAt)
+	}
+
+	sessions, err := dbStore.ListSessions(ctx, store.ListSessionsParams{})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != session.ID {
+		t.Fatalf("expected restored session in list, got %#v", sessions)
+	}
+}
+
 func TestMessageSubmissionReturnsUnavailableForRegisteredUnavailableAgent(t *testing.T) {
 	ctx := context.Background()
 	codexAgent := availabilityAgent{agentType: "codex", availableErr: agents.ErrUnavailable}

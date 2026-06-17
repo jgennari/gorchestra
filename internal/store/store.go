@@ -272,6 +272,35 @@ func (s *Store) ArchiveSession(ctx context.Context, params ArchiveSessionParams)
 	return s.GetSession(ctx, params.ID)
 }
 
+func (s *Store) RestoreSession(ctx context.Context, params RestoreSessionParams) (Session, error) {
+	if strings.TrimSpace(params.ID) == "" {
+		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+
+	now := s.now()
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE sessions
+		 SET archived_at = NULL, updated_at = CASE WHEN archived_at IS NOT NULL THEN ? ELSE updated_at END
+		 WHERE id = ?`,
+		formatTime(now),
+		params.ID,
+	)
+	if err != nil {
+		return Session{}, fmt.Errorf("restore session: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, fmt.Errorf("check restored session rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, params.ID)
+	}
+
+	return s.GetSession(ctx, params.ID)
+}
+
 func (s *Store) SetSessionProviderSessionID(ctx context.Context, params SetSessionProviderSessionIDParams) (Session, error) {
 	sessionID := strings.TrimSpace(params.ID)
 	providerSessionID := strings.TrimSpace(params.ProviderSessionID)

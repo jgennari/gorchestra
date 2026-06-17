@@ -405,6 +405,35 @@ func TestListSessionsCanIncludeArchivedSessions(t *testing.T) {
 	assertSessionIDs(t, sessions, []string{archived.ID, visible.ID})
 }
 
+func TestRestoreSessionReturnsSessionToActiveLists(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	session := createTestSessionWithTitle(t, ctx, store, "Archived")
+	if _, err := store.ArchiveSession(ctx, ArchiveSessionParams{ID: session.ID}); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+
+	restoreAt := time.Date(2026, 6, 12, 16, 10, 0, 0, time.UTC)
+	store.now = func() time.Time { return restoreAt }
+	restored, err := store.RestoreSession(ctx, RestoreSessionParams{ID: session.ID})
+	if err != nil {
+		t.Fatalf("restore session: %v", err)
+	}
+	if restored.ArchivedAt != nil {
+		t.Fatalf("expected restored session to clear archived_at, got %v", restored.ArchivedAt)
+	}
+	if !restored.UpdatedAt.Equal(restoreAt) {
+		t.Fatalf("expected updated_at %s, got %s", restoreAt, restored.UpdatedAt)
+	}
+
+	sessions, err := store.ListSessions(ctx, ListSessionsParams{})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	assertSessionIDs(t, sessions, []string{session.ID})
+}
+
 func TestArchiveSessionReturnsNotFoundForMissingSession(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)

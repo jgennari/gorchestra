@@ -15,6 +15,7 @@ import {
   listSessions,
   listSessionFiles,
   listWorkspaceRoots,
+  restoreSession,
   searchSessionFiles,
   sessionActivityStreamURL,
   submitMessage,
@@ -222,6 +223,31 @@ test('archive session posts to the archive endpoint', async () => {
   const session = await archiveSession('sess_1')
 
   expect(session.archived_at).toBe('2026-06-12T16:05:00Z')
+})
+
+test('restore session posts to the restore endpoint', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1/restore')
+    expect(init?.method).toBe('POST')
+    return jsonResponse({
+      id: 'sess_1',
+      title: 'Inspect repo',
+      agent_type: 'fake',
+      status: 'idle',
+      workspace_path: '/repo',
+      event_count: 0,
+      tool_count: 0,
+      created_at: '2026-06-12T16:00:00Z',
+      updated_at: '2026-06-12T16:06:00Z',
+      completed_at: null,
+      archived_at: null,
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const session = await restoreSession('sess_1')
+
+  expect(session.archived_at).toBeNull()
 })
 
 test('session action helpers post to clear and compact endpoints', async () => {

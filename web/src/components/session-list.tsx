@@ -1,4 +1,4 @@
-import { ListFilter, LoaderCircle, Plus, Search } from 'lucide-react'
+import { Archive, ListFilter, LoaderCircle, Plus, Search } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentType, Session, SessionStatus } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -257,16 +257,26 @@ export function SessionList({
                 className={cn(
                   'session-row grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                   selectedSessionID === session.id && 'border-primary/30 bg-background/80 shadow-sm',
-                  session.archived_at && 'bg-surface-muted/35 text-muted-foreground',
+                  session.archived_at &&
+                    'border-dashed border-border/80 bg-surface-muted/65 text-muted-foreground hover:border-border hover:bg-surface-muted/80',
                 )}
               >
                 <StatusBadge status={session.status} attention={sessionAttention(session, lastSeenSeqBySession)} />
-                <span className={cn('min-w-0 truncate text-sm font-medium', session.archived_at && 'text-muted-foreground')}>
+                <span
+                  className={cn(
+                    'min-w-0 truncate text-sm font-medium',
+                    session.archived_at && 'text-muted-foreground line-through decoration-muted-foreground/60',
+                  )}
+                >
                   {session.title || 'Untitled session'}
                 </span>
                 <span className="session-row-meta flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground">
                   {session.archived_at ? (
-                    <Badge variant="outline" className="min-h-5 px-1.5 py-0 text-[10px] uppercase tracking-[0.08em]">
+                    <Badge
+                      variant="warning"
+                      className="min-h-5 gap-1 px-1.5 py-0 text-[10px] uppercase tracking-[0.08em]"
+                    >
+                      <Archive className="size-3" aria-hidden="true" />
                       Archived
                     </Badge>
                   ) : null}

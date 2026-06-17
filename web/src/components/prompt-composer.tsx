@@ -487,7 +487,7 @@ export function PromptComposer({
           rows={1}
           className="h-9 min-h-9 resize-none border-transparent bg-transparent px-1 py-2 shadow-none focus-visible:ring-0"
         />
-        <div className="mt-2 flex min-h-9 items-center gap-2">
+        <div className="mt-2 flex min-h-8 items-center gap-1.5">
           {codexToolbarVisible ? (
             <>
               <CodexToolbar
@@ -524,7 +524,7 @@ export function PromptComposer({
               />
             </>
           ) : null}
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex items-center gap-1.5">
             <input
               ref={fileInputRef}
               type="file"
@@ -554,7 +554,7 @@ export function PromptComposer({
               disabled={inputDisabled}
               onClick={() => fileInputRef.current?.click()}
               aria-label="Attach images"
-              className="text-muted-foreground hover:text-foreground"
+              className="h-8 w-8 text-muted-foreground hover:text-foreground"
             >
               <Paperclip />
             </Button>
@@ -569,6 +569,7 @@ export function PromptComposer({
                   : `Queue message (${queueShortcutLabel})`
               }
               aria-label={`Queue message (${queueShortcutLabel})`}
+              className="h-8 px-2.5 text-sm"
             >
               <ClipboardList />
               <span className="hidden sm:inline">Queue</span>
@@ -580,13 +581,18 @@ export function PromptComposer({
                 size="icon"
                 disabled={cancelling}
                 onClick={() => void handleCancel()}
-                className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                className="h-8 w-8 border-destructive/40 text-destructive hover:bg-destructive/10"
                 aria-label="Cancel running session"
               >
                 <Square />
               </Button>
             ) : (
-              <Button type="submit" disabled={!canSubmit} aria-label="Submit prompt">
+              <Button
+                type="submit"
+                disabled={!canSubmit}
+                aria-label="Submit prompt"
+                className="h-8 px-2.5 text-sm"
+              >
                 <Send />
                 <span className="hidden sm:inline">{submitting ? 'Sending' : 'Send'}</span>
               </Button>
@@ -732,7 +738,12 @@ function CodexToolbar({
   }
 
   return (
-    <div className={cn('flex min-w-0 flex-wrap items-center gap-1.5 text-sm font-medium text-muted-foreground', className)}>
+    <div
+      className={cn(
+        'flex min-w-0 flex-wrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
+        className,
+      )}
+    >
       <SlidersHorizontal className="size-4 shrink-0" aria-hidden="true" />
       <OptionMenu
         label="Model"
@@ -962,7 +973,12 @@ function ClaudeToolbar({
   const [openMenu, setOpenMenu] = useState<'model' | 'effort' | null>(null)
 
   return (
-    <div className={cn('flex min-w-0 flex-wrap items-center gap-1.5 text-sm font-medium text-muted-foreground', className)}>
+    <div
+      className={cn(
+        'flex min-w-0 flex-wrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
+        className,
+      )}
+    >
       <SlidersHorizontal className="size-4 shrink-0" aria-hidden="true" />
       <OptionMenu
         label="Model"

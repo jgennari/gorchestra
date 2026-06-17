@@ -297,6 +297,12 @@ export async function archiveSession(sessionID: string) {
   })
 }
 
+export async function restoreSession(sessionID: string) {
+  return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}/restore`, {
+    method: 'POST',
+  })
+}
+
 export async function clearSession(sessionID: string) {
   return requestJSON<SessionActionResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/clear`, {
     method: 'POST',

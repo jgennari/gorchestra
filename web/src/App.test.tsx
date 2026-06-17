@@ -578,6 +578,39 @@ test('archive requires dialog confirmation', async () => {
   )
 })
 
+test('archived session uses restore confirmation', async () => {
+  const user = userEvent.setup()
+  const archivedSession: Session = {
+    ...session('sess_3', 'Archived chat', '2026-06-12T16:00:30Z'),
+    archived_at: '2026-06-12T16:05:00Z',
+  }
+  const fetch = fetchMock({ sessions: [firstSession, secondSession, archivedSession] })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await user.click(await screen.findAllByRole('button', { name: 'Session filters' }).then((buttons) => buttons[0]))
+  await user.click(screen.getByLabelText('Show archived'))
+  await user.click(screen.getAllByRole('button', { name: /Archived chat archived/i })[0])
+  await user.click(await screen.findByRole('button', { name: 'Restore selected session' }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'Restore session?' })
+  expect(within(dialog).getByText('Archived chat')).toBeInTheDocument()
+  expect(fetch).not.toHaveBeenCalledWith(
+    '/api/sessions/sess_3/restore',
+    expect.objectContaining({ method: 'POST' }),
+  )
+
+  await user.click(within(dialog).getByRole('button', { name: 'Restore' }))
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_3/restore',
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+})
+
 function fetchMock({
   fileEntry = false,
   fileName = 'main.go',
@@ -633,6 +666,17 @@ function fetchMock({
           ...matchedSession,
           archived_at: '2026-06-12T16:05:00Z',
           updated_at: '2026-06-12T16:05:00Z',
+        })
+      }
+    }
+    const restoreMatch = path.match(/^\/api\/sessions\/([^/?]+)\/restore$/)
+    if (restoreMatch && init?.method === 'POST') {
+      const matchedSession = sessions.find((session) => session.id === decodeURIComponent(restoreMatch[1]))
+      if (matchedSession) {
+        return jsonResponse({
+          ...matchedSession,
+          archived_at: null,
+          updated_at: '2026-06-12T16:06:00Z',
         })
       }
     }

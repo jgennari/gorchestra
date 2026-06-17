@@ -37,6 +37,7 @@ import {
   getSession,
   getSessionFileContent,
   listSessions,
+  restoreSession,
   sessionActivityStreamURL,
   submitMessage,
   updateSessionAgentOptions,
@@ -492,15 +493,17 @@ function App() {
     }
 
     const sessionID = confirmArchiveSessionID
+    const targetSession = sessions.find((session) => session.id === sessionID) ?? null
+    const restoring = Boolean(targetSession?.archived_at)
     const nextSelectedID = sessionListFilters.includeArchived
       ? selectedSessionID
       : nextSessionIDAfterArchive(sessions, sessionID, selectedSessionID)
     setArchivingSessionID(sessionID)
     setError('')
     try {
-      const archivedSession = await archiveSession(sessionID)
-      applySession(archivedSession)
-      selectSession(nextSelectedID, 'replace')
+      const updatedSession = restoring ? await restoreSession(sessionID) : await archiveSession(sessionID)
+      applySession(updatedSession)
+      selectSession(restoring ? sessionID : nextSelectedID, 'replace')
       setNotice('')
       setConfirmArchiveSessionID(null)
     } catch (archiveError) {
@@ -772,7 +775,7 @@ function App() {
             requestSessionAction('compact')
             return Promise.resolve()
           }}
-          onArchive={() => {
+          onToggleArchive={() => {
             requestArchiveSession()
             return Promise.resolve()
           }}
@@ -873,13 +876,17 @@ function ArchiveSessionConfirmDialog({
   onOpenChange: (open: boolean) => void
   onConfirm: () => void
 }) {
+  const isArchived = Boolean(session?.archived_at)
+
   return (
     <Dialog open={Boolean(session)} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Archive session?</DialogTitle>
+          <DialogTitle>{isArchived ? 'Restore session?' : 'Archive session?'}</DialogTitle>
           <DialogDescription>
-            Hide this session from the active list. Its event history and files remain stored.
+            {isArchived
+              ? 'Return this session to the active list.'
+              : 'Hide this session from the active list. Its event history and files remain stored.'}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -890,8 +897,8 @@ function ArchiveSessionConfirmDialog({
             <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="button" variant="destructive" disabled={pending} onClick={onConfirm}>
-              {pending ? 'Archiving' : 'Archive'}
+            <Button type="button" variant={isArchived ? 'default' : 'destructive'} disabled={pending} onClick={onConfirm}>
+              {pending ? (isArchived ? 'Restoring' : 'Archiving') : isArchived ? 'Restore' : 'Archive'}
             </Button>
           </div>
         </div>

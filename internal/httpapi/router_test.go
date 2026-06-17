@@ -13,6 +13,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/jgennari/gorchestra/internal/agents"
 	eventservice "github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/store"
 )
@@ -20,6 +21,48 @@ import (
 const testSessionID = "sess_test"
 
 var testCreatedAt = time.Date(2026, 6, 12, 16, 0, 0, 123456789, time.FixedZone("EDT", -4*60*60))
+
+type noopEventService struct{}
+
+func (noopEventService) Append(context.Context, eventservice.AppendParams) (store.Event, error) {
+	return store.Event{}, nil
+}
+
+func (noopEventService) Subscribe(string) (<-chan store.Event, func()) {
+	ch := make(chan store.Event)
+	return ch, func() { close(ch) }
+}
+
+func (noopEventService) SubscribeAll() (<-chan store.Event, func()) {
+	ch := make(chan store.Event)
+	return ch, func() { close(ch) }
+}
+
+type noopAgentRegistry struct{}
+
+func (noopAgentRegistry) Get(string) (agents.Agent, bool) {
+	return nil, false
+}
+
+type noopRunManager struct{}
+
+func (noopRunManager) Register(context.Context, string) (context.Context, func(), error) {
+	return context.Background(), func() {}, nil
+}
+
+func (noopRunManager) Cancel(string) error { return nil }
+
+func (noopRunManager) Active(string) bool { return false }
+
+func (noopRunManager) OpenUserInput(context.Context, agents.UserInputRequest) (agents.UserInputWaiter, error) {
+	return nil, nil
+}
+
+func (noopRunManager) PendingUserInput(string, string) (agents.UserInputRequest, error) {
+	return agents.UserInputRequest{}, store.ErrNotFound
+}
+
+func (noopRunManager) AnswerUserInput(string, string, agents.UserInputResponse) error { return nil }
 
 func TestHealthRoute(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
@@ -315,6 +358,31 @@ func TestListSessionsRejectsInvalidIncludeArchived(t *testing.T) {
 	assertErrorResponse(t, rec, "include_archived must be a boolean")
 	if got := fakeStore.listSessionsCallCount(); got != 0 {
 		t.Fatalf("expected no list sessions calls, got %d", got)
+	}
+}
+
+func TestRestoreSessionRouteExists(t *testing.T) {
+	fakeStore := newFakeHTTPStore()
+	fakeStore.addSessionWith(store.Session{
+		ID:        testSessionID,
+		Title:     "Archived session",
+		AgentType: "fake",
+		Status:    store.SessionStatusIdle,
+		CreatedAt: testCreatedAt,
+		UpdatedAt: testCreatedAt,
+		ArchivedAt: func() *time.Time {
+			value := testCreatedAt
+			return &value
+		}(),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+testSessionID+"/restore", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: fakeStore, Events: noopEventService{}, Agents: noopAgentRegistry{}, Runs: noopRunManager{}}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
 	}
 }
 
@@ -1044,6 +1112,22 @@ func (s *fakeHTTPStore) ArchiveSession(_ context.Context, params store.ArchiveSe
 	session.ArchivedAt = &archivedAt
 	session.UpdatedAt = archivedAt
 	s.sessions[params.ID] = session
+
+	return session, nil
+}
+
+func (s *fakeHTTPStore) RestoreSession(_ context.Context, params store.RestoreSessionParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[params.ID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+	session.ArchivedAt = nil
+	session.UpdatedAt = testCreatedAt.Add(11 * time.Minute)
+	s.sessions[params.ID] = session
+	s.applySessionCounts(&session)
 
 	return session, nil
 }

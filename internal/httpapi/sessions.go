@@ -348,6 +348,32 @@ func (api API) archiveSessionHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (api API) restoreSessionHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+
+	restored, err := api.store.RestoreSession(r.Context(), store.RestoreSessionParams{ID: sessionID})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if errors.Is(err, store.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to restore session")
+		return
+	}
+
+	response, err := api.sessionResponse(r.Context(), restored)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load session activity")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (api API) sessionResponses(ctx context.Context, sessions []store.Session) ([]sessionResponse, error) {
 	responses := make([]sessionResponse, 0, len(sessions))
 	for _, session := range sessions {

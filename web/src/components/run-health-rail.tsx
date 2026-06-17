@@ -23,7 +23,7 @@ type Props = {
   streamError: string
   onClear?: () => Promise<void>
   onCompact?: () => Promise<void>
-  onArchive: () => Promise<void>
+  onToggleArchive: () => Promise<void>
   onOpenFile?: (file: WorkspaceFileContent) => void
   fileRefreshKey?: number
   clearPending?: boolean
@@ -38,7 +38,7 @@ export function RunHealthRail({
   streamError,
   onClear = async () => undefined,
   onCompact = async () => undefined,
-  onArchive,
+  onToggleArchive,
   onOpenFile,
   fileRefreshKey = 0,
   clearPending = false,
@@ -118,13 +118,17 @@ export function RunHealthRail({
         <Button
           type="button"
           variant="outline"
-          className="w-full justify-start border-border/70 bg-background/40 text-muted-foreground hover:bg-background/70"
+          className={cn(
+            'w-full justify-start border-border/70 bg-background/40 text-muted-foreground hover:bg-background/70',
+            session?.archived_at &&
+              'border-[hsl(var(--warning)/0.32)] bg-[hsl(var(--warning)/0.10)] text-[hsl(var(--warning))] hover:bg-[hsl(var(--warning)/0.14)]',
+          )}
           disabled={!session || session.status === 'running' || archivePending}
-          onClick={() => void onArchive()}
-          aria-label="Archive selected session"
+          onClick={() => void onToggleArchive()}
+          aria-label={session?.archived_at ? 'Restore selected session' : 'Archive selected session'}
         >
           <Archive aria-hidden="true" />
-          {archivePending ? 'Archiving' : 'Archive'}
+          {archivePending ? (session?.archived_at ? 'Restoring' : 'Archiving') : session?.archived_at ? 'Restore' : 'Archive'}
         </Button>
       </div>
     </aside>
