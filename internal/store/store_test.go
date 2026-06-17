@@ -387,6 +387,24 @@ func TestArchiveSessionHidesSessionFromLists(t *testing.T) {
 	}
 }
 
+func TestListSessionsCanIncludeArchivedSessions(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	visible := createTestSessionWithTitle(t, ctx, store, "Visible")
+	archived := createTestSessionWithTitle(t, ctx, store, "Archived")
+	if _, err := store.ArchiveSession(ctx, ArchiveSessionParams{ID: archived.ID}); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+
+	sessions, err := store.ListSessions(ctx, ListSessionsParams{IncludeArchived: true})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+
+	assertSessionIDs(t, sessions, []string{archived.ID, visible.ID})
+}
+
 func TestArchiveSessionReturnsNotFoundForMissingSession(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)

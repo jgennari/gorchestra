@@ -54,7 +54,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/co
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { RunHealthRail } from '@/components/run-health-rail'
 import { SessionDetail } from '@/components/session-detail'
-import { SessionList } from '@/components/session-list'
+import { defaultSessionListFilters, SessionList, type SessionListFilters } from '@/components/session-list'
 import { StatusBadge } from '@/components/status-badge'
 import { hasSessionAttention, latestSessionSeq } from '@/lib/session-attention'
 import { sessionIDFromPathname, sessionPath } from '@/lib/routes'
@@ -94,6 +94,7 @@ function App() {
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileListOpen, setMobileListOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(true)
+  const [refreshingSessions, setRefreshingSessions] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [showDebugEvents, setShowDebugEvents] = useState(false)
@@ -106,6 +107,8 @@ function App() {
   const [fileRefreshKey, setFileRefreshKey] = useState(0)
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
+  const [sessionSearchQuery, setSessionSearchQuery] = useState('')
+  const [sessionListFilters, setSessionListFilters] = useState<SessionListFilters>(defaultSessionListFilters)
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
   const sessionsRef = useRef<Session[]>([])
   const paneWidthsRef = useRef(paneWidths)
@@ -123,12 +126,12 @@ function App() {
 
   const applySession = useCallback((session: Session) => {
     setSessions((current) => {
-      if (session.archived_at) {
+      if (session.archived_at && !sessionListFilters.includeArchived) {
         return current.filter((item) => item.id !== session.id)
       }
       return sortSessions([session, ...current.filter((item) => item.id !== session.id)])
     })
-  }, [])
+  }, [sessionListFilters.includeArchived])
 
   const selectSession = useCallback((sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
     selectedSessionIDRef.current = sessionID
@@ -276,15 +279,21 @@ function App() {
   }, [events, markSessionSeen, selectedSession, selectedSessionID])
 
   const loadSessions = useCallback(async (options: { showLoading?: boolean } = {}) => {
-    const showLoading = options.showLoading ?? true
+    const showLoading = options.showLoading ?? sessionsRef.current.length === 0
     if (showLoading) {
       setLoadingSessions(true)
       setError('')
+    } else {
+      setRefreshingSessions(true)
     }
     try {
-      const nextSessions = await listSessions()
+      const nextSessions = await listSessions({ include_archived: sessionListFilters.includeArchived })
       const selectedID = selectedSessionIDRef.current
-      const mergedSessions = await includeSelectedSession(nextSessions, selectedID)
+      const mergedSessions = await includeSelectedSession(
+        nextSessions,
+        selectedID,
+        sessionListFilters.includeArchived,
+      )
       const nextSelectedID =
         selectedID && mergedSessions.some((session) => session.id === selectedID)
           ? selectedID
@@ -299,9 +308,11 @@ function App() {
     } finally {
       if (showLoading) {
         setLoadingSessions(false)
+      } else {
+        setRefreshingSessions(false)
       }
     }
-  }, [selectSession])
+  }, [selectSession, sessionListFilters.includeArchived])
 
   useEffect(() => {
     let closed = false
@@ -481,12 +492,14 @@ function App() {
     }
 
     const sessionID = confirmArchiveSessionID
-    const nextSelectedID = nextSessionIDAfterArchive(sessions, sessionID, selectedSessionID)
+    const nextSelectedID = sessionListFilters.includeArchived
+      ? selectedSessionID
+      : nextSessionIDAfterArchive(sessions, sessionID, selectedSessionID)
     setArchivingSessionID(sessionID)
     setError('')
     try {
-      await archiveSession(sessionID)
-      setSessions((current) => current.filter((session) => session.id !== sessionID))
+      const archivedSession = await archiveSession(sessionID)
+      applySession(archivedSession)
       selectSession(nextSelectedID, 'replace')
       setNotice('')
       setConfirmArchiveSessionID(null)
@@ -631,6 +644,11 @@ function App() {
     sessions,
     selectedSessionID,
     lastSeenSeqBySession,
+    loading: loadingSessions || refreshingSessions,
+    query: sessionSearchQuery,
+    onQueryChange: setSessionSearchQuery,
+    filters: sessionListFilters,
+    onFiltersChange: setSessionListFilters,
     onSelect: (sessionID: string) => {
       selectSession(sessionID, 'push')
       setMobileListOpen(false)
@@ -695,10 +713,6 @@ function App() {
             <Plus />
           </Button>
         </header>
-
-        {loadingSessions ? (
-          <div className="shrink-0 border-b px-4 py-2 text-sm text-muted-foreground">Loading sessions...</div>
-        ) : null}
 
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <SessionDetail
@@ -1223,14 +1237,18 @@ function PaneResizeHandle({
   )
 }
 
-async function includeSelectedSession(sessions: Session[], selectedSessionID: string | null) {
+async function includeSelectedSession(
+  sessions: Session[],
+  selectedSessionID: string | null,
+  includeArchived: boolean,
+) {
   if (!selectedSessionID || sessions.some((session) => session.id === selectedSessionID)) {
     return sessions
   }
 
   try {
     const selectedSession = await getSession(selectedSessionID)
-    if (selectedSession.archived_at) {
+    if (selectedSession.archived_at && !includeArchived) {
       return sessions
     }
     return [selectedSession, ...sessions]
@@ -1299,12 +1317,10 @@ function payloadString(payload: unknown, key: string) {
 }
 
 function sortSessions(sessions: Session[]) {
-  return [...sessions]
-    .filter((session) => !session.archived_at)
-    .sort((left, right) => {
-      const byUpdated = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
-      return byUpdated !== 0 ? byUpdated : right.id.localeCompare(left.id)
-    })
+  return [...sessions].sort((left, right) => {
+    const byUpdated = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+    return byUpdated !== 0 ? byUpdated : right.id.localeCompare(left.id)
+  })
 }
 
 function paneWidthStyle(width: number): CSSProperties {

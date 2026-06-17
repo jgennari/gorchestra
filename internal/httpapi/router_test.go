@@ -250,6 +250,38 @@ func TestListSessionsFiltersByStatus(t *testing.T) {
 	}
 }
 
+func TestListSessionsCanIncludeArchived(t *testing.T) {
+	fakeStore := newFakeHTTPStore()
+	archivedAt := testCreatedAt.Add(10 * time.Minute)
+	fakeStore.addSessionWith(store.Session{
+		ID:         "sess_archived",
+		Title:      "Archived session",
+		AgentType:  "fake",
+		Status:     store.SessionStatusIdle,
+		CreatedAt:  testCreatedAt,
+		UpdatedAt:  archivedAt,
+		ArchivedAt: &archivedAt,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions?include_archived=true", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: fakeStore}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if !fakeStore.lastListSessionsIncludeArchived(t) {
+		t.Fatal("expected include_archived filter to be forwarded")
+	}
+
+	var response listSessionsResponse
+	decodeJSON(t, rec, &response)
+	if len(response.Sessions) != 1 || response.Sessions[0].ID != "sess_archived" {
+		t.Fatalf("expected archived session in response, got %#v", response.Sessions)
+	}
+}
+
 func TestListSessionsRejectsInvalidStatus(t *testing.T) {
 	for _, status := range []string{"paused", "completed", "cancelled"} {
 		t.Run(status, func(t *testing.T) {
@@ -267,6 +299,22 @@ func TestListSessionsRejectsInvalidStatus(t *testing.T) {
 				t.Fatalf("expected no list sessions calls, got %d", got)
 			}
 		})
+	}
+}
+
+func TestListSessionsRejectsInvalidIncludeArchived(t *testing.T) {
+	fakeStore := newFakeHTTPStore()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions?include_archived=maybe", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: fakeStore}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "include_archived must be a boolean")
+	if got := fakeStore.listSessionsCallCount(); got != 0 {
+		t.Fatalf("expected no list sessions calls, got %d", got)
 	}
 }
 
@@ -810,8 +858,9 @@ type listCall struct {
 }
 
 type listSessionsCall struct {
-	limit  int
-	status store.SessionStatus
+	limit           int
+	status          store.SessionStatus
+	includeArchived bool
 }
 
 func newFakeHTTPStore() *fakeHTTPStore {
@@ -904,13 +953,14 @@ func (s *fakeHTTPStore) ListSessions(_ context.Context, params store.ListSession
 	defer s.mu.Unlock()
 
 	s.listSessionsCalls = append(s.listSessionsCalls, listSessionsCall{
-		limit:  params.Limit,
-		status: params.Status,
+		limit:           params.Limit,
+		status:          params.Status,
+		includeArchived: params.IncludeArchived,
 	})
 
 	sessions := make([]store.Session, 0, len(s.sessions))
 	for _, session := range s.sessions {
-		if session.ArchivedAt != nil {
+		if !params.IncludeArchived && session.ArchivedAt != nil {
 			continue
 		}
 		if params.Status != "" && session.Status != params.Status {
@@ -1179,6 +1229,18 @@ func (s *fakeHTTPStore) listSessionsCallCount() int {
 	defer s.mu.Unlock()
 
 	return len(s.listSessionsCalls)
+}
+
+func (s *fakeHTTPStore) lastListSessionsIncludeArchived(t *testing.T) bool {
+	t.Helper()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.listSessionsCalls) == 0 {
+		t.Fatal("expected at least one ListSessions call")
+	}
+	return s.listSessionsCalls[len(s.listSessionsCalls)-1].includeArchived
 }
 
 func isTestTerminalSessionStatus(status store.SessionStatus) bool {

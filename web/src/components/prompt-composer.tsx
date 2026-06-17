@@ -250,6 +250,7 @@ export function PromptComposer({
       return
     }
 
+    const restorePromptFocus = document.activeElement === textareaRef.current
     setSubmitting(true)
     onError?.('')
     try {
@@ -266,6 +267,9 @@ export function PromptComposer({
       onError?.(submitError instanceof Error ? submitError.message : 'Failed to submit prompt')
     } finally {
       setSubmitting(false)
+      if (restorePromptFocus) {
+        window.setTimeout(() => textareaRef.current?.focus(), 0)
+      }
     }
   }
 
@@ -339,12 +343,18 @@ export function PromptComposer({
       onError?.(`Queue up to ${maxQueuedMessages} messages.`)
       return
     }
+    const restorePromptFocus =
+      document.activeElement === textareaRef.current ||
+      document.activeElement instanceof HTMLButtonElement
     if (disabled) {
       awaitingQueueAdvanceRef.current = true
     }
     setQueuedMessages((current) => [...current, trimmed])
     setContent('')
     onError?.('')
+    if (restorePromptFocus) {
+      window.setTimeout(() => textareaRef.current?.focus(), 0)
+    }
   }
 
   async function handleFiles(files: FileList | File[]) {

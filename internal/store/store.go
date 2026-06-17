@@ -137,12 +137,17 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 		        created_at, updated_at, completed_at, archived_at
 		 FROM sessions`
 	args := []any{}
-	filters := []string{`archived_at IS NULL`}
+	filters := make([]string, 0, 2)
+	if !params.IncludeArchived {
+		filters = append(filters, `archived_at IS NULL`)
+	}
 	if params.Status != "" {
 		filters = append(filters, `status = ?`)
 		args = append(args, string(params.Status))
 	}
-	query += ` WHERE ` + strings.Join(filters, ` AND `)
+	if len(filters) > 0 {
+		query += ` WHERE ` + strings.Join(filters, ` AND `)
+	}
 	query += ` ORDER BY updated_at DESC, created_at DESC, id DESC
 		 LIMIT ?`
 	args = append(args, limit)

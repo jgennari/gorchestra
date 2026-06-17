@@ -59,6 +59,94 @@ test('loading with a session route selects that session', async () => {
   ).toBe(true)
 })
 
+test('archived filter reloads sessions including archived chats', async () => {
+  const user = userEvent.setup()
+  const archivedSession: Session = {
+    ...session('sess_3', 'Archived chat', '2026-06-12T16:00:30Z'),
+    agent_type: 'claude',
+    archived_at: '2026-06-12T16:05:00Z',
+  }
+  const fetch = fetchMock({ sessions: [firstSession, secondSession, archivedSession] })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions?limit=50',
+      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+  expect(screen.queryByText('Archived chat')).not.toBeInTheDocument()
+
+  await user.click(screen.getAllByRole('button', { name: 'Session filters' })[0])
+  await user.click(screen.getByLabelText('Show archived'))
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions?limit=50&include_archived=true',
+      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+  expect(await screen.findByText('Archived chat')).toBeInTheDocument()
+})
+
+test('filter refreshes sessions in the background without showing a workspace loading bar', async () => {
+  const user = userEvent.setup()
+  const archivedSession: Session = {
+    ...session('sess_3', 'Archived chat', '2026-06-12T16:00:30Z'),
+    archived_at: '2026-06-12T16:05:00Z',
+  }
+  let resolveArchivedList: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/health') {
+      return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions?limit=50') {
+      return jsonResponse({ sessions: [firstSession, secondSession] })
+    }
+    if (path === '/api/sessions?limit=50&include_archived=true') {
+      await new Promise<void>((resolve) => {
+        resolveArchivedList = resolve
+      })
+      return jsonResponse({ sessions: [firstSession, secondSession, archivedSession] })
+    }
+    if (path === '/api/sessions/sess_1') {
+      return jsonResponse(firstSession)
+    }
+    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+      return jsonResponse({ events: [] })
+    }
+    if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
+      return jsonResponse({ events: [] })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+
+  await user.click(screen.getAllByRole('button', { name: 'Session filters' })[0])
+  await user.click(screen.getByLabelText('Show archived'))
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions?limit=50&include_archived=true',
+      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+  expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0)
+  expect(screen.queryByText('Loading sessions...')).not.toBeInTheDocument()
+
+  await act(async () => {
+    resolveArchivedList?.()
+    await Promise.resolve()
+  })
+})
+
 test('initial session load fetches the recent event window and streams after the tail', async () => {
   const fetch = fetchMock({
     events: [event(39, 'agent.message.delta', { text: 'Tail' }), event(40, 'agent.message.completed', { text: 'Tail' })],
@@ -515,6 +603,9 @@ function fetchMock({
       return jsonResponse({ status: 'ok' })
     }
     if (path === '/api/sessions?limit=50') {
+      return jsonResponse({ sessions: sessions.filter((session) => !session.archived_at) })
+    }
+    if (path === '/api/sessions?limit=50&include_archived=true') {
       return jsonResponse({ sessions })
     }
     const sessionMatch = path.match(/^\/api\/sessions\/([^/?]+)$/)

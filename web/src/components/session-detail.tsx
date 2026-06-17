@@ -248,7 +248,7 @@ function ChatSessionHeader({
       {errorMessage ? (
         <div
           role="alert"
-          className="command-chat-header -mt-px rounded-b-xl border-x border-b border-destructive/30 px-3 py-2 text-sm text-destructive shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
+          className="-mt-px rounded-b-xl border-x border-b border-destructive/40 bg-destructive/12 px-3 py-2 text-sm font-medium text-destructive shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
         >
           {errorMessage}
         </div>

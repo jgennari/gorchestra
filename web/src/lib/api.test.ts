@@ -60,6 +60,16 @@ test('session list helper includes status filters', async () => {
   await listSessions({ limit: 25, status: 'running' })
 })
 
+test('session list helper includes archived toggle', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    expect(String(url)).toBe('/api/sessions?limit=25&include_archived=true')
+    return jsonResponse({ sessions: [] })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await listSessions({ limit: 25, include_archived: true })
+})
+
 test('title update helper patches the session title', async () => {
   const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     expect(String(url)).toBe('/api/sessions/sess_1')

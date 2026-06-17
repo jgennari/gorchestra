@@ -87,8 +87,9 @@ type ClearSessionProviderSessionIDParams struct {
 }
 
 type ListSessionsParams struct {
-	Limit  int
-	Status SessionStatus
+	Limit           int
+	Status          SessionStatus
+	IncludeArchived bool
 }
 
 type AppendEventParams struct {

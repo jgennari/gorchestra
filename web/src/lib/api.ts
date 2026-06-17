@@ -221,6 +221,7 @@ type EventHistoryResponse = {
 type ListSessionsOptions = {
   limit?: number
   status?: SessionStatus
+  include_archived?: boolean
 }
 
 export const defaultEventWindowLimit = 500
@@ -246,9 +247,13 @@ export async function fetchHealth() {
 export async function listSessions(options: ListSessionsOptions | number = {}) {
   const limit = typeof options === 'number' ? options : (options.limit ?? 50)
   const status = typeof options === 'number' ? undefined : options.status
+  const includeArchived = typeof options === 'number' ? false : (options.include_archived ?? false)
   const params = new URLSearchParams({ limit: String(limit) })
   if (status) {
     params.set('status', status)
+  }
+  if (includeArchived) {
+    params.set('include_archived', 'true')
   }
 
   const data = await requestJSON<ListSessionsResponse>(`/api/sessions?${params.toString()}`)

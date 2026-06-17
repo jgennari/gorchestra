@@ -1,7 +1,8 @@
+import { useState, type ComponentProps } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session } from '@/lib/api'
-import { SessionList } from '@/components/session-list'
+import { defaultSessionListFilters, SessionList, type SessionListFilters } from '@/components/session-list'
 
 const sessions: Session[] = [
   {
@@ -30,18 +31,32 @@ const sessions: Session[] = [
     completed_at: '2026-06-12T16:05:00Z',
     archived_at: null,
   },
+  {
+    id: 'sess_archived',
+    title: 'Archived notes',
+    agent_type: 'claude',
+    status: 'idle',
+    workspace_path: '/repo',
+    event_count: 2,
+    tool_count: 0,
+    created_at: '2026-06-12T16:00:00Z',
+    updated_at: '2026-06-12T16:03:00Z',
+    completed_at: '2026-06-12T16:03:00Z',
+    archived_at: '2026-06-12T16:06:00Z',
+  },
 ]
 
 test('session list filters sessions with client side search', async () => {
   const user = userEvent.setup()
 
-  render(<SessionList {...baseProps()} />)
+  render(<SessionListHarness />)
 
   expect(screen.queryByRole('tab', { name: 'All' })).not.toBeInTheDocument()
   expect(screen.queryByRole('tab', { name: 'Running' })).not.toBeInTheDocument()
   expect(screen.queryByRole('tab', { name: 'Failed' })).not.toBeInTheDocument()
   expect(screen.getByText('Running work')).toBeInTheDocument()
   expect(screen.getByText('Documentation pass')).toBeInTheDocument()
+  expect(screen.queryByText('Archived notes')).not.toBeInTheDocument()
 
   await user.type(screen.getByRole('textbox', { name: 'Search sessions' }), 'failed')
 
@@ -54,8 +69,7 @@ test('session rows are keyboard selectable', async () => {
   const onSelect = vi.fn()
 
   render(
-    <SessionList
-      {...baseProps()}
+    <SessionListHarness
       onSelect={onSelect}
     />,
   )
@@ -68,7 +82,7 @@ test('session rows are keyboard selectable', async () => {
 
 test('session rows show status as a dot indicator', () => {
   render(
-    <SessionList {...baseProps()} />,
+    <SessionListHarness />,
   )
 
   expect(screen.getByRole('img', { name: 'Session status: running' })).toHaveClass(
@@ -80,8 +94,7 @@ test('session rows show status as a dot indicator', () => {
 
 test('selected session row still shows the session status indicator', () => {
   render(
-    <SessionList
-      {...baseProps()}
+    <SessionListHarness
       selectedSessionID="sess_running"
     />,
   )
@@ -94,8 +107,7 @@ test('selected session row still shows the session status indicator', () => {
 
 test('session rows show pending input with a pulsing yellow indicator', () => {
   render(
-    <SessionList
-      {...baseProps()}
+    <SessionListHarness
       sessions={[{ ...sessions[0], pending_input: true }]}
     />,
   )
@@ -108,8 +120,7 @@ test('session rows show pending input with a pulsing yellow indicator', () => {
 
 test('idle session rows show unseen results with a solid yellow indicator', () => {
   render(
-    <SessionList
-      {...baseProps()}
+    <SessionListHarness
       sessions={[{ ...sessions[0], status: 'idle', event_count: 8, last_event_seq: 8 }]}
       lastSeenSeqBySession={{ sess_running: 4 }}
     />,
@@ -123,7 +134,7 @@ test('session list exposes the global theme toggle', async () => {
   const user = userEvent.setup()
   const onThemeToggle = vi.fn()
 
-  render(<SessionList {...baseProps()} onThemeToggle={onThemeToggle} />)
+  render(<SessionListHarness onThemeToggle={onThemeToggle} />)
 
   await user.click(screen.getByRole('button', { name: 'Theme: System' }))
 
@@ -131,7 +142,7 @@ test('session list exposes the global theme toggle', async () => {
 })
 
 test('full session list uses the app icon instead of the text header', () => {
-  render(<SessionList {...baseProps()} />)
+  render(<SessionListHarness />)
 
   expect(screen.getByRole('img', { name: 'Gorchestra' })).toHaveAttribute('src', '/icon.svg')
   expect(screen.queryByText('Gorchestra')).not.toBeInTheDocument()
@@ -139,7 +150,7 @@ test('full session list uses the app icon instead of the text header', () => {
 })
 
 test('embedded session list hides desktop header controls', () => {
-  render(<SessionList {...baseProps()} variant="embedded" />)
+  render(<SessionListHarness variant="embedded" />)
 
   expect(screen.queryByRole('heading', { name: 'Sessions' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
@@ -147,14 +158,77 @@ test('embedded session list hides desktop header controls', () => {
   expect(screen.getByRole('textbox', { name: 'Search sessions' })).toBeInTheDocument()
 })
 
+test('session list filters by status and attention', async () => {
+  const user = userEvent.setup()
+
+  render(
+    <SessionListHarness
+      sessions={[
+        { ...sessions[0], pending_input: true },
+        sessions[1],
+      ]}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Session filters' }))
+  await user.click(screen.getByRole('button', { name: 'Needs input' }))
+
+  expect(screen.getByText('Running work')).toBeInTheDocument()
+  expect(screen.queryByText('Documentation pass')).not.toBeInTheDocument()
+
+  await user.click(screen.getByLabelText('Attention only'))
+
+  expect(screen.getByText('Running work')).toBeInTheDocument()
+})
+
+test('session list can show archived sessions', async () => {
+  const user = userEvent.setup()
+
+  render(<SessionListHarness />)
+
+  expect(screen.queryByText('Archived notes')).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Session filters' }))
+  await user.click(screen.getByLabelText('Show archived'))
+
+  expect(screen.getByText('Archived notes')).toBeInTheDocument()
+  expect(screen.getByText('Archived')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /archived notes archived/i })).toHaveClass('text-muted-foreground')
+})
+
 function baseProps() {
   return {
     sessions,
     selectedSessionID: null,
+    lastSeenSeqBySession: {},
+    query: '',
+    filters: defaultSessionListFilters,
+    onQueryChange: () => undefined,
+    onFiltersChange: (_filters: SessionListFilters) => undefined,
     onSelect: () => undefined,
     onCreate: () => undefined,
     themePreference: 'system' as const,
     resolvedTheme: 'light' as const,
     onThemeToggle: () => undefined,
   }
+}
+
+function SessionListHarness({
+  query = '',
+  filters = defaultSessionListFilters,
+  ...props
+}: Partial<ComponentProps<typeof SessionList>>) {
+  const [currentQuery, setCurrentQuery] = useState(query)
+  const [currentFilters, setCurrentFilters] = useState(filters)
+
+  return (
+    <SessionList
+      {...baseProps()}
+      {...props}
+      query={currentQuery}
+      filters={currentFilters}
+      onQueryChange={setCurrentQuery}
+      onFiltersChange={setCurrentFilters}
+    />
+  )
 }

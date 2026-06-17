@@ -137,10 +137,15 @@ func (api API) listSessionsHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	includeArchived, ok := parseIncludeArchived(w, r)
+	if !ok {
+		return
+	}
 
 	sessions, err := api.store.ListSessions(r.Context(), store.ListSessionsParams{
-		Limit:  limit,
-		Status: status,
+		Limit:           limit,
+		Status:          status,
+		IncludeArchived: includeArchived,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list sessions")
@@ -1465,6 +1470,21 @@ func parseSessionStatus(w http.ResponseWriter, r *http.Request) (store.SessionSt
 		writeError(w, http.StatusBadRequest, "status is unsupported")
 		return "", false
 	}
+}
+
+func parseIncludeArchived(w http.ResponseWriter, r *http.Request) (bool, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("include_archived"))
+	if raw == "" {
+		return false, true
+	}
+
+	includeArchived, err := strconv.ParseBool(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "include_archived must be a boolean")
+		return false, false
+	}
+
+	return includeArchived, true
 }
 
 func isTerminalRunEvent(eventType string) bool {

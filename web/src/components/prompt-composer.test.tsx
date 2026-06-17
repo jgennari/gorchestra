@@ -21,6 +21,7 @@ test('enter submits the prompt and clears the input', async () => {
 
   expect(onSubmit).toHaveBeenCalledWith('Hello agent')
   expect(prompt).toHaveValue('')
+  await waitFor(() => expect(prompt).toHaveFocus())
 })
 
 test('submit errors are reported to the parent instead of rendering under the composer', async () => {
@@ -72,6 +73,7 @@ test('cmd or ctrl shift enter queues the draft without submitting', async () => 
   expect(onSubmit).not.toHaveBeenCalled()
   expect(prompt).toHaveValue('')
   expect(screen.getByText('Queued prompt')).toBeInTheDocument()
+  await waitFor(() => expect(prompt).toHaveFocus())
 })
 
 test('queue button enqueues up to five drafts and allows removal', async () => {
@@ -83,6 +85,7 @@ test('queue button enqueues up to five drafts and allows removal', async () => {
   for (let index = 1; index <= 5; index += 1) {
     await user.type(prompt, `Queued ${index}`)
     await user.click(screen.getByRole('button', { name: /queue message/i }))
+    await waitFor(() => expect(prompt).toHaveFocus())
   }
 
   expect(screen.getAllByRole('button', { name: /remove queued message/i })).toHaveLength(5)
