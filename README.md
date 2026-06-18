@@ -1,11 +1,11 @@
 # Gorchestra
 
 <p align="center">
-  <strong>The control room for long-running AI coding agents.</strong>
+  <strong>The private, permanent control room for AI coding work.</strong>
 </p>
 
 <p align="center">
-  Launch sessions. Stream every event. Inspect diffs. Edit files. Recover the full story from SQLite.
+  Run multiple Codex and Claude sessions, stream every event, inspect files and git state, and keep the whole story.
 </p>
 
 <p align="center">
@@ -18,28 +18,34 @@
 
 > Agents perform work. Gorchestra conducts the performance.
 
-Gorchestra gives coding agents a durable runtime: a local Go server, a React command center, a SQLite-backed event log, workspace-aware file tools, and enough visibility to see what actually happened during a long autonomous run.
+Take your development wherever you are. Gorchestra gives you a private, permanent control room for AI coding work: open it on desktop or mobile, run multiple sessions across agents, queue follow-up messages, upload screenshots, switch into planning mode, inspect files and git state, and come back to the same durable history after refreshes, reconnects, and restarts.
 
-> [!NOTE]
-> Screenshot slot: main session view with live transcript, activity rail, file explorer, and prompt composer.
+<p align="center">
+  <img alt="Gorchestra live session demo" src="docs/gorchestra-demo.gif" width="1100" />
+</p>
 
 ## The Runtime At A Glance
 
-| Run | Watch | Inspect | Remember |
+| Run | Coordinate | Inspect | Remember |
 | --- | --- | --- | --- |
-| Launch Codex sessions from a local Go server. | Stream events, thinking, tool calls, and diffs live. | Browse, search, preview, and edit files in-session. | Store sessions and ordered events in SQLite. |
-| Tune model, reasoning, service tier, and execution mode. | Reconnect with replay instead of losing context. | Jump from file-change diffs straight into Monaco. | Recover refreshes, restarts, and historical runs. |
+| Launch Codex or Claude sessions from one local server. | Queue work, attach images, and switch between fast and planning flows. | Browse files, inspect git-aware changes, and edit text in-session. | Store ordered session history in SQLite. |
+| Tune model, reasoning, service tier, and execution mode. | Keep multiple sessions moving at once from desktop or mobile. | Jump from file-change diffs straight into Monaco. | Reconnect with replay instead of losing context. |
 
 ## Why It Exists
 
-Coding agents are useful, but long runs are hard to follow when all you have is a chat window. Gorchestra gives each run a local control room: start a session, watch what the agent is doing, inspect file changes, and keep the full history after refreshes or restarts.
+Coding agents are useful, but serious work falls apart when everything is trapped in a single chat window. Gorchestra turns each run into an operating surface: start a session, watch what the agent is doing, inspect file and git changes, queue the next step, and keep the full history after refreshes or restarts.
 
 It is built for getting work done locally:
 
-- Pick a workspace and start Codex.
+- Pick a workspace and start Codex or Claude.
 - Watch messages, thinking, tool calls, logs, errors, and file edits as they happen.
-- Open changed files, review diffs, and edit Markdown or text without leaving the app.
+- Queue follow-up prompts while the current run is still working.
+- Open changed files, review diffs, inspect git state, and edit Markdown or text without leaving the app.
 - Come back later and see the same ordered session history.
+
+<p align="center">
+  <img alt="Gorchestra main session view with live transcript, activity rail, file explorer, and prompt composer" src="docs/control-room.png" width="1100" />
+</p>
 
 ## Quick Tour
 
@@ -47,13 +53,14 @@ Start a session, choose a workspace, and let the agent run. Gorchestra keeps the
 
 - Tune Codex options like model, reasoning effort, service tier, planning mode, and dangerous mode.
 - Follow messages, thinking, tool calls, command output, file edits, errors, and debug events in one transcript.
-- Keep typing while a run is active, attach images, and answer agent-requested prompts when a run needs input.
+- Keep typing while a run is active, queue messages, attach images, and answer agent-requested prompts when a run needs input.
 - Browse, search, preview, and edit workspace files from the side rail.
 - Review file-change diffs and jump straight into the editor for the changed file.
 - Refresh or reconnect without losing the session history.
 
-> [!TIP]
-> Screenshot slot: file-change diff with the floating file-editor action and Monaco editor overlay.
+<p align="center">
+  <img alt="Gorchestra showing multiple sessions with queued follow-up work" src="docs/queued-work.png" width="1100" />
+</p>
 
 ## Install
 

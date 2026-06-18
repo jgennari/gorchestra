@@ -59,6 +59,41 @@ test('loading with a session route selects that session', async () => {
   ).toBe(true)
 })
 
+test('switching sessions during a title edit requires confirmation', async () => {
+  const user = userEvent.setup()
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  await user.click(screen.getAllByRole('button', { name: /edit session title/i })[0])
+
+  const input = screen.getByRole('textbox', { name: 'Session title' })
+  await user.clear(input)
+  await user.type(input, 'Renamed session')
+  expect(input).toHaveValue('Renamed session')
+
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+
+  const dialog = await screen.findByRole('dialog', { name: 'Discard title edit?' })
+  expect(window.location.pathname).toBe('/sessions/sess_1')
+
+  await user.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard title edit?' })).not.toBeInTheDocument())
+  expect(window.location.pathname).toBe('/sessions/sess_1')
+  expect(screen.getByRole('textbox', { name: 'Session title' })).toHaveValue('Renamed session')
+
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+  const confirmDialog = await screen.findByRole('dialog', { name: 'Discard title edit?' })
+  await user.click(within(confirmDialog).getByRole('button', { name: 'Discard and switch' }))
+
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
+  expect(
+    screen
+      .getAllByRole('button', { name: /Write docs/ })
+      .some((button) => button.getAttribute('aria-current') === 'true'),
+  ).toBe(true)
+})
+
 test('archived filter reloads sessions including archived chats', async () => {
   const user = userEvent.setup()
   const archivedSession: Session = {

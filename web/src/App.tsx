@@ -75,6 +75,10 @@ type PendingSessionAction = {
   action: CodexSessionAction
   sessionID: string
 }
+type PendingSessionNavigation = {
+  targetSessionID: string | null
+  historyMode: SessionRouteHistoryMode
+}
 
 const debugStorageKeyPrefix = 'gorchestra.session-debug.'
 const paneWidthsStorageKey = 'gorchestra.pane-widths.v1'
@@ -102,12 +106,14 @@ function App() {
   const [archivingSessionID, setArchivingSessionID] = useState<string | null>(null)
   const [confirmArchiveSessionID, setConfirmArchiveSessionID] = useState<string | null>(null)
   const [confirmSessionAction, setConfirmSessionAction] = useState<PendingSessionAction | null>(null)
+  const [confirmSessionNavigation, setConfirmSessionNavigation] = useState<PendingSessionNavigation | null>(null)
   const [pendingSessionAction, setPendingSessionAction] = useState<PendingSessionAction | null>(null)
   const [paneWidths, setPaneWidths] = useState<PaneWidths>(() => loadPaneWidths())
   const [openWorkspaceFile, setOpenWorkspaceFile] = useState<WorkspaceFileContent | null>(null)
   const [fileRefreshKey, setFileRefreshKey] = useState(0)
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
+  const [titleEditorStates, setTitleEditorStates] = useState<Record<string, { editing: boolean; dirty: boolean }>>({})
   const [sessionSearchQuery, setSessionSearchQuery] = useState('')
   const [sessionListFilters, setSessionListFilters] = useState<SessionListFilters>(defaultSessionListFilters)
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
@@ -121,6 +127,14 @@ function App() {
   const hasFaviconAttention = useMemo(
     () => hasSessionAttention(sessions, lastSeenSeqBySession),
     [lastSeenSeqBySession, sessions],
+  )
+  const hasOpenTitleEdit = useMemo(
+    () => Object.values(titleEditorStates).some((state) => state.editing),
+    [titleEditorStates],
+  )
+  const hasDirtyTitleEdit = useMemo(
+    () => Object.values(titleEditorStates).some((state) => state.editing && state.dirty),
+    [titleEditorStates],
   )
   const theme = useTheme()
   useFavicon(hasFaviconAttention)
@@ -141,6 +155,29 @@ function App() {
       writeSelectedSessionRoute(sessionID, historyMode)
     }
   }, [])
+
+  const completeSessionSelection = useCallback(
+    (sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
+      selectSession(sessionID, historyMode)
+      setMobileListOpen(false)
+      setNotice('')
+    },
+    [selectSession],
+  )
+
+  const requestSessionSelection = useCallback(
+    (sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
+      if (sessionID === selectedSessionIDRef.current) {
+        return
+      }
+      if (hasOpenTitleEdit) {
+        setConfirmSessionNavigation({ targetSessionID: sessionID, historyMode })
+        return
+      }
+      completeSessionSelection(sessionID, historyMode)
+    },
+    [completeSessionSelection, hasOpenTitleEdit],
+  )
 
   const refreshSession = useCallback(
     async (sessionID: string) => {
@@ -200,18 +237,20 @@ function App() {
 
   useEffect(() => {
     function handlePopState() {
-      selectSession(selectedSessionIDFromLocation(), 'none')
-      setMobileListOpen(false)
-      setNotice('')
+      requestSessionSelection(selectedSessionIDFromLocation(), 'none')
     }
 
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
-  }, [selectSession])
+  }, [requestSessionSelection])
 
   useEffect(() => {
     setShowDebugEvents(loadSessionDebugPreference(selectedSessionID))
     setOpenWorkspaceFile(null)
+  }, [selectedSessionID])
+
+  useEffect(() => {
+    setTitleEditorStates({})
   }, [selectedSessionID])
 
   const applySessionActivityEvent = useCallback(
@@ -459,6 +498,35 @@ function App() {
     saveSessionDebugPreference(selectedSessionID, nextShowDebugEvents)
   }
 
+  const handleTitleEditStateChange = useCallback(
+    ({
+      editorID,
+      editing,
+      dirty,
+    }: {
+      editorID: string
+      editing: boolean
+      dirty: boolean
+    }) => {
+      setTitleEditorStates((current) => {
+        if (!editing && !dirty) {
+          if (!(editorID in current)) {
+            return current
+          }
+          const next = { ...current }
+          delete next[editorID]
+          return next
+        }
+        const existing = current[editorID]
+        if (existing?.editing === editing && existing.dirty === dirty) {
+          return current
+        }
+        return { ...current, [editorID]: { editing, dirty } }
+      })
+    },
+    [],
+  )
+
   async function handleUpdateTitle(title: string) {
     if (!selectedSessionID) {
       return
@@ -652,11 +720,7 @@ function App() {
     onQueryChange: setSessionSearchQuery,
     filters: sessionListFilters,
     onFiltersChange: setSessionListFilters,
-    onSelect: (sessionID: string) => {
-      selectSession(sessionID, 'push')
-      setMobileListOpen(false)
-      setNotice('')
-    },
+    onSelect: (sessionID: string) => requestSessionSelection(sessionID, 'push'),
     onCreate: () => setCreateOpen(true),
     themePreference: theme.preference,
     resolvedTheme: theme.resolvedTheme,
@@ -674,6 +738,9 @@ function App() {
     : null
   const confirmArchivePending =
     confirmArchiveSessionID !== null && archivingSessionID === confirmArchiveSessionID
+  const navigationTargetSession = confirmSessionNavigation?.targetSessionID
+    ? (sessions.find((session) => session.id === confirmSessionNavigation.targetSessionID) ?? null)
+    : null
 
   return (
     <main className="app-shell">
@@ -734,6 +801,7 @@ function App() {
             onAnswerUserInput={handleAnswerUserInput}
             onCancel={handleCancel}
             onUpdateTitle={handleUpdateTitle}
+            onTitleEditStateChange={handleTitleEditStateChange}
             onUpdateAgentOptions={handleUpdateAgentOptions}
             onRefresh={handleRefresh}
             onOpenFilePath={handleOpenWorkspacePath}
@@ -819,6 +887,25 @@ function App() {
         }}
         onConfirm={() => void handleConfirmArchiveSession()}
       />
+      <SessionNavigationConfirmDialog
+        currentSession={selectedSession}
+        targetSession={navigationTargetSession}
+        dirty={hasDirtyTitleEdit}
+        open={confirmSessionNavigation !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmSessionNavigation(null)
+          }
+        }}
+        onConfirm={() => {
+          if (!confirmSessionNavigation) {
+            return
+          }
+          const { targetSessionID, historyMode } = confirmSessionNavigation
+          setConfirmSessionNavigation(null)
+          completeSessionSelection(targetSessionID, historyMode)
+        }}
+      />
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
     </main>
   )
@@ -899,6 +986,55 @@ function ArchiveSessionConfirmDialog({
             </Button>
             <Button type="button" variant={isArchived ? 'default' : 'destructive'} disabled={pending} onClick={onConfirm}>
               {pending ? (isArchived ? 'Restoring' : 'Archiving') : isArchived ? 'Restore' : 'Archive'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function SessionNavigationConfirmDialog({
+  currentSession,
+  targetSession,
+  dirty,
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  currentSession: Session | null
+  targetSession: Session | null
+  dirty: boolean
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onConfirm: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{dirty ? 'Discard title edit?' : 'Leave title edit?'}</DialogTitle>
+          <DialogDescription>
+            {dirty
+              ? 'Switching sessions now will discard the title changes you have not saved.'
+              : 'The session title editor is still open. Finish the edit here or leave this session.'}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1 text-sm text-muted-foreground">
+            <p className="truncate" title={currentSession?.title || undefined}>
+              Editing: {currentSession?.title || 'Untitled session'}
+            </p>
+            <p className="truncate" title={targetSession?.title || undefined}>
+              Switch to: {targetSession?.title || 'Selected session'}
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Keep editing
+            </Button>
+            <Button type="button" variant="destructive" onClick={onConfirm}>
+              Discard and switch
             </Button>
           </div>
         </div>

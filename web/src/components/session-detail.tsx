@@ -41,6 +41,7 @@ type Props = {
   onCancel: () => Promise<void>
   onRefresh: () => void
   onUpdateTitle: (title: string) => Promise<void>
+  onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onOpenFilePath?: (path: string) => Promise<void> | void
   onErrorMessageChange?: (message: string) => void
@@ -63,6 +64,7 @@ export function SessionDetail({
   onCancel,
   onRefresh,
   onUpdateTitle,
+  onTitleEditStateChange,
   onUpdateAgentOptions,
   onOpenFilePath,
   onErrorMessageChange,
@@ -132,7 +134,12 @@ export function SessionDetail({
         <div className="flex min-h-10 items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <StatusBadge status={session.status} />
-            <SessionTitleEditor title={session.title} onSave={onUpdateTitle} />
+            <SessionTitleEditor
+              key={`mobile-${session.id}`}
+              title={session.title}
+              onSave={onUpdateTitle}
+              onEditStateChange={onTitleEditStateChange}
+            />
             <Badge variant="outline" className="shrink-0 capitalize" aria-label={`Agent: ${session.agent_type}`}>
               {session.agent_type}
             </Badge>
@@ -179,6 +186,7 @@ export function SessionDetail({
             title={session.title}
             errorMessage={errorMessage}
             onUpdateTitle={onUpdateTitle}
+            onTitleEditStateChange={onTitleEditStateChange}
             onUpdateAgentOptions={onUpdateAgentOptions}
           />
         </div>
@@ -215,6 +223,7 @@ function ChatSessionHeader({
   title,
   errorMessage,
   onUpdateTitle,
+  onTitleEditStateChange,
   onUpdateAgentOptions,
 }: {
   sessionID: string
@@ -224,6 +233,7 @@ function ChatSessionHeader({
   title: string
   errorMessage: string
   onUpdateTitle: (title: string) => Promise<void>
+  onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
 }) {
   return (
@@ -235,7 +245,12 @@ function ChatSessionHeader({
         )}
       >
         <div className="min-w-0 flex-1">
-          <SessionTitleEditor title={title} onSave={onUpdateTitle} />
+          <SessionTitleEditor
+            key={`desktop-${sessionID}`}
+            title={title}
+            onSave={onUpdateTitle}
+            onEditStateChange={onTitleEditStateChange}
+          />
         </div>
         <SessionDetailsMenu
           sessionID={sessionID}

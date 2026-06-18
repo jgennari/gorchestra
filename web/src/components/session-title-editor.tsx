@@ -8,9 +8,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 type Props = {
   title: string
   onSave: (title: string) => Promise<void>
+  onEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
 }
 
-export function SessionTitleEditor({ title, onSave }: Props) {
+export function SessionTitleEditor({ title, onSave, onEditStateChange }: Props) {
+  const editorID = useId()
   const inputID = useId()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(title)
@@ -18,12 +20,20 @@ export function SessionTitleEditor({ title, onSave }: Props) {
   const [pendingTitle, setPendingTitle] = useState<string | null>(null)
   const [error, setError] = useState('')
   const displayTitle = pendingTitle ?? title
+  const dirty = draft !== title
 
   useEffect(() => {
     if (!editing && !saving) {
       setDraft(title)
     }
   }, [editing, saving, title])
+
+  useEffect(() => {
+    onEditStateChange?.({ editorID, editing, dirty: editing && dirty })
+    return () => {
+      onEditStateChange?.({ editorID, editing: false, dirty: false })
+    }
+  }, [dirty, editing, editorID, onEditStateChange])
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
