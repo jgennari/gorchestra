@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -547,15 +548,15 @@ func TestEventHistoryTailReturnsRecentEvents(t *testing.T) {
 	var response eventHistoryResponse
 	decodeJSON(t, rec, &response)
 
-	if got, want := len(response.Events), 2; got != want {
+	if got, want := len(response.Events), 3; got != want {
 		t.Fatalf("expected %d events, got %d: %#v", want, got, response.Events)
 	}
-	if response.Events[0].Seq != 2 || response.Events[1].Seq != 3 {
-		t.Fatalf("expected seqs [2 3], got [%d %d]", response.Events[0].Seq, response.Events[1].Seq)
+	if got := eventSeqs(response.Events); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
+		t.Fatalf("expected seqs [1 2 3], got %v", got)
 	}
 	call := store.lastListCall(t)
-	if call.mode != "tail" {
-		t.Fatalf("expected tail event list mode, got %q", call.mode)
+	if call.mode != "before" || call.beforeSeq != 2 {
+		t.Fatalf("expected boundary backfill before seq 2, got mode=%q before_seq=%d", call.mode, call.beforeSeq)
 	}
 }
 
@@ -582,15 +583,72 @@ func TestEventHistoryBeforeSeqReturnsPreviousEvents(t *testing.T) {
 	var response eventHistoryResponse
 	decodeJSON(t, rec, &response)
 
-	if got, want := len(response.Events), 2; got != want {
+	if got, want := len(response.Events), 3; got != want {
 		t.Fatalf("expected %d events, got %d: %#v", want, got, response.Events)
 	}
-	if response.Events[0].Seq != 2 || response.Events[1].Seq != 3 {
-		t.Fatalf("expected seqs [2 3], got [%d %d]", response.Events[0].Seq, response.Events[1].Seq)
+	if got := eventSeqs(response.Events); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
+		t.Fatalf("expected seqs [1 2 3], got %v", got)
 	}
 	call := store.lastListCall(t)
-	if call.mode != "before" || call.beforeSeq != 4 {
-		t.Fatalf("expected before event list mode at seq 4, got mode=%q before_seq=%d", call.mode, call.beforeSeq)
+	if call.mode != "before" || call.beforeSeq != 2 {
+		t.Fatalf("expected boundary backfill before seq 2, got mode=%q before_seq=%d", call.mode, call.beforeSeq)
+	}
+}
+
+func TestEventHistoryTailKeepsExactLimitWhenBoundaryIsSafe(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEvent(1, "user.message.completed"),
+		testEvent(2, "agent.message.completed"),
+		testEvent(3, "agent.run.completed"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?tail=true&limit=2", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+
+	if got := eventSeqs(response.Events); !reflect.DeepEqual(got, []int64{2, 3}) {
+		t.Fatalf("expected seqs [2 3], got %v", got)
+	}
+	if got := store.listCallCount(); got != 1 {
+		t.Fatalf("expected a single list call, got %d", got)
+	}
+}
+
+func TestEventHistoryBeforeSeqOverfetchesToolCompletionBoundary(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEventWithPayload(1, "tool.call.started", map[string]any{"item_id": "tool_1"}),
+		testEventWithPayload(2, "tool.call.completed", map[string]any{"item_id": "tool_1"}),
+		testEvent(3, "agent.message.completed"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?before_seq=3&limit=1", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+
+	if got := eventSeqs(response.Events); !reflect.DeepEqual(got, []int64{1, 2}) {
+		t.Fatalf("expected seqs [1 2], got %v", got)
 	}
 }
 
@@ -1473,6 +1531,24 @@ func testEvent(seq int64, eventType string) store.Event {
 		Payload:   json.RawMessage(fmt.Sprintf(`{"text":"event %d"}`, seq)),
 		CreatedAt: testCreatedAt,
 	}
+}
+
+func testEventWithPayload(seq int64, eventType string, payload map[string]any) store.Event {
+	event := testEvent(seq, eventType)
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	event.Payload = encoded
+	return event
+}
+
+func eventSeqs(events []eventResponse) []int64 {
+	seqs := make([]int64, 0, len(events))
+	for _, event := range events {
+		seqs = append(seqs, event.Seq)
+	}
+	return seqs
 }
 
 func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder, value any) {

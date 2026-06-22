@@ -32,6 +32,7 @@ type Props = {
   showDebugEvents: boolean
   onShowDebugEventsChange: (showDebugEvents: boolean) => void
   onLoadOlderEvents?: () => Promise<void> | void
+  onFollowLatestChange?: (followingLatest: boolean) => void
   onSubmitPrompt: (
     content: string,
     agentOptions?: SubmitAgentOptions,
@@ -59,6 +60,7 @@ export function SessionDetail({
   showDebugEvents,
   onShowDebugEventsChange,
   onLoadOlderEvents,
+  onFollowLatestChange,
   onSubmitPrompt,
   onAnswerUserInput,
   onCancel,
@@ -175,6 +177,7 @@ export function SessionDetail({
           hasOlderEvents={hasOlderEvents}
           loadingOlderEvents={loadingOlderEvents}
           onLoadOlderEvents={onLoadOlderEvents}
+          onFollowLatestChange={onFollowLatestChange}
           onOpenFilePath={onOpenFilePath}
         />
         <div data-testid="floating-session-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">

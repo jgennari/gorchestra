@@ -157,7 +157,7 @@ test('uses the measured bottom inset height for transcript padding', () => {
   expect(container.querySelector('.p-4')).toHaveStyle({ paddingBottom: '276px' })
 })
 
-test('scrolling to the top auto-loads older events and leaves the manual button', async () => {
+test('scrolling near the top auto-loads older events and leaves the manual button', async () => {
   let resolveLoad: () => void = () => undefined
   const onLoadOlderEvents = vi.fn(
     () =>
@@ -175,13 +175,73 @@ test('scrolling to the top auto-loads older events and leaves the manual button'
   )
 
   const log = screen.getByRole('log', { name: 'Chat messages' })
-  fireEvent.scroll(log, { target: { scrollTop: 0 } })
-  fireEvent.scroll(log, { target: { scrollTop: 0 } })
+  setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1000, clientHeight: 400 })
+  fireEvent.wheel(log)
+  fireEvent.scroll(log, { target: { scrollTop: 120 } })
+  fireEvent.scroll(log, { target: { scrollTop: 120 } })
 
   await waitFor(() => expect(onLoadOlderEvents).toHaveBeenCalledTimes(1))
   expect(screen.getByRole('button', { name: 'Load older events' })).toBeInTheDocument()
 
   resolveLoad()
+})
+
+test('does not auto-load older events from initial programmatic scroll events', () => {
+  const onLoadOlderEvents = vi.fn()
+
+  render(
+    <ChatTranscript
+      hasOlderEvents
+      onLoadOlderEvents={onLoadOlderEvents}
+      events={[event(251, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })]}
+    />,
+  )
+
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  fireEvent.scroll(log, { target: { scrollTop: 0 } })
+
+  expect(onLoadOlderEvents).not.toHaveBeenCalled()
+})
+
+test('prepends older events without moving the current viewport', async () => {
+  const user = userEvent.setup()
+  let resolveLoad: () => void = () => undefined
+  const { rerender } = render(
+    <ChatTranscript
+      hasOlderEvents
+      onLoadOlderEvents={() =>
+        new Promise<void>((resolve) => {
+          resolveLoad = resolve
+        })}
+      events={[
+        event(251, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 1' }),
+        event(252, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 2' }),
+      ]}
+    />,
+  )
+
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  setScrollMetrics(log, { scrollTop: 180, scrollHeight: 1000, clientHeight: 400 })
+
+  await user.click(screen.getByRole('button', { name: 'Load older events' }))
+
+  setScrollMetrics(log, { scrollTop: 180, scrollHeight: 1320, clientHeight: 400 })
+  resolveLoad()
+  rerender(
+    <ChatTranscript
+      hasOlderEvents
+      loadingOlderEvents={false}
+      onLoadOlderEvents={() => Promise.resolve()}
+      events={[
+        event(240, 'agent.message.completed', 'assistant', 'completed', { text: 'Older 1' }),
+        event(241, 'agent.message.completed', 'assistant', 'completed', { text: 'Older 2' }),
+        event(251, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 1' }),
+        event(252, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 2' }),
+      ]}
+    />,
+  )
+
+  await waitFor(() => expect(log.scrollTop).toBe(500))
 })
 
 test('load older control is disabled while older events are loading', () => {

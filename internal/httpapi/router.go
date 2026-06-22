@@ -21,11 +21,12 @@ import (
 )
 
 const (
-	defaultEventLimit   = 500
-	maxEventLimit       = 1000
-	defaultSessionLimit = 50
-	maxSessionLimit     = 100
-	streamHeartbeat     = 15 * time.Second
+	defaultEventLimit        = 500
+	maxEventLimit            = 1000
+	eventHistoryBackfillStep = 250
+	defaultSessionLimit      = 50
+	maxSessionLimit          = 100
+	streamHeartbeat          = 15 * time.Second
 )
 
 type Store interface {
@@ -277,14 +278,14 @@ func (api API) listHistoryEvents(r *http.Request, sessionID string, limit int) (
 	}
 
 	if tail {
-		return api.store.ListRecentEvents(r.Context(), sessionID, limit)
+		return api.listBoundarySafeRecentEvents(r.Context(), sessionID, limit)
 	}
 	if rawBeforeSeq != "" {
 		beforeSeq, err := parseNonNegativeInt64(rawBeforeSeq, "before_seq")
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s", errInvalidEventHistoryCursor, err.Error())
 		}
-		return api.store.ListEventsBefore(r.Context(), sessionID, beforeSeq, limit)
+		return api.listBoundarySafeEventsBefore(r.Context(), sessionID, beforeSeq, limit)
 	}
 
 	afterSeq := int64(0)
@@ -296,6 +297,80 @@ func (api API) listHistoryEvents(r *http.Request, sessionID string, limit int) (
 		afterSeq = parsedAfterSeq
 	}
 	return api.store.ListEvents(r.Context(), sessionID, afterSeq, limit)
+}
+
+func (api API) listBoundarySafeRecentEvents(ctx context.Context, sessionID string, limit int) ([]store.Event, error) {
+	events, err := api.store.ListRecentEvents(ctx, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return api.expandHistoryWindowToSafeBoundary(ctx, sessionID, events)
+}
+
+func (api API) listBoundarySafeEventsBefore(
+	ctx context.Context,
+	sessionID string,
+	beforeSeq int64,
+	limit int,
+) ([]store.Event, error) {
+	events, err := api.store.ListEventsBefore(ctx, sessionID, beforeSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	return api.expandHistoryWindowToSafeBoundary(ctx, sessionID, events)
+}
+
+func (api API) expandHistoryWindowToSafeBoundary(
+	ctx context.Context,
+	sessionID string,
+	events []store.Event,
+) ([]store.Event, error) {
+	for len(events) > 0 && !safeHistoryWindowStart(events[0]) && len(events) < maxEventLimit {
+		beforeSeq := events[0].Seq
+		if beforeSeq <= 1 {
+			return events, nil
+		}
+
+		backfillLimit := eventHistoryBackfillStep
+		if remaining := maxEventLimit - len(events); backfillLimit > remaining {
+			backfillLimit = remaining
+		}
+		if backfillLimit <= 0 {
+			return events, nil
+		}
+
+		olderEvents, err := api.store.ListEventsBefore(ctx, sessionID, beforeSeq, backfillLimit)
+		if err != nil {
+			return nil, err
+		}
+		if len(olderEvents) == 0 {
+			return events, nil
+		}
+
+		expanded := make([]store.Event, 0, len(olderEvents)+len(events))
+		expanded = append(expanded, olderEvents...)
+		expanded = append(expanded, events...)
+		events = expanded
+	}
+
+	return events, nil
+}
+
+func safeHistoryWindowStart(event store.Event) bool {
+	switch event.Type {
+	case "agent.message.delta",
+		"agent.plan.delta",
+		"agent.thinking.delta",
+		"agent.log.delta",
+		"tool.call.delta",
+		"file.change.delta",
+		"tool.call.completed",
+		"file.change.completed",
+		"agent.thinking.completed":
+		return false
+	default:
+		return true
+	}
 }
 
 func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {

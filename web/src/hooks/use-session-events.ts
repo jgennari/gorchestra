@@ -9,6 +9,7 @@ type Options = {
   onEvent?: (event: AgentEvent) => void
   reconnectDelayMs?: number
   refreshKey?: number
+  followLatest?: boolean
 }
 
 type SessionEventCacheEntry = {
@@ -20,11 +21,15 @@ type SessionEventCacheEntry = {
 }
 
 const cachedSessionLimit = 8
-const cachedEventLimit = 5000
+const cachedEventLimit = 1000
+const activeEventWindowLimit = 1000
+const recentEventsRequestRetentionMs = 2000
 const sessionEventCache = new Map<string, SessionEventCacheEntry>()
+const recentEventsRequests = new Map<string, Promise<AgentEvent[]>>()
 
 export function clearSessionEventCacheForTest() {
   sessionEventCache.clear()
+  recentEventsRequests.clear()
 }
 
 export function useSessionEvents(sessionID: string | null, options: Options = {}) {
@@ -39,12 +44,18 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const onEventRef = useRef(options.onEvent)
   const reconnectDelayMs = options.reconnectDelayMs ?? 1000
   const refreshKey = options.refreshKey ?? 0
+  const followLatest = options.followLatest ?? true
+  const followLatestRef = useRef(followLatest)
   const [hasOlderEvents, setHasOlderEvents] = useState(false)
   const [loadingOlderEvents, setLoadingOlderEvents] = useState(false)
 
   useEffect(() => {
     onEventRef.current = options.onEvent
   }, [options.onEvent])
+
+  useEffect(() => {
+    followLatestRef.current = followLatest
+  }, [followLatest])
 
   useEffect(() => {
     const sameSessionRefresh = loadedSessionIDRef.current === sessionID
@@ -105,8 +116,12 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         const event = JSON.parse(message.data) as AgentEvent
         lastSeqRef.current = Math.max(lastSeqRef.current, event.seq)
         setEvents((current) => {
-          const next = appendEvent(current, event)
-          writeCachedSessionEvents(activeSessionID, next, oldestSeqRef.current > 1)
+          const appended = appendEvent(current, event)
+          const next = followLatestRef.current ? trimEventsWindow(appended, activeEventWindowLimit) : appended
+          oldestSeqRef.current = firstSeq(next)
+          const nextHasOlderEvents = oldestSeqRef.current > 1 || next.length < appended.length
+          setHasOlderEvents(nextHasOlderEvents)
+          writeCachedSessionEvents(activeSessionID, next, nextHasOlderEvents)
           return next
         })
         onEventRef.current?.(event)
@@ -140,7 +155,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     async function load() {
       setStreamState('loading')
       try {
-        const history = await listRecentEvents(activeSessionID)
+        const history = await listRecentEventsOnce(activeSessionID, refreshKey)
         if (closed) {
           return
         }
@@ -153,10 +168,15 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           oldestSeqRef.current = historyFirstSeq
         }
         loadedSessionIDRef.current = activeSessionID
-        setHasOlderEvents(oldestSeqRef.current > 1)
+        const nextHasOlderEvents = oldestSeqRef.current > 1
+        setHasOlderEvents(nextHasOlderEvents)
         setEvents((current) => {
-          const next = appendEvents(sameSessionRefresh ? current : [], history)
-          writeCachedSessionEvents(activeSessionID, next, oldestSeqRef.current > 1)
+          const merged = appendEvents(sameSessionRefresh ? current : [], history)
+          const next = followLatestRef.current ? trimEventsWindow(merged, activeEventWindowLimit) : merged
+          oldestSeqRef.current = firstSeq(next)
+          const trimmedHasOlderEvents = nextHasOlderEvents || next.length < merged.length
+          setHasOlderEvents(trimmedHasOlderEvents)
+          writeCachedSessionEvents(activeSessionID, next, trimmedHasOlderEvents)
           return next
         })
         connect(lastSeqRef.current)
@@ -255,6 +275,31 @@ function firstSeq(events: AgentEvent[]) {
   return events.reduce((min, event) => (min === 0 ? event.seq : Math.min(min, event.seq)), 0)
 }
 
+function listRecentEventsOnce(sessionID: string, refreshKey: number) {
+  const key = `${sessionID}:${refreshKey}`
+  const existing = recentEventsRequests.get(key)
+  if (existing) {
+    return existing
+  }
+
+  const request = listRecentEvents(sessionID).catch((error) => {
+    recentEventsRequests.delete(key)
+    throw error
+  })
+  recentEventsRequests.set(key, request)
+  request.then(
+    () => {
+      window.setTimeout(() => {
+        if (recentEventsRequests.get(key) === request) {
+          recentEventsRequests.delete(key)
+        }
+      }, recentEventsRequestRetentionMs)
+    },
+    () => undefined,
+  )
+  return request
+}
+
 function readCachedSessionEvents(sessionID: string): SessionEventCacheEntry | null {
   const entry = sessionEventCache.get(sessionID)
   if (!entry) {
@@ -266,7 +311,7 @@ function readCachedSessionEvents(sessionID: string): SessionEventCacheEntry | nu
 }
 
 function writeCachedSessionEvents(sessionID: string, events: AgentEvent[], hasOlderEvents: boolean) {
-  const trimmedEvents = trimCachedEvents(events)
+  const trimmedEvents = trimEventsWindow(events, cachedEventLimit)
   const trimmedOlderEvents = trimmedEvents.length < events.length
   sessionEventCache.set(sessionID, {
     events: trimmedEvents,
@@ -278,11 +323,39 @@ function writeCachedSessionEvents(sessionID: string, events: AgentEvent[], hasOl
   evictOldSessionEventCaches()
 }
 
-function trimCachedEvents(events: AgentEvent[]) {
-  if (events.length <= cachedEventLimit) {
+export function trimEventsWindow(events: AgentEvent[], limit: number) {
+  if (events.length <= limit) {
     return events
   }
-  return events.slice(events.length - cachedEventLimit)
+  let start = events.length - limit
+  for (let index = start; index < events.length; index += 1) {
+    if (safeLeadingWindowEvent(events[index])) {
+      start = index
+      break
+    }
+  }
+  return events.slice(start)
+}
+
+export function safeLeadingWindowEvent(event: AgentEvent | undefined) {
+  if (!event) {
+    return true
+  }
+
+  switch (event.type) {
+    case 'agent.message.delta':
+    case 'agent.plan.delta':
+    case 'agent.thinking.delta':
+    case 'agent.log.delta':
+    case 'tool.call.delta':
+    case 'file.change.delta':
+    case 'tool.call.completed':
+    case 'file.change.completed':
+    case 'agent.thinking.completed':
+      return false
+    default:
+      return true
+  }
 }
 
 function evictOldSessionEventCaches() {

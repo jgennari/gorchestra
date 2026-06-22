@@ -112,6 +112,7 @@ function App() {
   const [openWorkspaceFile, setOpenWorkspaceFile] = useState<WorkspaceFileContent | null>(null)
   const [fileRefreshKey, setFileRefreshKey] = useState(0)
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
+  const [followingLatest, setFollowingLatest] = useState(true)
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const [titleEditorStates, setTitleEditorStates] = useState<Record<string, { editing: boolean; dirty: boolean }>>({})
   const [sessionSearchQuery, setSessionSearchQuery] = useState('')
@@ -247,6 +248,7 @@ function App() {
   useEffect(() => {
     setShowDebugEvents(loadSessionDebugPreference(selectedSessionID))
     setOpenWorkspaceFile(null)
+    setFollowingLatest(true)
   }, [selectedSessionID])
 
   useEffect(() => {
@@ -308,6 +310,7 @@ function App() {
     loadOlderEvents,
   } = useSessionEvents(selectedSessionID, {
     onEvent: handleSessionEvent,
+    followLatest: followingLatest,
     refreshKey: eventRefreshKey,
   })
 
@@ -793,6 +796,7 @@ function App() {
             hasOlderEvents={hasOlderEvents}
             loadingOlderEvents={loadingOlderEvents}
             onLoadOlderEvents={loadOlderEvents}
+            onFollowLatestChange={setFollowingLatest}
             errorMessage={error || streamError}
             notice={notice || healthLabel(healthState)}
             showDebugEvents={showDebugEvents}

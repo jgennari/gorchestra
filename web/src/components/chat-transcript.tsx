@@ -28,6 +28,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
+const AUTO_LOAD_OLDER_THRESHOLD_PX = 160
 const scrollIntentKeys = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])
 
 type Props = {
@@ -41,6 +42,7 @@ type Props = {
   hasOlderEvents?: boolean
   loadingOlderEvents?: boolean
   onLoadOlderEvents?: () => Promise<void> | void
+  onFollowLatestChange?: (followingLatest: boolean) => void
   onOpenFilePath?: (path: string) => Promise<void> | void
 }
 
@@ -55,17 +57,20 @@ export function ChatTranscript({
   hasOlderEvents = false,
   loadingOlderEvents = false,
   onLoadOlderEvents,
+  onFollowLatestChange,
   onOpenFilePath,
 }: Props) {
   const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
   const scrollRef = useRef<HTMLDivElement>(null)
   const scrollIdleTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const autoLoadOlderRef = useRef(false)
+  const prependAnchorRef = useRef<{ firstSeq: number; scrollHeight: number; scrollTop: number } | null>(null)
   const autoScrollPausedRef = useRef(false)
   const lastScrollTopRef = useRef(0)
   const userScrollIntentRef = useRef(false)
   const [scrolling, setScrolling] = useState(false)
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
+  const firstTimelineSeq = timeline[0]?.startSeq ?? 0
   const lastSeq = timeline.at(-1)?.endSeq ?? 0
   const bottomAnchorKey = `${lastSeq}:${thinking ? 'thinking' : 'idle'}`
 
@@ -89,11 +94,34 @@ export function ChatTranscript({
     }
   }, [bottomAnchorKey])
 
+  useLayoutEffect(() => {
+    const anchor = prependAnchorRef.current
+    const element = scrollRef.current
+    if (!anchor || !element) {
+      return
+    }
+
+    if (firstTimelineSeq > 0 && firstTimelineSeq < anchor.firstSeq) {
+      element.scrollTop = anchor.scrollTop + (element.scrollHeight - anchor.scrollHeight)
+      lastScrollTopRef.current = element.scrollTop
+      prependAnchorRef.current = null
+      return
+    }
+
+    if (!loadingOlderEvents) {
+      prependAnchorRef.current = null
+    }
+  }, [firstTimelineSeq, loadingOlderEvents])
+
   useEffect(() => {
     if (events.length === 0) {
       setAutoScrollPausedState(false)
     }
   }, [events.length])
+
+  useEffect(() => {
+    onFollowLatestChange?.(!autoScrollPaused)
+  }, [autoScrollPaused, onFollowLatestChange])
 
   useEffect(() => {
     if (!loadingOlderEvents) {
@@ -148,10 +176,11 @@ export function ChatTranscript({
 
   function maybeLoadOlderFromScroll(element: HTMLDivElement) {
     if (
-      element.scrollTop > 0 ||
+      element.scrollTop > AUTO_LOAD_OLDER_THRESHOLD_PX ||
       !hasOlderEvents ||
       loadingOlderEvents ||
       autoLoadOlderRef.current ||
+      (!userScrollIntentRef.current && !autoScrollPausedRef.current) ||
       !onLoadOlderEvents
     ) {
       return
@@ -159,10 +188,30 @@ export function ChatTranscript({
 
     autoLoadOlderRef.current = true
     void Promise.resolve()
-      .then(() => onLoadOlderEvents())
+      .then(() => requestOlderEvents())
       .finally(() => {
         autoLoadOlderRef.current = false
       })
+  }
+
+  function requestOlderEvents() {
+    if (!onLoadOlderEvents || loadingOlderEvents) {
+      return Promise.resolve()
+    }
+
+    const element = scrollRef.current
+    if (element) {
+      prependAnchorRef.current = {
+        firstSeq: firstTimelineSeq,
+        scrollHeight: element.scrollHeight,
+        scrollTop: element.scrollTop,
+      }
+    }
+
+    return Promise.resolve(onLoadOlderEvents()).catch((error) => {
+      prependAnchorRef.current = null
+      throw error
+    })
   }
 
   if (error && timeline.length === 0) {
@@ -217,7 +266,7 @@ export function ChatTranscript({
           style={{ paddingBottom: `${contentBottomPadding}px` }}
         >
           {hasOlderEvents || loadingOlderEvents ? (
-            <LoadOlderEventsButton loading={loadingOlderEvents} onLoad={onLoadOlderEvents} />
+            <LoadOlderEventsButton loading={loadingOlderEvents} onLoad={requestOlderEvents} />
           ) : null}
           {timeline.map((item, index) => (
             <div
