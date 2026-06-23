@@ -169,12 +169,20 @@ test('pastes image clipboard items into attachments', async () => {
   })
 })
 
-test('prompt composer shows cancellation action while running', async () => {
+test('prompt composer queues enter submissions while running', async () => {
   const user = userEvent.setup()
   const onSubmit = vi.fn(async () => undefined)
   const onCancel = vi.fn(async () => undefined)
 
-  render(<PromptComposer disabled disabledReason="This session is running." onSubmit={onSubmit} onCancel={onCancel} />)
+  render(
+    <PromptComposer
+      disabled
+      disabledReason="This session is running."
+      sessionStatus="running"
+      onSubmit={onSubmit}
+      onCancel={onCancel}
+    />,
+  )
 
   const prompt = screen.getByLabelText('Prompt')
   expect(prompt).toBeEnabled()
@@ -183,7 +191,8 @@ test('prompt composer shows cancellation action while running', async () => {
   await user.type(prompt, 'Draft next message{enter}')
 
   expect(onSubmit).not.toHaveBeenCalled()
-  expect(prompt).toHaveValue('Draft next message')
+  expect(prompt).toHaveValue('')
+  expect(screen.getByText('Draft next message')).toBeInTheDocument()
 
   await user.click(screen.getByRole('button', { name: 'Cancel running session' }))
 

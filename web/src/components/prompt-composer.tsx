@@ -310,6 +310,11 @@ export function PromptComposer({
       insertTextareaNewline(event.currentTarget, setContent)
       return
     }
+    if (sessionStatus === 'running') {
+      event.preventDefault()
+      enqueueDraft()
+      return
+    }
     event.preventDefault()
     void submitPrompt()
   }
