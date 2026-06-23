@@ -485,7 +485,7 @@ export function PromptComposer({
           onKeyDown={handleKeyDown}
           disabled={inputDisabled}
           rows={1}
-          className="h-9 min-h-9 resize-none border-transparent bg-transparent px-1 py-2 shadow-none focus-visible:ring-0"
+          className="h-9 min-h-9 resize-none border-transparent bg-transparent px-1 py-1.5 text-base shadow-none focus-visible:ring-0 sm:py-2 sm:text-sm"
         />
         <div className="mt-2 flex min-h-8 items-center gap-1.5">
           {codexToolbarVisible ? (

@@ -318,7 +318,7 @@ function ThinkingIndicatorRow() {
         role="status"
         aria-label="Thinking"
         aria-live="polite"
-        className="thinking-indicator inline-flex max-w-[min(48rem,90%)] items-center gap-2 px-1 py-1 text-sm font-medium"
+        className="thinking-indicator inline-flex max-w-full sm:max-w-[min(48rem,90%)] items-center gap-2 px-1 py-1 text-sm font-medium"
       >
         <Brain className="thinking-indicator__icon size-4" aria-hidden="true" stroke={`url(#${gradientId})`}>
           <defs>
@@ -495,7 +495,7 @@ function ChatMessageRow({
   return (
     <article className={cn('flex', user ? 'justify-end' : 'justify-start')} data-message-variant={message.variant}>
       <div
-        className="relative -mt-8 inline-block max-w-[min(48rem,90%)] overflow-hidden pt-8"
+        className="relative -mt-8 inline-block max-w-full sm:max-w-[min(48rem,90%)] overflow-hidden pt-8"
         onMouseEnter={handleRailMouseEnter}
         onMouseLeave={hideMessageRail}
       >
@@ -1029,7 +1029,7 @@ function DebugEventRow({ event }: { event: ChatDebugEvent }) {
 
   return (
     <article className="flex justify-start">
-      <div className="max-w-[min(48rem,90%)] border-l border-border/70 pl-3 text-xs">
+      <div className="max-w-full sm:max-w-[min(48rem,90%)] border-l border-border/70 pl-3 text-xs">
         <button
           type="button"
           className="flex w-full min-w-0 items-center gap-1 rounded py-0.5 text-left font-mono text-muted-foreground/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -1078,7 +1078,7 @@ function RunErrorRow({ error }: { error: ChatRunError }) {
 
   return (
     <article className="flex justify-start" role="alert" aria-label={`${error.label}: ${error.error}`}>
-      <div className="relative max-w-[min(48rem,90%)] rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 pr-12 text-sm text-destructive shadow-sm">
+      <div className="relative max-w-full sm:max-w-[min(48rem,90%)] rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 pr-12 text-sm text-destructive shadow-sm">
         <FloatingCopyButton label="Copy error" value={error.error} />
         <div className="flex min-w-0 items-center gap-2 text-xs font-medium">
           <span className="min-w-0 flex-1 truncate">{error.label}</span>

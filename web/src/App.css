@@ -115,7 +115,6 @@
 
 .codex-plan-composer {
   position: relative;
-  overflow: hidden;
   border-color: hsl(42 96% 62% / 0.72);
   background: hsl(42 100% 86% / 0.84);
   box-shadow:
