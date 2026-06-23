@@ -177,6 +177,17 @@ export type WorkspaceSearchResponse = {
   results: WorkspaceSearchResult[]
 }
 
+export type ConsoleStatus = {
+  session_id: string
+  workspace_path: string
+  running: boolean
+  attached_count: number
+  started_at?: string
+  idle_since?: string | null
+  exited_at?: string | null
+  exit_code?: number | null
+}
+
 type ErrorResponse = {
   error?: string
 }
@@ -437,6 +448,28 @@ export function sessionActivityStreamURL() {
   return '/api/sessions/activity/stream'
 }
 
+export async function getConsoleStatus(sessionID: string) {
+  return requestJSON<ConsoleStatus>(`/api/sessions/${encodeURIComponent(sessionID)}/console`)
+}
+
+export async function startConsole(sessionID: string) {
+  return requestJSON<ConsoleStatus>(`/api/sessions/${encodeURIComponent(sessionID)}/console`, {
+    method: 'POST',
+  })
+}
+
+export async function killConsole(sessionID: string) {
+  await requestNoContent(`/api/sessions/${encodeURIComponent(sessionID)}/console`, {
+    method: 'DELETE',
+  })
+}
+
+export function consoleWebSocketURL(sessionID: string) {
+  const httpURL = new URL(`/api/sessions/${encodeURIComponent(sessionID)}/console/ws`, window.location.href)
+  httpURL.protocol = httpURL.protocol === 'https:' ? 'wss:' : 'ws:'
+  return httpURL.toString()
+}
+
 function withQuery(path: string, params: URLSearchParams) {
   const query = params.toString()
   return query ? `${path}?${query}` : path
@@ -466,4 +499,27 @@ async function requestJSON<T>(url: string, init: RequestInit = {}) {
   }
 
   return (await response.json()) as T
+}
+
+async function requestNoContent(url: string, init: RequestInit = {}) {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      Accept: 'application/json',
+      ...init.headers,
+    },
+  })
+
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`
+    try {
+      const payload = (await response.json()) as ErrorResponse
+      if (payload.error) {
+        message = payload.error
+      }
+    } catch {
+      // Keep the HTTP status fallback when the body is not JSON.
+    }
+    throw new APIError(response.status, message)
+  }
 }

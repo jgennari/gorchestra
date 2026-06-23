@@ -22,7 +22,10 @@ export default defineConfig({
   server: {
     allowedHosts: allowedHosts.length > 0 ? allowedHosts : undefined,
     proxy: {
-      '/api': process.env.BACKEND_URL ?? 'http://localhost:8080',
+      '/api': {
+        target: process.env.BACKEND_URL ?? 'http://localhost:8080',
+        ws: true,
+      },
     },
   },
   test: {

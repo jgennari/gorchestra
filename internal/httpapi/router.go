@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/jgennari/gorchestra/internal/console"
 	eventservice "github.com/jgennari/gorchestra/internal/events"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
@@ -69,6 +70,7 @@ type Dependencies struct {
 	Events         EventService
 	Agents         AgentRegistry
 	Runs           RunManager
+	Console        *console.Manager
 	Workdir        string
 	WorkspaceRoots []string
 	StaticAssets   fs.FS
@@ -79,6 +81,7 @@ type API struct {
 	events       EventService
 	agents       AgentRegistry
 	runs         RunManager
+	console      *console.Manager
 	workdir      string
 	workspaces   workspaceConfig
 	staticAssets fs.FS
@@ -116,9 +119,13 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.events = deps[0].Events
 		api.agents = deps[0].Agents
 		api.runs = deps[0].Runs
+		api.console = deps[0].Console
 		api.workdir = deps[0].Workdir
 		api.workspaces = newWorkspaceConfig(deps[0].Workdir, deps[0].WorkspaceRoots)
 		api.staticAssets = deps[0].StaticAssets
+	}
+	if api.console == nil {
+		api.console = console.NewManager()
 	}
 
 	r := chi.NewRouter()
@@ -141,6 +148,10 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Post("/api/sessions/{sessionId}/compact", api.compactSessionHandler)
 		r.Post("/api/sessions/{sessionId}/cancel", api.cancelSessionHandler)
 		r.Post("/api/sessions/{sessionId}/requests/{requestId}/answer", api.answerUserInputHandler)
+		r.Get("/api/sessions/{sessionId}/console", api.consoleStatusHandler)
+		r.Post("/api/sessions/{sessionId}/console", api.startConsoleHandler)
+		r.Delete("/api/sessions/{sessionId}/console", api.killConsoleHandler)
+		r.Get("/api/sessions/{sessionId}/console/ws", api.consoleWebSocketHandler)
 	}
 	if api.store != nil {
 		r.Get("/api/sessions", api.listSessionsHandler)

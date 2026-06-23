@@ -1,5 +1,5 @@
 import { Check, Copy, Ellipsis, RefreshCcw } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
   MessageAttachment,
@@ -46,6 +46,7 @@ type Props = {
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onOpenFilePath?: (path: string) => Promise<void> | void
   onErrorMessageChange?: (message: string) => void
+  headerActions?: ReactNode
 }
 
 export function SessionDetail({
@@ -70,6 +71,7 @@ export function SessionDetail({
   onUpdateAgentOptions,
   onOpenFilePath,
   onErrorMessageChange,
+  headerActions,
 }: Props) {
   const userInputRequest = useMemo(
     () => (session?.status === 'running' ? pendingUserInputRequest(events) : null),
@@ -191,6 +193,7 @@ export function SessionDetail({
             onUpdateTitle={onUpdateTitle}
             onTitleEditStateChange={onTitleEditStateChange}
             onUpdateAgentOptions={onUpdateAgentOptions}
+            headerActions={headerActions}
           />
         </div>
       </div>
@@ -228,6 +231,7 @@ function ChatSessionHeader({
   onUpdateTitle,
   onTitleEditStateChange,
   onUpdateAgentOptions,
+  headerActions,
 }: {
   sessionID: string
   agentType: Session['agent_type']
@@ -238,6 +242,7 @@ function ChatSessionHeader({
   onUpdateTitle: (title: string) => Promise<void>
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
+  headerActions?: ReactNode
 }) {
   return (
     <div className="pointer-events-auto">
@@ -255,6 +260,7 @@ function ChatSessionHeader({
             onEditStateChange={onTitleEditStateChange}
           />
         </div>
+        {headerActions}
         <SessionDetailsMenu
           sessionID={sessionID}
           agentType={agentType}

@@ -219,6 +219,71 @@ func TestSessionFileAPIsListSearchAndReadWorkspaceFiles(t *testing.T) {
 	assertErrorResponse(t, binaryUpdateRec, "file must be UTF-8 text")
 }
 
+func TestSessionConsoleStatusStartAndKill(t *testing.T) {
+	ctx := context.Background()
+	workspace := canonicalPath(t, t.TempDir())
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Console",
+		AgentType:     "fake",
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	statusRec := get(handler, "/api/sessions/"+session.ID+"/console")
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, statusRec.Code, statusRec.Body.String())
+	}
+	var initialStatus struct {
+		Running       bool   `json:"running"`
+		WorkspacePath string `json:"workspace_path"`
+	}
+	decodeJSON(t, statusRec, &initialStatus)
+	if initialStatus.Running {
+		t.Fatalf("expected console to be stopped initially, got %#v", initialStatus)
+	}
+	if initialStatus.WorkspacePath != workspace {
+		t.Fatalf("expected workspace path %q, got %q", workspace, initialStatus.WorkspacePath)
+	}
+
+	startRec := postJSON(handler, "/api/sessions/"+session.ID+"/console", `{}`)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("expected start status %d, got %d with body %s", http.StatusOK, startRec.Code, startRec.Body.String())
+	}
+	var startedStatus struct {
+		Running       bool   `json:"running"`
+		WorkspacePath string `json:"workspace_path"`
+	}
+	decodeJSON(t, startRec, &startedStatus)
+	if !startedStatus.Running {
+		t.Fatalf("expected console to be running, got %#v", startedStatus)
+	}
+	if startedStatus.WorkspacePath != workspace {
+		t.Fatalf("expected workspace path %q, got %q", workspace, startedStatus.WorkspacePath)
+	}
+
+	runningRec := get(handler, "/api/sessions/"+session.ID+"/console")
+	if runningRec.Code != http.StatusOK {
+		t.Fatalf("expected running status %d, got %d with body %s", http.StatusOK, runningRec.Code, runningRec.Body.String())
+	}
+	var runningStatus struct {
+		Running bool `json:"running"`
+	}
+	decodeJSON(t, runningRec, &runningStatus)
+	if !runningStatus.Running {
+		t.Fatalf("expected console to remain running after start response")
+	}
+
+	killReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+session.ID+"/console", nil)
+	killRec := httptest.NewRecorder()
+	handler.ServeHTTP(killRec, killReq)
+	if killRec.Code != http.StatusNoContent {
+		t.Fatalf("expected kill status %d, got %d with body %s", http.StatusNoContent, killRec.Code, killRec.Body.String())
+	}
+}
+
 func TestSessionFilesIncludesGitSummary(t *testing.T) {
 	ctx := context.Background()
 	workspace := canonicalPath(t, t.TempDir())

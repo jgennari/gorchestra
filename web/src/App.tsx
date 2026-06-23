@@ -1,5 +1,5 @@
 import Editor from '@monaco-editor/react'
-import { Code2, Eye, FileText, Menu, Plus, Save, X } from 'lucide-react'
+import { Code2, Eye, FileText, Menu, MessageSquare, Plus, Save, Terminal, X } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -53,6 +53,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
+import { HostConsole } from '@/components/host-console'
 import { RunHealthRail } from '@/components/run-health-rail'
 import { SessionDetail } from '@/components/session-detail'
 import { defaultSessionListFilters, SessionList, type SessionListFilters } from '@/components/session-list'
@@ -71,6 +72,7 @@ type PaneWidths = {
 type FileOverlayMode = 'preview' | 'edit'
 type FileSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error'
 type CodexSessionAction = 'clear' | 'compact'
+type AppView = 'session' | 'console'
 type PendingSessionAction = {
   action: CodexSessionAction
   sessionID: string
@@ -117,6 +119,7 @@ function App() {
   const [titleEditorStates, setTitleEditorStates] = useState<Record<string, { editing: boolean; dirty: boolean }>>({})
   const [sessionSearchQuery, setSessionSearchQuery] = useState('')
   const [sessionListFilters, setSessionListFilters] = useState<SessionListFilters>(defaultSessionListFilters)
+  const [appView, setAppView] = useState<AppView>('session')
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
   const sessionsRef = useRef<Session[]>([])
   const paneWidthsRef = useRef(paneWidths)
@@ -744,6 +747,41 @@ function App() {
   const navigationTargetSession = confirmSessionNavigation?.targetSessionID
     ? (sessions.find((session) => session.id === confirmSessionNavigation.targetSessionID) ?? null)
     : null
+  const viewToggle = (
+    <div className="relative grid shrink-0 grid-cols-2 rounded-md bg-muted p-1 shadow-inner">
+      <span
+        aria-hidden="true"
+        className={cn(
+          'absolute bottom-1 left-1 top-1 w-9 rounded-sm bg-background shadow-sm transition-transform duration-150 ease-out',
+          appView === 'console' ? 'translate-x-9' : 'translate-x-0',
+        )}
+      />
+      <button
+        type="button"
+        aria-label="Show chat"
+        aria-pressed={appView === 'session'}
+        className={cn(
+          'relative z-10 flex h-8 w-9 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          appView === 'session' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+        )}
+        onClick={() => setAppView('session')}
+      >
+        <MessageSquare className="size-4" />
+      </button>
+      <button
+        type="button"
+        aria-label="Show console"
+        aria-pressed={appView === 'console'}
+        className={cn(
+          'relative z-10 flex h-8 w-9 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          appView === 'console' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+        )}
+        onClick={() => setAppView('console')}
+      >
+        <Terminal className="size-4" />
+      </button>
+    </div>
+  )
 
   return (
     <main className="app-shell">
@@ -764,7 +802,7 @@ function App() {
         <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b bg-background/84 px-3 lg:hidden">
           <Sheet open={mobileListOpen} onOpenChange={setMobileListOpen}>
             <SheetTrigger asChild>
-              <Button size="icon" variant="outline" aria-label="Open sessions">
+              <Button size="icon" variant="outline" aria-label="Open sessions" className="lg:hidden">
                 <Menu />
               </Button>
             </SheetTrigger>
@@ -788,30 +826,41 @@ function App() {
         </header>
 
         <div className="relative min-h-0 flex-1 overflow-hidden">
-          <SessionDetail
-            session={selectedSession}
-            events={events}
-            streamState={streamState}
-            streamError={streamError}
-            hasOlderEvents={hasOlderEvents}
-            loadingOlderEvents={loadingOlderEvents}
-            onLoadOlderEvents={loadOlderEvents}
-            onFollowLatestChange={setFollowingLatest}
-            errorMessage={error || streamError}
-            notice={notice || healthLabel(healthState)}
-            showDebugEvents={showDebugEvents}
-            onShowDebugEventsChange={handleShowDebugEventsChange}
-            onSubmitPrompt={handleSubmitPrompt}
-            onAnswerUserInput={handleAnswerUserInput}
-            onCancel={handleCancel}
-            onUpdateTitle={handleUpdateTitle}
-            onTitleEditStateChange={handleTitleEditStateChange}
-            onUpdateAgentOptions={handleUpdateAgentOptions}
-            onRefresh={handleRefresh}
-            onOpenFilePath={handleOpenWorkspacePath}
-            onErrorMessageChange={setError}
-          />
-          {openWorkspaceFile ? (
+          {appView === 'console' ? (
+            <HostConsole
+              session={selectedSession}
+              resolvedTheme={theme.resolvedTheme}
+              headerActions={viewToggle}
+              onUpdateTitle={handleUpdateTitle}
+              onTitleEditStateChange={handleTitleEditStateChange}
+            />
+          ) : (
+            <SessionDetail
+              session={selectedSession}
+              events={events}
+              streamState={streamState}
+              streamError={streamError}
+              hasOlderEvents={hasOlderEvents}
+              loadingOlderEvents={loadingOlderEvents}
+              onLoadOlderEvents={loadOlderEvents}
+              onFollowLatestChange={setFollowingLatest}
+              errorMessage={error || streamError}
+              notice={notice || healthLabel(healthState)}
+              showDebugEvents={showDebugEvents}
+              onShowDebugEventsChange={handleShowDebugEventsChange}
+              onSubmitPrompt={handleSubmitPrompt}
+              onAnswerUserInput={handleAnswerUserInput}
+              onCancel={handleCancel}
+              onUpdateTitle={handleUpdateTitle}
+              onTitleEditStateChange={handleTitleEditStateChange}
+              onUpdateAgentOptions={handleUpdateAgentOptions}
+              onRefresh={handleRefresh}
+              onOpenFilePath={handleOpenWorkspacePath}
+              onErrorMessageChange={setError}
+              headerActions={viewToggle}
+            />
+          )}
+          {appView === 'session' && openWorkspaceFile ? (
             <WorkspaceFileOverlay
               sessionID={selectedSessionID ?? ''}
               file={openWorkspaceFile}
