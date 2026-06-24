@@ -187,7 +187,7 @@ test('floating chat header owns session errors', () => {
   })
 
   expect(screen.getByRole('alert')).toHaveTextContent('HTTP 502')
-  expect(screen.getByRole('alert')).toHaveClass('bg-destructive/12', 'text-destructive')
+  expect(screen.getByRole('alert')).toHaveClass('command-error-banner', 'text-destructive')
   expect(screen.queryByText(/Failed to load chat history/)).not.toBeInTheDocument()
 })
 

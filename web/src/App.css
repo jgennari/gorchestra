@@ -116,6 +116,14 @@
   -webkit-backdrop-filter: blur(28px) saturate(1.12);
 }
 
+.command-error-banner {
+  background:
+    linear-gradient(180deg, hsl(var(--destructive) / 0.22), hsl(var(--destructive) / 0.16)),
+    linear-gradient(180deg, hsl(var(--surface) / 0.94), hsl(var(--background) / 0.9));
+  backdrop-filter: blur(28px) saturate(1.12);
+  -webkit-backdrop-filter: blur(28px) saturate(1.12);
+}
+
 .command-file-overlay {
   background: linear-gradient(180deg, hsl(var(--background) / 0.94), hsl(var(--surface) / 0.96));
   backdrop-filter: blur(24px) saturate(1.15);
@@ -130,6 +138,12 @@
 :root[data-theme='dark'] .command-chat-header {
   background: linear-gradient(180deg, hsl(var(--surface) / 0.52), hsl(var(--background) / 0.66));
   box-shadow: 0 8px 22px hsl(var(--foreground) / 0.07);
+}
+
+:root[data-theme='dark'] .command-error-banner {
+  background:
+    linear-gradient(180deg, hsl(var(--destructive) / 0.24), hsl(var(--destructive) / 0.18)),
+    linear-gradient(180deg, hsl(var(--surface) / 0.76), hsl(var(--background) / 0.74));
 }
 
 .codex-plan-composer {
