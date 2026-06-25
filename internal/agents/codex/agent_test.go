@@ -201,6 +201,37 @@ func TestInvalidJSONRPCProducesParseError(t *testing.T) {
 	}
 }
 
+func TestReadAppServerAcceptsLargeResponseWithoutRetainingRaw(t *testing.T) {
+	var line bytes.Buffer
+	line.WriteString(`{"jsonrpc":"2.0","id":"2","result":{"thread":{"id":"thread_large"},"images":["data:image/png;base64,`)
+	line.WriteString(strings.Repeat("a", 11*1024*1024))
+	line.WriteString(`"]}}` + "\n")
+
+	incoming := readAppServer(bytes.NewReader(line.Bytes()), strings.NewReader(""))
+	message, ok := <-incoming
+	if !ok {
+		t.Fatal("expected large response message")
+	}
+	if message.ReadErr != nil {
+		t.Fatalf("expected large response to be readable, got read error %v", message.ReadErr)
+	}
+	if message.ParseErr != nil {
+		t.Fatalf("expected large response to parse, got parse error %v", message.ParseErr)
+	}
+	if message.Message == nil {
+		t.Fatalf("expected parsed message, got %#v", message)
+	}
+	if got := message.Message.idKey(); got != "2" {
+		t.Fatalf("expected response id 2, got %q", got)
+	}
+	if got := stringAt(message.Message.Result, "thread", "id"); got != "thread_large" {
+		t.Fatalf("expected thread id thread_large, got %q", got)
+	}
+	if len(message.Message.Raw) != 0 {
+		t.Fatalf("expected responses not to retain raw bytes, got %d bytes", len(message.Message.Raw))
+	}
+}
+
 func TestAgentRunsFakeAppServerSuccess(t *testing.T) {
 	agent := fakeAppServerAgent(t, "success")
 	recorder := newEventRecorder()

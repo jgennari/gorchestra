@@ -28,6 +28,8 @@ const (
 	defaultInterruptGrace  = 2 * time.Second
 	defaultOptionsCacheTTL = 5 * time.Minute
 	defaultFastServiceTier = "priority"
+	maxJSONRPCLineBytes    = 64 * 1024 * 1024
+	maxStderrLineBytes     = 1024 * 1024
 )
 
 type VersionChecker func(ctx context.Context, binary string) (string, error)
@@ -1423,7 +1425,7 @@ func readAppServer(stdout io.Reader, stderr io.Reader) <-chan incomingMessage {
 
 func scanJSONRPC(reader io.Reader, incoming chan<- incomingMessage) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxJSONRPCLineBytes)
 	line := 0
 	for scanner.Scan() {
 		line++
@@ -1440,14 +1442,14 @@ func scanJSONRPC(reader io.Reader, incoming chan<- incomingMessage) {
 	}
 	if err := scanner.Err(); err != nil {
 		if !errors.Is(err, os.ErrClosed) {
-			incoming <- incomingMessage{ReadErr: fmt.Errorf("read codex app-server stdout: %w", err)}
+			incoming <- incomingMessage{ReadErr: fmt.Errorf("read codex app-server stdout: %w; max JSON-RPC line size is %d bytes", err, maxJSONRPCLineBytes)}
 		}
 	}
 }
 
 func scanStderr(reader io.Reader, incoming chan<- incomingMessage) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxStderrLineBytes)
 	for scanner.Scan() {
 		line := strings.TrimRight(scanner.Text(), "\r")
 		if line == "" {
@@ -1467,7 +1469,9 @@ func parseRPCMessage(raw []byte) (*rpcMessage, error) {
 	if err := json.Unmarshal(raw, &message); err != nil {
 		return nil, err
 	}
-	message.Raw = append([]byte(nil), raw...)
+	if message.Method != "" {
+		message.Raw = append([]byte(nil), raw...)
+	}
 	return &message, nil
 }
 
