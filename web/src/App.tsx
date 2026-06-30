@@ -456,11 +456,12 @@ function App() {
     content: string,
     agentOptions?: SubmitAgentOptions,
     attachments: MessageAttachment[] = [],
+    queue = false,
   ) {
     if (!selectedSessionID) {
       throw new Error('Select a session first.')
     }
-    const response = await submitMessage(selectedSessionID, content, agentOptions, attachments)
+    const response = await submitMessage(selectedSessionID, content, agentOptions, attachments, queue)
     setSessions((current) =>
       current.map((session) =>
         session.id === selectedSessionID

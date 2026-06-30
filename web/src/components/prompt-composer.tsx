@@ -27,11 +27,14 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   type AgentEvent,
   fetchAgentOptions,
+  fetchQueuedMessages,
   type AgentType,
   type CodexAgentOptions,
   type CodexModelOption,
   type CodexServiceTierOption,
   type MessageAttachment,
+  type QueuedMessage,
+  removeQueuedMessage as deleteQueuedMessage,
   type SubmitAgentOptions,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -57,10 +60,16 @@ type Props = {
   sessionStatus?: 'idle' | 'running' | 'failed'
   hasPendingUserInput?: boolean
   latestTerminalEvent?: AgentEvent | null
+  latestQueueEvent?: AgentEvent | null
   disabled: boolean
   disabledReason: string
   showDebugEvents?: boolean
-  onSubmit: (content: string, agentOptions?: SubmitAgentOptions, attachments?: MessageAttachment[]) => Promise<void>
+  onSubmit: (
+    content: string,
+    agentOptions?: SubmitAgentOptions,
+    attachments?: MessageAttachment[],
+    queue?: boolean,
+  ) => Promise<void>
   onShowDebugEventsChange?: (showDebugEvents: boolean) => void
   onCancel?: () => Promise<void>
   onError?: (message: string) => void
@@ -81,7 +90,6 @@ type ClaudeSelection = {
 
 type ComposerStorageValue = {
   draft?: string
-  queuedMessages?: string[]
   codexSelection?: Partial<CodexSelection>
   claudeSelection?: Partial<ClaudeSelection>
 }
@@ -94,8 +102,8 @@ export function PromptComposer({
   sessionID,
   agentType = 'fake',
   sessionStatus = 'idle',
-  hasPendingUserInput = false,
   latestTerminalEvent = null,
+  latestQueueEvent = null,
   disabled,
   disabledReason,
   showDebugEvents = false,
@@ -106,10 +114,8 @@ export function PromptComposer({
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const lastAutoAdvanceSeqRef = useRef(0)
-  const awaitingQueueAdvanceRef = useRef(false)
   const [content, setContent] = useState(() => loadDraft(sessionID))
-  const [queuedMessages, setQueuedMessages] = useState(() => loadQueuedMessages(sessionID))
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [dragActive, setDragActive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -177,8 +183,24 @@ export function PromptComposer({
   }, [content, sessionID])
 
   useEffect(() => {
-    saveQueuedMessages(sessionID, queuedMessages)
-  }, [queuedMessages, sessionID])
+    if (!sessionID) {
+      setQueuedMessages([])
+      return
+    }
+
+    let cancelled = false
+    void fetchQueuedMessages(sessionID)
+      .then((response) => {
+        if (!cancelled) setQueuedMessages(Array.isArray(response.messages) ? response.messages : [])
+      })
+      .catch((queueError) => {
+        if (!cancelled) onError?.(queueError instanceof Error ? queueError.message : 'Failed to load queued messages')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [latestQueueEvent?.seq, latestTerminalEvent?.seq, sessionID, onError])
 
   useEffect(() => {
     saveCodexSelection(sessionID, codexSelection)
@@ -187,35 +209,6 @@ export function PromptComposer({
   useEffect(() => {
     saveClaudeSelection(sessionID, claudeSelection)
   }, [claudeSelection, sessionID])
-
-  useEffect(() => {
-    if (queuedMessages.length === 0) {
-      awaitingQueueAdvanceRef.current = false
-      return
-    }
-    if (sessionStatus === 'running') {
-      awaitingQueueAdvanceRef.current = true
-    }
-  }, [queuedMessages.length, sessionStatus])
-
-  useEffect(() => {
-    if (!latestTerminalEvent || latestTerminalEvent.type !== 'agent.run.completed') {
-      return
-    }
-    if (latestTerminalEvent.seq <= lastAutoAdvanceSeqRef.current) {
-      return
-    }
-    if (sessionStatus !== 'idle' || hasPendingUserInput || queuedMessages.length === 0 || submitting) {
-      return
-    }
-    if (!awaitingQueueAdvanceRef.current) {
-      return
-    }
-
-    lastAutoAdvanceSeqRef.current = latestTerminalEvent.seq
-    awaitingQueueAdvanceRef.current = false
-    void submitQueuedMessage()
-  }, [hasPendingUserInput, latestTerminalEvent, queuedMessages, sessionStatus, submitting])
 
   function currentSubmitOptions() {
     if (codexToolbarVisible) {
@@ -227,9 +220,13 @@ export function PromptComposer({
     return undefined
   }
 
-  async function submitText(contentToSend: string, submitAttachments: MessageAttachment[] = []) {
+  async function submitText(contentToSend: string, submitAttachments: MessageAttachment[] = [], queue = false) {
     const submitOptions = currentSubmitOptions()
 
+    if (queue) {
+      await onSubmit(contentToSend, submitOptions, submitAttachments.length > 0 ? submitAttachments : undefined, true)
+      return
+    }
     if (submitOptions && submitAttachments.length > 0) {
       await onSubmit(contentToSend, submitOptions, submitAttachments)
       return
@@ -245,12 +242,20 @@ export function PromptComposer({
     await onSubmit(contentToSend)
   }
 
-  async function submitPrompt() {
+  function restoreTextareaFocus() {
+    window.setTimeout(() => {
+      window.requestAnimationFrame(() => {
+        textareaRef.current?.focus({ preventScroll: true })
+      })
+    }, 0)
+  }
+
+  async function submitPrompt(forceRestoreFocus = false) {
     if (!canSubmit) {
       return
     }
 
-    const restorePromptFocus = document.activeElement === textareaRef.current
+    const restorePromptFocus = forceRestoreFocus || document.activeElement === textareaRef.current
     setSubmitting(true)
     onError?.('')
     try {
@@ -268,26 +273,8 @@ export function PromptComposer({
     } finally {
       setSubmitting(false)
       if (restorePromptFocus) {
-        window.setTimeout(() => textareaRef.current?.focus(), 0)
+        restoreTextareaFocus()
       }
-    }
-  }
-
-  async function submitQueuedMessage() {
-    const nextQueuedMessage = queuedMessages[0]
-    if (!nextQueuedMessage) {
-      return
-    }
-
-    setSubmitting(true)
-    onError?.('')
-    try {
-      await submitText(nextQueuedMessage)
-      setQueuedMessages((current) => current.slice(1))
-    } catch (submitError) {
-      onError?.(submitError instanceof Error ? submitError.message : 'Failed to submit queued prompt')
-    } finally {
-      setSubmitting(false)
     }
   }
 
@@ -302,7 +289,7 @@ export function PromptComposer({
     }
     if ((event.metaKey || event.ctrlKey) && event.shiftKey) {
       event.preventDefault()
-      enqueueDraft()
+      void enqueueDraft(true)
       return
     }
     if (event.shiftKey) {
@@ -312,11 +299,11 @@ export function PromptComposer({
     }
     if (sessionStatus === 'running') {
       event.preventDefault()
-      enqueueDraft()
+      void enqueueDraft(true)
       return
     }
     event.preventDefault()
-    void submitPrompt()
+    void submitPrompt(true)
   }
 
   async function handleCancel() {
@@ -335,7 +322,7 @@ export function PromptComposer({
     }
   }
 
-  function enqueueDraft() {
+  async function enqueueDraft(forceRestoreFocus = false) {
     const trimmed = content.trim()
     if (!trimmed) {
       return
@@ -349,16 +336,39 @@ export function PromptComposer({
       return
     }
     const restorePromptFocus =
+      forceRestoreFocus ||
       document.activeElement === textareaRef.current ||
       document.activeElement instanceof HTMLButtonElement
-    if (disabled) {
-      awaitingQueueAdvanceRef.current = true
-    }
-    setQueuedMessages((current) => [...current, trimmed])
-    setContent('')
+    setSubmitting(true)
     onError?.('')
-    if (restorePromptFocus) {
-      window.setTimeout(() => textareaRef.current?.focus(), 0)
+    try {
+      await submitText(trimmed, [], true)
+      setContent('')
+      if (sessionID) {
+        const response = await fetchQueuedMessages(sessionID)
+        setQueuedMessages(Array.isArray(response.messages) ? response.messages : [])
+      }
+    } catch (queueError) {
+      onError?.(queueError instanceof Error ? queueError.message : 'Failed to queue prompt')
+    } finally {
+      setSubmitting(false)
+      if (restorePromptFocus) {
+        restoreTextareaFocus()
+      }
+    }
+  }
+
+  async function removeQueuedDraft(queuedMessageID: string) {
+    if (!sessionID) {
+      return
+    }
+    onError?.('')
+    try {
+      await deleteQueuedMessage(sessionID, queuedMessageID)
+      const response = await fetchQueuedMessages(sessionID)
+      setQueuedMessages(Array.isArray(response.messages) ? response.messages : [])
+    } catch (removeError) {
+      onError?.(removeError instanceof Error ? removeError.message : 'Failed to remove queued prompt')
     }
   }
 
@@ -447,10 +457,10 @@ export function PromptComposer({
           <div className="mt-1.5">
             {queuedMessages.map((message, index) => (
               <QueuedMessageRow
-                key={`${index}:${message}`}
+                key={message.id}
                 index={index}
-                message={message}
-                onRemove={() => setQueuedMessages((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                message={message.content}
+                onRemove={() => void removeQueuedDraft(message.id)}
               />
             ))}
           </div>
@@ -567,7 +577,7 @@ export function PromptComposer({
               type="button"
               variant="outline"
               disabled={!canQueue}
-              onClick={enqueueDraft}
+              onClick={() => void enqueueDraft()}
               title={
                 queueBlockedByAttachments
                   ? 'Queued messages cannot include image attachments.'
@@ -1374,25 +1384,10 @@ function loadDraft(sessionID: string | undefined) {
   return typeof stored.draft === 'string' ? stored.draft : ''
 }
 
-function loadQueuedMessages(sessionID: string | undefined) {
-  const stored = loadComposerStorage(sessionID)
-  if (!Array.isArray(stored.queuedMessages)) {
-    return []
-  }
-  return stored.queuedMessages.filter((message): message is string => typeof message === 'string' && message.trim().length > 0)
-}
-
 function saveDraft(sessionID: string | undefined, draft: string) {
   saveComposerStorage(sessionID, {
     ...loadComposerStorage(sessionID),
     draft,
-  })
-}
-
-function saveQueuedMessages(sessionID: string | undefined, queuedMessages: string[]) {
-  saveComposerStorage(sessionID, {
-    ...loadComposerStorage(sessionID),
-    queuedMessages,
   })
 }
 

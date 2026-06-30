@@ -23,6 +23,15 @@ const (
 	EventStatusCancelled EventStatus = "cancelled"
 )
 
+type QueuedMessageStatus string
+
+const (
+	QueuedMessageStatusPending QueuedMessageStatus = "pending"
+	QueuedMessageStatusSending QueuedMessageStatus = "sending"
+	QueuedMessageStatusSent    QueuedMessageStatus = "sent"
+	QueuedMessageStatusRemoved QueuedMessageStatus = "removed"
+)
+
 type Session struct {
 	ID                string
 	Title             string
@@ -48,6 +57,17 @@ type Event struct {
 	Status    EventStatus
 	Payload   json.RawMessage
 	CreatedAt time.Time
+}
+
+type QueuedMessage struct {
+	ID           string
+	SessionID    string
+	Seq          int64
+	Status       QueuedMessageStatus
+	Content      string
+	AgentOptions json.RawMessage
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type CreateSessionParams struct {
@@ -102,4 +122,16 @@ type AppendEventParams struct {
 	Role      string
 	Status    EventStatus
 	Payload   json.RawMessage
+}
+
+type EnqueueMessageParams struct {
+	SessionID    string
+	Content      string
+	AgentOptions json.RawMessage
+	MaxPending   int
+}
+
+type QueueMessageIDParams struct {
+	SessionID string
+	ID        string
 }

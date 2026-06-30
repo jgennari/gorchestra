@@ -506,6 +506,259 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 	return event, nil
 }
 
+func (s *Store) EnqueueMessage(ctx context.Context, params EnqueueMessageParams) (QueuedMessage, error) {
+	sessionID := strings.TrimSpace(params.SessionID)
+	content := strings.TrimSpace(params.Content)
+	if sessionID == "" {
+		return QueuedMessage{}, fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
+	}
+	if content == "" {
+		return QueuedMessage{}, fmt.Errorf("%w: content is required", ErrInvalidArgument)
+	}
+	agentOptions := params.AgentOptions
+	if len(agentOptions) == 0 {
+		agentOptions = json.RawMessage(`{}`)
+	}
+	if !json.Valid(agentOptions) {
+		return QueuedMessage{}, fmt.Errorf("%w: agent_options must be valid JSON", ErrInvalidArgument)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return QueuedMessage{}, fmt.Errorf("begin enqueue message: %w", err)
+	}
+	defer rollback(tx)
+
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE id = ?`, sessionID).Scan(&exists); err != nil {
+		return QueuedMessage{}, fmt.Errorf("check session: %w", err)
+	}
+	if exists == 0 {
+		return QueuedMessage{}, fmt.Errorf("%w: session %s", ErrNotFound, sessionID)
+	}
+
+	if params.MaxPending > 0 {
+		var pendingCount int
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT COUNT(*) FROM queued_messages WHERE session_id = ? AND status = ?`,
+			sessionID,
+			string(QueuedMessageStatusPending),
+		).Scan(&pendingCount); err != nil {
+			return QueuedMessage{}, fmt.Errorf("count pending queued messages: %w", err)
+		}
+		if pendingCount >= params.MaxPending {
+			return QueuedMessage{}, fmt.Errorf("%w: queue limit reached", ErrInvalidArgument)
+		}
+	}
+
+	var seq int64
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT COALESCE(MAX(seq), 0) + 1 FROM queued_messages WHERE session_id = ?`,
+		sessionID,
+	).Scan(&seq); err != nil {
+		return QueuedMessage{}, fmt.Errorf("assign queued message sequence: %w", err)
+	}
+
+	id, err := newPrefixedUUID("qmsg_")
+	if err != nil {
+		return QueuedMessage{}, err
+	}
+	now := s.now()
+	queued := QueuedMessage{
+		ID:           id,
+		SessionID:    sessionID,
+		Seq:          seq,
+		Status:       QueuedMessageStatusPending,
+		Content:      content,
+		AgentOptions: append(json.RawMessage(nil), agentOptions...),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO queued_messages (id, session_id, seq, status, content, agent_options_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		queued.ID,
+		queued.SessionID,
+		queued.Seq,
+		string(queued.Status),
+		queued.Content,
+		string(queued.AgentOptions),
+		formatTime(queued.CreatedAt),
+		formatTime(queued.UpdatedAt),
+	); err != nil {
+		return QueuedMessage{}, fmt.Errorf("insert queued message: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return QueuedMessage{}, fmt.Errorf("commit enqueue message: %w", err)
+	}
+
+	return queued, nil
+}
+
+func (s *Store) ListQueuedMessages(ctx context.Context, sessionID string) ([]QueuedMessage, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
+	}
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT id, session_id, seq, status, content, agent_options_json, created_at, updated_at
+		 FROM queued_messages
+		 WHERE session_id = ? AND status = ?
+		 ORDER BY seq ASC`,
+		sessionID,
+		string(QueuedMessageStatusPending),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list queued messages: %w", err)
+	}
+	defer rows.Close()
+
+	messages := make([]QueuedMessage, 0)
+	for rows.Next() {
+		message, err := scanQueuedMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list queued messages rows: %w", err)
+	}
+
+	return messages, nil
+}
+
+func (s *Store) RemoveQueuedMessage(ctx context.Context, params QueueMessageIDParams) (QueuedMessage, error) {
+	return s.updateQueuedMessageStatus(ctx, params, QueuedMessageStatusRemoved, QueuedMessageStatusPending)
+}
+
+func (s *Store) ClaimNextQueuedMessage(ctx context.Context, sessionID string) (QueuedMessage, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return QueuedMessage{}, fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return QueuedMessage{}, fmt.Errorf("begin claim queued message: %w", err)
+	}
+	defer rollback(tx)
+
+	row := tx.QueryRowContext(
+		ctx,
+		`SELECT id, session_id, seq, status, content, agent_options_json, created_at, updated_at
+		 FROM queued_messages
+		 WHERE session_id = ? AND status = ?
+		 ORDER BY seq ASC
+		 LIMIT 1`,
+		sessionID,
+		string(QueuedMessageStatusPending),
+	)
+	message, err := scanQueuedMessage(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
+			return QueuedMessage{}, ErrNotFound
+		}
+		return QueuedMessage{}, err
+	}
+
+	now := s.now()
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE queued_messages SET status = ?, updated_at = ? WHERE id = ?`,
+		string(QueuedMessageStatusSending),
+		formatTime(now),
+		message.ID,
+	); err != nil {
+		return QueuedMessage{}, fmt.Errorf("claim queued message: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return QueuedMessage{}, fmt.Errorf("commit claim queued message: %w", err)
+	}
+	message.Status = QueuedMessageStatusSending
+	message.UpdatedAt = now
+	return message, nil
+}
+
+func (s *Store) MarkQueuedMessageSent(ctx context.Context, params QueueMessageIDParams) (QueuedMessage, error) {
+	return s.updateQueuedMessageStatus(ctx, params, QueuedMessageStatusSent, QueuedMessageStatusSending)
+}
+
+func (s *Store) ReleaseQueuedMessage(ctx context.Context, params QueueMessageIDParams) (QueuedMessage, error) {
+	return s.updateQueuedMessageStatus(ctx, params, QueuedMessageStatusPending, QueuedMessageStatusSending)
+}
+
+func (s *Store) updateQueuedMessageStatus(ctx context.Context, params QueueMessageIDParams, next QueuedMessageStatus, expected QueuedMessageStatus) (QueuedMessage, error) {
+	sessionID := strings.TrimSpace(params.SessionID)
+	messageID := strings.TrimSpace(params.ID)
+	if sessionID == "" {
+		return QueuedMessage{}, fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
+	}
+	if messageID == "" {
+		return QueuedMessage{}, fmt.Errorf("%w: queued message id is required", ErrInvalidArgument)
+	}
+
+	current, err := s.getQueuedMessage(ctx, sessionID, messageID)
+	if err != nil {
+		return QueuedMessage{}, err
+	}
+	if current.Status != expected {
+		return QueuedMessage{}, fmt.Errorf("%w: queued message is %s", ErrInvalidArgument, current.Status)
+	}
+
+	now := s.now()
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE queued_messages
+		 SET status = ?, updated_at = ?
+		 WHERE session_id = ? AND id = ? AND status = ?`,
+		string(next),
+		formatTime(now),
+		sessionID,
+		messageID,
+		string(expected),
+	)
+	if err != nil {
+		return QueuedMessage{}, fmt.Errorf("update queued message status: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return QueuedMessage{}, fmt.Errorf("check queued message update rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return QueuedMessage{}, fmt.Errorf("%w: queued message %s", ErrNotFound, messageID)
+	}
+
+	current.Status = next
+	current.UpdatedAt = now
+	return current, nil
+}
+
+func (s *Store) getQueuedMessage(ctx context.Context, sessionID string, messageID string) (QueuedMessage, error) {
+	row := s.db.QueryRowContext(
+		ctx,
+		`SELECT id, session_id, seq, status, content, agent_options_json, created_at, updated_at
+		 FROM queued_messages
+		 WHERE session_id = ? AND id = ?`,
+		sessionID,
+		messageID,
+	)
+	message, err := scanQueuedMessage(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
+			return QueuedMessage{}, fmt.Errorf("%w: queued message %s", ErrNotFound, messageID)
+		}
+		return QueuedMessage{}, err
+	}
+	return message, nil
+}
+
 func (s *Store) ListEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]Event, error) {
 	if limit <= 0 {
 		limit = defaultEventLimit
@@ -726,6 +979,55 @@ func scanEvent(row rowScanner) (Event, error) {
 	return event, nil
 }
 
+func scanQueuedMessage(row rowScanner) (QueuedMessage, error) {
+	var message QueuedMessage
+	var status string
+	var agentOptions string
+	var createdAt string
+	var updatedAt string
+
+	if err := row.Scan(
+		&message.ID,
+		&message.SessionID,
+		&message.Seq,
+		&status,
+		&message.Content,
+		&agentOptions,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return QueuedMessage{}, ErrNotFound
+		}
+		return QueuedMessage{}, fmt.Errorf("scan queued message: %w", err)
+	}
+
+	parsedCreatedAt, err := parseTime(createdAt)
+	if err != nil {
+		return QueuedMessage{}, fmt.Errorf("parse queued message created_at: %w", err)
+	}
+	parsedUpdatedAt, err := parseTime(updatedAt)
+	if err != nil {
+		return QueuedMessage{}, fmt.Errorf("parse queued message updated_at: %w", err)
+	}
+	if agentOptions == "" {
+		agentOptions = "{}"
+	}
+	if !json.Valid([]byte(agentOptions)) {
+		return QueuedMessage{}, fmt.Errorf("scan queued message: invalid agent_options_json")
+	}
+
+	message.Status = QueuedMessageStatus(status)
+	if !isValidQueuedMessageStatus(message.Status) {
+		return QueuedMessage{}, fmt.Errorf("scan queued message: unsupported status %s", status)
+	}
+	message.AgentOptions = json.RawMessage(agentOptions)
+	message.CreatedAt = parsedCreatedAt
+	message.UpdatedAt = parsedUpdatedAt
+
+	return message, nil
+}
+
 func formatTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
@@ -746,6 +1048,15 @@ func isTerminalSessionStatus(status SessionStatus) bool {
 func isValidSessionStatus(status SessionStatus) bool {
 	switch status {
 	case SessionStatusIdle, SessionStatusRunning, SessionStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidQueuedMessageStatus(status QueuedMessageStatus) bool {
+	switch status {
+	case QueuedMessageStatusPending, QueuedMessageStatusSending, QueuedMessageStatusSent, QueuedMessageStatusRemoved:
 		return true
 	default:
 		return false

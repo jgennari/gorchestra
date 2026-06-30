@@ -325,6 +325,53 @@ test('keeps auto-scroll active when content growth emits a scroll event', async 
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 })
 
+test('scrolls to bottom when the composer bottom inset grows while following latest', async () => {
+  const { rerender } = render(
+    <ChatTranscript
+      bottomInsetHeight={176}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 1000, scrollHeight: 1000, clientHeight: 400 })
+
+  setScrollMetrics(log, { scrollTop: 1000, scrollHeight: 1160, clientHeight: 400 })
+  rerender(
+    <ChatTranscript
+      bottomInsetHeight={336}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+    />,
+  )
+
+  await waitFor(() => expect(log.scrollTop).toBe(1160))
+})
+
+test('does not scroll on composer bottom inset growth while auto-scroll is paused', () => {
+  const { rerender } = render(
+    <ChatTranscript
+      bottomInsetHeight={176}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1000, clientHeight: 400 })
+  fireEvent.wheel(log)
+  fireEvent.scroll(log)
+
+  setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1160, clientHeight: 400 })
+  rerender(
+    <ChatTranscript
+      bottomInsetHeight={336}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+    />,
+  )
+
+  expect(log.scrollTop).toBe(120)
+  expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+})
+
 test('copies fenced code blocks from user and assistant messages', async () => {
   const user = userEvent.setup()
   const writeText = vi.fn(async () => undefined)

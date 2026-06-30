@@ -1243,6 +1243,30 @@ func (s *fakeHTTPStore) ClearSessionProviderSessionID(_ context.Context, params 
 	return session, nil
 }
 
+func (s *fakeHTTPStore) EnqueueMessage(context.Context, store.EnqueueMessageParams) (store.QueuedMessage, error) {
+	return store.QueuedMessage{}, nil
+}
+
+func (s *fakeHTTPStore) ListQueuedMessages(context.Context, string) ([]store.QueuedMessage, error) {
+	return nil, nil
+}
+
+func (s *fakeHTTPStore) RemoveQueuedMessage(context.Context, store.QueueMessageIDParams) (store.QueuedMessage, error) {
+	return store.QueuedMessage{}, store.ErrNotFound
+}
+
+func (s *fakeHTTPStore) ClaimNextQueuedMessage(context.Context, string) (store.QueuedMessage, error) {
+	return store.QueuedMessage{}, store.ErrNotFound
+}
+
+func (s *fakeHTTPStore) MarkQueuedMessageSent(context.Context, store.QueueMessageIDParams) (store.QueuedMessage, error) {
+	return store.QueuedMessage{}, nil
+}
+
+func (s *fakeHTTPStore) ReleaseQueuedMessage(context.Context, store.QueueMessageIDParams) (store.QueuedMessage, error) {
+	return store.QueuedMessage{}, nil
+}
+
 func (s *fakeHTTPStore) ListEvents(_ context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error) {
 	s.mu.Lock()
 	s.listCalls = append(s.listCalls, listCall{sessionID: sessionID, afterSeq: afterSeq, limit: limit, mode: "after"})

@@ -789,7 +789,7 @@ func TestUpdateCodexSessionAgentOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	options := decodeAgentOptions(t, updated.AgentOptions)
+	options := decodeTestAgentOptions(t, updated.AgentOptions)
 	if options["codex"]["run_dangerously"] != true {
 		t.Fatalf("expected persisted run_dangerously option, got %#v", options)
 	}
@@ -828,7 +828,7 @@ func TestUpdateCodexSessionAgentOptionsCanClearRunDangerously(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	options := decodeAgentOptions(t, updated.AgentOptions)
+	options := decodeTestAgentOptions(t, updated.AgentOptions)
 	if _, ok := options["codex"]; ok {
 		t.Fatalf("expected persisted codex options to be cleared, got %#v", options)
 	}
@@ -1822,7 +1822,7 @@ func TestCancelRejectsMalformedJSONBody(t *testing.T) {
 	assertErrorResponse(t, rec, "invalid JSON body")
 }
 
-func TestMessageSubmissionToRunningSessionReturnsConflict(t *testing.T) {
+func TestMessageSubmissionToRunningSessionQueuesMessage(t *testing.T) {
 	ctx := context.Background()
 	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 	session := createIntegrationSession(t, ctx, dbStore)
@@ -1836,14 +1836,229 @@ func TestMessageSubmissionToRunningSessionReturnsConflict(t *testing.T) {
 
 	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Second message"}`)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected status %d, got %d with body %s", http.StatusConflict, rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
 	}
-	assertErrorResponse(t, rec, "session is already running")
+	var response submitMessageResponse
+	decodeJSON(t, rec, &response)
+	if response.AcceptedAs != "queued" || response.QueuedMessage == nil {
+		t.Fatalf("expected queued response, got %#v", response)
+	}
+	if response.Status != string(store.SessionStatusRunning) {
+		t.Fatalf("expected running status, got %q", response.Status)
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"user.message.queued"})
+	assertPayloadText(t, events[0], "Second message")
+
+	queued, err := dbStore.ListQueuedMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("list queued messages: %v", err)
+	}
+	if len(queued) != 1 || queued[0].Content != "Second message" {
+		t.Fatalf("expected queued message, got %#v", queued)
+	}
+}
+
+func TestMessageSubmissionExplicitQueueDoesNotStartIdleSession(t *testing.T) {
+	ctx := context.Background()
+	agent := newBlockingAgent()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Later","queue":true}`)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+	var response submitMessageResponse
+	decodeJSON(t, rec, &response)
+	if response.AcceptedAs != "queued" || response.QueuedMessage == nil {
+		t.Fatalf("expected queued response, got %#v", response)
+	}
+	if response.Status != string(store.SessionStatusIdle) {
+		t.Fatalf("expected idle status, got %q", response.Status)
+	}
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated.Status != store.SessionStatusIdle {
+		t.Fatalf("expected session to remain idle, got %q", updated.Status)
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"user.message.queued"})
+	assertPayloadText(t, events[0], "Later")
+
+	select {
+	case input := <-agent.started:
+		t.Fatalf("expected explicit queue not to start agent, got %#v", input)
+	default:
+	}
+}
+
+func TestQueuedMessageRejectsAttachments(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{
+		"content":"Later",
+		"queue":true,
+		"attachments":[
+			{
+				"name":"diagram.png",
+				"media_type":"image/png",
+				"data_url":"data:image/png;base64,aGVsbG8=",
+				"size_bytes":5
+			}
+		]
+	}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "queued messages cannot include image attachments")
 
 	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
 	if len(events) != 0 {
-		t.Fatalf("expected no events to be appended, got %#v", events)
+		t.Fatalf("expected no events, got %#v", events)
+	}
+}
+
+func TestQueuedMessagesCanBeListedAndRemoved(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	queueRec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Later","queue":true}`)
+	if queueRec.Code != http.StatusAccepted {
+		t.Fatalf("expected queue status %d, got %d with body %s", http.StatusAccepted, queueRec.Code, queueRec.Body.String())
+	}
+	var queueResponse submitMessageResponse
+	decodeJSON(t, queueRec, &queueResponse)
+	if queueResponse.QueuedMessage == nil {
+		t.Fatal("expected queued message response")
+	}
+
+	listRec := get(handler, "/api/sessions/"+session.ID+"/queued-messages")
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d with body %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+	var listResponse queuedMessagesResponse
+	decodeJSON(t, listRec, &listResponse)
+	if len(listResponse.Messages) != 1 || listResponse.Messages[0].Content != "Later" {
+		t.Fatalf("expected one queued message, got %#v", listResponse.Messages)
+	}
+
+	removeRec := deleteRequest(handler, "/api/sessions/"+session.ID+"/queued-messages/"+queueResponse.QueuedMessage.ID)
+	if removeRec.Code != http.StatusOK {
+		t.Fatalf("expected remove status %d, got %d with body %s", http.StatusOK, removeRec.Code, removeRec.Body.String())
+	}
+
+	remaining, err := dbStore.ListQueuedMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("list queued messages: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected no pending queued messages, got %#v", remaining)
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"user.message.queued", "user.message.queue.removed"})
+	assertPayloadText(t, events[1], "Later")
+}
+
+func TestSuccessfulRunDispatchesNextQueuedMessage(t *testing.T) {
+	ctx := context.Background()
+	stepBarrier := make(chan struct{})
+	dbStore, _, runManager, handler := newIntegrationAPI(t, ctx, fake.New(fake.WithStepBarrier(stepBarrier)))
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	firstRec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"First"}`)
+	if firstRec.Code != http.StatusAccepted {
+		t.Fatalf("expected first status %d, got %d with body %s", http.StatusAccepted, firstRec.Code, firstRec.Body.String())
+	}
+	waitFor(t, func() bool {
+		return runManager.Active(session.ID) && hasEventType(t, ctx, dbStore, session.ID, "agent.run.started")
+	})
+
+	queueRec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Second"}`)
+	if queueRec.Code != http.StatusAccepted {
+		t.Fatalf("expected queue status %d, got %d with body %s", http.StatusAccepted, queueRec.Code, queueRec.Body.String())
+	}
+
+	close(stepBarrier)
+
+	waitFor(t, func() bool {
+		events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+		return countEvents(events, "agent.run.completed") == 2
+	})
+	waitFor(t, func() bool {
+		session, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && session.Status == store.SessionStatusIdle && !runManager.Active(session.ID)
+	})
+
+	queued, err := dbStore.ListQueuedMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("list queued messages: %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("expected queued message to be sent, got %#v", queued)
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	if userMessages := countEvents(events, "user.message.completed"); userMessages != 2 {
+		t.Fatalf("expected two user messages, got %d", userMessages)
+	}
+	if !hasQueuedUserMessage(events) {
+		t.Fatalf("expected queued user message to include queue item id, got %#v", events)
+	}
+}
+
+func TestFailedRunLeavesQueuedMessagesPending(t *testing.T) {
+	ctx := context.Background()
+	agent := newFailingBlockingAgent(errors.New("planned failure"))
+	dbStore, _, runManager, handler := newIntegrationAPI(t, ctx, agent)
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	firstRec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"First"}`)
+	if firstRec.Code != http.StatusAccepted {
+		t.Fatalf("expected first status %d, got %d with body %s", http.StatusAccepted, firstRec.Code, firstRec.Body.String())
+	}
+	waitFor(t, func() bool {
+		return runManager.Active(session.ID) && hasEventType(t, ctx, dbStore, session.ID, "agent.run.started")
+	})
+
+	queueRec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Second"}`)
+	if queueRec.Code != http.StatusAccepted {
+		t.Fatalf("expected queue status %d, got %d with body %s", http.StatusAccepted, queueRec.Code, queueRec.Body.String())
+	}
+
+	agent.release()
+
+	waitFor(t, func() bool {
+		session, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && session.Status == store.SessionStatusFailed && !runManager.Active(session.ID)
+	})
+
+	queued, err := dbStore.ListQueuedMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("list queued messages: %v", err)
+	}
+	if len(queued) != 1 || queued[0].Content != "Second" {
+		t.Fatalf("expected queued message to remain pending, got %#v", queued)
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	if countEvents(events, "user.message.completed") != 1 {
+		t.Fatalf("expected only first user message to run, got %d", countEvents(events, "user.message.completed"))
+	}
+	if countEvents(events, "agent.run.failed") != 1 {
+		t.Fatalf("expected one failed run, got %#v", events)
 	}
 }
 
@@ -2038,6 +2253,13 @@ func get(handler http.Handler, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
+func deleteRequest(handler http.Handler, path string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodDelete, path, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
 func quoteJSON(value string) string {
 	body, err := json.Marshal(value)
 	if err != nil {
@@ -2093,6 +2315,37 @@ func hasEvent(events []store.Event, eventType string) bool {
 		}
 	}
 	return false
+}
+
+func countEvents(events []store.Event, eventType string) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == eventType {
+			count++
+		}
+	}
+	return count
+}
+
+func hasQueuedUserMessage(events []store.Event) bool {
+	for _, event := range events {
+		if event.Type != "user.message.completed" {
+			continue
+		}
+		payload := decodeEventPayloadNoTest(event)
+		if _, ok := payload["queue_item_id"].(string); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeEventPayloadNoTest(event store.Event) map[string]any {
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return nil
+	}
+	return payload
 }
 
 func assertTerminalRunEventCount(t *testing.T, events []store.Event, want int) {
@@ -2194,6 +2447,53 @@ func (a *blockingAgent) Run(ctx context.Context, input agents.AgentInput, emit a
 }
 
 func (a *blockingAgent) release() {
+	a.once.Do(func() {
+		close(a.releasec)
+	})
+}
+
+type failingBlockingAgent struct {
+	agentType string
+	err       error
+	started   chan agents.AgentInput
+	releasec  chan struct{}
+	once      sync.Once
+}
+
+func newFailingBlockingAgent(err error) *failingBlockingAgent {
+	return &failingBlockingAgent{
+		agentType: "fake",
+		err:       err,
+		started:   make(chan agents.AgentInput, 1),
+		releasec:  make(chan struct{}),
+	}
+}
+
+func (a *failingBlockingAgent) Type() string {
+	return a.agentType
+}
+
+func (a *failingBlockingAgent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
+	a.started <- input
+	if err := emit(ctx, agents.AgentEvent{
+		Type:   "agent.run.started",
+		Role:   "assistant",
+		Status: string(store.EventStatusStarted),
+		Payload: map[string]any{
+			"agent_type": a.agentType,
+		},
+	}); err != nil {
+		return err
+	}
+	select {
+	case <-a.releasec:
+		return a.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (a *failingBlockingAgent) release() {
 	a.once.Do(func() {
 		close(a.releasec)
 	})
@@ -2361,7 +2661,7 @@ func (a optionsAgent) Run(context.Context, agents.AgentInput, agents.EmitFunc) e
 	return nil
 }
 
-func decodeAgentOptions(t *testing.T, raw json.RawMessage) map[string]map[string]any {
+func decodeTestAgentOptions(t *testing.T, raw json.RawMessage) map[string]map[string]any {
 	t.Helper()
 	options := map[string]map[string]any{}
 	if len(raw) == 0 {

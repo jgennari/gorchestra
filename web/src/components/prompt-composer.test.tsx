@@ -60,26 +60,35 @@ test('shift enter inserts a newline without submitting', async () => {
   expect(prompt).toHaveValue('Line one\nLine two')
 })
 
-test('cmd or ctrl shift enter queues the draft without submitting', async () => {
+test('cmd or ctrl shift enter queues the draft on the server', async () => {
   const user = userEvent.setup()
-  const onSubmit = vi.fn(async () => undefined)
+  const queued = [] as ReturnType<typeof queuedMessage>[]
+  vi.stubGlobal('fetch', queueFetchMock(queued))
+  const onSubmit = vi.fn(async (content: string) => {
+    queued.push(queuedMessage(`queue_${queued.length + 1}`, content, queued.length + 1))
+  })
 
-  render(<PromptComposer disabled={false} disabledReason="" onSubmit={onSubmit} />)
+  render(<PromptComposer sessionID="sess_1" disabled={false} disabledReason="" onSubmit={onSubmit} />)
 
   const prompt = screen.getByLabelText('Prompt')
   await user.type(prompt, 'Queued prompt')
   await user.keyboard('{Meta>}{Shift>}{Enter}{/Shift}{/Meta}')
 
-  expect(onSubmit).not.toHaveBeenCalled()
+  expect(onSubmit).toHaveBeenCalledWith('Queued prompt', undefined, undefined, true)
   expect(prompt).toHaveValue('')
-  expect(screen.getByText('Queued prompt')).toBeInTheDocument()
+  expect(await screen.findByText('Queued prompt')).toBeInTheDocument()
   await waitFor(() => expect(prompt).toHaveFocus())
 })
 
-test('queue button enqueues up to five drafts and allows removal', async () => {
+test('queue button enqueues up to five server drafts and allows removal', async () => {
   const user = userEvent.setup()
+  const queued = [] as ReturnType<typeof queuedMessage>[]
+  vi.stubGlobal('fetch', queueFetchMock(queued))
+  const onSubmit = vi.fn(async (content: string) => {
+    queued.push(queuedMessage(`queue_${queued.length + 1}`, content, queued.length + 1))
+  })
 
-  render(<PromptComposer disabled={false} disabledReason="" onSubmit={async () => undefined} />)
+  render(<PromptComposer sessionID="sess_1" disabled={false} disabledReason="" onSubmit={onSubmit} />)
 
   const prompt = screen.getByLabelText('Prompt')
   for (let index = 1; index <= 5; index += 1) {
@@ -94,7 +103,7 @@ test('queue button enqueues up to five drafts and allows removal', async () => {
 
   await user.click(screen.getByRole('button', { name: 'Remove queued message 3' }))
 
-  expect(screen.queryByText('Queued 3')).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.queryByText('Queued 3')).not.toBeInTheDocument())
   expect(screen.getAllByRole('button', { name: /remove queued message/i })).toHaveLength(4)
 })
 
@@ -171,13 +180,18 @@ test('pastes image clipboard items into attachments', async () => {
 
 test('prompt composer queues enter submissions while running', async () => {
   const user = userEvent.setup()
-  const onSubmit = vi.fn(async () => undefined)
+  const queued = [] as ReturnType<typeof queuedMessage>[]
+  vi.stubGlobal('fetch', queueFetchMock(queued))
+  const onSubmit = vi.fn(async (content: string) => {
+    queued.push(queuedMessage(`queue_${queued.length + 1}`, content, queued.length + 1))
+  })
   const onCancel = vi.fn(async () => undefined)
 
   render(
     <PromptComposer
       disabled
       disabledReason="This session is running."
+      sessionID="sess_1"
       sessionStatus="running"
       onSubmit={onSubmit}
       onCancel={onCancel}
@@ -190,9 +204,10 @@ test('prompt composer queues enter submissions while running', async () => {
 
   await user.type(prompt, 'Draft next message{enter}')
 
-  expect(onSubmit).not.toHaveBeenCalled()
+  expect(onSubmit).toHaveBeenCalledWith('Draft next message', undefined, undefined, true)
   expect(prompt).toHaveValue('')
-  expect(screen.getByText('Draft next message')).toBeInTheDocument()
+  expect(await screen.findByText('Draft next message')).toBeInTheDocument()
+  await waitFor(() => expect(prompt).toHaveFocus())
 
   await user.click(screen.getByRole('button', { name: 'Cancel running session' }))
 
@@ -272,16 +287,14 @@ test('codex composer exposes compact mobile options and hides debug on mobile', 
 
 test('draft messages persist per session', async () => {
   const user = userEvent.setup()
+  vi.stubGlobal('fetch', queueFetchMock([]))
 
   const first = render(
     <PromptComposer sessionID="sess_1" disabled={false} disabledReason="" onSubmit={async () => undefined} />,
   )
-  await user.type(screen.getByLabelText('Prompt'), 'Queued draft')
-  await user.click(screen.getByRole('button', { name: /queue message/i }))
   await user.type(screen.getByLabelText('Prompt'), 'First draft')
   await waitFor(() => {
     expect(window.localStorage.getItem('gorchestra.session-composer.sess_1')).toContain('First draft')
-    expect(window.localStorage.getItem('gorchestra.session-composer.sess_1')).toContain('Queued draft')
   })
   first.unmount()
 
@@ -295,48 +308,49 @@ test('draft messages persist per session', async () => {
   render(<PromptComposer sessionID="sess_1" disabled={false} disabledReason="" onSubmit={async () => undefined} />)
 
   expect(screen.getByLabelText('Prompt')).toHaveValue('First draft')
-  expect(screen.getByText('Queued draft')).toBeInTheDocument()
 })
 
-test('auto-submits the next queued message after a completed run', async () => {
-  const onSubmit = vi.fn(async () => undefined)
-  window.localStorage.setItem(
-    'gorchestra.session-composer.__default__',
-    JSON.stringify({ queuedMessages: ['Queued follow-up'] }),
-  )
+test('refreshes server queued messages after queue lifecycle events', async () => {
+  const queued = [] as ReturnType<typeof queuedMessage>[]
+  vi.stubGlobal('fetch', queueFetchMock(queued))
   const { rerender } = render(
     <PromptComposer
-      disabled
-      disabledReason="This session is running."
-      sessionStatus="running"
-      onSubmit={onSubmit}
+      sessionID="sess_1"
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
     />,
   )
 
+  expect(screen.queryByText('Queued follow-up')).not.toBeInTheDocument()
+  queued.push(queuedMessage('queue_1', 'Queued follow-up', 1))
+
   rerender(
     <PromptComposer
+      sessionID="sess_1"
       disabled={false}
       disabledReason=""
       sessionStatus="idle"
-      latestTerminalEvent={{
+      latestQueueEvent={{
         id: 'evt_9',
         session_id: 'sess_1',
         seq: 9,
-        type: 'agent.run.completed',
-        role: 'assistant',
+        type: 'user.message.queued',
+        role: 'user',
         status: 'completed',
         payload: {},
         created_at: '2026-06-12T16:00:00Z',
       }}
-      onSubmit={onSubmit}
+      onSubmit={async () => undefined}
     />,
   )
 
-  await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('Queued follow-up'))
+  expect(await screen.findByText('Queued follow-up')).toBeInTheDocument()
 })
 
-test('does not auto-submit queued messages after failed or cancelled runs, or while input is pending', async () => {
+test('does not auto-submit server queued messages after failed or completed runs', async () => {
   const onSubmit = vi.fn(async () => undefined)
+  vi.stubGlobal('fetch', queueFetchMock([queuedMessage('queue_1', 'Queued follow-up')]))
   const terminalBase = {
     id: 'evt_10',
     session_id: 'sess_1',
@@ -345,12 +359,9 @@ test('does not auto-submit queued messages after failed or cancelled runs, or wh
     created_at: '2026-06-12T16:00:00Z',
   }
 
-  window.localStorage.setItem(
-    'gorchestra.session-composer.__default__',
-    JSON.stringify({ queuedMessages: ['Queued follow-up'] }),
-  )
   const { rerender } = render(
     <PromptComposer
+      sessionID="sess_1"
       disabled
       disabledReason="This session is running."
       sessionStatus="running"
@@ -360,6 +371,7 @@ test('does not auto-submit queued messages after failed or cancelled runs, or wh
 
   rerender(
     <PromptComposer
+      sessionID="sess_1"
       disabled={false}
       disabledReason=""
       sessionStatus="failed"
@@ -372,6 +384,7 @@ test('does not auto-submit queued messages after failed or cancelled runs, or wh
 
   rerender(
     <PromptComposer
+      sessionID="sess_1"
       disabled
       disabledReason="This session is running."
       sessionStatus="running"
@@ -381,6 +394,7 @@ test('does not auto-submit queued messages after failed or cancelled runs, or wh
 
   rerender(
     <PromptComposer
+      sessionID="sess_1"
       disabled={false}
       disabledReason=""
       sessionStatus="idle"
@@ -391,6 +405,7 @@ test('does not auto-submit queued messages after failed or cancelled runs, or wh
   )
 
   await waitFor(() => expect(onSubmit).not.toHaveBeenCalled())
+  expect(await screen.findByText('Queued follow-up')).toBeInTheDocument()
 })
 
 test('codex toolbar submits selected options with the prompt', async () => {
@@ -613,6 +628,33 @@ function codexOptionsResponse() {
       { name: 'Default', mode: 'default' },
     ],
   }
+}
+
+function queuedMessage(id: string, content: string, seq = 1) {
+  return {
+    id,
+    session_id: 'sess_1',
+    seq,
+    content,
+    agent_options: {},
+    created_at: '2026-06-12T16:00:00Z',
+  }
+}
+
+function queueFetchMock(queued: ReturnType<typeof queuedMessage>[]) {
+  return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(url)
+    if (path === '/api/sessions/sess_1/queued-messages') {
+      return jsonResponse({ messages: queued })
+    }
+    if (path.startsWith('/api/sessions/sess_1/queued-messages/') && init?.method === 'DELETE') {
+      const id = decodeURIComponent(path.slice('/api/sessions/sess_1/queued-messages/'.length))
+      const index = queued.findIndex((message) => message.id === id)
+      const removed = index >= 0 ? queued.splice(index, 1)[0] : queuedMessage(id, '')
+      return jsonResponse(removed)
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
 }
 
 function jsonResponse(body: unknown) {

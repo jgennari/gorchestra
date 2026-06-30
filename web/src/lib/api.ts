@@ -95,6 +95,15 @@ export type SubmitAgentOptions = {
   claude?: ClaudeSubmitOptions
 }
 
+export type QueuedMessage = {
+  id: string
+  session_id: string
+  seq: number
+  content: string
+  agent_options?: SubmitAgentOptions
+  created_at: string
+}
+
 export type MessageAttachment = {
   name: string
   media_type: string
@@ -204,9 +213,11 @@ type CreateSessionResponse = {
   session_id: string
 }
 
-type SubmitMessageResponse = {
+export type SubmitMessageResponse = {
   session_id: string
   status: SessionStatus
+  accepted_as?: 'run' | 'queued'
+  queued_message?: QueuedMessage
 }
 
 type SessionActionResponse = {
@@ -382,11 +393,13 @@ export async function submitMessage(
   content: string,
   agentOptions?: SubmitAgentOptions,
   attachments: MessageAttachment[] = [],
+  queue = false,
 ) {
   const body: {
     content: string
     agent_options?: SubmitAgentOptions
     attachments?: MessageAttachment[]
+    queue?: boolean
   } = { content }
   if (agentOptions) {
     body.agent_options = agentOptions
@@ -394,11 +407,27 @@ export async function submitMessage(
   if (attachments.length > 0) {
     body.attachments = attachments
   }
+  if (queue) {
+    body.queue = true
+  }
 
   return requestJSON<SubmitMessageResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/messages`, {
     method: 'POST',
     body: JSON.stringify(body),
   })
+}
+
+export async function fetchQueuedMessages(sessionID: string) {
+  return requestJSON<{ messages: QueuedMessage[] }>(`/api/sessions/${encodeURIComponent(sessionID)}/queued-messages`)
+}
+
+export async function removeQueuedMessage(sessionID: string, queuedMessageID: string) {
+  return requestJSON<QueuedMessage>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/queued-messages/${encodeURIComponent(queuedMessageID)}`,
+    {
+      method: 'DELETE',
+    },
+  )
 }
 
 export async function cancelSession(sessionID: string) {

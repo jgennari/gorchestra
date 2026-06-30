@@ -37,6 +37,7 @@ type Props = {
     content: string,
     agentOptions?: SubmitAgentOptions,
     attachments?: MessageAttachment[],
+    queue?: boolean,
   ) => Promise<void>
   onAnswerUserInput: (requestID: string, answers: UserInputAnswers) => Promise<void>
   onCancel: () => Promise<void>
@@ -82,6 +83,7 @@ export function SessionDetail({
     [events, session?.status, userInputRequest],
   )
   const latestTerminal = useMemo(() => latestTerminalEvent(events), [events])
+  const latestQueueEvent = useMemo(() => latestQueuedMessageEvent(events), [events])
   const bottomStackRef = useRef<HTMLDivElement>(null)
   const [bottomInsetHeight, setBottomInsetHeight] = useState(176)
 
@@ -207,6 +209,7 @@ export function SessionDetail({
             sessionStatus={session.status}
             hasPendingUserInput={Boolean(userInputRequest)}
             latestTerminalEvent={latestTerminal}
+            latestQueueEvent={latestQueueEvent}
             disabled={composerDisabled}
             disabledReason={disabledReason}
             showDebugEvents={showDebugEvents}
@@ -497,4 +500,25 @@ function streamStateLabel(state: StreamState, error: string) {
   if (state === 'connected') return 'Live'
   if (state === 'reconnecting') return 'Reconnecting'
   return 'Loading'
+}
+
+function latestQueuedMessageEvent(events: AgentEvent[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (
+      event.type === 'user.message.queued' ||
+      event.type === 'user.message.queue.removed' ||
+      queuedUserMessageCompleted(event)
+    ) {
+      return event
+    }
+  }
+  return null
+}
+
+function queuedUserMessageCompleted(event: AgentEvent) {
+  if (event.type !== 'user.message.completed' || typeof event.payload !== 'object' || event.payload === null) {
+    return false
+  }
+  return 'queue_item_id' in event.payload
 }

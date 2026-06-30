@@ -95,6 +95,14 @@ export function ChatTranscript({
   }, [bottomAnchorKey])
 
   useLayoutEffect(() => {
+    const element = scrollRef.current
+    if (!element || autoScrollPausedRef.current) {
+      return
+    }
+    scrollToBottom(element)
+  }, [bottomInsetHeight])
+
+  useLayoutEffect(() => {
     const anchor = prependAnchorRef.current
     const element = scrollRef.current
     if (!anchor || !element) {

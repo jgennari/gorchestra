@@ -34,8 +34,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 6 {
-		t.Fatalf("expected six recorded migrations, got %d", count)
+	if count != 7 {
+		t.Fatalf("expected seven recorded migrations, got %d", count)
 	}
 }
 
@@ -262,6 +262,73 @@ func TestCreateSessionRejectsEmptyAgentType(t *testing.T) {
 	_, err := store.CreateSession(ctx, CreateSessionParams{Title: "Missing agent"})
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestQueuedMessagesSequenceAndLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	first, err := store.EnqueueMessage(ctx, EnqueueMessageParams{
+		SessionID:    session.ID,
+		Content:      "First",
+		AgentOptions: json.RawMessage(`{"codex":{"model":"gpt-5.5"}}`),
+		MaxPending:   2,
+	})
+	if err != nil {
+		t.Fatalf("enqueue first message: %v", err)
+	}
+	second, err := store.EnqueueMessage(ctx, EnqueueMessageParams{
+		SessionID:  session.ID,
+		Content:    "Second",
+		MaxPending: 2,
+	})
+	if err != nil {
+		t.Fatalf("enqueue second message: %v", err)
+	}
+	if first.Seq != 1 || second.Seq != 2 {
+		t.Fatalf("expected queued sequence 1,2 got %d,%d", first.Seq, second.Seq)
+	}
+
+	if _, err := store.EnqueueMessage(ctx, EnqueueMessageParams{
+		SessionID:  session.ID,
+		Content:    "Third",
+		MaxPending: 2,
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected queue limit invalid argument, got %v", err)
+	}
+
+	pending, err := store.ListQueuedMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("list queued messages: %v", err)
+	}
+	if len(pending) != 2 || pending[0].Content != "First" || pending[1].Content != "Second" {
+		t.Fatalf("expected FIFO pending messages, got %#v", pending)
+	}
+
+	claimed, err := store.ClaimNextQueuedMessage(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("claim queued message: %v", err)
+	}
+	if claimed.ID != first.ID || claimed.Status != QueuedMessageStatusSending {
+		t.Fatalf("expected first message sending, got %#v", claimed)
+	}
+
+	pending, err = store.ListQueuedMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("list after claim: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != second.ID {
+		t.Fatalf("expected only second pending after claim, got %#v", pending)
+	}
+
+	sent, err := store.MarkQueuedMessageSent(ctx, QueueMessageIDParams{SessionID: session.ID, ID: claimed.ID})
+	if err != nil {
+		t.Fatalf("mark sent: %v", err)
+	}
+	if sent.Status != QueuedMessageStatusSent {
+		t.Fatalf("expected sent status, got %#v", sent)
 	}
 }
 

@@ -7,6 +7,7 @@ import {
   createSession,
   eventStreamURL,
   fetchAgentOptions,
+  fetchQueuedMessages,
   getSessionFileContent,
   isAgentType,
   listEvents,
@@ -18,6 +19,7 @@ import {
   restoreSession,
   searchSessionFiles,
   sessionActivityStreamURL,
+  removeQueuedMessage,
   submitMessage,
   updateSessionAgentOptions,
   updateSessionFileContent,
@@ -391,6 +393,69 @@ test('submit message posts image attachments when provided', async () => {
   const response = await submitMessage('sess_1', '', undefined, attachments)
 
   expect(response.status).toBe('running')
+})
+
+test('submit message can request server queueing', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1/messages')
+    expect(init?.method).toBe('POST')
+    expect(init?.body).toBe(JSON.stringify({ content: 'Next', queue: true }))
+    return jsonResponse({
+      session_id: 'sess_1',
+      status: 'running',
+      accepted_as: 'queued',
+      queued_message: {
+        id: 'queue_1',
+        session_id: 'sess_1',
+        seq: 1,
+        content: 'Next',
+        created_at: '2026-06-12T16:00:00Z',
+      },
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const response = await submitMessage('sess_1', 'Next', undefined, [], true)
+
+  expect(response.accepted_as).toBe('queued')
+  expect(response.queued_message?.content).toBe('Next')
+})
+
+test('queued message helpers use session queue endpoints', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions/sess_1/queued-messages') {
+      expect(init?.method).toBeUndefined()
+      return jsonResponse({
+        messages: [
+          {
+            id: 'queue_1',
+            session_id: 'sess_1',
+            seq: 1,
+            content: 'Next',
+            created_at: '2026-06-12T16:00:00Z',
+          },
+        ],
+      })
+    }
+    if (String(url) === '/api/sessions/sess_1/queued-messages/queue_1') {
+      expect(init?.method).toBe('DELETE')
+      return jsonResponse({
+        id: 'queue_1',
+        session_id: 'sess_1',
+        seq: 1,
+        content: 'Next',
+        created_at: '2026-06-12T16:00:00Z',
+      })
+    }
+    throw new Error(`unexpected URL ${String(url)}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const response = await fetchQueuedMessages('sess_1')
+  const removed = await removeQueuedMessage('sess_1', 'queue_1')
+
+  expect(response.messages).toHaveLength(1)
+  expect(removed.id).toBe('queue_1')
 })
 
 test('answer user input posts selected answers', async () => {

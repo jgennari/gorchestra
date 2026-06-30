@@ -75,6 +75,7 @@ type submitMessageRequest struct {
 	Content      string              `json:"content"`
 	AgentOptions *submitAgentOptions `json:"agent_options,omitempty"`
 	Attachments  []submitAttachment  `json:"attachments,omitempty"`
+	Queue        bool                `json:"queue,omitempty"`
 }
 
 type submitAgentOptions struct {
@@ -104,13 +105,29 @@ type submitAttachment struct {
 }
 
 type submitMessageResponse struct {
-	SessionID string `json:"session_id"`
-	Status    string `json:"status"`
+	SessionID     string                 `json:"session_id"`
+	Status        string                 `json:"status"`
+	AcceptedAs    string                 `json:"accepted_as,omitempty"`
+	QueuedMessage *queuedMessageResponse `json:"queued_message,omitempty"`
+}
+
+type queuedMessageResponse struct {
+	ID           string `json:"id"`
+	SessionID    string `json:"session_id"`
+	Seq          int64  `json:"seq"`
+	Content      string `json:"content"`
+	AgentOptions any    `json:"agent_options"`
+	CreatedAt    string `json:"created_at"`
+}
+
+type queuedMessagesResponse struct {
+	Messages []queuedMessageResponse `json:"messages"`
 }
 
 const (
 	maxSubmitAttachments     = 8
 	maxSubmitAttachmentBytes = 5 * 1024 * 1024
+	maxQueuedMessages        = 5
 )
 
 type cancelSessionResponse struct {
@@ -721,12 +738,25 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if session.Status == store.SessionStatusRunning {
-		writeError(w, http.StatusConflict, "session is already running")
-		return
-	}
 	if session.ArchivedAt != nil {
 		writeError(w, http.StatusConflict, "session is archived")
+		return
+	}
+	if request.Queue || session.Status == store.SessionStatusRunning {
+		if len(attachments) > 0 {
+			writeError(w, http.StatusBadRequest, "queued messages cannot include image attachments")
+			return
+		}
+		queued, ok := api.enqueueSessionMessage(w, r, session, content, request.AgentOptions)
+		if !ok {
+			return
+		}
+		writeJSON(w, http.StatusAccepted, submitMessageResponse{
+			SessionID:     session.ID,
+			Status:        string(session.Status),
+			AcceptedAs:    "queued",
+			QueuedMessage: queuedMessageToResponse(queued),
+		})
 		return
 	}
 
@@ -755,7 +785,7 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		metadata,
 		agents.AgentActionMessage,
 		func(ctx context.Context) error {
-			return api.appendUserMessage(ctx, session.ID, content, attachments, eventOptions)
+			return api.appendUserMessage(ctx, session.ID, content, attachments, eventOptions, "")
 		},
 		"failed to persist user message",
 	)
@@ -764,9 +794,128 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, submitMessageResponse{
-		SessionID: updatedSession.ID,
-		Status:    string(updatedSession.Status),
+		SessionID:  updatedSession.ID,
+		Status:     string(updatedSession.Status),
+		AcceptedAs: "run",
 	})
+}
+
+func (api API) listQueuedMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	if _, err := api.store.GetSession(r.Context(), sessionID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load session")
+		return
+	}
+
+	messages, err := api.store.ListQueuedMessages(r.Context(), sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load queued messages")
+		return
+	}
+	response := queuedMessagesResponse{Messages: make([]queuedMessageResponse, 0, len(messages))}
+	for _, message := range messages {
+		response.Messages = append(response.Messages, *queuedMessageToResponse(message))
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (api API) removeQueuedMessageHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	messageID := chi.URLParam(r, "queuedMessageId")
+
+	removed, err := api.store.RemoveQueuedMessage(r.Context(), store.QueueMessageIDParams{
+		SessionID: sessionID,
+		ID:        messageID,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "queued message not found")
+			return
+		}
+		if errors.Is(err, store.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to remove queued message")
+		return
+	}
+	if err := api.appendQueuedMessageRemoved(r.Context(), removed); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist queued message removal")
+		return
+	}
+	writeJSON(w, http.StatusOK, queuedMessageToResponse(removed))
+}
+
+func (api API) enqueueSessionMessage(
+	w http.ResponseWriter,
+	r *http.Request,
+	session store.Session,
+	content string,
+	options *submitAgentOptions,
+) (store.QueuedMessage, bool) {
+	if _, _, err := submitOptionsMetadata(session.AgentType, session.AgentOptions, options); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return store.QueuedMessage{}, false
+	}
+	rawOptions, err := json.Marshal(optionsOrEmpty(options))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode queued message options")
+		return store.QueuedMessage{}, false
+	}
+
+	queued, err := api.store.EnqueueMessage(r.Context(), store.EnqueueMessageParams{
+		SessionID:    session.ID,
+		Content:      content,
+		AgentOptions: rawOptions,
+		MaxPending:   maxQueuedMessages,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return store.QueuedMessage{}, false
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return store.QueuedMessage{}, false
+		}
+		writeError(w, http.StatusInternalServerError, "failed to queue message")
+		return store.QueuedMessage{}, false
+	}
+	if err := api.appendQueuedMessageQueued(r.Context(), queued); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist queued message event")
+		return store.QueuedMessage{}, false
+	}
+	return queued, true
+}
+
+func optionsOrEmpty(options *submitAgentOptions) any {
+	if options == nil {
+		return map[string]any{}
+	}
+	return options
+}
+
+func decodeAgentOptions(raw json.RawMessage) any {
+	agentOptions := map[string]any{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &agentOptions)
+	}
+	return agentOptions
+}
+
+func queuedMessageToResponse(message store.QueuedMessage) *queuedMessageResponse {
+	return &queuedMessageResponse{
+		ID:           message.ID,
+		SessionID:    message.SessionID,
+		Seq:          message.Seq,
+		Content:      message.Content,
+		AgentOptions: decodeAgentOptions(message.AgentOptions),
+		CreatedAt:    message.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
 }
 
 func (api API) clearSessionHandler(w http.ResponseWriter, r *http.Request) {
@@ -965,11 +1114,122 @@ func (api API) startSessionRun(
 	}
 
 	go func() {
-		defer cleanup()
-		api.runAgent(runCtx, updatedSession, message, attachments, agent, metadata, action)
+		completed := api.runAgent(runCtx, updatedSession, message, attachments, agent, metadata, action)
+		cleanup()
+		if completed {
+			api.startQueuedMessageRun(context.Background(), session.ID)
+		}
 	}()
 
 	return updatedSession, true
+}
+
+func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool {
+	queued, err := api.store.ClaimNextQueuedMessage(ctx, sessionID)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			log.Printf("failed to claim queued message: session_id=%s error=%v", sessionID, err)
+		}
+		return false
+	}
+	release := func() {
+		if _, releaseErr := api.store.ReleaseQueuedMessage(context.Background(), store.QueueMessageIDParams{
+			SessionID: queued.SessionID,
+			ID:        queued.ID,
+		}); releaseErr != nil {
+			log.Printf("failed to release queued message: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, releaseErr)
+		}
+	}
+
+	session, err := api.store.GetSession(ctx, queued.SessionID)
+	if err != nil {
+		log.Printf("failed to load queued message session: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
+		release()
+		return false
+	}
+	if session.Status != store.SessionStatusIdle || session.ArchivedAt != nil {
+		release()
+		return false
+	}
+
+	var queuedOptions submitAgentOptions
+	if len(queued.AgentOptions) > 0 {
+		if err := json.Unmarshal(queued.AgentOptions, &queuedOptions); err != nil {
+			log.Printf("failed to decode queued message options: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
+			release()
+			return false
+		}
+	}
+	metadata, eventOptions, err := submitOptionsMetadata(session.AgentType, session.AgentOptions, &queuedOptions)
+	if err != nil {
+		log.Printf("failed to prepare queued message options: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
+		release()
+		return false
+	}
+
+	agent, ok := api.agents.Get(session.AgentType)
+	if !ok {
+		log.Printf("queued message agent unavailable: session_id=%s queue_item_id=%s agent_type=%s", queued.SessionID, queued.ID, session.AgentType)
+		release()
+		return false
+	}
+	if availability, ok := agent.(agents.Availability); ok {
+		if err := availability.Available(); err != nil {
+			log.Printf("queued message agent unavailable: session_id=%s queue_item_id=%s agent_type=%s error=%v", queued.SessionID, queued.ID, session.AgentType, err)
+			release()
+			return false
+		}
+	}
+
+	runCtx, cleanup, err := api.runs.Register(context.Background(), session.ID)
+	if err != nil {
+		if !errors.Is(err, runcontrol.ErrRunAlreadyActive) {
+			log.Printf("failed to register queued message run: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
+		}
+		release()
+		return false
+	}
+
+	if err := api.appendUserMessage(ctx, session.ID, queued.Content, nil, eventOptions, queued.ID); err != nil {
+		cleanup()
+		log.Printf("failed to append queued user message: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
+		release()
+		return false
+	}
+	updatedSession, err := api.store.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+		ID:     session.ID,
+		Status: store.SessionStatusRunning,
+	})
+	if err != nil {
+		cleanup()
+		log.Printf("failed to mark queued session running: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
+		release()
+		return false
+	}
+	if err := api.appendSessionStatusUpdated(ctx, updatedSession); err != nil {
+		cleanup()
+		log.Printf("failed to emit queued session status: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
+		release()
+		return false
+	}
+	if _, err := api.store.MarkQueuedMessageSent(ctx, store.QueueMessageIDParams{
+		SessionID: queued.SessionID,
+		ID:        queued.ID,
+	}); err != nil {
+		cleanup()
+		log.Printf("failed to mark queued message sent: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
+		release()
+		return false
+	}
+
+	go func() {
+		completed := api.runAgent(runCtx, updatedSession, queued.Content, nil, agent, metadata, agents.AgentActionMessage)
+		cleanup()
+		if completed {
+			api.startQueuedMessageRun(context.Background(), session.ID)
+		}
+	}()
+	return true
 }
 
 func (api API) cancelSessionHandler(w http.ResponseWriter, r *http.Request) {
@@ -1087,6 +1347,7 @@ func (api API) appendUserMessage(
 	content string,
 	attachments []agents.Attachment,
 	agentOptions map[string]any,
+	queueItemID string,
 ) error {
 	payloadValue := map[string]any{"text": content}
 	if len(attachments) > 0 {
@@ -1094,6 +1355,9 @@ func (api API) appendUserMessage(
 	}
 	if len(agentOptions) > 0 {
 		payloadValue["agent_options"] = agentOptions
+	}
+	if strings.TrimSpace(queueItemID) != "" {
+		payloadValue["queue_item_id"] = strings.TrimSpace(queueItemID)
 	}
 
 	payload, err := json.Marshal(payloadValue)
@@ -1104,6 +1368,43 @@ func (api API) appendUserMessage(
 	_, err = api.events.Append(ctx, eventservice.AppendParams{
 		SessionID: sessionID,
 		Type:      "user.message.completed",
+		Role:      "user",
+		Status:    store.EventStatusCompleted,
+		Payload:   payload,
+	})
+	return err
+}
+
+func (api API) appendQueuedMessageQueued(ctx context.Context, message store.QueuedMessage) error {
+	payload, err := json.Marshal(map[string]any{
+		"queue_item_id": message.ID,
+		"text":          message.Content,
+		"agent_options": decodeAgentOptions(message.AgentOptions),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal queued message payload: %w", err)
+	}
+	_, err = api.events.Append(ctx, eventservice.AppendParams{
+		SessionID: message.SessionID,
+		Type:      "user.message.queued",
+		Role:      "user",
+		Status:    store.EventStatusCompleted,
+		Payload:   payload,
+	})
+	return err
+}
+
+func (api API) appendQueuedMessageRemoved(ctx context.Context, message store.QueuedMessage) error {
+	payload, err := json.Marshal(map[string]any{
+		"queue_item_id": message.ID,
+		"text":          message.Content,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal queued message removed payload: %w", err)
+	}
+	_, err = api.events.Append(ctx, eventservice.AppendParams{
+		SessionID: message.SessionID,
+		Type:      "user.message.queue.removed",
 		Role:      "user",
 		Status:    store.EventStatusCompleted,
 		Payload:   payload,
@@ -1173,7 +1474,7 @@ func (api API) runAgent(
 	agent agents.Agent,
 	metadata map[string]any,
 	action agents.AgentAction,
-) {
+) bool {
 	terminalEventEmitted := false
 	emit := func(ctx context.Context, event agents.AgentEvent) error {
 		terminalEvent := isTerminalRunEvent(event.Type)
@@ -1220,7 +1521,7 @@ func (api API) runAgent(
 		}); updateErr != nil {
 			log.Printf("failed to mark session idle after cancellation: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), updateErr)
 		}
-		return
+		return false
 	}
 	if err != nil {
 		log.Printf("agent run failed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), err)
@@ -1238,7 +1539,7 @@ func (api API) runAgent(
 		}); updateErr != nil {
 			log.Printf("failed to mark session failed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), updateErr)
 		}
-		return
+		return false
 	}
 
 	if !terminalEventEmitted {
@@ -1250,7 +1551,7 @@ func (api API) runAgent(
 			}); updateErr != nil {
 				log.Printf("failed to mark session failed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), updateErr)
 			}
-			return
+			return false
 		}
 	}
 
@@ -1259,7 +1560,9 @@ func (api API) runAgent(
 		Status: store.SessionStatusIdle,
 	}); err != nil {
 		log.Printf("failed to mark session idle after completion: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), err)
+		return false
 	}
+	return true
 }
 
 func (api API) persistProviderSessionIDFromEvent(
