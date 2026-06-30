@@ -258,8 +258,12 @@ func assertTerminalCount(t *testing.T, events []normalizedEvent, want int) {
 
 func fakeClaudeAgent(t *testing.T) *Agent {
 	t.Helper()
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
 	return New(
-		WithBinary(os.Args[0]),
+		WithBinary(binary),
 		WithVersionChecker(func(context.Context, string) (string, error) {
 			return "2.1.128", nil
 		}),
