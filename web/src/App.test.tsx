@@ -45,12 +45,33 @@ test('selecting a session updates the browser route', async () => {
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
 })
 
-test('mobile app header reserves safe area space', async () => {
+test('mobile navigation uses the floating session header', async () => {
   render(<App />)
 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
 
-  expect(screen.getByRole('button', { name: 'Open sessions' }).closest('header')).toHaveClass('mobile-app-header')
+  const openSessionsButton = screen.getByRole('button', { name: 'Open sessions' })
+  expect(openSessionsButton.closest('.mobile-floating-header-shell')).toBeTruthy()
+  expect(document.querySelector('.mobile-app-header')).toBeNull()
+})
+
+test('mobile sessions button opens a floating session dialog', async () => {
+  const user = userEvent.setup()
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+
+  await user.click(screen.getByRole('button', { name: 'Open sessions' }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'Sessions' })
+  expect(within(dialog).getByRole('button', { name: 'Create session' })).toBeInTheDocument()
+  expect(within(dialog).getByRole('button', { name: /Theme:/ })).toBeInTheDocument()
+
+  await user.click(within(dialog).getByRole('button', { name: /Write docs/ }))
+
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Sessions' })).not.toBeInTheDocument())
 })
 
 test('loading with a session route selects that session', async () => {

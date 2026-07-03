@@ -19,6 +19,7 @@ test('renders user and assistant messages without duplicating completion text', 
   expect(screen.getByText('Hi there')).toBeInTheDocument()
   expect(screen.queryByText('Hi thereHi there')).not.toBeInTheDocument()
   expect(container.querySelectorAll('time[datetime="2026-06-12T16:00:00Z"]')).toHaveLength(2)
+  expect(container.querySelector('time[datetime="2026-06-12T16:00:00Z"]')?.closest('.hidden')).toHaveClass('sm:block')
 })
 
 test('renders session actions as conversation breaks', () => {
@@ -57,6 +58,8 @@ test('renders run failures as system error rows instead of assistant text', () =
   expect(alert).toHaveTextContent('Run failed')
   expect(alert).toHaveTextContent(errorText)
   expect(alert).toHaveTextContent('#3')
+  expect(alert.querySelector('time')).toHaveClass('hidden')
+  expect(alert.querySelector('time')).toHaveClass('sm:inline')
 
   const assistantMessage = screen.getByText('I started the change.').closest('article')
   expect(assistantMessage).toHaveTextContent('I started the change.')

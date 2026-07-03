@@ -20,12 +20,14 @@ export function HostConsole({
   session,
   resolvedTheme,
   headerActions,
+  mobileLeadingAction,
   onUpdateTitle,
   onTitleEditStateChange,
 }: {
   session: Session | null
   resolvedTheme: 'light' | 'dark'
   headerActions?: ReactNode
+  mobileLeadingAction?: ReactNode
   onUpdateTitle: (title: string) => Promise<void>
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
 }) {
@@ -223,17 +225,20 @@ export function HostConsole({
 
   return (
     <div className="relative flex h-full w-full min-h-0 flex-col bg-background">
-      <ConsoleHeader
-        session={session}
-        workspacePath={workspacePath}
-        restarting={restarting}
-        headerActions={headerActions}
-        onRestart={() => void handleRestart()}
-        onStop={() => void killConsole(sessionID)}
-        onUpdateTitle={onUpdateTitle}
-        onTitleEditStateChange={onTitleEditStateChange}
-        className="border-b bg-background px-3 lg:hidden"
-      />
+      <div className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden">
+        <ConsoleHeader
+          session={session}
+          workspacePath={workspacePath}
+          restarting={restarting}
+          leadingAction={mobileLeadingAction}
+          headerActions={headerActions}
+          onRestart={() => void handleRestart()}
+          onStop={() => void killConsole(sessionID)}
+          onUpdateTitle={onUpdateTitle}
+          onTitleEditStateChange={onTitleEditStateChange}
+          className="command-chat-header pointer-events-auto rounded-xl border border-border/90 px-3 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
+        />
+      </div>
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
         <ConsoleHeader
           session={session}
@@ -248,11 +253,11 @@ export function HostConsole({
         />
       </div>
       {errorMessage ? (
-        <div className="border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive lg:mx-3 lg:mt-[4.75rem] lg:rounded-xl lg:border">
+        <div className="mx-3 mt-36 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive lg:mt-[4.75rem]">
           {errorMessage}
         </div>
       ) : null}
-      <div className={cn('min-h-0 flex-1 p-2 lg:px-3 lg:pb-3', !errorMessage && 'lg:pt-[4.75rem]')}>
+      <div className={cn('min-h-0 flex-1 p-2 lg:px-3 lg:pb-3', !errorMessage && 'pt-36 lg:pt-[4.75rem]')}>
         <div ref={terminalElementRef} className="host-console h-full min-h-0 overflow-hidden rounded-xl border border-border/90" />
       </div>
     </div>
@@ -263,6 +268,7 @@ function ConsoleHeader({
   session,
   workspacePath,
   restarting,
+  leadingAction,
   headerActions,
   onRestart,
   onStop,
@@ -273,6 +279,7 @@ function ConsoleHeader({
   session: Session
   workspacePath: string
   restarting: boolean
+  leadingAction?: ReactNode
   headerActions?: ReactNode
   onRestart: () => void
   onStop: () => void
@@ -282,6 +289,7 @@ function ConsoleHeader({
 }) {
   return (
     <div className={cn('flex min-h-14 shrink-0 items-center justify-between gap-3 py-2', className)}>
+      {leadingAction ? <div className="shrink-0">{leadingAction}</div> : null}
       <div className="min-w-0 flex-1">
         <SessionTitleEditor
           key={`console-${session.id}`}

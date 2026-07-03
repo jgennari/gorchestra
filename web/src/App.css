@@ -47,10 +47,8 @@
   background: linear-gradient(180deg, hsl(var(--background) / 0.88), hsl(var(--surface) / 0.94));
 }
 
-.mobile-app-header {
-  --mobile-app-safe-area-top: max(env(safe-area-inset-top, 0px), 2rem);
-  min-height: calc(3.5rem + var(--mobile-app-safe-area-top));
-  padding-top: var(--mobile-app-safe-area-top);
+.mobile-floating-header-shell {
+  top: max(env(safe-area-inset-top, 0px), 2rem);
 }
 
 .host-console {

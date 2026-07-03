@@ -1,4 +1,4 @@
-import { Check, Copy, Ellipsis, RefreshCcw } from 'lucide-react'
+import { Check, Copy, Ellipsis } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
@@ -9,14 +9,11 @@ import type {
   UserInputAnswers,
 } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { StatusBadge } from '@/components/status-badge'
 import { ChatTranscript } from '@/components/chat-transcript'
 import { PromptComposer } from '@/components/prompt-composer'
 import { SessionTitleEditor } from '@/components/session-title-editor'
 import { UserInputCard } from '@/components/user-input-card'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { activeThinking, latestTerminalEvent, pendingUserInputRequest } from '@/lib/events'
 import { cn } from '@/lib/utils'
 
@@ -24,11 +21,9 @@ type Props = {
   session: Session | null
   events: AgentEvent[]
   streamState: StreamState
-  streamError: string
   hasOlderEvents?: boolean
   loadingOlderEvents?: boolean
   errorMessage?: string
-  notice: string
   showDebugEvents: boolean
   onShowDebugEventsChange: (showDebugEvents: boolean) => void
   onLoadOlderEvents?: () => Promise<void> | void
@@ -41,24 +36,22 @@ type Props = {
   ) => Promise<void>
   onAnswerUserInput: (requestID: string, answers: UserInputAnswers) => Promise<void>
   onCancel: () => Promise<void>
-  onRefresh: () => void
   onUpdateTitle: (title: string) => Promise<void>
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onOpenFilePath?: (path: string) => Promise<void> | void
   onErrorMessageChange?: (message: string) => void
   headerActions?: ReactNode
+  mobileLeadingAction?: ReactNode
 }
 
 export function SessionDetail({
   session,
   events,
   streamState,
-  streamError,
   hasOlderEvents = false,
   loadingOlderEvents = false,
   errorMessage = '',
-  notice,
   showDebugEvents,
   onShowDebugEventsChange,
   onLoadOlderEvents,
@@ -66,13 +59,13 @@ export function SessionDetail({
   onSubmitPrompt,
   onAnswerUserInput,
   onCancel,
-  onRefresh,
   onUpdateTitle,
   onTitleEditStateChange,
   onUpdateAgentOptions,
   onOpenFilePath,
   onErrorMessageChange,
   headerActions,
+  mobileLeadingAction,
 }: Props) {
   const userInputRequest = useMemo(
     () => (session?.status === 'running' ? pendingUserInputRequest(events) : null),
@@ -133,42 +126,6 @@ export function SessionDetail({
 
   return (
     <section className="relative flex h-full w-full min-h-0 flex-col overflow-hidden bg-transparent">
-      <header
-        data-testid="session-detail-mobile-header"
-        className="hidden shrink-0 border-b border-border/70 bg-background/62 px-4 py-2 backdrop-blur"
-      >
-        <div className="flex min-h-10 items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <StatusBadge status={session.status} />
-            <SessionTitleEditor
-              key={`mobile-${session.id}`}
-              title={session.title}
-              onSave={onUpdateTitle}
-              onEditStateChange={onTitleEditStateChange}
-            />
-            <Badge variant="outline" className="shrink-0 capitalize" aria-label={`Agent: ${session.agent_type}`}>
-              {session.agent_type}
-            </Badge>
-            {notice && !errorMessage ? (
-              <span className="truncate text-sm text-muted-foreground lg:hidden">{notice}</span>
-            ) : null}
-          </div>
-          <TooltipProvider>
-            <div className="flex shrink-0 items-center gap-2 lg:hidden">
-              <ConnectionIndicator state={streamState} error={streamError} />
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="outline" size="icon" onClick={onRefresh} aria-label="Refresh session">
-                    <RefreshCcw />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Refresh session</TooltipContent>
-              </Tooltip>
-            </div>
-          </TooltipProvider>
-        </div>
-      </header>
-
       <div className="relative min-h-0 flex-1 overflow-hidden">
         <ChatTranscript
           events={events}
@@ -184,6 +141,24 @@ export function SessionDetail({
           onFollowLatestChange={onFollowLatestChange}
           onOpenFilePath={onOpenFilePath}
         />
+        <div
+          data-testid="mobile-floating-session-header"
+          className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden"
+        >
+          <ChatSessionHeader
+            sessionID={session.id}
+            agentType={session.agent_type}
+            workspacePath={session.workspace_path}
+            agentOptions={session.agent_options}
+            title={session.title}
+            errorMessage={errorMessage}
+            onUpdateTitle={onUpdateTitle}
+            onTitleEditStateChange={onTitleEditStateChange}
+            onUpdateAgentOptions={onUpdateAgentOptions}
+            headerActions={headerActions}
+            leadingAction={mobileLeadingAction}
+          />
+        </div>
         <div data-testid="floating-session-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
           <ChatSessionHeader
             sessionID={session.id}
@@ -235,6 +210,7 @@ function ChatSessionHeader({
   onTitleEditStateChange,
   onUpdateAgentOptions,
   headerActions,
+  leadingAction,
 }: {
   sessionID: string
   agentType: Session['agent_type']
@@ -246,6 +222,7 @@ function ChatSessionHeader({
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   headerActions?: ReactNode
+  leadingAction?: ReactNode
 }) {
   return (
     <div className="pointer-events-auto">
@@ -255,6 +232,7 @@ function ChatSessionHeader({
           errorMessage ? 'rounded-t-xl' : 'rounded-xl',
         )}
       >
+        {leadingAction ? <div className="shrink-0">{leadingAction}</div> : null}
         <div className="min-w-0 flex-1">
           <SessionTitleEditor
             key={`desktop-${sessionID}`}
@@ -458,48 +436,6 @@ function CopyableDetailBox({
       </div>
     </div>
   )
-}
-
-function ConnectionIndicator({ state, error }: { state: StreamState; error: string }) {
-  const visibleLabel = streamStateLabel(state, error)
-  return (
-    <span
-      aria-label={`Stream status: ${visibleLabel}`}
-      className={cn(
-        'inline-flex h-8 items-center gap-2 rounded-md border px-2 text-xs',
-        error || state === 'disconnected'
-          ? 'border-destructive/30 text-destructive'
-          : state === 'reconnecting'
-            ? 'border-amber-200 text-amber-800'
-            : state === 'connected'
-              ? 'border-emerald-200 text-emerald-800'
-              : 'text-muted-foreground',
-      )}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          'size-2 rounded-full',
-          error || state === 'disconnected'
-            ? 'bg-destructive'
-            : state === 'reconnecting'
-              ? 'bg-amber-500'
-              : state === 'connected'
-                ? 'bg-emerald-500'
-                : 'bg-muted-foreground',
-          (state === 'loading' || state === 'reconnecting') && 'animate-pulse',
-        )}
-      />
-      {visibleLabel}
-    </span>
-  )
-}
-
-function streamStateLabel(state: StreamState, error: string) {
-  if (error || state === 'disconnected') return 'Disconnected'
-  if (state === 'connected') return 'Live'
-  if (state === 'reconnecting') return 'Reconnecting'
-  return 'Loading'
 }
 
 function latestQueuedMessageEvent(events: AgentEvent[]) {

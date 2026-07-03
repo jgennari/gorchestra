@@ -85,10 +85,13 @@ test('thinking indicator follows active reasoning events while running', () => {
   expect(screen.getByRole('status', { name: /thinking/i })).toBeInTheDocument()
 })
 
-test('mobile-only session detail headers stay hidden under the app header', () => {
-  renderDetail()
+test('session detail uses matching floating headers on mobile and desktop', () => {
+  renderDetail({ mobileLeadingAction: <button type="button">Open sessions</button> })
 
-  expect(screen.getByTestId('session-detail-mobile-header')).toHaveClass('hidden')
+  const mobileHeader = screen.getByTestId('mobile-floating-session-header')
+  expect(mobileHeader).toHaveClass('mobile-floating-header-shell')
+  expect(mobileHeader).toHaveClass('lg:hidden')
+  expect(within(mobileHeader).getByRole('button', { name: 'Open sessions' })).toBeInTheDocument()
   expect(screen.getByTestId('floating-session-header')).toHaveClass('hidden')
   expect(screen.getByTestId('floating-session-header')).toHaveClass('lg:block')
   expect(screen.queryByText(/Created:/)).not.toBeInTheDocument()
@@ -108,7 +111,7 @@ test('floating chat header shows session details and copies the session key', as
 
   expect(screen.queryByText('sess_1')).not.toBeInTheDocument()
 
-  await user.click(screen.getByRole('button', { name: 'Session details' }))
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
 
   const popover = screen.getByRole('dialog', { name: 'Session details' })
   expect(within(popover).getByText('Session key')).toBeInTheDocument()
@@ -137,8 +140,8 @@ test('floating chat header updates run dangerously for codex sessions', async ()
     onUpdateAgentOptions,
   })
 
-  await user.click(screen.getByRole('button', { name: 'Session details' }))
-  const checkbox = screen.getByRole('checkbox', { name: /run dangerously/i })
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
+  const checkbox = within(desktopFloatingHeader()).getByRole('checkbox', { name: /run dangerously/i })
 
   expect(checkbox).not.toBeChecked()
 
@@ -160,8 +163,8 @@ test('floating chat header updates run dangerously for claude sessions', async (
     onUpdateAgentOptions,
   })
 
-  await user.click(screen.getByRole('button', { name: 'Session details' }))
-  const checkbox = screen.getByRole('checkbox', { name: /run dangerously/i })
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
+  const checkbox = within(desktopFloatingHeader()).getByRole('checkbox', { name: /run dangerously/i })
 
   expect(checkbox).not.toBeChecked()
 
@@ -175,19 +178,19 @@ test('floating chat header hides run dangerously for fake sessions', async () =>
 
   renderDetail()
 
-  await user.click(screen.getByRole('button', { name: 'Session details' }))
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
 
   expect(screen.queryByRole('checkbox', { name: /run dangerously/i })).not.toBeInTheDocument()
 })
 
 test('floating chat header owns session errors', () => {
   renderDetail({
-    streamError: 'HTTP 502',
     errorMessage: 'HTTP 502',
   })
 
-  expect(screen.getByRole('alert')).toHaveTextContent('HTTP 502')
-  expect(screen.getByRole('alert')).toHaveClass('command-error-banner', 'text-destructive')
+  const alert = within(desktopFloatingHeader()).getByRole('alert')
+  expect(alert).toHaveTextContent('HTTP 502')
+  expect(alert).toHaveClass('command-error-banner', 'text-destructive')
   expect(screen.queryByText(/Failed to load chat history/)).not.toBeInTheDocument()
 })
 
@@ -215,19 +218,20 @@ function rerenderDetail(rerender: (ui: ReactNode) => void, overrides: Partial<Se
   rerender(<SessionDetail {...props(overrides)} />)
 }
 
+function desktopFloatingHeader() {
+  return screen.getByTestId('floating-session-header')
+}
+
 function props(overrides: Partial<SessionDetailProps>): SessionDetailProps {
   return {
     session: baseSession,
     events: [],
     streamState: 'connected',
-    streamError: '',
-    notice: '',
     showDebugEvents: false,
     onShowDebugEventsChange: () => undefined,
     onSubmitPrompt: async () => undefined,
     onAnswerUserInput: async () => undefined,
     onCancel: async () => undefined,
-    onRefresh: () => undefined,
     onUpdateTitle: async () => undefined,
     onUpdateAgentOptions: async () => undefined,
     ...overrides,

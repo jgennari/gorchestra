@@ -33,7 +33,6 @@ import {
   clearSession,
   compactSession,
   createSession,
-  fetchHealth,
   getSession,
   getSessionFileContent,
   listSessions,
@@ -51,18 +50,16 @@ import { useFavicon } from '@/hooks/use-favicon'
 import { useTheme } from '@/hooks/use-theme'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { HostConsole } from '@/components/host-console'
 import { RunHealthRail } from '@/components/run-health-rail'
 import { SessionDetail } from '@/components/session-detail'
 import { defaultSessionListFilters, SessionList, type SessionListFilters } from '@/components/session-list'
-import { StatusBadge } from '@/components/status-badge'
+import { ThemeToggle } from '@/components/theme-toggle'
 import { hasSessionAttention, latestSessionSeq } from '@/lib/session-attention'
 import { sessionIDFromPathname, sessionPath } from '@/lib/routes'
 import { cn } from '@/lib/utils'
 
-type HealthState = 'checking' | 'online' | 'offline'
 type SessionRouteHistoryMode = 'push' | 'replace' | 'none'
 type PaneSide = 'left' | 'right'
 type PaneWidths = {
@@ -95,7 +92,6 @@ const paneLimits = {
 }
 
 function App() {
-  const [healthState, setHealthState] = useState<HealthState>('checking')
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedSessionID, setSelectedSessionID] = useState<string | null>(() => selectedSessionIDFromLocation())
   const [createOpen, setCreateOpen] = useState(false)
@@ -103,7 +99,6 @@ function App() {
   const [loadingSessions, setLoadingSessions] = useState(true)
   const [refreshingSessions, setRefreshingSessions] = useState(false)
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
   const [showDebugEvents, setShowDebugEvents] = useState(false)
   const [archivingSessionID, setArchivingSessionID] = useState<string | null>(null)
   const [confirmArchiveSessionID, setConfirmArchiveSessionID] = useState<string | null>(null)
@@ -164,7 +159,6 @@ function App() {
     (sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
       selectSession(sessionID, historyMode)
       setMobileListOpen(false)
-      setNotice('')
     },
     [selectSession],
   )
@@ -413,24 +407,6 @@ function App() {
   }, [loadSessions])
 
   useEffect(() => {
-    let cancelled = false
-    async function check() {
-      try {
-        await fetchHealth()
-        if (!cancelled) setHealthState('online')
-      } catch {
-        if (!cancelled) setHealthState('offline')
-      }
-    }
-    void check()
-    const timer = window.setInterval(() => void check(), 15000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [])
-
-  useEffect(() => {
     if (!selectedSessionID) {
       return
     }
@@ -448,7 +424,6 @@ function App() {
     const session = await createSession(params)
     applySession(session)
     selectSession(session.id, 'push')
-    setNotice('')
     return session
   }
 
@@ -473,7 +448,6 @@ function App() {
           : session,
       ),
     )
-    setNotice('')
     setEventRefreshKey((value) => value + 1)
   }
 
@@ -483,7 +457,6 @@ function App() {
     }
     try {
       await cancelSession(selectedSessionID)
-      setNotice('Cancellation requested.')
     } catch (cancelError) {
       setError(messageFromError(cancelError))
       if (cancelError instanceof APIError && cancelError.status === 409) {
@@ -497,7 +470,6 @@ function App() {
       throw new Error('Select a session first.')
     }
     await answerUserInput(selectedSessionID, requestID, answers)
-    setNotice('')
   }
 
   function handleShowDebugEventsChange(nextShowDebugEvents: boolean) {
@@ -579,7 +551,6 @@ function App() {
       const updatedSession = restoring ? await restoreSession(sessionID) : await archiveSession(sessionID)
       applySession(updatedSession)
       selectSession(restoring ? sessionID : nextSelectedID, 'replace')
-      setNotice('')
       setConfirmArchiveSessionID(null)
     } catch (archiveError) {
       setError(messageFromError(archiveError))
@@ -623,7 +594,6 @@ function App() {
       if (action === 'clear') {
         await refreshSession(sessionID)
       }
-      setNotice(action === 'clear' ? 'Context cleared.' : 'Compaction started.')
       setConfirmSessionAction(null)
     } catch (actionError) {
       setError(messageFromError(actionError))
@@ -635,11 +605,6 @@ function App() {
         current?.action === action && current.sessionID === sessionID ? null : current,
       )
     }
-  }
-
-  function handleRefresh() {
-    void loadSessions()
-    if (selectedSessionID) void refreshSession(selectedSessionID)
   }
 
   const handleOpenWorkspacePath = useCallback(
@@ -783,6 +748,18 @@ function App() {
       </button>
     </div>
   )
+  const openSessionsButton = (
+    <Button
+      type="button"
+      size="icon"
+      variant="ghost"
+      aria-label="Open sessions"
+      onClick={() => setMobileListOpen(true)}
+      className="h-9 w-9 shrink-0 text-muted-foreground hover:bg-background/50 hover:text-foreground lg:hidden"
+    >
+      <Menu />
+    </Button>
+  )
 
   return (
     <main className="app-shell">
@@ -800,38 +777,13 @@ function App() {
       />
 
       <section className="command-workspace flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="mobile-app-header flex shrink-0 items-center justify-between gap-3 border-b bg-background/84 px-3 lg:hidden">
-          <Sheet open={mobileListOpen} onOpenChange={setMobileListOpen}>
-            <SheetTrigger asChild>
-              <Button size="icon" variant="outline" aria-label="Open sessions" className="lg:hidden">
-                <Menu />
-              </Button>
-            </SheetTrigger>
-            <SheetContent>
-              <SheetHeader>
-                <SheetTitle>Sessions</SheetTitle>
-              </SheetHeader>
-              <div className="min-h-0 flex-1">{mobileList}</div>
-            </SheetContent>
-          </Sheet>
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            {selectedSession ? <StatusBadge status={selectedSession.status} /> : null}
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium">{selectedSession?.title || 'Gorchestra'}</p>
-              <p className="truncate text-xs text-muted-foreground">{selectedSession?.agent_type || 'No session'}</p>
-            </div>
-          </div>
-          <Button size="icon" onClick={() => setCreateOpen(true)} aria-label="Create session">
-            <Plus />
-          </Button>
-        </header>
-
         <div className="relative min-h-0 flex-1 overflow-hidden">
           {appView === 'console' ? (
             <HostConsole
               session={selectedSession}
               resolvedTheme={theme.resolvedTheme}
               headerActions={viewToggle}
+              mobileLeadingAction={openSessionsButton}
               onUpdateTitle={handleUpdateTitle}
               onTitleEditStateChange={handleTitleEditStateChange}
             />
@@ -840,13 +792,11 @@ function App() {
               session={selectedSession}
               events={events}
               streamState={streamState}
-              streamError={streamError}
               hasOlderEvents={hasOlderEvents}
               loadingOlderEvents={loadingOlderEvents}
               onLoadOlderEvents={loadOlderEvents}
               onFollowLatestChange={setFollowingLatest}
               errorMessage={error || streamError}
-              notice={notice || healthLabel(healthState)}
               showDebugEvents={showDebugEvents}
               onShowDebugEventsChange={handleShowDebugEventsChange}
               onSubmitPrompt={handleSubmitPrompt}
@@ -855,10 +805,10 @@ function App() {
               onUpdateTitle={handleUpdateTitle}
               onTitleEditStateChange={handleTitleEditStateChange}
               onUpdateAgentOptions={handleUpdateAgentOptions}
-              onRefresh={handleRefresh}
               onOpenFilePath={handleOpenWorkspacePath}
               onErrorMessageChange={setError}
               headerActions={viewToggle}
+              mobileLeadingAction={openSessionsButton}
             />
           )}
           {appView === 'session' && openWorkspaceFile ? (
@@ -960,6 +910,35 @@ function App() {
           completeSessionSelection(targetSessionID, historyMode)
         }}
       />
+      <Dialog open={mobileListOpen} onOpenChange={setMobileListOpen}>
+        <DialogContent className="command-chat-header grid max-h-[min(42rem,calc(100dvh-4rem))] w-[calc(100vw-1.5rem)] max-w-md grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden border-border/90 p-0 shadow-[0_18px_60px_hsl(var(--foreground)/0.18)]">
+          <DialogHeader className="border-b border-border/70 p-4 pr-14">
+            <div className="flex items-center justify-between gap-3">
+              <DialogTitle>Sessions</DialogTitle>
+              <div className="flex shrink-0 items-center gap-2">
+                <ThemeToggle
+                  preference={theme.preference}
+                  resolvedTheme={theme.resolvedTheme}
+                  onToggle={theme.nextPreference}
+                />
+                <Button
+                  type="button"
+                  aria-label="Create session"
+                  size="icon"
+                  onClick={() => {
+                    setMobileListOpen(false)
+                    setCreateOpen(true)
+                  }}
+                  className="shadow-sm"
+                >
+                  <Plus />
+                </Button>
+              </div>
+            </div>
+          </DialogHeader>
+          <div className="min-h-0 overflow-hidden">{mobileList}</div>
+        </DialogContent>
+      </Dialog>
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
     </main>
   )
@@ -1631,17 +1610,6 @@ function workspaceRelativeFilePath(path: string, workspacePath: string) {
 
 function messageFromError(error: unknown) {
   return error instanceof Error ? error.message : 'Request failed'
-}
-
-function healthLabel(state: HealthState) {
-  switch (state) {
-    case 'online':
-      return ''
-    case 'offline':
-      return 'Backend offline.'
-    default:
-      return ''
-  }
 }
 
 function loadSessionDebugPreference(sessionID: string | null) {
