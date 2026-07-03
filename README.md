@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  Run multiple Codex and Claude sessions, stream every event, inspect files and git state, and keep the whole story.
+  Run multiple Codex, Claude, and OpenCode sessions, stream every event, inspect files and git state, and keep the whole story.
 </p>
 
 <p align="center">
@@ -14,6 +14,8 @@
   <img alt="SQLite persistence" src="https://img.shields.io/badge/storage-SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white" />
   <img alt="SSE streaming" src="https://img.shields.io/badge/streaming-SSE-111827?style=for-the-badge" />
   <img alt="Codex adapter" src="https://img.shields.io/badge/agent-Codex-111827?style=for-the-badge" />
+  <img alt="Claude adapter" src="https://img.shields.io/badge/agent-Claude-111827?style=for-the-badge" />
+  <img alt="OpenCode adapter" src="https://img.shields.io/badge/agent-OpenCode-111827?style=for-the-badge" />
 </p>
 
 > Agents perform work. Gorchestra conducts the performance.
@@ -28,7 +30,7 @@ Take your development wherever you are. Gorchestra gives you a private, permanen
 
 | Run | Coordinate | Inspect | Remember |
 | --- | --- | --- | --- |
-| Launch Codex or Claude sessions from one local server. | Queue work, attach images, and switch between fast and planning flows. | Browse files, inspect git-aware changes, and edit text in-session. | Store ordered session history in SQLite. |
+| Launch Codex, Claude, or OpenCode sessions from one local server. | Queue work, attach images, and switch between fast and planning flows. | Browse files, inspect git-aware changes, and edit text in-session. | Store ordered session history in SQLite. |
 | Tune model, reasoning, service tier, and execution mode. | Keep multiple sessions moving at once from desktop or mobile. | Jump from file-change diffs straight into Monaco. | Reconnect with replay instead of losing context. |
 
 ## Why It Exists
@@ -37,7 +39,7 @@ Coding agents are useful, but serious work falls apart when everything is trappe
 
 It is built for getting work done locally:
 
-- Pick a workspace and start Codex or Claude.
+- Pick a workspace and start Codex, Claude, or OpenCode.
 - Watch messages, thinking, tool calls, logs, errors, and file edits as they happen.
 - Queue follow-up prompts while the current run is still working.
 - Open changed files, review diffs, inspect git state, and edit Markdown or text without leaving the app.
@@ -51,7 +53,7 @@ It is built for getting work done locally:
 
 Start a session, choose a workspace, and let the agent run. Gorchestra keeps the live transcript, workspace tools, and session controls together so you do not have to bounce between terminal tabs, editor windows, and logs.
 
-- Tune Codex options like model, reasoning effort, service tier, planning mode, and dangerous mode.
+- Tune agent options like model, reasoning effort, service tier, planning mode, and dangerous mode.
 - Follow messages, thinking, tool calls, command output, file edits, errors, and debug events in one transcript.
 - Keep typing while a run is active, queue messages, attach images, and answer agent-requested prompts when a run needs input.
 - Browse, search, preview, and edit workspace files from the side rail.
@@ -83,7 +85,7 @@ open http://127.0.0.1:15173
 brew services stop jgennari/tap/gorchestra
 ```
 
-The Homebrew service reads `$(brew --prefix)/etc/gorchestra/gorchestra.env`. Edit that file and restart the service to change the port, data directory, workspace roots, or Codex binary path.
+The Homebrew service reads `$(brew --prefix)/etc/gorchestra/gorchestra.env`. Edit that file and restart the service to change the port, data directory, workspace roots, or agent binary paths.
 
 ### Direct Download
 
@@ -113,6 +115,7 @@ Release targets:
 - `windows/arm64`
 
 Real Codex sessions require the Codex CLI to be available on `PATH`, or configured with `--codex-bin`.
+Real Claude sessions require the Claude CLI to be available on `PATH`, or configured with `--claude-bin`.
 Real OpenCode sessions require the OpenCode CLI to be available on `PATH`, or configured with `--opencode-bin`.
 
 ## Use
@@ -138,6 +141,8 @@ gorchestra --codex-model gpt-5
 gorchestra --codex-sandbox workspace-write
 gorchestra --codex-network-access=false
 gorchestra --codex-web-search=cached
+gorchestra --claude-bin /path/to/claude
+gorchestra --claude-model claude-sonnet-4-5
 gorchestra --opencode-bin /path/to/opencode
 gorchestra --version
 ```
@@ -152,7 +157,7 @@ Linux: $XDG_DATA_HOME/gorchestra/gorchestra.db
 Linux fallback: ~/.local/share/gorchestra/gorchestra.db
 ```
 
-Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, `GORCHESTRA_OPENCODE_BIN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
+Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, `GORCHESTRA_CLAUDE_BIN`, `GORCHESTRA_CLAUDE_MODEL`, `GORCHESTRA_OPENCODE_BIN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
 
 Config files use the same env-style names:
 
@@ -164,6 +169,7 @@ GORCHESTRA_WORKSPACE=~
 GORCHESTRA_WORKSPACE_ROOTS=~
 GORCHESTRA_OPEN=false
 GORCHESTRA_CODEX_BIN=codex
+GORCHESTRA_CLAUDE_BIN=claude
 GORCHESTRA_OPENCODE_BIN=opencode
 ```
 
