@@ -45,6 +45,14 @@ test('selecting a session updates the browser route', async () => {
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
 })
 
+test('mobile app header reserves safe area space', async () => {
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+
+  expect(screen.getByRole('button', { name: 'Open sessions' }).closest('header')).toHaveClass('mobile-app-header')
+})
+
 test('loading with a session route selects that session', async () => {
   window.history.replaceState({}, '', '/sessions/sess_2')
 

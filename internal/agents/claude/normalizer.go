@@ -27,10 +27,17 @@ type normalizer struct {
 	terminal         bool
 	terminalKind     terminalKind
 	terminalError    string
+	toolCalls        map[string]*claudeToolCall
+	toolBlockIDs     map[int]string
+	toolInputDeltas  map[int]string
 }
 
 func newNormalizer() *normalizer {
-	return &normalizer{}
+	return &normalizer{
+		toolCalls:       make(map[string]*claudeToolCall),
+		toolBlockIDs:    make(map[int]string),
+		toolInputDeltas: make(map[int]string),
+	}
 }
 
 func (n *normalizer) normalize(input *streamEvent) []normalizedEvent {
@@ -45,6 +52,8 @@ func (n *normalizer) normalize(input *streamEvent) []normalizedEvent {
 		return n.normalizeAnthropicStreamEvent(input)
 	case "assistant":
 		return n.normalizeAssistant(input)
+	case "user":
+		return n.normalizeUser(input)
 	case "result":
 		return []normalizedEvent{n.normalizeResult(input)}
 	case "rate_limit_event":
@@ -98,6 +107,7 @@ func (n *normalizer) normalizeAnthropicStreamEvent(input *streamEvent) []normali
 
 	switch providerEventType {
 	case "message_start":
+		n.messageText = ""
 		if model := stringAt(input.Event, "message", "model"); model != "" {
 			payload["model"] = model
 		}
@@ -107,6 +117,7 @@ func (n *normalizer) normalizeAnthropicStreamEvent(input *streamEvent) []normali
 		}
 		return []normalizedEvent{{Event: agentEvent("agent.status.started", "assistant", "started", payload)}}
 	case "content_block_delta":
+		n.captureToolInputDelta(input)
 		text := stringAt(input.Event, "delta", "text")
 		if text == "" {
 			return []normalizedEvent{{Event: agentEvent("provider.claude.event", "system", "completed", payload)}}
@@ -126,7 +137,17 @@ func (n *normalizer) normalizeAnthropicStreamEvent(input *streamEvent) []normali
 			payload["usage"] = usage
 		}
 		return []normalizedEvent{{Event: agentEvent("provider.claude.event", "system", "completed", payload)}}
-	case "message_stop", "content_block_start", "content_block_stop":
+	case "content_block_start":
+		return compact(
+			normalizedEvent{Event: agentEvent("provider.claude.event", "system", "completed", payload)},
+			n.normalizeToolUseStart(input),
+		)
+	case "content_block_stop":
+		return compact(
+			normalizedEvent{Event: agentEvent("provider.claude.event", "system", "completed", payload)},
+			n.normalizeToolUseInputStop(input),
+		)
+	case "message_stop":
 		return []normalizedEvent{{Event: agentEvent("provider.claude.event", "system", "completed", payload)}}
 	default:
 		return []normalizedEvent{{Event: agentEvent("provider.claude.event", "system", "completed", payload)}}
@@ -138,7 +159,7 @@ func (n *normalizer) normalizeAssistant(input *streamEvent) []normalizedEvent {
 	payload["provider_event_type"] = "assistant"
 	payload["raw_message"] = rawOrNil(input.Message)
 	text := textFromAssistantMessage(input.Message)
-	if text == "" {
+	if text == "" && !assistantMessageHasToolUse(input.Message) {
 		text = n.messageText
 	}
 	if text != "" {
@@ -150,7 +171,47 @@ func (n *normalizer) normalizeAssistant(input *streamEvent) []normalizedEvent {
 	if model := stringAt(input.Message, "model"); model != "" {
 		payload["model"] = model
 	}
-	return []normalizedEvent{{Event: agentEvent("agent.message.completed", "assistant", "completed", payload)}}
+	events := []normalizedEvent{{Event: agentEvent("agent.message.completed", "assistant", "completed", payload)}}
+	for _, tool := range toolUsesFromAssistantMessage(input.Message) {
+		n.upsertToolCall(tool)
+		if tool.Input != nil {
+			events = append(events, normalizedEvent{Event: agentEvent("tool.call.delta", "assistant", "delta", n.toolPayload(input, tool))})
+			if stored := n.toolCalls[tool.ID]; stored != nil {
+				stored.InputEmitted = true
+			}
+		}
+	}
+	return events
+}
+
+func (n *normalizer) normalizeUser(input *streamEvent) []normalizedEvent {
+	payload := basePayload(input)
+	payload["provider_event_type"] = "user"
+	payload["raw"] = rawOrNil(input.Raw)
+	events := []normalizedEvent{{Event: agentEvent("provider.claude.event", "system", "completed", payload)}}
+	for _, result := range toolResultsFromUser(input.Raw) {
+		tool := n.toolCalls[result.ToolUseID]
+		if tool == nil {
+			tool = &claudeToolCall{ID: result.ToolUseID}
+		}
+		eventPayload := n.toolPayload(input, *tool)
+		eventPayload["provider_event_type"] = "tool_result"
+		if result.Output != "" {
+			eventPayload["output"] = result.Output
+			eventPayload["aggregated_output"] = result.Output
+		}
+		if result.RawOutput != nil {
+			eventPayload["raw_output"] = result.RawOutput
+		}
+		if result.IsError {
+			eventPayload["is_error"] = true
+			if result.Output != "" {
+				eventPayload["error"] = result.Output
+			}
+		}
+		events = append(events, normalizedEvent{Event: agentEvent("tool.call.completed", "assistant", "completed", eventPayload)})
+	}
+	return events
 }
 
 func (n *normalizer) normalizeResult(input *streamEvent) normalizedEvent {
@@ -202,6 +263,122 @@ func (n *normalizer) syntheticRunStarted(input *streamEvent, payload map[string]
 		payload["provider_session_id"] = input.SessionID
 	}
 	return normalizedEvent{Event: agentEvent("agent.run.started", "assistant", "started", payload)}
+}
+
+type claudeToolCall struct {
+	ID           string
+	Name         string
+	Input        map[string]any
+	InputEmitted bool
+}
+
+type claudeToolResult struct {
+	ToolUseID string
+	Output    string
+	IsError   bool
+	RawOutput any
+}
+
+func (n *normalizer) normalizeToolUseStart(input *streamEvent) normalizedEvent {
+	block, ok := mapAt(input.Event, "content_block")
+	if !ok || stringFromMap(block, "type") != "tool_use" {
+		return normalizedEvent{}
+	}
+
+	tool := claudeToolCall{
+		ID:    stringFromMap(block, "id"),
+		Name:  stringFromMap(block, "name"),
+		Input: mapFromMap(block, "input"),
+	}
+	if tool.ID == "" {
+		return normalizedEvent{}
+	}
+	n.upsertToolCall(tool)
+	if index, ok := intAt(input.Event, "index"); ok {
+		n.toolBlockIDs[index] = tool.ID
+	}
+	return normalizedEvent{Event: agentEvent("tool.call.started", "assistant", "started", n.toolPayload(input, tool))}
+}
+
+func (n *normalizer) captureToolInputDelta(input *streamEvent) {
+	index, ok := intAt(input.Event, "index")
+	if !ok || n.toolBlockIDs[index] == "" {
+		return
+	}
+	if stringAt(input.Event, "delta", "type") != "input_json_delta" {
+		return
+	}
+	n.toolInputDeltas[index] += stringAt(input.Event, "delta", "partial_json")
+}
+
+func (n *normalizer) normalizeToolUseInputStop(input *streamEvent) normalizedEvent {
+	index, ok := intAt(input.Event, "index")
+	if !ok {
+		return normalizedEvent{}
+	}
+	toolID := n.toolBlockIDs[index]
+	if toolID == "" {
+		return normalizedEvent{}
+	}
+	delete(n.toolBlockIDs, index)
+
+	tool := n.toolCalls[toolID]
+	if tool == nil {
+		delete(n.toolInputDeltas, index)
+		return normalizedEvent{}
+	}
+	if tool.Input == nil {
+		tool.Input = parseJSONObject(n.toolInputDeltas[index])
+	}
+	delete(n.toolInputDeltas, index)
+	if tool.Input == nil || tool.InputEmitted {
+		return normalizedEvent{}
+	}
+	tool.InputEmitted = true
+	return normalizedEvent{Event: agentEvent("tool.call.delta", "assistant", "delta", n.toolPayload(input, *tool))}
+}
+
+func (n *normalizer) upsertToolCall(tool claudeToolCall) {
+	if tool.ID == "" {
+		return
+	}
+	stored := n.toolCalls[tool.ID]
+	if stored == nil {
+		n.toolCalls[tool.ID] = &tool
+		return
+	}
+	if tool.Name != "" {
+		stored.Name = tool.Name
+	}
+	if tool.Input != nil {
+		stored.Input = tool.Input
+	}
+}
+
+func (n *normalizer) toolPayload(input *streamEvent, tool claudeToolCall) map[string]any {
+	payload := basePayload(input)
+	payload["provider_event_type"] = "tool_use"
+	payload["tool_call_id"] = tool.ID
+	payload["item_id"] = tool.ID
+	if tool.Name != "" {
+		payload["name"] = tool.Name
+		payload["tool"] = tool.Name
+		payload["kind"] = tool.Name
+		payload["title"] = tool.Name
+	}
+	if tool.Input != nil {
+		payload["raw_input"] = tool.Input
+		if command := stringFromMap(tool.Input, "command"); command != "" {
+			payload["command"] = command
+		}
+		if description := stringFromMap(tool.Input, "description"); description != "" {
+			payload["description"] = description
+		}
+		if path := firstStringFromMap(tool.Input, "file_path", "filePath", "path"); path != "" {
+			payload["path"] = path
+		}
+	}
+	return payload
 }
 
 func (n *normalizer) unknown(input *streamEvent) normalizedEvent {
@@ -276,6 +453,127 @@ func textFromAssistantMessage(raw json.RawMessage) string {
 	return strings.Join(parts, "")
 }
 
+func assistantMessageHasToolUse(raw json.RawMessage) bool {
+	return len(toolUsesFromAssistantMessage(raw)) > 0
+}
+
+func toolUsesFromAssistantMessage(raw json.RawMessage) []claudeToolCall {
+	var message struct {
+		Content []struct {
+			Type  string         `json:"type"`
+			ID    string         `json:"id"`
+			Name  string         `json:"name"`
+			Input map[string]any `json:"input"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &message); err != nil {
+		return nil
+	}
+	tools := make([]claudeToolCall, 0)
+	for _, content := range message.Content {
+		if content.Type != "tool_use" || content.ID == "" {
+			continue
+		}
+		tools = append(tools, claudeToolCall{
+			ID:    content.ID,
+			Name:  content.Name,
+			Input: content.Input,
+		})
+	}
+	return tools
+}
+
+func toolResultsFromUser(raw json.RawMessage) []claudeToolResult {
+	root, ok := objectFromRaw(raw)
+	if !ok {
+		return nil
+	}
+	message, ok := root["message"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	content, ok := message["content"].([]any)
+	if !ok {
+		return nil
+	}
+	rawOutput := root["tool_use_result"]
+	results := make([]claudeToolResult, 0)
+	for _, item := range content {
+		block, ok := item.(map[string]any)
+		if !ok || stringFromMap(block, "type") != "tool_result" {
+			continue
+		}
+		toolUseID := stringFromMap(block, "tool_use_id")
+		if toolUseID == "" {
+			continue
+		}
+		output := stringFromMap(block, "content")
+		if output == "" {
+			output = outputFromClaudeToolResult(rawOutput)
+		}
+		results = append(results, claudeToolResult{
+			ToolUseID: toolUseID,
+			Output:    output,
+			IsError:   boolFromMap(block, "is_error"),
+			RawOutput: rawOutput,
+		})
+	}
+	return results
+}
+
+func outputFromClaudeToolResult(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case map[string]any:
+		stdout := stringFromMap(typed, "stdout")
+		stderr := stringFromMap(typed, "stderr")
+		switch {
+		case stdout != "" && stderr != "":
+			return stdout + "\n" + stderr
+		case stdout != "":
+			return stdout
+		default:
+			return stderr
+		}
+	default:
+		return ""
+	}
+}
+
+func objectFromRaw(raw json.RawMessage) (map[string]any, bool) {
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func mapAt(raw json.RawMessage, path ...string) (map[string]any, bool) {
+	value := anyAt(raw, path...)
+	object, ok := value.(map[string]any)
+	return object, ok
+}
+
+func mapFromMap(object map[string]any, key string) map[string]any {
+	value, ok := object[key].(map[string]any)
+	if !ok || len(value) == 0 {
+		return nil
+	}
+	return value
+}
+
+func parseJSONObject(value string) map[string]any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal([]byte(value), &object); err != nil || len(object) == 0 {
+		return nil
+	}
+	return object
+}
+
 func stringAt(raw json.RawMessage, path ...string) string {
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {
@@ -304,6 +602,43 @@ func anyAt(raw json.RawMessage, path ...string) any {
 		}
 		value = object[key]
 	}
+	return value
+}
+
+func intAt(raw json.RawMessage, path ...string) (int, bool) {
+	switch value := anyAt(raw, path...).(type) {
+	case float64:
+		return int(value), true
+	case int:
+		return value, true
+	default:
+		return 0, false
+	}
+}
+
+func stringFromMap(object map[string]any, key string) string {
+	value, ok := object[key]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+func firstStringFromMap(object map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := stringFromMap(object, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func boolFromMap(object map[string]any, key string) bool {
+	value, _ := object[key].(bool)
 	return value
 }
 

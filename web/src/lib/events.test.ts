@@ -707,3 +707,169 @@ test('chat transcript labels web search tools from completed query metadata', ()
     text: ['Query: weather: 33445, United States', 'Queries:', '- weather: 33445, United States'].join('\n'),
   })
 })
+
+test('chat transcript labels OpenCode read tools from paths', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Reading the file.' }),
+    event(2, 'tool.call.started', {
+      tool_call_id: 'call_read',
+      kind: 'read',
+      title: 'read',
+    }),
+    event(3, 'tool.call.completed', {
+      tool_call_id: 'call_read',
+      kind: 'read',
+      title: 'read',
+      locations: [{ path: '/Users/joey/Source/gennari/index.html' }],
+      raw_input: { filePath: '/Users/joey/Source/gennari/index.html', limit: 120 },
+    }),
+  ])
+
+  expect(transcript[0].tools[0]).toMatchObject({
+    label: 'Tool: Read index.html',
+  })
+})
+
+test('chat transcript labels OpenCode glob and bash tools from raw input', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Checking the workspace.' }),
+    event(2, 'tool.call.started', {
+      tool_call_id: 'call_glob',
+      kind: 'glob',
+      title: 'glob',
+    }),
+    event(3, 'tool.call.completed', {
+      tool_call_id: 'call_glob',
+      kind: 'glob',
+      title: 'glob',
+      locations: [{ path: '/Users/joey/Source/gorchestra' }],
+      raw_input: { pattern: '**/*.go', path: '/Users/joey/Source/gorchestra' },
+    }),
+    event(4, 'tool.call.started', {
+      tool_call_id: 'call_bash',
+      kind: 'bash',
+      title: 'bash',
+    }),
+    event(5, 'tool.call.completed', {
+      tool_call_id: 'call_bash',
+      kind: 'bash',
+      title: "date '+%A, %B %d, %Y'",
+      raw_input: { command: "date '+%A, %B %d, %Y'" },
+    }),
+  ])
+
+  expect(transcript[0].tools.map((tool) => tool.label)).toEqual([
+    'Tool: Glob **/*.go in gorchestra',
+    "Tool: date '+%A, %B %d, %Y'",
+  ])
+})
+
+test('chat transcript synthesizes legacy Claude tool calls from provider events', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'agent.message.completed', {
+      provider: 'claude',
+      message_id: 'msg_1',
+      text: 'Let me read that file.',
+    }),
+    event(2, 'provider.claude.event', {
+      provider: 'claude',
+      provider_event_type: 'content_block_start',
+      raw_event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: {
+          type: 'tool_use',
+          id: 'toolu_read',
+          name: 'Read',
+          input: {},
+        },
+      },
+    }),
+    event(3, 'agent.message.completed', {
+      provider: 'claude',
+      message_id: 'msg_1',
+      raw_message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_read',
+            name: 'Read',
+            input: { file_path: '/Users/joey/Source/gennari/index.html' },
+          },
+        ],
+      },
+    }),
+    event(4, 'provider.claude.event', {
+      provider: 'claude',
+      provider_event_type: 'user',
+      raw: {
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_read',
+              is_error: false,
+              content: '1\\t<!DOCTYPE html>',
+            },
+          ],
+        },
+        tool_use_result: '1\\t<!DOCTYPE html>',
+      },
+    }),
+  ])
+
+  expect(transcript).toHaveLength(1)
+  expect(transcript[0]).toMatchObject({ text: 'Let me read that file.' })
+  expect(transcript[0].tools).toHaveLength(1)
+  expect(transcript[0].tools[0]).toMatchObject({
+    label: 'Tool: Read index.html',
+    text: '1\\t<!DOCTYPE html>',
+  })
+})
+
+test('chat transcript does not synthesize duplicate Claude tools when canonical events exist', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'agent.message.completed', {
+      provider: 'claude',
+      message_id: 'msg_1',
+      text: 'Running a command.',
+    }),
+    event(2, 'provider.claude.event', {
+      provider: 'claude',
+      provider_event_type: 'content_block_start',
+      raw_event: {
+        content_block: {
+          type: 'tool_use',
+          id: 'toolu_bash',
+          name: 'Bash',
+          input: {},
+        },
+      },
+    }),
+    event(3, 'tool.call.started', {
+      provider: 'claude',
+      tool_call_id: 'toolu_bash',
+      name: 'Bash',
+    }),
+    event(4, 'tool.call.delta', {
+      provider: 'claude',
+      tool_call_id: 'toolu_bash',
+      name: 'Bash',
+      command: 'pwd',
+      raw_input: { command: 'pwd' },
+    }),
+    event(5, 'tool.call.completed', {
+      provider: 'claude',
+      tool_call_id: 'toolu_bash',
+      name: 'Bash',
+      command: 'pwd',
+      output: '/Users/joey/Source',
+    }),
+  ])
+
+  expect(transcript[0].tools).toHaveLength(1)
+  expect(transcript[0].tools[0]).toMatchObject({
+    label: 'Tool: pwd',
+    text: 'pwd\n/Users/joey/Source',
+  })
+})

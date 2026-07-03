@@ -166,6 +166,72 @@ func TestSampleStreamNormalizesExpectedEvents(t *testing.T) {
 	}
 }
 
+func TestClaudeToolUseNormalizesToolCallEvents(t *testing.T) {
+	events := normalizeLines(t, []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_01","type":"message","role":"assistant","content":[]}},"session_id":"session_1","uuid":"uuid_start"}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_01","name":"Bash","input":{},"caller":{"type":"direct"}},"index":0},"session_id":"session_1","uuid":"uuid_tool_start"}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"pwd\""}},"session_id":"session_1","uuid":"uuid_tool_delta"}`,
+		`{"type":"assistant","message":{"model":"claude-sonnet-5","id":"msg_01","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"pwd","description":"Print working directory"}}]},"session_id":"session_1","uuid":"uuid_assistant"}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0},"session_id":"session_1","uuid":"uuid_tool_stop"}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","is_error":false,"content":"/Users/joey/Source"}]},"tool_use_result":{"stdout":"/Users/joey/Source","stderr":"","interrupted":false},"session_id":"session_1","uuid":"uuid_result"}`,
+	})
+
+	assertAgentEventTypes(t, events, []string{
+		"agent.status.started",
+		"provider.claude.event",
+		"tool.call.started",
+		"provider.claude.event",
+		"agent.message.completed",
+		"tool.call.delta",
+		"provider.claude.event",
+		"provider.claude.event",
+		"tool.call.completed",
+	})
+
+	startPayload := events[2].Event.Payload.(map[string]any)
+	if startPayload["tool_call_id"] != "toolu_01" || startPayload["name"] != "Bash" {
+		t.Fatalf("expected bash tool start payload, got %#v", startPayload)
+	}
+
+	deltaPayload := events[5].Event.Payload.(map[string]any)
+	if deltaPayload["command"] != "pwd" {
+		t.Fatalf("expected command in tool delta, got %#v", deltaPayload)
+	}
+	rawInput, ok := deltaPayload["raw_input"].(map[string]any)
+	if !ok || rawInput["description"] != "Print working directory" {
+		t.Fatalf("expected raw input in tool delta, got %#v", deltaPayload["raw_input"])
+	}
+
+	resultPayload := events[8].Event.Payload.(map[string]any)
+	if resultPayload["tool_call_id"] != "toolu_01" || resultPayload["output"] != "/Users/joey/Source" {
+		t.Fatalf("expected tool result payload, got %#v", resultPayload)
+	}
+	if resultPayload["command"] != "pwd" {
+		t.Fatalf("expected command copied to tool result, got %#v", resultPayload)
+	}
+}
+
+func TestClaudeToolUseInputCanBeRecoveredFromStreamDeltas(t *testing.T) {
+	events := normalizeLines(t, []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_read","name":"Read","input":{}},"index":0},"session_id":"session_1"}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/Users/joey/Source/gennari/index.html\"}"}},"session_id":"session_1"}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0},"session_id":"session_1"}`,
+	})
+
+	assertAgentEventTypes(t, events, []string{
+		"provider.claude.event",
+		"tool.call.started",
+		"provider.claude.event",
+		"provider.claude.event",
+		"tool.call.delta",
+	})
+
+	payload := events[4].Event.Payload.(map[string]any)
+	if payload["path"] != "/Users/joey/Source/gennari/index.html" {
+		t.Fatalf("expected read path from stream deltas, got %#v", payload)
+	}
+}
+
 func TestResultErrorNormalizesFailedTerminal(t *testing.T) {
 	events := normalizeLines(t, []string{
 		`{"type":"result","subtype":"error_max_turns","is_error":true,"result":"max turns exceeded","session_id":"session_1"}`,

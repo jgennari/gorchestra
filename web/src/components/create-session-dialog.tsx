@@ -153,6 +153,7 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
                 <SelectItem value="fake">Fake</SelectItem>
                 <SelectItem value="codex">Codex</SelectItem>
                 <SelectItem value="claude">Claude</SelectItem>
+                <SelectItem value="opencode">OpenCode</SelectItem>
               </SelectContent>
             </Select>
           </div>

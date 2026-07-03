@@ -229,7 +229,7 @@ export function groupEvents(events: AgentEvent[]) {
   const toolGroupsByID = new Map<string, EventGroup>()
   const fileChangeGroupsByID = new Map<string, EventGroup>()
 
-  for (const event of sortedUniqueEvents(events)) {
+  for (const event of eventsWithLegacyClaudeToolCalls(sortedUniqueEvents(events))) {
     const previous = groups[groups.length - 1]
     const toolID = toolGroupID(event)
     const fileChangeID = fileChangeGroupID(event)
@@ -304,6 +304,25 @@ export function groupEvents(events: AgentEvent[]) {
   }
 
   return groups
+}
+
+function eventsWithLegacyClaudeToolCalls(events: AgentEvent[]) {
+  const canonicalToolIDs = new Set(
+    events.flatMap((event) => (event.type.startsWith('tool.call') ? [toolGroupID(event)].filter(Boolean) : [])),
+  )
+  if (canonicalToolIDs.size === 0 && !events.some(isLegacyClaudeToolEvent)) {
+    return events
+  }
+
+  const toolInputs = new Map<string, Record<string, unknown>>()
+  const prepared: AgentEvent[] = []
+  for (const event of events) {
+    prepared.push(event)
+    for (const toolEvent of legacyClaudeToolEvents(event, canonicalToolIDs, toolInputs)) {
+      prepared.push(toolEvent)
+    }
+  }
+  return prepared
 }
 
 export function buildChatTranscript(events: AgentEvent[]) {
@@ -676,6 +695,214 @@ function sortedUniqueEvents(events: AgentEvent[]) {
   return [...bySeq.values()].sort((left, right) => left.seq - right.seq)
 }
 
+function isLegacyClaudeToolEvent(event: AgentEvent) {
+  if (event.type !== 'provider.claude.event' && event.type !== 'agent.message.completed') {
+    return false
+  }
+  return legacyClaudeToolStarts(event).length > 0 || legacyClaudeToolInputs(event).length > 0 || legacyClaudeToolResults(event).length > 0
+}
+
+function legacyClaudeToolEvents(
+  event: AgentEvent,
+  canonicalToolIDs: Set<string>,
+  toolInputs: Map<string, Record<string, unknown>>,
+) {
+  const synthetic: AgentEvent[] = []
+  for (const tool of legacyClaudeToolStarts(event)) {
+    if (canonicalToolIDs.has(tool.id)) {
+      continue
+    }
+    if (tool.rawInput) {
+      toolInputs.set(tool.id, tool.rawInput)
+    }
+    synthetic.push(legacyClaudeToolEvent(event, 'tool.call.started', 'started', tool))
+  }
+  for (const tool of legacyClaudeToolInputs(event)) {
+    if (canonicalToolIDs.has(tool.id)) {
+      continue
+    }
+    if (tool.rawInput) {
+      toolInputs.set(tool.id, tool.rawInput)
+    }
+    synthetic.push(legacyClaudeToolEvent(event, 'tool.call.delta', 'delta', tool))
+  }
+  for (const result of legacyClaudeToolResults(event)) {
+    if (canonicalToolIDs.has(result.id)) {
+      continue
+    }
+    const rawInput = toolInputs.get(result.id)
+    synthetic.push(
+      legacyClaudeToolEvent(event, 'tool.call.completed', 'completed', {
+        id: result.id,
+        name: result.name,
+        rawInput,
+        output: result.output,
+        rawOutput: result.rawOutput,
+        isError: result.isError,
+      }),
+    )
+  }
+  return synthetic
+}
+
+type LegacyClaudeTool = {
+  id: string
+  name?: string
+  rawInput?: Record<string, unknown>
+  output?: string
+  rawOutput?: unknown
+  isError?: boolean
+}
+
+function legacyClaudeToolEvent(
+  source: AgentEvent,
+  type: 'tool.call.started' | 'tool.call.delta' | 'tool.call.completed',
+  status: 'started' | 'delta' | 'completed',
+  tool: LegacyClaudeTool,
+): AgentEvent {
+  const payload: Record<string, unknown> = {
+    provider: 'claude',
+    provider_event_type: type === 'tool.call.completed' ? 'tool_result' : 'tool_use',
+    tool_call_id: tool.id,
+    item_id: tool.id,
+  }
+  const providerSessionID = payloadString(source.payload, ['provider_session_id'])
+  if (providerSessionID) {
+    payload.provider_session_id = providerSessionID
+  }
+  if (tool.name) {
+    payload.name = tool.name
+    payload.tool = tool.name
+    payload.kind = tool.name
+    payload.title = tool.name
+  }
+  if (tool.rawInput) {
+    payload.raw_input = tool.rawInput
+    const command = payloadString(tool.rawInput, ['command'])
+    if (command) {
+      payload.command = command
+    }
+    const description = payloadString(tool.rawInput, ['description'])
+    if (description) {
+      payload.description = description
+    }
+    const path = payloadString(tool.rawInput, ['file_path', 'filePath', 'path'])
+    if (path) {
+      payload.path = path
+    }
+  }
+  if (tool.output) {
+    payload.output = tool.output
+    payload.aggregated_output = tool.output
+  }
+  if (tool.rawOutput !== undefined) {
+    payload.raw_output = tool.rawOutput
+  }
+  if (tool.isError) {
+    payload.is_error = true
+    if (tool.output) {
+      payload.error = tool.output
+    }
+  }
+
+  return {
+    ...source,
+    id: `${source.id}-${type}-${tool.id}`,
+    type,
+    role: 'assistant',
+    status,
+    payload,
+  }
+}
+
+function legacyClaudeToolStarts(event: AgentEvent): LegacyClaudeTool[] {
+  if (event.type !== 'provider.claude.event' || !isRecord(event.payload)) {
+    return []
+  }
+  const rawEvent = isRecord(event.payload.raw_event) ? event.payload.raw_event : null
+  const block = rawEvent && isRecord(rawEvent.content_block) ? rawEvent.content_block : null
+  if (!block || payloadString(block, ['type']) !== 'tool_use') {
+    return []
+  }
+  const id = payloadString(block, ['id'])
+  if (!id) {
+    return []
+  }
+  return [
+    {
+      id,
+      name: payloadString(block, ['name']),
+      rawInput: isRecord(block.input) ? block.input : undefined,
+    },
+  ]
+}
+
+function legacyClaudeToolInputs(event: AgentEvent): LegacyClaudeTool[] {
+  if (event.type !== 'agent.message.completed' || !isRecord(event.payload) || event.payload.provider !== 'claude') {
+    return []
+  }
+  const rawMessage = isRecord(event.payload.raw_message) ? event.payload.raw_message : null
+  const content = Array.isArray(rawMessage?.content) ? rawMessage.content : []
+  return content.flatMap((item) => {
+    if (!isRecord(item) || payloadString(item, ['type']) !== 'tool_use') {
+      return []
+    }
+    const id = payloadString(item, ['id'])
+    if (!id) {
+      return []
+    }
+    return [
+      {
+        id,
+        name: payloadString(item, ['name']),
+        rawInput: isRecord(item.input) ? item.input : undefined,
+      },
+    ]
+  })
+}
+
+function legacyClaudeToolResults(event: AgentEvent): LegacyClaudeTool[] {
+  if (event.type !== 'provider.claude.event' || !isRecord(event.payload) || event.payload.provider !== 'claude') {
+    return []
+  }
+  const raw = isRecord(event.payload.raw) ? event.payload.raw : null
+  const message = raw && isRecord(raw.message) ? raw.message : null
+  const content = Array.isArray(message?.content) ? message.content : []
+  const rawOutput = raw?.tool_use_result
+  return content.flatMap((item) => {
+    if (!isRecord(item) || payloadString(item, ['type']) !== 'tool_result') {
+      return []
+    }
+    const id = payloadString(item, ['tool_use_id'])
+    if (!id) {
+      return []
+    }
+    return [
+      {
+        id,
+        output: payloadString(item, ['content']) || legacyClaudeToolOutput(rawOutput),
+        rawOutput,
+        isError: item.is_error === true,
+      },
+    ]
+  })
+}
+
+function legacyClaudeToolOutput(value: unknown) {
+  if (typeof value === 'string') {
+    return value
+  }
+  if (!isRecord(value)) {
+    return ''
+  }
+  const stdout = payloadString(value, ['stdout'])
+  const stderr = payloadString(value, ['stderr'])
+  if (stdout && stderr) {
+    return `${stdout}\n${stderr}`
+  }
+  return stdout || stderr
+}
+
 function newGroup(event: AgentEvent): EventGroup {
   const kind = groupKind(event)
   const group: EventGroup = {
@@ -717,6 +944,7 @@ function groupKind(event: AgentEvent): EventGroupKind {
   if (isErrorEvent(event.type, event.status)) return 'error'
   if (isActionBreakEvent(event)) return 'action-break'
   if (event.type === 'user.message.completed') return 'user-message'
+  if (isClaudeToolOnlyAssistantEvent(event)) return 'unknown'
   if (event.type.startsWith('agent.message')) return 'agent-message'
   if (isPlanEvent(event)) return 'plan'
   if (event.type.startsWith('agent.thinking')) return 'thinking'
@@ -725,6 +953,18 @@ function groupKind(event: AgentEvent): EventGroupKind {
   if (event.type === 'agent.log.delta') return 'log'
   if (isTerminalEvent(event.type)) return 'terminal'
   return 'unknown'
+}
+
+function isClaudeToolOnlyAssistantEvent(event: AgentEvent) {
+  if (event.type !== 'agent.message.completed' || !isRecord(event.payload) || event.payload.provider !== 'claude') {
+    return false
+  }
+  if (payloadText(event.payload)) {
+    return false
+  }
+  const rawMessage = isRecord(event.payload.raw_message) ? event.payload.raw_message : null
+  const content = Array.isArray(rawMessage?.content) ? rawMessage.content : []
+  return content.length > 0 && content.every((item) => isRecord(item) && payloadString(item, ['type']) === 'tool_use')
 }
 
 function groupLabel(event: AgentEvent, kind: EventGroupKind) {
@@ -1135,8 +1375,111 @@ function toolLabelFromPayload(payload: unknown) {
     return query
   }
 
+  const structured = structuredToolLabelFromPayload(payload)
+  if (structured) {
+    return structured
+  }
+
   const name = payloadString(payload, ['name', 'tool', 'server', 'namespace', 'item_type'])
   return name
+}
+
+function structuredToolLabelFromPayload(payload: Record<string, unknown>) {
+  const rawInput = isRecord(payload.raw_input) ? payload.raw_input : null
+  const kind = payloadString(payload, ['kind', 'tool', 'name'])
+  const title = payloadString(payload, ['title'])
+  const kindKey = toolKindKey(kind || title)
+  const path = firstToolPath(payload)
+  const pattern = rawInput ? payloadString(rawInput, ['pattern', 'glob']) : ''
+  const rawCommand = rawInput ? payloadString(rawInput, ['command']) : ''
+  const command = rawCommand || (!isGenericToolTitle(title, kindKey) ? title : '')
+
+  if (kindKey === 'read') {
+    return path ? `Read ${basename(path)}` : title && !isGenericToolTitle(title, kindKey) ? `Read ${basename(title)}` : 'Read'
+  }
+
+  if (kindKey === 'write' || kindKey === 'edit' || kindKey === 'patch') {
+    const label = kindKey === 'write' ? 'Write' : 'Edit'
+    return path ? `${label} ${basename(path)}` : title && !isGenericToolTitle(title, kindKey) ? `${label} ${title}` : label
+  }
+
+  if (kindKey === 'glob') {
+    const suffix = path ? ` in ${basename(path)}` : ''
+    return pattern ? `Glob ${pattern}${suffix}` : 'Glob'
+  }
+
+  if (kindKey === 'grep' || kindKey === 'search') {
+    const suffix = path ? ` in ${basename(path)}` : ''
+    return pattern ? `Search ${pattern}${suffix}` : 'Search'
+  }
+
+  if (kindKey === 'bash' || kindKey === 'shell') {
+    return command ? cleanShellCommand(command) : 'Shell'
+  }
+
+  if (title && !isGenericToolTitle(title, kindKey)) {
+    return title
+  }
+  if (kind && !isGenericToolTitle(kind, kindKey)) {
+    return kind
+  }
+  return ''
+}
+
+function toolKindKey(value: string) {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, '')
+}
+
+function isGenericToolTitle(value: string, kindKey: string) {
+  const key = toolKindKey(value)
+  if (!key) {
+    return true
+  }
+  return (
+    key === kindKey ||
+    key === 'tool' ||
+    key === 'toolcall' ||
+    key === 'read' ||
+    key === 'write' ||
+    key === 'edit' ||
+    key === 'patch' ||
+    key === 'glob' ||
+    key === 'grep' ||
+    key === 'search' ||
+    key === 'bash' ||
+    key === 'shell'
+  )
+}
+
+function firstToolPath(payload: Record<string, unknown>) {
+  const rawInput = isRecord(payload.raw_input) ? payload.raw_input : null
+  const rawOutput = isRecord(payload.raw_output) ? payload.raw_output : null
+  const rawOutputMetadata = rawOutput && isRecord(rawOutput.metadata) ? rawOutput.metadata : null
+  const rawOutputDisplay = rawOutputMetadata && isRecord(rawOutputMetadata.display) ? rawOutputMetadata.display : null
+
+  return (
+    payloadString(payload, ['path', 'file', 'file_path', 'filePath']) ||
+    firstLocationPath(payload.locations) ||
+    (rawInput ? payloadString(rawInput, ['path', 'file', 'file_path', 'filePath']) : '') ||
+    (rawOutputDisplay ? payloadString(rawOutputDisplay, ['path', 'file', 'file_path', 'filePath']) : '') ||
+    (rawOutputMetadata ? payloadString(rawOutputMetadata, ['path', 'file', 'file_path', 'filePath']) : '')
+  )
+}
+
+function firstLocationPath(value: unknown) {
+  if (!Array.isArray(value)) {
+    return ''
+  }
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue
+    }
+    const path = payloadString(item, ['path', 'file', 'file_path', 'filePath'])
+    if (path) {
+      return path
+    }
+  }
+  return ''
 }
 
 function toolTextLines(payload: unknown) {

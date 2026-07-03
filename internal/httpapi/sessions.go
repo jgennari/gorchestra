@@ -79,8 +79,9 @@ type submitMessageRequest struct {
 }
 
 type submitAgentOptions struct {
-	Codex  *submitCodexOptions  `json:"codex,omitempty"`
-	Claude *submitClaudeOptions `json:"claude,omitempty"`
+	Codex    *submitCodexOptions    `json:"codex,omitempty"`
+	Claude   *submitClaudeOptions   `json:"claude,omitempty"`
+	OpenCode *submitOpenCodeOptions `json:"opencode,omitempty"`
 }
 
 type submitCodexOptions struct {
@@ -94,6 +95,11 @@ type submitCodexOptions struct {
 type submitClaudeOptions struct {
 	Model        string `json:"model,omitempty"`
 	Effort       string `json:"effort,omitempty"`
+	PlanningMode bool   `json:"planning_mode,omitempty"`
+}
+
+type submitOpenCodeOptions struct {
+	Model        string `json:"model,omitempty"`
 	PlanningMode bool   `json:"planning_mode,omitempty"`
 }
 
@@ -571,6 +577,7 @@ func submitOptionsMetadata(agentType string, sessionAgentOptions json.RawMessage
 	}
 	codexOptions := map[string]any{}
 	claudeOptions := map[string]any{}
+	opencodeOptions := map[string]any{}
 	if len(sessionAgentOptions) > 0 {
 		var persisted map[string]map[string]any
 		if err := json.Unmarshal(sessionAgentOptions, &persisted); err != nil {
@@ -582,8 +589,11 @@ func submitOptionsMetadata(agentType string, sessionAgentOptions json.RawMessage
 		for key, value := range persisted["claude"] {
 			claudeOptions[key] = value
 		}
+		for key, value := range persisted["opencode"] {
+			opencodeOptions[key] = value
+		}
 	}
-	if options == nil || options.Codex == nil && options.Claude == nil {
+	if options == nil || options.Codex == nil && options.Claude == nil && options.OpenCode == nil {
 		responseOptions := map[string]any{}
 		if len(codexOptions) > 0 {
 			metadata["codex_options"] = codexOptions
@@ -593,10 +603,26 @@ func submitOptionsMetadata(agentType string, sessionAgentOptions json.RawMessage
 			metadata["claude_options"] = claudeOptions
 			responseOptions["claude"] = claudeOptions
 		}
+		if len(opencodeOptions) > 0 {
+			metadata["opencode_options"] = opencodeOptions
+			responseOptions["opencode"] = opencodeOptions
+		}
 		if len(responseOptions) == 0 {
 			return metadata, nil, nil
 		}
 		return metadata, responseOptions, nil
+	}
+	if options.OpenCode != nil {
+		if options.Codex != nil || options.Claude != nil {
+			return nil, nil, fmt.Errorf("only one agent options block is supported")
+		}
+		if agentType != "opencode" {
+			return nil, nil, fmt.Errorf("opencode options require an opencode session")
+		}
+		opencodeOptions["model"] = strings.TrimSpace(options.OpenCode.Model)
+		opencodeOptions["planning_mode"] = options.OpenCode.PlanningMode
+		metadata["opencode_options"] = opencodeOptions
+		return metadata, map[string]any{"opencode": opencodeOptions}, nil
 	}
 	if options.Codex == nil {
 		if options.Claude == nil {
@@ -1619,6 +1645,16 @@ func providerSessionIDFromAgentEvent(agentType string, event agents.AgentEvent) 
 			return ""
 		}
 		return payloadString(payload, "provider_session_id")
+	case "opencode":
+		if payloadString(payload, "provider") != "opencode" {
+			return ""
+		}
+		switch payloadString(payload, "provider_event_type") {
+		case "session/new", "session/resume", "session/load":
+			return payloadString(payload, "provider_session_id")
+		default:
+			return ""
+		}
 	default:
 		return ""
 	}

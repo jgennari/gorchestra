@@ -33,6 +33,7 @@ import {
   type CodexModelOption,
   type CodexServiceTierOption,
   type MessageAttachment,
+  type OpenCodeAgentOptions,
   type QueuedMessage,
   removeQueuedMessage as deleteQueuedMessage,
   type SubmitAgentOptions,
@@ -88,10 +89,16 @@ type ClaudeSelection = {
   planning_mode: boolean
 }
 
+type OpenCodeSelection = {
+  model: string
+  planning_mode: boolean
+}
+
 type ComposerStorageValue = {
   draft?: string
   codexSelection?: Partial<CodexSelection>
   claudeSelection?: Partial<ClaudeSelection>
+  opencodeSelection?: Partial<OpenCodeSelection>
 }
 
 type ComposerAttachment = MessageAttachment & {
@@ -123,8 +130,12 @@ export function PromptComposer({
   const [codexOptions, setCodexOptions] = useState<CodexAgentOptions | null>(null)
   const [codexOptionsLoading, setCodexOptionsLoading] = useState(false)
   const [codexOptionsError, setCodexOptionsError] = useState('')
+  const [opencodeOptions, setOpenCodeOptions] = useState<OpenCodeAgentOptions | null>(null)
+  const [opencodeOptionsLoading, setOpenCodeOptionsLoading] = useState(false)
+  const [opencodeOptionsError, setOpenCodeOptionsError] = useState('')
   const [codexSelection, setCodexSelection] = useState<CodexSelection>(() => loadCodexSelection(sessionID))
   const [claudeSelection, setClaudeSelection] = useState<ClaudeSelection>(() => loadClaudeSelection(sessionID))
+  const [opencodeSelection, setOpenCodeSelection] = useState<OpenCodeSelection>(() => loadOpenCodeSelection(sessionID))
   const hasAttachments = attachments.length > 0
   const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments)
   const queueBlockedByAttachments = hasAttachments
@@ -140,12 +151,14 @@ export function PromptComposer({
         : 'Ask the agent to work on this repository...'
   const codexToolbarVisible = agentType === 'codex'
   const claudeToolbarVisible = agentType === 'claude'
+  const opencodeToolbarVisible = agentType === 'opencode'
   const selectedCodexModel = useMemo(
     () => selectedModel(codexOptions, codexSelection.model),
     [codexOptions, codexSelection.model],
   )
   const selectedFastTier = useMemo(() => fastTierForModel(selectedCodexModel), [selectedCodexModel])
   const codexControlsDisabled = disabled || submitting || codexOptionsLoading || !codexOptions
+  const opencodeControlsDisabled = disabled || submitting || opencodeOptionsLoading || !opencodeOptions
 
   useLayoutEffect(() => {
     resizePromptTextarea(textareaRef.current)
@@ -171,6 +184,33 @@ export function PromptComposer({
       })
       .finally(() => {
         if (!cancelled) setCodexOptionsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [agentType])
+
+  useEffect(() => {
+    if (agentType !== 'opencode') {
+      return
+    }
+
+    let cancelled = false
+    setOpenCodeOptionsLoading(true)
+    setOpenCodeOptionsError('')
+    void fetchAgentOptions('opencode')
+      .then((options) => {
+        if (cancelled) return
+        setOpenCodeOptions(options)
+        setOpenCodeSelection((current) => reconcileOpenCodeSelection(current, options))
+      })
+      .catch((loadError) => {
+        if (cancelled) return
+        setOpenCodeOptionsError(loadError instanceof Error ? loadError.message : 'Failed to load OpenCode options')
+      })
+      .finally(() => {
+        if (!cancelled) setOpenCodeOptionsLoading(false)
       })
 
     return () => {
@@ -210,12 +250,19 @@ export function PromptComposer({
     saveClaudeSelection(sessionID, claudeSelection)
   }, [claudeSelection, sessionID])
 
+  useEffect(() => {
+    saveOpenCodeSelection(sessionID, opencodeSelection)
+  }, [opencodeSelection, sessionID])
+
   function currentSubmitOptions() {
     if (codexToolbarVisible) {
       return submitOptionsForCodex(codexSelection, selectedFastTier)
     }
     if (claudeToolbarVisible) {
       return submitOptionsForClaude(claudeSelection)
+    }
+    if (opencodeToolbarVisible) {
+      return submitOptionsForOpenCode(opencodeSelection)
     }
     return undefined
   }
@@ -536,6 +583,27 @@ export function PromptComposer({
                 selection={claudeSelection}
                 disabled={disabled || submitting}
                 onChange={setClaudeSelection}
+              />
+            </>
+          ) : null}
+          {opencodeToolbarVisible ? (
+            <>
+              <OpenCodeToolbar
+                options={opencodeOptions}
+                selection={opencodeSelection}
+                loading={opencodeOptionsLoading}
+                error={opencodeOptionsError}
+                disabled={opencodeControlsDisabled}
+                onChange={setOpenCodeSelection}
+                className="hidden sm:flex"
+              />
+              <MobileOpenCodeOptions
+                options={opencodeOptions}
+                selection={opencodeSelection}
+                loading={opencodeOptionsLoading}
+                error={opencodeOptionsError}
+                disabled={opencodeControlsDisabled}
+                onChange={setOpenCodeSelection}
               />
             </>
           ) : null}
@@ -974,6 +1042,168 @@ function mobileCodexSummary({
   return [modelName || 'Model', reasoningEffort].filter(Boolean).join(' / ')
 }
 
+function OpenCodeToolbar({
+  options,
+  selection,
+  loading,
+  error,
+  disabled,
+  onChange,
+  className,
+}: {
+  options: OpenCodeAgentOptions | null
+  selection: OpenCodeSelection
+  loading: boolean
+  error: string
+  disabled: boolean
+  onChange: (selection: OpenCodeSelection) => void
+  className?: string
+}) {
+  const [openMenu, setOpenMenu] = useState<'model' | null>(null)
+  const model = selectedOpenCodeModel(options, selection.model)
+  const planAvailable = options?.collaboration_modes.some((mode) => mode.mode === 'plan') ?? false
+
+  return (
+    <div
+      className={cn(
+        'flex min-w-0 flex-wrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
+        className,
+      )}
+    >
+      <SlidersHorizontal className="size-4 shrink-0" aria-hidden="true" />
+      <OptionMenu
+        label="Model"
+        value={loading && !options ? 'Loading' : error && !options ? 'Unavailable' : model?.display_name || 'Model'}
+        open={openMenu === 'model'}
+        onOpenChange={(open) => setOpenMenu(open ? 'model' : null)}
+        disabled={disabled || !options?.models.length}
+        options={(options?.models ?? []).map((item) => ({ value: item.model, label: item.display_name }))}
+        onSelect={(modelValue) => onChange(reconcileOpenCodeSelection({ ...selection, model: modelValue }, options))}
+      />
+      <span aria-hidden="true" className="text-muted-foreground/70">
+        ·
+      </span>
+      <SwitchControl
+        label="Plan"
+        active={selection.planning_mode && planAvailable}
+        disabled={disabled || !planAvailable}
+        onClick={() => onChange({ ...selection, planning_mode: planAvailable ? !selection.planning_mode : false })}
+      />
+    </div>
+  )
+}
+
+function MobileOpenCodeOptions({
+  options,
+  selection,
+  loading,
+  error,
+  disabled,
+  onChange,
+}: {
+  options: OpenCodeAgentOptions | null
+  selection: OpenCodeSelection
+  loading: boolean
+  error: string
+  disabled: boolean
+  onChange: (selection: OpenCodeSelection) => void
+}) {
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [openMenu, setOpenMenu] = useState<'model' | null>(null)
+  const model = selectedOpenCodeModel(options, selection.model)
+  const planAvailable = options?.collaboration_modes.some((mode) => mode.mode === 'plan') ?? false
+  const hasActiveMode = selection.planning_mode
+  const summary =
+    loading && !options
+      ? 'Loading'
+      : error && !options
+        ? 'Unavailable'
+        : [model?.display_name || 'Model', selection.planning_mode ? 'Plan' : 'Build'].filter(Boolean).join(' / ')
+
+  useEffect(() => {
+    if (!open) {
+      setOpenMenu(null)
+      return
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div ref={menuRef} className="relative sm:hidden">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label="Composer options"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className={cn(
+          'h-8 w-8 text-muted-foreground hover:text-foreground',
+          hasActiveMode && 'bg-primary/12 text-primary hover:bg-primary/16 hover:text-primary',
+        )}
+      >
+        <SlidersHorizontal aria-hidden="true" />
+      </Button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label="Composer options"
+          className="absolute bottom-full left-0 z-50 mb-2 w-[min(20rem,calc(100vw-2rem))] rounded-lg border border-border/80 bg-popover p-3 text-popover-foreground shadow-lg"
+        >
+          <div className="mb-3 flex min-w-0 items-center justify-between gap-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Options</p>
+            <p className="min-w-0 truncate text-right text-xs text-muted-foreground">{summary}</p>
+          </div>
+          <div className="space-y-2">
+            <OptionMenu
+              label="Model"
+              value={model?.display_name || selection.model || 'Model'}
+              open={openMenu === 'model'}
+              onOpenChange={(nextOpen) => setOpenMenu(nextOpen ? 'model' : null)}
+              disabled={disabled || !options?.models.length}
+              options={(options?.models ?? []).map((item) => ({ value: item.model, label: item.display_name }))}
+              onSelect={(modelValue) => onChange(reconcileOpenCodeSelection({ ...selection, model: modelValue }, options))}
+              buttonClassName="w-full justify-between rounded-md border border-border/80 bg-surface-muted/40 px-2"
+              valueClassName="max-w-[13rem]"
+              menuLayout="inline"
+            />
+            <div className="pt-1">
+              <SwitchControl
+                label="Plan"
+                active={selection.planning_mode && planAvailable}
+                disabled={disabled || !planAvailable}
+                onClick={() =>
+                  onChange({ ...selection, planning_mode: planAvailable ? !selection.planning_mode : false })
+                }
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function ClaudeToolbar({
   selection,
   disabled,
@@ -1313,6 +1543,15 @@ function submitOptionsForClaude(selection: ClaudeSelection): SubmitAgentOptions 
   }
 }
 
+function submitOptionsForOpenCode(selection: OpenCodeSelection): SubmitAgentOptions {
+  return {
+    opencode: {
+      model: selection.model || undefined,
+      planning_mode: selection.planning_mode,
+    },
+  }
+}
+
 function reconcileCodexSelection(selection: CodexSelection, options: CodexAgentOptions | null): CodexSelection {
   if (!options || options.models.length === 0) {
     return selection
@@ -1337,7 +1576,41 @@ function reconcileCodexSelection(selection: CodexSelection, options: CodexAgentO
   }
 }
 
+function reconcileOpenCodeSelection(
+  selection: OpenCodeSelection,
+  options: OpenCodeAgentOptions | null,
+): OpenCodeSelection {
+  if (!options || options.models.length === 0) {
+    return selection
+  }
+
+  const model =
+    options.models.find((item) => item.model === selection.model) ??
+    options.models.find((item) => item.model === options.default_model) ??
+    options.models.find((item) => item.is_default) ??
+    options.models[0]
+  const planAvailable = options.collaboration_modes.some((mode) => mode.mode === 'plan')
+
+  return {
+    model: model.model,
+    planning_mode: selection.planning_mode && planAvailable,
+  }
+}
+
 function selectedModel(options: CodexAgentOptions | null, model: string) {
+  if (!options) {
+    return null
+  }
+  return (
+    options.models.find((item) => item.model === model) ??
+    options.models.find((item) => item.model === options.default_model) ??
+    options.models.find((item) => item.is_default) ??
+    options.models[0] ??
+    null
+  )
+}
+
+function selectedOpenCodeModel(options: OpenCodeAgentOptions | null, model: string) {
   if (!options) {
     return null
   }
@@ -1421,6 +1694,21 @@ function saveClaudeSelection(sessionID: string | undefined, selection: ClaudeSel
   saveComposerStorage(sessionID, {
     ...loadComposerStorage(sessionID),
     claudeSelection: selection,
+  })
+}
+
+function loadOpenCodeSelection(sessionID: string | undefined): OpenCodeSelection {
+  const stored = loadComposerStorage(sessionID).opencodeSelection ?? {}
+  return {
+    model: typeof stored.model === 'string' ? stored.model : '',
+    planning_mode: Boolean(stored.planning_mode),
+  }
+}
+
+function saveOpenCodeSelection(sessionID: string | undefined, selection: OpenCodeSelection) {
+  saveComposerStorage(sessionID, {
+    ...loadComposerStorage(sessionID),
+    opencodeSelection: selection,
   })
 }
 

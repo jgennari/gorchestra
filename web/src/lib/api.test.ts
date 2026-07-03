@@ -485,6 +485,7 @@ test('agent type validation only accepts known agents', () => {
   expect(isAgentType('fake')).toBe(true)
   expect(isAgentType('codex')).toBe(true)
   expect(isAgentType('claude')).toBe(true)
+  expect(isAgentType('opencode')).toBe(true)
   expect(isAgentType('other')).toBe(false)
 })
 

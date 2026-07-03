@@ -387,6 +387,28 @@ func TestCreateSessionAcceptsAvailableClaudeAgent(t *testing.T) {
 	}
 }
 
+func TestCreateSessionAcceptsAvailableOpenCodeAgent(t *testing.T) {
+	ctx := context.Background()
+	opencodeAgent := availabilityAgent{agentType: "opencode"}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, opencodeAgent)
+
+	rec := postJSON(handler, "/api/sessions", `{"agent_type":"opencode","title":"OpenCode run"}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	var response createSessionResponse
+	decodeJSON(t, rec, &response)
+	session, err := dbStore.GetSession(ctx, response.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.AgentType != "opencode" {
+		t.Fatalf("expected opencode agent type, got %q", session.AgentType)
+	}
+}
+
 func TestCreateSessionStoresCodexRunDangerouslyOption(t *testing.T) {
 	ctx := context.Background()
 	codexAgent := availabilityAgent{agentType: "codex"}
@@ -1292,6 +1314,37 @@ func TestClaudeRunStartedPersistsProviderSessionID(t *testing.T) {
 	}
 	if updated.ProviderSessionID != "2fe74369-4b15-49f9-8025-517ed6e52fed" {
 		t.Fatalf("expected provider session id, got %q", updated.ProviderSessionID)
+	}
+}
+
+func TestOpenCodeRunStartedPersistsProviderSessionID(t *testing.T) {
+	ctx := context.Background()
+	agent := opencodeSessionAgent{sessionID: "ses_created"}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "OpenCode run",
+		AgentType: "opencode",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Start"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	waitFor(t, func() bool {
+		session, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && session.Status == store.SessionStatusIdle
+	})
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated.ProviderSessionID != "ses_created" {
+		t.Fatalf("expected provider session id ses_created, got %q", updated.ProviderSessionID)
 	}
 }
 
@@ -2616,6 +2669,27 @@ func (a claudeSessionAgent) Run(ctx context.Context, input agents.AgentInput, em
 		Payload: map[string]any{
 			"provider":            "claude",
 			"provider_event_type": "system/init",
+			"provider_session_id": a.sessionID,
+		},
+	})
+}
+
+type opencodeSessionAgent struct {
+	sessionID string
+}
+
+func (a opencodeSessionAgent) Type() string {
+	return "opencode"
+}
+
+func (a opencodeSessionAgent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
+	return emit(ctx, agents.AgentEvent{
+		Type:   "agent.run.started",
+		Role:   "assistant",
+		Status: string(store.EventStatusStarted),
+		Payload: map[string]any{
+			"provider":            "opencode",
+			"provider_event_type": "session/new",
 			"provider_session_id": a.sessionID,
 		},
 	})

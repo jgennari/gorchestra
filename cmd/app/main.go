@@ -24,6 +24,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents/claude"
 	"github.com/jgennari/gorchestra/internal/agents/codex"
 	"github.com/jgennari/gorchestra/internal/agents/fake"
+	"github.com/jgennari/gorchestra/internal/agents/opencode"
 	"github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/httpapi"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
@@ -50,6 +51,7 @@ type config struct {
 	codexModel     string
 	claudeBin      string
 	claudeModel    string
+	opencodeBin    string
 	open           bool
 	showVersion    bool
 }
@@ -110,7 +112,17 @@ func main() {
 		log.Printf("claude available: %s", version)
 	}
 
-	agentRegistry, err := agents.NewRegistry(fake.New(), codexAgent, claudeAgent)
+	opencodeAgent := opencode.New(
+		opencode.WithBinary(cfg.opencodeBin),
+		opencode.WithWorkspace(cfg.workspace),
+	)
+	if version, err := opencodeAgent.CheckAvailability(ctx); err != nil {
+		log.Printf("opencode unavailable: %v", err)
+	} else {
+		log.Printf("opencode available: %s", version)
+	}
+
+	agentRegistry, err := agents.NewRegistry(fake.New(), codexAgent, claudeAgent, opencodeAgent)
 	if err != nil {
 		log.Fatalf("agent registry startup failed: %v", err)
 	}
@@ -185,6 +197,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	flags.StringVar(&cfg.codexModel, "codex-model", "", "optional Codex model override")
 	flags.StringVar(&cfg.claudeBin, "claude-bin", "", "path to the Claude CLI binary")
 	flags.StringVar(&cfg.claudeModel, "claude-model", "", "optional Claude model override")
+	flags.StringVar(&cfg.opencodeBin, "opencode-bin", "", "path to the OpenCode CLI binary")
 	flags.BoolVar(&cfg.open, "open", false, "open the app in the default browser after startup")
 	flags.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -203,6 +216,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	codexModelFlag := flagWasSet(flags, "codex-model")
 	claudeBinFlag := flagWasSet(flags, "claude-bin")
 	claudeModelFlag := flagWasSet(flags, "claude-model")
+	opencodeBinFlag := flagWasSet(flags, "opencode-bin")
 	openFlag := flagWasSet(flags, "open")
 	workspaceRootsFlag := flagWasSet(flags, "workspace-root")
 	if cfg.showVersion {
@@ -256,6 +270,9 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	}
 	if !claudeModelFlag {
 		cfg.claudeModel = envOr(configGetenv, "GORCHESTRA_CLAUDE_MODEL", "")
+	}
+	if !opencodeBinFlag {
+		cfg.opencodeBin = defaultOpenCodeBin(configGetenv)
 	}
 	if !openFlag {
 		cfg.open = envBool(configGetenv, "GORCHESTRA_OPEN", false)
@@ -459,6 +476,37 @@ func envBool(getenv func(string) string, key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func defaultOpenCodeBin(getenv func(string) string) string {
+	home, _ := os.UserHomeDir()
+	return defaultOpenCodeBinFor(
+		getenv("GORCHESTRA_OPENCODE_BIN"),
+		home,
+		exec.LookPath,
+		fileExists,
+	)
+}
+
+func defaultOpenCodeBinFor(envValue string, home string, lookPath func(string) (string, error), exists func(string) bool) string {
+	if strings.TrimSpace(envValue) != "" {
+		return strings.TrimSpace(envValue)
+	}
+	if _, err := lookPath("opencode"); err == nil {
+		return "opencode"
+	}
+	if strings.TrimSpace(home) != "" {
+		installerPath := filepath.Join(home, ".opencode", "bin", "opencode")
+		if exists(installerPath) {
+			return installerPath
+		}
+	}
+	return "opencode"
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func defaultDataDir(getenv func(string) string) (string, error) {

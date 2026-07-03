@@ -104,6 +104,7 @@ GORCHESTRA_CODEX_WEB_SEARCH=cached
 GORCHESTRA_CODEX_MODEL=gpt-test
 GORCHESTRA_CLAUDE_BIN=/opt/claude/bin/claude
 GORCHESTRA_CLAUDE_MODEL=claude-test
+GORCHESTRA_OPENCODE_BIN=/opt/opencode/bin/opencode
 GORCHESTRA_OPEN=true
 `, dataDir, workspace, firstRoot, os.PathListSeparator, secondRoot))
 
@@ -142,6 +143,9 @@ GORCHESTRA_OPEN=true
 	if cfg.claudeBin != "/opt/claude/bin/claude" || cfg.claudeModel != "claude-test" {
 		t.Fatalf("expected claude config values, got %#v", cfg)
 	}
+	if cfg.opencodeBin != "/opt/opencode/bin/opencode" {
+		t.Fatalf("expected opencode config values, got %#v", cfg)
+	}
 	if cfg.codexNetwork || !cfg.open {
 		t.Fatalf("expected boolean config values, got network=%v open=%v", cfg.codexNetwork, cfg.open)
 	}
@@ -173,6 +177,65 @@ GORCHESTRA_WORKSPACE=%s
 	}
 	if cfg.port != "19090" {
 		t.Fatalf("expected flag port to override environment and config, got %q", cfg.port)
+	}
+}
+
+func TestDefaultOpenCodeBinUsesPATHWhenAvailable(t *testing.T) {
+	got := defaultOpenCodeBinFor(
+		"",
+		"/Users/test",
+		func(binary string) (string, error) {
+			if binary != "opencode" {
+				t.Fatalf("expected opencode lookup, got %q", binary)
+			}
+			return "/usr/local/bin/opencode", nil
+		},
+		func(string) bool {
+			t.Fatal("installer path should not be checked when PATH lookup succeeds")
+			return false
+		},
+	)
+
+	if got != "opencode" {
+		t.Fatalf("expected PATH binary name, got %q", got)
+	}
+}
+
+func TestDefaultOpenCodeBinFallsBackToInstallerPath(t *testing.T) {
+	home := t.TempDir()
+	installerPath := filepath.Join(home, ".opencode", "bin", "opencode")
+	got := defaultOpenCodeBinFor(
+		"",
+		home,
+		func(string) (string, error) {
+			return "", os.ErrNotExist
+		},
+		func(path string) bool {
+			return path == installerPath
+		},
+	)
+
+	if got != installerPath {
+		t.Fatalf("expected installer path %q, got %q", installerPath, got)
+	}
+}
+
+func TestDefaultOpenCodeBinUsesExplicitEnvironment(t *testing.T) {
+	got := defaultOpenCodeBinFor(
+		" /opt/opencode/bin/opencode ",
+		t.TempDir(),
+		func(string) (string, error) {
+			t.Fatal("PATH lookup should not run when env value is set")
+			return "", nil
+		},
+		func(string) bool {
+			t.Fatal("installer path should not be checked when env value is set")
+			return false
+		},
+	)
+
+	if got != "/opt/opencode/bin/opencode" {
+		t.Fatalf("expected explicit environment path, got %q", got)
 	}
 }
 

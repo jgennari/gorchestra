@@ -113,6 +113,7 @@ Release targets:
 - `windows/arm64`
 
 Real Codex sessions require the Codex CLI to be available on `PATH`, or configured with `--codex-bin`.
+Real OpenCode sessions require the OpenCode CLI to be available on `PATH`, or configured with `--opencode-bin`.
 
 ## Use
 
@@ -137,6 +138,7 @@ gorchestra --codex-model gpt-5
 gorchestra --codex-sandbox workspace-write
 gorchestra --codex-network-access=false
 gorchestra --codex-web-search=cached
+gorchestra --opencode-bin /path/to/opencode
 gorchestra --version
 ```
 
@@ -150,7 +152,7 @@ Linux: $XDG_DATA_HOME/gorchestra/gorchestra.db
 Linux fallback: ~/.local/share/gorchestra/gorchestra.db
 ```
 
-Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
+Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, `GORCHESTRA_OPENCODE_BIN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
 
 Config files use the same env-style names:
 
@@ -162,6 +164,7 @@ GORCHESTRA_WORKSPACE=~
 GORCHESTRA_WORKSPACE_ROOTS=~
 GORCHESTRA_OPEN=false
 GORCHESTRA_CODEX_BIN=codex
+GORCHESTRA_OPENCODE_BIN=opencode
 ```
 
 `GORCHESTRA_CONFIG` is the environment equivalent of `--config`. `GORCHESTRA_WORKSPACE_ROOTS` accepts multiple paths separated by the OS path-list separator (`:` on macOS/Linux).

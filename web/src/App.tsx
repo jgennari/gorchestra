@@ -800,7 +800,7 @@ function App() {
       />
 
       <section className="command-workspace flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b bg-background/84 px-3 lg:hidden">
+        <header className="mobile-app-header flex shrink-0 items-center justify-between gap-3 border-b bg-background/84 px-3 lg:hidden">
           <Sheet open={mobileListOpen} onOpenChange={setMobileListOpen}>
             <SheetTrigger asChild>
               <Button size="icon" variant="outline" aria-label="Open sessions" className="lg:hidden">
