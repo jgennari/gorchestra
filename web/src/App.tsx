@@ -49,7 +49,7 @@ import { useSessionEvents } from '@/hooks/use-session-events'
 import { useFavicon } from '@/hooks/use-favicon'
 import { useTheme } from '@/hooks/use-theme'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { HostConsole } from '@/components/host-console'
 import { RunHealthRail } from '@/components/run-health-rail'
@@ -78,6 +78,18 @@ type PendingSessionNavigation = {
   targetSessionID: string | null
   historyMode: SessionRouteHistoryMode
 }
+type ViewportDebugSnapshot = {
+  inner: string
+  outer: string
+  documentElement: string
+  visualViewport: string
+  visualOffset: string
+  scroll: string
+  safeTop: string
+  appRect: string
+  screen: string
+  dpr: string
+}
 
 const debugStorageKeyPrefix = 'gorchestra.session-debug.'
 const paneWidthsStorageKey = 'gorchestra.pane-widths.v1'
@@ -92,6 +104,7 @@ const paneLimits = {
 }
 
 function App() {
+  const viewportDebug = useMemo(() => loadViewportDebugPreference(), [])
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedSessionID, setSelectedSessionID] = useState<string | null>(() => selectedSessionIDFromLocation())
   const [createOpen, setCreateOpen] = useState(false)
@@ -911,8 +924,11 @@ function App() {
         }}
       />
       <Dialog open={mobileListOpen} onOpenChange={setMobileListOpen}>
-        <DialogContent className="command-chat-header grid max-h-[min(42rem,calc(100dvh-4rem))] w-[calc(100vw-1.5rem)] max-w-md grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden border-border/90 p-0 shadow-[0_18px_60px_hsl(var(--foreground)/0.18)]">
-          <DialogHeader className="border-b border-border/70 p-4 pr-14">
+        <DialogContent
+          showClose={false}
+          className="command-chat-header grid max-h-[min(42rem,calc(100dvh-4rem))] w-[calc(100vw-1.5rem)] max-w-md grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden border-border/90 p-0 shadow-[0_18px_60px_hsl(var(--foreground)/0.18)]"
+        >
+          <DialogHeader className="border-b border-border/70 p-4">
             <div className="flex items-center justify-between gap-3">
               <DialogTitle>Sessions</DialogTitle>
               <div className="flex shrink-0 items-center gap-2">
@@ -920,6 +936,7 @@ function App() {
                   preference={theme.preference}
                   resolvedTheme={theme.resolvedTheme}
                   onToggle={theme.nextPreference}
+                  showTooltip={false}
                 />
                 <Button
                   type="button"
@@ -933,6 +950,17 @@ function App() {
                 >
                   <Plus />
                 </Button>
+                <DialogClose asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Close"
+                    className="text-muted-foreground hover:bg-background/50 hover:text-foreground"
+                  >
+                    <X />
+                  </Button>
+                </DialogClose>
               </div>
             </div>
           </DialogHeader>
@@ -940,7 +968,63 @@ function App() {
         </DialogContent>
       </Dialog>
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
+      {viewportDebug ? <ViewportDebugPanel /> : null}
     </main>
+  )
+}
+
+function ViewportDebugPanel() {
+  const probeRef = useRef<HTMLDivElement | null>(null)
+  const [snapshot, setSnapshot] = useState<ViewportDebugSnapshot>(() => viewportDebugSnapshot(null))
+
+  useEffect(() => {
+    const visualViewport = window.visualViewport
+
+    function updateSnapshot() {
+      setSnapshot(viewportDebugSnapshot(probeRef.current))
+    }
+
+    updateSnapshot()
+    window.addEventListener('resize', updateSnapshot)
+    window.addEventListener('orientationchange', updateSnapshot)
+    window.addEventListener('scroll', updateSnapshot, { passive: true })
+    visualViewport?.addEventListener('resize', updateSnapshot)
+    visualViewport?.addEventListener('scroll', updateSnapshot)
+
+    const timer = window.setInterval(updateSnapshot, 1000)
+    return () => {
+      window.removeEventListener('resize', updateSnapshot)
+      window.removeEventListener('orientationchange', updateSnapshot)
+      window.removeEventListener('scroll', updateSnapshot)
+      visualViewport?.removeEventListener('resize', updateSnapshot)
+      visualViewport?.removeEventListener('scroll', updateSnapshot)
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  return (
+    <>
+      <div
+        ref={probeRef}
+        aria-hidden="true"
+        className="pointer-events-none fixed left-0 top-0 h-0 w-0 overflow-hidden"
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+      />
+      <div className="fixed inset-x-2 bottom-2 z-[100] rounded-lg border border-amber-300/60 bg-background/92 p-2 font-mono text-[11px] leading-4 text-foreground shadow-xl backdrop-blur">
+        <div className="mb-1 flex items-center justify-between gap-2 font-sans text-xs font-semibold">
+          <span>Viewport debug</span>
+          <span className="text-muted-foreground">remove param to hide</span>
+        </div>
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2">
+          {Object.entries(snapshot).map(([label, value]) => (
+            <div key={label} className="contents">
+              <dt className="text-muted-foreground">{label}</dt>
+              <dd className="truncate">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    </>
   )
 }
 
@@ -1670,6 +1754,45 @@ function saveSessionSeenSeqs(seenSeqs: Record<string, number>) {
 
 function debugStorageKey(sessionID: string) {
   return `${debugStorageKeyPrefix}${sessionID}`
+}
+
+function loadViewportDebugPreference() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  const value = new URLSearchParams(window.location.search).get('viewportDebug')
+  return value === '1' || value === 'true'
+}
+
+function viewportDebugSnapshot(probe: HTMLElement | null): ViewportDebugSnapshot {
+  const visualViewport = window.visualViewport
+  const documentElement = document.documentElement
+  const appRect = document.querySelector('.app-shell')?.getBoundingClientRect()
+  const safeTop = probe ? window.getComputedStyle(probe).paddingTop : 'n/a'
+
+  return {
+    inner: `${Math.round(window.innerWidth)} x ${Math.round(window.innerHeight)}`,
+    outer: `${Math.round(window.outerWidth)} x ${Math.round(window.outerHeight)}`,
+    documentElement: `${Math.round(documentElement.clientWidth)} x ${Math.round(documentElement.clientHeight)}`,
+    visualViewport: visualViewport
+      ? `${Math.round(visualViewport.width)} x ${Math.round(visualViewport.height)} scale ${round2(visualViewport.scale)}`
+      : 'n/a',
+    visualOffset: visualViewport
+      ? `top ${round2(visualViewport.offsetTop)} pageTop ${round2(visualViewport.pageTop)}`
+      : 'n/a',
+    scroll: `${round2(window.scrollX)}, ${round2(window.scrollY)}`,
+    safeTop,
+    appRect: appRect
+      ? `top ${round2(appRect.top)} bottom ${round2(appRect.bottom)} height ${round2(appRect.height)}`
+      : 'n/a',
+    screen: `${window.screen.width} x ${window.screen.height} avail ${window.screen.availHeight}`,
+    dpr: String(round2(window.devicePixelRatio)),
+  }
+}
+
+function round2(value: number) {
+  return Math.round(value * 100) / 100
 }
 
 function selectedSessionIDFromLocation() {

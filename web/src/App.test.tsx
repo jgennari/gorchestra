@@ -67,6 +67,7 @@ test('mobile sessions button opens a floating session dialog', async () => {
   const dialog = await screen.findByRole('dialog', { name: 'Sessions' })
   expect(within(dialog).getByRole('button', { name: 'Create session' })).toBeInTheDocument()
   expect(within(dialog).getByRole('button', { name: /Theme:/ })).toBeInTheDocument()
+  expect(within(dialog).getByRole('button', { name: 'Close' })).toBeInTheDocument()
 
   await user.click(within(dialog).getByRole('button', { name: /Write docs/ }))
 

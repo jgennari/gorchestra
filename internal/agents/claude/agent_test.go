@@ -232,6 +232,40 @@ func TestClaudeToolUseInputCanBeRecoveredFromStreamDeltas(t *testing.T) {
 	}
 }
 
+func TestClaudeThinkingBlocksNormalizeThinkingEvents(t *testing.T) {
+	events := normalizeLines(t, []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_01","type":"message","role":"assistant","content":[]}},"session_id":"session_1","uuid":"uuid_start"}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"thinking","thinking":"","signature":""},"index":0},"session_id":"session_1","uuid":"uuid_thinking_start"}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Checking the workspace"}},"session_id":"session_1","uuid":"uuid_thinking_delta"}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc"}},"session_id":"session_1","uuid":"uuid_signature_delta"}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0},"session_id":"session_1","uuid":"uuid_thinking_stop"}`,
+	})
+
+	assertAgentEventTypes(t, events, []string{
+		"agent.status.started",
+		"provider.claude.event",
+		"agent.thinking.started",
+		"provider.claude.event",
+		"agent.thinking.delta",
+		"provider.claude.event",
+		"provider.claude.event",
+		"agent.thinking.completed",
+	})
+
+	startPayload := events[2].Event.Payload.(map[string]any)
+	if startPayload["item_id"] != "msg_01:thinking:0" || startPayload["message_id"] != "msg_01" {
+		t.Fatalf("unexpected thinking start payload %#v", startPayload)
+	}
+	deltaPayload := events[4].Event.Payload.(map[string]any)
+	if deltaPayload["text"] != "Checking the workspace" {
+		t.Fatalf("expected thinking delta text, got %#v", deltaPayload)
+	}
+	completedPayload := events[7].Event.Payload.(map[string]any)
+	if completedPayload["item_id"] != "msg_01:thinking:0" {
+		t.Fatalf("unexpected thinking completed payload %#v", completedPayload)
+	}
+}
+
 func TestResultErrorNormalizesFailedTerminal(t *testing.T) {
 	events := normalizeLines(t, []string{
 		`{"type":"result","subtype":"error_max_turns","is_error":true,"result":"max turns exceeded","session_id":"session_1"}`,

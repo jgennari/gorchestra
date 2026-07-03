@@ -7,27 +7,33 @@ type Props = {
   preference: ThemePreference
   resolvedTheme: ResolvedTheme
   onToggle: () => void
+  showTooltip?: boolean
 }
 
-export function ThemeToggle({ preference, resolvedTheme, onToggle }: Props) {
+export function ThemeToggle({ preference, resolvedTheme, onToggle, showTooltip = true }: Props) {
   const Icon = preference === 'system' ? Monitor : resolvedTheme === 'dark' ? Moon : Sun
   const label = `Theme: ${themeLabel(preference)}`
+  const button = (
+    <Button
+      type="button"
+      variant="outline"
+      size="icon"
+      aria-label={label}
+      onClick={onToggle}
+      className="border-border/70 bg-background/70"
+    >
+      <Icon />
+    </Button>
+  )
+
+  if (!showTooltip) {
+    return button
+  }
 
   return (
     <TooltipProvider>
       <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            aria-label={label}
-            onClick={onToggle}
-            className="border-border/70 bg-background/70"
-          >
-            <Icon />
-          </Button>
-        </TooltipTrigger>
+        <TooltipTrigger asChild>{button}</TooltipTrigger>
         <TooltipContent>{label}</TooltipContent>
       </Tooltip>
     </TooltipProvider>

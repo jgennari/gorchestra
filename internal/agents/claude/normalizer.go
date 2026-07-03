@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/jgennari/gorchestra/internal/agents"
@@ -30,13 +31,15 @@ type normalizer struct {
 	toolCalls        map[string]*claudeToolCall
 	toolBlockIDs     map[int]string
 	toolInputDeltas  map[int]string
+	thinkingBlockIDs map[int]string
 }
 
 func newNormalizer() *normalizer {
 	return &normalizer{
-		toolCalls:       make(map[string]*claudeToolCall),
-		toolBlockIDs:    make(map[int]string),
-		toolInputDeltas: make(map[int]string),
+		toolCalls:        make(map[string]*claudeToolCall),
+		toolBlockIDs:     make(map[int]string),
+		toolInputDeltas:  make(map[int]string),
+		thinkingBlockIDs: make(map[int]string),
 	}
 }
 
@@ -118,9 +121,13 @@ func (n *normalizer) normalizeAnthropicStreamEvent(input *streamEvent) []normali
 		return []normalizedEvent{{Event: agentEvent("agent.status.started", "assistant", "started", payload)}}
 	case "content_block_delta":
 		n.captureToolInputDelta(input)
+		thinkingDelta := n.normalizeThinkingDelta(input)
 		text := stringAt(input.Event, "delta", "text")
 		if text == "" {
-			return []normalizedEvent{{Event: agentEvent("provider.claude.event", "system", "completed", payload)}}
+			return compact(
+				normalizedEvent{Event: agentEvent("provider.claude.event", "system", "completed", payload)},
+				thinkingDelta,
+			)
 		}
 		n.messageText += text
 		payload["text"] = text
@@ -140,11 +147,13 @@ func (n *normalizer) normalizeAnthropicStreamEvent(input *streamEvent) []normali
 	case "content_block_start":
 		return compact(
 			normalizedEvent{Event: agentEvent("provider.claude.event", "system", "completed", payload)},
+			n.normalizeThinkingStart(input),
 			n.normalizeToolUseStart(input),
 		)
 	case "content_block_stop":
 		return compact(
 			normalizedEvent{Event: agentEvent("provider.claude.event", "system", "completed", payload)},
+			n.normalizeThinkingStop(input),
 			n.normalizeToolUseInputStop(input),
 		)
 	case "message_stop":
@@ -277,6 +286,72 @@ type claudeToolResult struct {
 	Output    string
 	IsError   bool
 	RawOutput any
+}
+
+func (n *normalizer) normalizeThinkingStart(input *streamEvent) normalizedEvent {
+	block, ok := mapAt(input.Event, "content_block")
+	if !ok || stringFromMap(block, "type") != "thinking" {
+		return normalizedEvent{}
+	}
+	index, ok := intAt(input.Event, "index")
+	if !ok {
+		return normalizedEvent{}
+	}
+	itemID := n.thinkingItemID(index)
+	n.thinkingBlockIDs[index] = itemID
+	payload := n.thinkingPayload(input, itemID)
+	if text := stringFromMap(block, "thinking"); text != "" {
+		payload["text"] = text
+	}
+	return normalizedEvent{Event: agentEvent("agent.thinking.started", "assistant", "started", payload)}
+}
+
+func (n *normalizer) normalizeThinkingDelta(input *streamEvent) normalizedEvent {
+	index, ok := intAt(input.Event, "index")
+	if !ok {
+		return normalizedEvent{}
+	}
+	itemID := n.thinkingBlockIDs[index]
+	if itemID == "" || stringAt(input.Event, "delta", "type") != "thinking_delta" {
+		return normalizedEvent{}
+	}
+	payload := n.thinkingPayload(input, itemID)
+	if text := stringAt(input.Event, "delta", "thinking"); text != "" {
+		payload["text"] = text
+	}
+	return normalizedEvent{Event: agentEvent("agent.thinking.delta", "assistant", "delta", payload)}
+}
+
+func (n *normalizer) normalizeThinkingStop(input *streamEvent) normalizedEvent {
+	index, ok := intAt(input.Event, "index")
+	if !ok {
+		return normalizedEvent{}
+	}
+	itemID := n.thinkingBlockIDs[index]
+	if itemID == "" {
+		return normalizedEvent{}
+	}
+	delete(n.thinkingBlockIDs, index)
+	return normalizedEvent{Event: agentEvent("agent.thinking.completed", "assistant", "completed", n.thinkingPayload(input, itemID))}
+}
+
+func (n *normalizer) thinkingPayload(input *streamEvent, itemID string) map[string]any {
+	payload := basePayload(input)
+	payload["provider_event_type"] = stringAt(input.Event, "type")
+	payload["item_id"] = itemID
+	payload["item_type"] = "thinking"
+	payload["raw_event"] = rawOrNil(input.Event)
+	if n.currentMessageID != "" {
+		payload["message_id"] = n.currentMessageID
+	}
+	return payload
+}
+
+func (n *normalizer) thinkingItemID(index int) string {
+	if n.currentMessageID != "" {
+		return n.currentMessageID + ":thinking:" + strconv.Itoa(index)
+	}
+	return "thinking:" + strconv.Itoa(index)
 }
 
 func (n *normalizer) normalizeToolUseStart(input *streamEvent) normalizedEvent {

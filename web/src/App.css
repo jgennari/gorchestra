@@ -1,7 +1,12 @@
 .app-shell {
-  height: 100vh;
-  height: 100dvh;
-  min-height: 100vh;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: calc(-1 * env(safe-area-inset-top, 0px));
+  top: calc(100dvh - 100lvh);
+  height: auto;
+  min-height: 0;
   display: flex;
   overflow: hidden;
   background: linear-gradient(135deg, hsl(var(--background)), hsl(var(--surface)));

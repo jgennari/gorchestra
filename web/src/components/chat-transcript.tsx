@@ -268,8 +268,8 @@ export function ChatTranscript({
         <div
           className={cn(
             'p-4',
-            topInset === 'sessionHeader' && 'pt-36 lg:pt-24',
-            topInset === 'sessionHeaderAlert' && 'pt-48 lg:pt-36',
+            topInset === 'sessionHeader' && 'lg:pt-24',
+            topInset === 'sessionHeaderAlert' && 'lg:pt-36',
           )}
           style={{ paddingBottom: `${contentBottomPadding}px` }}
         >
