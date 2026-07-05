@@ -19,11 +19,13 @@ type CachedSessionEventsRecord = CachedSessionEvents & {
 }
 
 const dbName = 'gorchestra-session-cache'
-const dbVersion = 1
+const dbVersion = 2
 const sessionsStore = 'sessions'
 const eventsStore = 'events'
 const cachedSessionLimit = 8
-export const persistentCachedEventLimit = 1000
+export const persistentCachedEventLimit = 500
+export const persistentCachedEventBytesLimit = 512 * 1024
+export const persistentCachedSingleEventBytesLimit = 96 * 1024
 
 let dbPromise: Promise<IDBDatabase | null> | null = null
 
@@ -64,13 +66,26 @@ export async function readCachedSessionEvents(sessionID: string): Promise<Cached
   const record = await getRecord<CachedSessionEventsRecord>(db, eventsStore, sessionID)
   if (!record) return null
 
-  const next = { ...record, usedAt: Date.now() }
+  const trimmedEvents = trimPersistentEvents(record.events)
+  if (trimmedEvents.length === 0) {
+    await deleteRecord(db, eventsStore, sessionID)
+    return null
+  }
+  const trimmedOlderEvents = trimmedEvents.length < record.events.length
+  const next = {
+    ...record,
+    events: trimmedEvents,
+    lastSeq: lastSeq(trimmedEvents),
+    oldestSeq: firstSeq(trimmedEvents),
+    hasOlderEvents: record.hasOlderEvents || trimmedOlderEvents,
+    usedAt: Date.now(),
+  }
   await putRecord(db, eventsStore, next)
   return {
-    events: record.events,
-    lastSeq: record.lastSeq,
-    oldestSeq: record.oldestSeq,
-    hasOlderEvents: record.hasOlderEvents,
+    events: next.events,
+    lastSeq: next.lastSeq,
+    oldestSeq: next.oldestSeq,
+    hasOlderEvents: next.hasOlderEvents,
   }
 }
 
@@ -83,6 +98,10 @@ export async function writeCachedSessionEvents(
   if (!db) return
 
   const trimmedEvents = trimPersistentEvents(events)
+  if (trimmedEvents.length === 0) {
+    await deleteRecord(db, eventsStore, sessionID)
+    return
+  }
   const trimmedOlderEvents = trimmedEvents.length < events.length
   await putRecord(db, eventsStore, {
     sessionID,
@@ -106,8 +125,11 @@ async function openCacheDB(): Promise<IDBDatabase | null> {
   dbPromise ??= new Promise((resolve) => {
     const request = indexedDB.open(dbName, dbVersion)
     request.onerror = () => resolve(null)
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result
+      if (event.oldVersion > 0 && event.oldVersion < 2 && db.objectStoreNames.contains(eventsStore)) {
+        db.deleteObjectStore(eventsStore)
+      }
       if (!db.objectStoreNames.contains(sessionsStore)) {
         db.createObjectStore(sessionsStore, { keyPath: 'id' })
       }
@@ -180,17 +202,44 @@ function lastSeq(events: AgentEvent[]) {
 }
 
 function trimPersistentEvents(events: AgentEvent[]) {
-  if (events.length <= persistentCachedEventLimit) {
-    return events
+  const countTrimmedEvents =
+    events.length <= persistentCachedEventLimit ? events : events.slice(events.length - persistentCachedEventLimit)
+  const byteTrimmedEvents: AgentEvent[] = []
+  let totalBytes = 2
+
+  for (let index = countTrimmedEvents.length - 1; index >= 0; index -= 1) {
+    const event = countTrimmedEvents[index]
+    const eventBytes = serializedEventBytes(event)
+    if (eventBytes > persistentCachedSingleEventBytesLimit) {
+      continue
+    }
+    const nextTotalBytes = totalBytes + eventBytes + (byteTrimmedEvents.length > 0 ? 1 : 0)
+    if (nextTotalBytes > persistentCachedEventBytesLimit) {
+      break
+    }
+    byteTrimmedEvents.unshift(event)
+    totalBytes = nextTotalBytes
   }
-  let start = events.length - persistentCachedEventLimit
-  for (let index = start; index < events.length; index += 1) {
-    if (safeLeadingWindowEvent(events[index])) {
+
+  let start = 0
+  for (let index = 0; index < byteTrimmedEvents.length; index += 1) {
+    if (safeLeadingWindowEvent(byteTrimmedEvents[index])) {
       start = index
       break
     }
+    if (index === byteTrimmedEvents.length - 1) {
+      return []
+    }
   }
-  return events.slice(start)
+  return byteTrimmedEvents.slice(start)
+}
+
+function serializedEventBytes(event: AgentEvent) {
+  try {
+    return JSON.stringify(event).length
+  } catch {
+    return persistentCachedSingleEventBytesLimit + 1
+  }
 }
 
 function safeLeadingWindowEvent(event: AgentEvent | undefined) {

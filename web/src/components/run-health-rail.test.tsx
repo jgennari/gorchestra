@@ -92,6 +92,23 @@ test('run health rail shows loading while a routed session resolves', () => {
   expect(screen.queryByText('Select a session to browse files.')).not.toBeInTheDocument()
 })
 
+test('run health rail can hide file browsing for compact mobile details', () => {
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      showFiles={false}
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  expect(screen.getByText('Activity')).toBeInTheDocument()
+  expect(screen.queryByText('Files')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Refresh files' })).not.toBeInTheDocument()
+})
+
 test('run health rail archives an idle session from the slice action', async () => {
   const user = userEvent.setup()
   const onToggleArchive = vi.fn(async () => undefined)

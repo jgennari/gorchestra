@@ -16,6 +16,27 @@ vi.mock('@monaco-editor/react', () => ({
   ),
 }))
 
+vi.mock('@xterm/addon-fit', () => ({
+  FitAddon: class {
+    fit() {}
+  },
+}))
+
+vi.mock('@xterm/xterm', () => ({
+  Terminal: class {
+    cols = 80
+    rows = 24
+
+    loadAddon() {}
+    open() {}
+    write() {}
+    dispose() {}
+    onData() {
+      return { dispose() {} }
+    }
+  },
+}))
+
 const firstSession = session('sess_1', 'Inspect repo', '2026-06-12T16:02:00Z')
 const secondSession = session('sess_2', 'Write docs', '2026-06-12T16:01:00Z')
 
@@ -27,6 +48,8 @@ beforeEach(() => {
   FakeEventSource.instances = []
   vi.stubGlobal('fetch', fetchMock())
   vi.stubGlobal('EventSource', FakeEventSource)
+  vi.stubGlobal('WebSocket', FakeWebSocket)
+  vi.stubGlobal('ResizeObserver', FakeResizeObserver)
   vi.stubGlobal('matchMedia', matchMediaMock)
 })
 
@@ -45,6 +68,75 @@ test('selecting a session updates the browser route', async () => {
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
 
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
+})
+
+test('switching app views updates the session route and browser history', async () => {
+  const user = userEvent.setup()
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1'))
+
+  await user.click(screen.getAllByRole('button', { name: 'Show console' })[0])
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/console'))
+  expect(
+    screen
+      .getAllByRole('button', { name: 'Show console' })
+      .some((button) => button.getAttribute('aria-pressed') === 'true'),
+  ).toBe(true)
+
+  await user.click(screen.getAllByRole('button', { name: 'Show files' })[0])
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/files'))
+  expect(
+    screen
+      .getAllByRole('button', { name: 'Show files' })
+      .some((button) => button.getAttribute('aria-pressed') === 'true'),
+  ).toBe(true)
+
+  await act(async () => {
+    window.history.back()
+    await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/console'))
+  })
+  expect(
+    screen
+      .getAllByRole('button', { name: 'Show console' })
+      .some((button) => button.getAttribute('aria-pressed') === 'true'),
+  ).toBe(true)
+
+  await act(async () => {
+    window.history.back()
+    await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1'))
+  })
+  expect(
+    screen
+      .getAllByRole('button', { name: 'Show chat' })
+      .some((button) => button.getAttribute('aria-pressed') === 'true'),
+  ).toBe(true)
+})
+
+test('loading with console and files routes restores the routed app view', async () => {
+  window.history.replaceState({}, '', '/sessions/sess_1/files')
+  const firstRender = render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  expect(
+    screen
+      .getAllByRole('button', { name: 'Show files' })
+      .some((button) => button.getAttribute('aria-pressed') === 'true'),
+  ).toBe(true)
+
+  firstRender.unmount()
+  window.history.replaceState({}, '', '/sessions/sess_1/console')
+  render(<App />)
+
+  await waitFor(() =>
+    expect(
+      screen
+        .getAllByRole('button', { name: 'Show console' })
+        .some((button) => button.getAttribute('aria-pressed') === 'true'),
+    ).toBe(true),
+  )
 })
 
 test('mobile navigation uses the floating session header', async () => {
@@ -75,6 +167,44 @@ test('mobile sessions button opens a floating session dialog', async () => {
 
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Sessions' })).not.toBeInTheDocument())
+})
+
+test('mobile session menu opens workspace details in a floating dialog', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal('fetch', fetchMock({ fileEntry: true }))
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  const mobileHeader = screen.getByTestId('mobile-floating-session-header')
+
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Workspace details' }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'Workspace details' })
+  expect(within(dialog).getByText('Activity')).toBeInTheDocument()
+  expect(within(dialog).queryByText('Files')).not.toBeInTheDocument()
+  expect(within(dialog).queryByRole('button', { name: /main\.go/i })).not.toBeInTheDocument()
+})
+
+test('header files view opens workspace files inline', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal('fetch', fetchMock({ fileEntry: true }))
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+
+  await user.click(screen.getAllByRole('button', { name: 'Show files' })[0])
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/files'))
+  const filesHeader = screen.getByTestId('floating-files-header')
+  expect(within(filesHeader).getByRole('button', { name: 'Session details' })).toBeInTheDocument()
+  expect(screen.getByText('No file selected').closest('.host-console-frame')).toBeTruthy()
+
+  await user.click((await screen.findAllByRole('button', { name: /main\.go/i }))[0])
+
+  const fileViewer = await screen.findByRole('region', { name: 'File viewer: main.go' })
+  expect(within(fileViewer).getByLabelText('File editor')).toHaveValue('package main\n')
 })
 
 test('loading with a session route selects that session', async () => {
@@ -594,7 +724,7 @@ test('desktop pane resize handles update persisted widths', async () => {
   })
 })
 
-test('file browser opens a chat overlay viewer that can close', async () => {
+test('file browser opens the inline files view', async () => {
   const user = userEvent.setup()
   vi.stubGlobal('fetch', fetchMock({ fileEntry: true }))
 
@@ -602,14 +732,14 @@ test('file browser opens a chat overlay viewer that can close', async () => {
 
   await user.click(await screen.findByRole('button', { name: /main\.go/i }))
 
-  const dialog = await screen.findByRole('dialog', { name: 'File viewer: main.go' })
-  expect(dialog).toBeInTheDocument()
-  expect(within(dialog).getAllByText('main.go')).toHaveLength(1)
-  expect(within(dialog).getByLabelText('File editor')).toHaveValue('package main\n')
-
-  await user.click(screen.getByRole('button', { name: 'Close file viewer' }))
-
-  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'File viewer: main.go' })).not.toBeInTheDocument())
+  const fileViewer = await screen.findByRole('region', { name: 'File viewer: main.go' })
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/files'))
+  expect(fileViewer).toBeInTheDocument()
+  expect(within(fileViewer).getAllByText('main.go')).toHaveLength(1)
+  expect(within(fileViewer).getByLabelText('File editor')).toHaveValue('package main\n')
+  expect(screen.getAllByRole('button', { name: 'Show files' }).some((button) => button.getAttribute('aria-pressed') === 'true')).toBe(
+    true,
+  )
 })
 
 test('file browser renders markdown files as markdown', async () => {
@@ -623,11 +753,11 @@ test('file browser renders markdown files as markdown', async () => {
 
   await user.click(await screen.findByRole('button', { name: /README\.md/i }))
 
-  const dialog = await screen.findByRole('dialog', { name: 'File viewer: README.md' })
-  expect(dialog).toBeInTheDocument()
-  expect(within(dialog).getAllByText('README.md')).toHaveLength(1)
-  expect(within(dialog).getByRole('heading', { name: 'Project Notes' })).toBeInTheDocument()
-  expect(within(dialog).getByRole('listitem')).toHaveTextContent('Ship it')
+  const fileViewer = await screen.findByRole('region', { name: 'File viewer: README.md' })
+  expect(fileViewer).toBeInTheDocument()
+  expect(within(fileViewer).getAllByText('README.md')).toHaveLength(1)
+  expect(within(fileViewer).getByRole('heading', { name: 'Project Notes' })).toBeInTheDocument()
+  expect(within(fileViewer).getByRole('listitem')).toHaveTextContent('Ship it')
 })
 
 test('file browser edit mode saves workspace files', async () => {
@@ -637,19 +767,19 @@ test('file browser edit mode saves workspace files', async () => {
   render(<App />)
 
   await user.click(await screen.findByRole('button', { name: /README\.md/i }))
-  const dialog = await screen.findByRole('dialog', { name: 'File viewer: README.md' })
-  await user.click(within(dialog).getByRole('button', { name: /edit/i }))
+  const fileViewer = await screen.findByRole('region', { name: 'File viewer: README.md' })
+  await user.click(within(fileViewer).getByRole('button', { name: /edit/i }))
 
-  const editor = within(dialog).getByLabelText('File editor')
+  const editor = within(fileViewer).getByLabelText('File editor')
   await user.clear(editor)
   await user.type(editor, '# Edited Notes\n\nSaved')
-  await user.click(within(dialog).getByRole('button', { name: /^save$/i }))
+  await user.click(within(fileViewer).getByRole('button', { name: /^save$/i }))
 
-  await waitFor(() => expect(within(dialog).getByText('Saved')).toBeInTheDocument())
-  await user.click(within(dialog).getByRole('button', { name: /preview/i }))
+  await waitFor(() => expect(within(fileViewer).getByText('Saved')).toBeInTheDocument())
+  await user.click(within(fileViewer).getByRole('button', { name: /preview/i }))
 
-  expect(within(dialog).getByRole('heading', { name: 'Edited Notes' })).toBeInTheDocument()
-  expect(within(dialog).getAllByText('Saved').length).toBeGreaterThan(0)
+  expect(within(fileViewer).getByRole('heading', { name: 'Edited Notes' })).toBeInTheDocument()
+  expect(within(fileViewer).getAllByText('Saved').length).toBeGreaterThan(0)
 })
 
 test('file change diff actions open absolute paths in the file editor', async () => {
@@ -679,8 +809,12 @@ test('file change diff actions open absolute paths in the file editor', async ()
   await user.click(await screen.findByRole('button', { name: /expand main\.go/i }))
   await user.click(screen.getByRole('button', { name: 'Show in File Editor' }))
 
-  const dialog = await screen.findByRole('dialog', { name: 'File viewer: src/main.go' })
-  expect(within(dialog).getByLabelText('File editor')).toHaveValue('package main\n')
+  const fileViewer = await screen.findByRole('region', { name: 'File viewer: src/main.go' })
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/files'))
+  expect(within(fileViewer).getByLabelText('File editor')).toHaveValue('package main\n')
+  expect(screen.getAllByRole('button', { name: 'Show files' }).some((button) => button.getAttribute('aria-pressed') === 'true')).toBe(
+    true,
+  )
 })
 
 test('streamed mutating git commands refresh the file browser', async () => {
@@ -869,6 +1003,13 @@ function fetchMock({
     if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
       return jsonResponse({ events: [] })
     }
+    const consoleMatch = path.match(/^\/api\/sessions\/([^/?]+)\/console$/)
+    if (consoleMatch) {
+      const matchedSession = sessions.find((session) => session.id === decodeURIComponent(consoleMatch[1]))
+      if (matchedSession) {
+        return jsonResponse({ session_id: matchedSession.id, workspace_path: matchedSession.workspace_path, running: false })
+      }
+    }
     if (path === '/api/sessions/sess_1/events?before_seq=251&limit=500') {
       return jsonResponse({ events: olderEvents })
     }
@@ -954,6 +1095,40 @@ class FakeEventSource {
   }
 
   close() {}
+}
+
+class FakeWebSocket {
+  static OPEN = 1
+  readyState = FakeWebSocket.OPEN
+  private listeners = new Map<string, Set<(event: Event) => void>>()
+
+  constructor() {
+    window.setTimeout(() => this.dispatch('open', new Event('open')), 0)
+  }
+
+  addEventListener(type: string, listener: (event: Event) => void) {
+    const listeners = this.listeners.get(type) ?? new Set()
+    listeners.add(listener)
+    this.listeners.set(type, listeners)
+  }
+
+  removeEventListener(type: string, listener: (event: Event) => void) {
+    this.listeners.get(type)?.delete(listener)
+  }
+
+  send() {}
+  close() {}
+
+  private dispatch(type: string, event: Event) {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event)
+    }
+  }
+}
+
+class FakeResizeObserver {
+  observe() {}
+  disconnect() {}
 }
 
 async function findEventSource(urlPrefix: string) {

@@ -485,6 +485,51 @@ func TestEventHistoryReturnsEventsAfterSeq(t *testing.T) {
 	}
 }
 
+func TestEventHistoryTruncatesLargePayloadStrings(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEventWithPayload(1, "tool.call.completed", map[string]any{
+			"item_id":           "tool_1",
+			"aggregated_output": strings.Repeat("x", maxEventPayloadStringLen+1024),
+		}),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?after_seq=0&limit=10", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+	if got, want := len(response.Events), 1; got != want {
+		t.Fatalf("expected %d event, got %d", want, got)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(response.Events[0].Payload, &payload); err != nil {
+		t.Fatalf("expected payload to be JSON object: %v", err)
+	}
+	output, ok := payload["aggregated_output"].(string)
+	if !ok {
+		t.Fatalf("expected aggregated_output string, got %#v", payload["aggregated_output"])
+	}
+	if len(output) > maxEventPayloadStringLen {
+		t.Fatalf("expected output to be capped at %d bytes, got %d", maxEventPayloadStringLen, len(output))
+	}
+	if !strings.Contains(output, "gorchestra truncated") {
+		t.Fatal("expected truncation marker in output")
+	}
+	if payload["_gorchestra_truncated"] != true {
+		t.Fatalf("expected truncation marker flag, got %#v", payload["_gorchestra_truncated"])
+	}
+}
+
 func TestEventHistoryAppliesDefaultLimit(t *testing.T) {
 	store := newFakeHTTPStore()
 	store.addSession(testSessionID)
@@ -795,6 +840,51 @@ func TestSSEUsesIDEventAndDataFields(t *testing.T) {
 	}
 	if got := payload["text"]; got != "event 1" {
 		t.Fatalf("expected payload text %q, got %q", "event 1", got)
+	}
+}
+
+func TestSSETruncatesLargePayloadStrings(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEventWithPayload(1, "tool.call.completed", map[string]any{
+			"item_id":           "tool_1",
+			"aggregated_output": strings.Repeat("x", maxEventPayloadStringLen+1024),
+		}),
+	)
+
+	subscriber := &fakeSubscriber{}
+	store.onList = func(string, int64, int) {
+		subscriber.closeAll()
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events/stream", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store, Events: subscriber}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	response := firstSSEData(t, rec.Body.String())
+	var payload map[string]any
+	if err := json.Unmarshal(response.Payload, &payload); err != nil {
+		t.Fatalf("expected payload to be JSON object: %v", err)
+	}
+	output, ok := payload["aggregated_output"].(string)
+	if !ok {
+		t.Fatalf("expected aggregated_output string, got %#v", payload["aggregated_output"])
+	}
+	if len(output) > maxEventPayloadStringLen {
+		t.Fatalf("expected output to be capped at %d bytes, got %d", maxEventPayloadStringLen, len(output))
+	}
+	if !strings.Contains(output, "gorchestra truncated") {
+		t.Fatal("expected truncation marker in output")
+	}
+	if payload["_gorchestra_truncated"] != true {
+		t.Fatalf("expected truncation marker flag, got %#v", payload["_gorchestra_truncated"])
 	}
 }
 

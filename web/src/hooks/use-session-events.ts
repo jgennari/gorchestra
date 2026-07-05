@@ -29,12 +29,18 @@ const cachedSessionLimit = 8
 const cachedEventLimit = 1000
 const activeEventWindowLimit = 1000
 const recentEventsRequestRetentionMs = 2000
+const persistentEventsWriteDelayMs = 1200
 const sessionEventCache = new Map<string, SessionEventCacheEntry>()
 const recentEventsRequests = new Map<string, Promise<AgentEvent[]>>()
+const persistentEventsWriteTimers = new Map<string, number>()
 
 export function clearSessionEventCacheForTest() {
   sessionEventCache.clear()
   recentEventsRequests.clear()
+  for (const timer of persistentEventsWriteTimers.values()) {
+    window.clearTimeout(timer)
+  }
+  persistentEventsWriteTimers.clear()
   clearSessionCacheForTest()
 }
 
@@ -350,7 +356,19 @@ function writeCachedSessionEvents(sessionID: string, events: AgentEvent[], hasOl
     usedAt: Date.now(),
   })
   evictOldSessionEventCaches()
-  void writePersistentCachedSessionEvents(sessionID, trimmedEvents, hasOlderEvents || trimmedOlderEvents)
+  schedulePersistentSessionEventsWrite(sessionID, trimmedEvents, hasOlderEvents || trimmedOlderEvents)
+}
+
+function schedulePersistentSessionEventsWrite(sessionID: string, events: AgentEvent[], hasOlderEvents: boolean) {
+  const existingTimer = persistentEventsWriteTimers.get(sessionID)
+  if (existingTimer !== undefined) {
+    window.clearTimeout(existingTimer)
+  }
+  const timer = window.setTimeout(() => {
+    persistentEventsWriteTimers.delete(sessionID)
+    void writePersistentCachedSessionEvents(sessionID, events, hasOlderEvents)
+  }, persistentEventsWriteDelayMs)
+  persistentEventsWriteTimers.set(sessionID, timer)
 }
 
 export function trimEventsWindow(events: AgentEvent[], limit: number) {

@@ -1,18 +1,22 @@
 export function createFakeIndexedDB() {
   const databases = new Map<string, FakeDB>()
   return {
-    open(name: string) {
+    open(name: string, version = 1) {
       const request: FakeRequest<FakeDB> = {}
       window.setTimeout(() => {
         let db = databases.get(name)
-        const needsUpgrade = !db
+        const oldVersion = db?.version ?? 0
+        const needsUpgrade = !db || version > oldVersion
         if (!db) {
-          db = new FakeDB()
+          db = new FakeDB(version)
           databases.set(name, db)
+        }
+        if (version > db.version) {
+          db.version = version
         }
         request.result = db
         if (needsUpgrade) {
-          request.onupgradeneeded?.()
+          request.onupgradeneeded?.({ oldVersion })
         }
         request.onsuccess?.()
       }, 0)
@@ -25,21 +29,35 @@ type FakeRequest<T> = {
   result?: T
   onsuccess?: () => void
   onerror?: () => void
-  onupgradeneeded?: () => void
+  onupgradeneeded?: (event: { oldVersion: number }) => void
 }
 
 class FakeDB {
+  version: number
   stores = new Map<string, Map<string, unknown>>()
   objectStoreNames = {
     contains: (name: string) => this.stores.has(name),
+  }
+
+  constructor(version: number) {
+    this.version = version
   }
 
   createObjectStore(name: string) {
     this.stores.set(name, new Map())
   }
 
+  deleteObjectStore(name: string) {
+    this.stores.delete(name)
+  }
+
   transaction(storeName: string) {
-    return new FakeTransaction(this.stores.get(storeName) ?? new Map())
+    let store = this.stores.get(storeName)
+    if (!store) {
+      store = new Map()
+      this.stores.set(storeName, store)
+    }
+    return new FakeTransaction(store)
   }
 }
 

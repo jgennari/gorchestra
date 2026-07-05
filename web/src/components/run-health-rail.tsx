@@ -1,19 +1,12 @@
-import { Activity, Archive, Clock3, Eraser, FileText, Folder, Gauge, Loader2, Minimize2, RefreshCw, Search, X } from 'lucide-react'
+import { Activity, Archive, Clock3, Eraser, Gauge, Loader2, Minimize2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type {
-  AgentEvent,
-  Session,
-  WorkspaceEntry,
-  WorkspaceFileContent,
-  WorkspaceGitSummary,
-  WorkspaceSearchResult,
-} from '@/lib/api'
-import { getSessionFileContent, listSessionFiles, searchSessionFiles } from '@/lib/api'
+import type { ReactNode } from 'react'
+import type { AgentEvent, Session, WorkspaceFileContent } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
 import type { TokenUsageSummary } from '@/lib/events'
 import { eventLabel, groupEvents, latestTokenUsage } from '@/lib/events'
 import { Button } from '@/components/ui/button'
+import { WorkspaceFileBrowser } from '@/components/workspace-files'
 import { cn } from '@/lib/utils'
 
 type Props = {
@@ -27,6 +20,7 @@ type Props = {
   onToggleArchive: () => Promise<void>
   onOpenFile?: (file: WorkspaceFileContent) => void
   fileRefreshKey?: number
+  showFiles?: boolean
   clearPending?: boolean
   compactPending?: boolean
   archivePending?: boolean
@@ -43,6 +37,7 @@ export function RunHealthRail({
   onToggleArchive,
   onOpenFile,
   fileRefreshKey = 0,
+  showFiles = true,
   clearPending = false,
   compactPending = false,
   archivePending = false,
@@ -95,14 +90,16 @@ export function RunHealthRail({
         </RailPanel>
       </div>
 
-      <div className="mt-3 min-h-0 flex-1">
-        <FileExplorer
-          session={session}
-          resolvingSessionID={resolvingSessionID}
-          refreshKey={fileRefreshKey}
-          onOpenFile={onOpenFile}
-        />
-      </div>
+      {showFiles ? (
+        <div className="mt-3 min-h-0 flex-1">
+          <WorkspaceFileBrowser
+            session={session}
+            resolvingSessionID={resolvingSessionID}
+            refreshKey={fileRefreshKey}
+            onOpenFile={onOpenFile}
+          />
+        </div>
+      ) : null}
 
       <div className="mt-auto space-y-3 pt-3">
         {showTokenPanel ? (
@@ -140,322 +137,6 @@ export function RunHealthRail({
       </div>
     </aside>
   )
-}
-
-function FileExplorer({
-  session,
-  resolvingSessionID = null,
-  refreshKey,
-  onOpenFile = () => undefined,
-}: {
-  session: Session | null
-  resolvingSessionID?: string | null
-  refreshKey: number
-  onOpenFile?: (file: WorkspaceFileContent) => void
-}) {
-  const [currentPath, setCurrentPath] = useState('')
-  const [entries, setEntries] = useState<WorkspaceEntry[]>([])
-  const [gitSummary, setGitSummary] = useState<WorkspaceGitSummary | null>(null)
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState<WorkspaceSearchResult[]>([])
-  const [loading, setLoading] = useState(false)
-  const [searching, setSearching] = useState(false)
-  const [reloadKey, setReloadKey] = useState(0)
-  const [error, setError] = useState('')
-  const searchInputRef = useRef<HTMLInputElement>(null)
-  const sessionID = session?.id ?? ''
-  const displayEntries = query.trim() ? results : entries
-  const refreshing = loading || searching
-  const isAtWorkspaceRoot = currentPath === ''
-  const pathLabel = useMemo(() => basename(currentPath) || 'Workspace', [currentPath])
-
-  function navigateToDirectory(path: string) {
-    setCurrentPath(path)
-    setQuery('')
-    setError('')
-  }
-
-  function clearSearch() {
-    setQuery('')
-    setResults([])
-    setSearching(false)
-    setError('')
-    searchInputRef.current?.focus()
-  }
-
-  useEffect(() => {
-    setCurrentPath('')
-    setEntries([])
-    setGitSummary(null)
-    setResults([])
-    setQuery('')
-    setError('')
-  }, [sessionID])
-
-  useEffect(() => {
-    if (!sessionID) {
-      return
-    }
-
-    let cancelled = false
-    async function loadFiles() {
-      setLoading(true)
-      setError('')
-      try {
-        const response = await listSessionFiles(sessionID, currentPath)
-        if (cancelled) return
-        setEntries(response.entries)
-        setGitSummary(response.git_summary ?? null)
-      } catch (loadError) {
-        if (!cancelled) {
-          setEntries([])
-          setGitSummary(null)
-          setError(loadError instanceof Error ? loadError.message : 'Failed to load files')
-        }
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-
-    void loadFiles()
-    return () => {
-      cancelled = true
-    }
-  }, [currentPath, refreshKey, reloadKey, sessionID])
-
-  useEffect(() => {
-    const trimmed = query.trim()
-    if (!sessionID || !trimmed) {
-      setResults([])
-      setSearching(false)
-      return
-    }
-
-    let cancelled = false
-    const timer = window.setTimeout(() => {
-      async function runSearch() {
-        setSearching(true)
-        setError('')
-        try {
-          const response = await searchSessionFiles(sessionID, trimmed, currentPath)
-          if (!cancelled) setResults(response.results)
-        } catch (searchError) {
-          if (!cancelled) {
-            setResults([])
-            setError(searchError instanceof Error ? searchError.message : 'Failed to search files')
-          }
-        } finally {
-          if (!cancelled) setSearching(false)
-        }
-      }
-      void runSearch()
-    }, 220)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [currentPath, query, refreshKey, reloadKey, sessionID])
-
-  async function openEntry(entry: WorkspaceEntry) {
-    if (!sessionID) {
-      return
-    }
-    if (entry.type === 'directory') {
-      navigateToDirectory(entry.path)
-      return
-    }
-
-    setLoading(true)
-    setError('')
-    try {
-      const content = await getSessionFileContent(sessionID, entry.path)
-      onOpenFile(content)
-    } catch (contentError) {
-      setError(contentError instanceof Error ? contentError.message : 'Failed to read file')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <RailPanel className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <RailSectionTitle icon={Folder} label="Files" />
-          <GitSummary summary={gitSummary} />
-        </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-7 border-transparent text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
-          disabled={!sessionID || refreshing}
-          onClick={() => setReloadKey((value) => value + 1)}
-          aria-label="Refresh files"
-          title="Refresh files"
-        >
-          {refreshing ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
-        </Button>
-      </div>
-
-      <div className="mt-2 flex h-8 items-center gap-1.5 rounded border border-border/70 bg-background/55 px-2">
-        <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <input
-          ref={searchInputRef}
-          aria-label="Search files and contents"
-          value={query}
-          disabled={!sessionID}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search files and contents"
-          className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
-        />
-        {searching ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-hidden="true" /> : null}
-        {query ? (
-          <button
-            type="button"
-            className="inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-surface-muted/80 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-            disabled={!sessionID}
-            onClick={clearSearch}
-            aria-label="Clear file search"
-            title="Clear file search"
-          >
-            <X className="size-3" aria-hidden="true" />
-          </button>
-        ) : null}
-      </div>
-
-      <p className="mt-2 truncate text-[11px] text-muted-foreground" title={session?.workspace_path || undefined}>
-        {session ? pathLabel : resolvingSessionID ? 'Loading session' : 'No session selected'}
-      </p>
-
-      <div className="mt-1 min-h-0 flex-1 overflow-auto">
-        {resolvingSessionID && !sessionID ? (
-          <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-            Loading session
-          </div>
-        ) : !sessionID ? (
-          <p className="py-3 text-xs text-muted-foreground">Select a session to browse files.</p>
-        ) : loading && entries.length === 0 ? (
-          <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-            Loading files
-          </div>
-        ) : (
-          <div className="space-y-0.5">
-            {!isAtWorkspaceRoot ? (
-              <>
-                <button
-                  type="button"
-                  className="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
-                  onClick={() => navigateToDirectory('')}
-                  aria-label="Go to workspace root"
-                >
-                  <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate font-mono">.</span>
-                  <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">root</span>
-                </button>
-                <button
-                  type="button"
-                  className="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
-                  onClick={() => navigateToDirectory(parentPath(currentPath))}
-                  aria-label="Go to parent folder"
-                >
-                  <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate font-mono">..</span>
-                  <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">
-                    parent
-                  </span>
-                </button>
-              </>
-            ) : null}
-            {displayEntries.map((entry) => (
-              <button
-                key={`${entry.type}:${entry.path}`}
-                type="button"
-                className="flex w-full min-w-0 items-start gap-1.5 rounded px-1.5 py-1 text-left text-xs text-foreground hover:bg-surface-muted/70"
-                onClick={() => void openEntry(entry)}
-              >
-                {entry.type === 'directory' ? (
-                  <Folder className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                ) : (
-                  <FileText className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                )}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">{entry.name}</span>
-                  {query.trim() ? <SearchMatchDetail entry={entry} /> : null}
-                </span>
-                {entry.git_status ? <GitStatus status={entry.git_status} /> : null}
-              </button>
-            ))}
-            {displayEntries.length === 0 ? (
-              <p className="py-3 text-xs text-muted-foreground">{query.trim() ? 'No matches' : 'No files'}</p>
-            ) : null}
-          </div>
-        )}
-      </div>
-
-      {error ? <p className="mt-2 shrink-0 text-xs text-destructive">{error}</p> : null}
-    </RailPanel>
-  )
-}
-
-function SearchMatchDetail({ entry }: { entry: WorkspaceEntry | WorkspaceSearchResult }) {
-  const result = entry as WorkspaceSearchResult
-  const linePrefix = result.match_type === 'content' && result.line_number ? `:${result.line_number}` : ''
-  const detail = result.match_type === 'content' && result.line_text ? result.line_text : entry.path
-
-  return (
-    <span className="mt-0.5 block min-w-0 truncate font-mono text-[10px] leading-snug text-muted-foreground">
-      {entry.path}
-      {linePrefix}
-      {result.match_type === 'content' && result.line_text ? ' ' : null}
-      {result.match_type === 'content' && result.line_text ? detail : null}
-    </span>
-  )
-}
-
-function GitSummary({ summary }: { summary: WorkspaceGitSummary | null }) {
-  if (!summary || summary.added + summary.modified + summary.deleted === 0) {
-    return null
-  }
-
-  return (
-    <div className="flex shrink-0 items-center gap-1" aria-label="Git file summary">
-      <GitSummaryBadge label="+" value={summary.added} tone="added" />
-      <GitSummaryBadge label="~" value={summary.modified} tone="modified" />
-      <GitSummaryBadge label="-" value={summary.deleted} tone="deleted" />
-    </div>
-  )
-}
-
-type GitFileTone = 'added' | 'modified' | 'deleted' | 'neutral'
-
-function GitSummaryBadge({ label, value, tone }: { label: string; value: number; tone: GitFileTone }) {
-  if (value === 0) {
-    return null
-  }
-
-  return (
-    <span className={cn('git-file-tag', gitFileToneClassName(tone))} title={`${gitSummaryLabel(label)}: ${value}`}>
-      {label}
-      {value}
-    </span>
-  )
-}
-
-function gitSummaryLabel(label: string) {
-  switch (label) {
-    case '+':
-      return 'Added'
-    case '~':
-      return 'Modified'
-    case '-':
-      return 'Deleted'
-    default:
-      return label
-  }
 }
 
 function ActiveChatDot({
@@ -604,72 +285,6 @@ function TokenMetric({ label, value }: { label: string; value: number }) {
       <p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
     </div>
   )
-}
-
-function GitStatus({ status }: { status: string }) {
-  return (
-    <span className={cn('git-file-tag shrink-0 uppercase', gitStatusClassName(status))} title={`Git: ${status}`}>
-      {gitStatusLabel(status)}
-    </span>
-  )
-}
-
-function gitStatusClassName(status: string) {
-  switch (status) {
-    case 'modified':
-      return gitFileToneClassName('modified')
-    case 'added':
-    case 'untracked':
-      return gitFileToneClassName('added')
-    case 'deleted':
-    case 'conflicted':
-      return gitFileToneClassName('deleted')
-    default:
-      return gitFileToneClassName('neutral')
-  }
-}
-
-function gitFileToneClassName(tone: GitFileTone) {
-  switch (tone) {
-    case 'added':
-      return 'git-file-tag--added'
-    case 'modified':
-      return 'git-file-tag--modified'
-    case 'deleted':
-      return 'git-file-tag--deleted'
-    default:
-      return 'git-file-tag--neutral'
-  }
-}
-
-function gitStatusLabel(status: string) {
-  switch (status) {
-    case 'modified':
-      return 'M'
-    case 'added':
-      return 'A'
-    case 'deleted':
-      return 'D'
-    case 'untracked':
-      return '?'
-    case 'conflicted':
-      return '!'
-    case 'renamed':
-      return 'R'
-    default:
-      return status.slice(0, 1)
-  }
-}
-
-function basename(path: string) {
-  const parts = path.split('/').filter(Boolean)
-  return parts.at(-1) ?? ''
-}
-
-function parentPath(path: string) {
-  const parts = path.split('/').filter(Boolean)
-  parts.pop()
-  return parts.join('/')
 }
 
 function streamStateLabel(state: StreamState, error: string) {

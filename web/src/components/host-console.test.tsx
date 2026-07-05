@@ -124,6 +124,7 @@ test('mobile console actions include session actions', async () => {
   const onClear = vi.fn(async () => undefined)
   const onCompact = vi.fn(async () => undefined)
   const onToggleArchive = vi.fn(async () => undefined)
+  const onOpenWorkspaceDetails = vi.fn()
 
   render(
     <HostConsole
@@ -134,11 +135,15 @@ test('mobile console actions include session actions', async () => {
       onClear={onClear}
       onCompact={onCompact}
       onToggleArchive={onToggleArchive}
+      onOpenWorkspaceDetails={onOpenWorkspaceDetails}
     />,
   )
 
   const mobileHeader = screen.getByRole('button', { name: 'Open sessions' }).closest('.mobile-floating-header-shell')
   expect(mobileHeader).not.toBeNull()
+
+  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Console actions' }))
+  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Workspace details' }))
 
   await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Console actions' }))
   await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Clear context' }))
@@ -149,6 +154,7 @@ test('mobile console actions include session actions', async () => {
   await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Console actions' }))
   await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Archive session' }))
 
+  expect(onOpenWorkspaceDetails).toHaveBeenCalledOnce()
   expect(onClear).toHaveBeenCalledOnce()
   expect(onCompact).toHaveBeenCalledOnce()
   expect(onToggleArchive).toHaveBeenCalledOnce()

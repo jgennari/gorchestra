@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jgennari/gorchestra/internal/agents"
@@ -25,6 +26,7 @@ const (
 	defaultEventLimit        = 500
 	maxEventLimit            = 1000
 	eventHistoryBackfillStep = 250
+	maxEventPayloadStringLen = 64 * 1024
 	defaultSessionLimit      = 50
 	maxSessionLimit          = 100
 	streamHeartbeat          = 15 * time.Second
@@ -618,9 +620,78 @@ func newEventResponse(event store.Event) eventResponse {
 		Type:      event.Type,
 		Role:      event.Role,
 		Status:    string(event.Status),
-		Payload:   event.Payload,
+		Payload:   responseEventPayload(event.Payload),
 		CreatedAt: event.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
+}
+
+func responseEventPayload(payload json.RawMessage) json.RawMessage {
+	if len(payload) <= maxEventPayloadStringLen {
+		return payload
+	}
+
+	var decoded any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return payload
+	}
+
+	truncated, changed := truncatePayloadValue(decoded)
+	if !changed {
+		return payload
+	}
+	encoded, err := json.Marshal(truncated)
+	if err != nil {
+		return payload
+	}
+	return encoded
+}
+
+func truncatePayloadValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		next := make(map[string]any, len(typed)+1)
+		changed := false
+		for key, child := range typed {
+			truncatedChild, childChanged := truncatePayloadValue(child)
+			next[key] = truncatedChild
+			changed = changed || childChanged
+		}
+		if changed {
+			next["_gorchestra_truncated"] = true
+		}
+		return next, changed
+	case []any:
+		next := make([]any, len(typed))
+		changed := false
+		for index, child := range typed {
+			truncatedChild, childChanged := truncatePayloadValue(child)
+			next[index] = truncatedChild
+			changed = changed || childChanged
+		}
+		return next, changed
+	case string:
+		truncated, changed := truncatePayloadString(typed)
+		return truncated, changed
+	default:
+		return value, false
+	}
+}
+
+func truncatePayloadString(value string) (string, bool) {
+	if len(value) <= maxEventPayloadStringLen {
+		return value, false
+	}
+
+	suffix := fmt.Sprintf("\n\n[gorchestra truncated %d bytes from this field for browser display]", len(value)-maxEventPayloadStringLen)
+	limit := maxEventPayloadStringLen - len(suffix)
+	if limit < 0 {
+		limit = maxEventPayloadStringLen
+		suffix = ""
+	}
+	for limit > 0 && !utf8.ValidString(value[:limit]) {
+		limit--
+	}
+	return value[:limit] + suffix, true
 }
 
 func writeSSE(w http.ResponseWriter, event store.Event) error {

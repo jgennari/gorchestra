@@ -1,4 +1,4 @@
-import { Archive, Check, Copy, Ellipsis, Eraser, Loader2, Minimize2 } from 'lucide-react'
+import { Archive, Check, Copy, Ellipsis, Eraser, Loader2, Minimize2, PanelRightOpen } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
@@ -45,6 +45,7 @@ type Props = {
   onClear?: () => Promise<void>
   onCompact?: () => Promise<void>
   onToggleArchive?: () => Promise<void>
+  onOpenWorkspaceDetails?: () => void
   clearPending?: boolean
   compactPending?: boolean
   archivePending?: boolean
@@ -75,6 +76,7 @@ export function SessionDetail({
   onClear,
   onCompact,
   onToggleArchive,
+  onOpenWorkspaceDetails,
   clearPending = false,
   compactPending = false,
   archivePending = false,
@@ -196,6 +198,7 @@ export function SessionDetail({
               onClear,
               onCompact,
               onToggleArchive,
+              onOpenWorkspaceDetails,
               clearPending,
               compactPending,
               archivePending,
@@ -243,7 +246,7 @@ export function SessionDetail({
   )
 }
 
-function ChatSessionHeader({
+export function ChatSessionHeader({
   sessionID,
   agentType,
   workspacePath,
@@ -451,6 +454,17 @@ function SessionDetailsMenu({
               <div className="space-y-1 border-t border-border/70 pt-3 lg:hidden">
                 <button
                   type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                  onClick={() => {
+                    setOpen(false)
+                    mobileSessionActions.onOpenWorkspaceDetails?.()
+                  }}
+                >
+                  <PanelRightOpen className="size-4" aria-hidden="true" />
+                  <span>Workspace details</span>
+                </button>
+                <button
+                  type="button"
                   className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45"
                   disabled={mobileCodexActionDisabled}
                   onClick={() => {
@@ -514,11 +528,12 @@ function SessionDetailsMenu({
   )
 }
 
-type MobileSessionActions = {
+export type MobileSessionActions = {
   session: Session | null
   onClear?: () => Promise<void>
   onCompact?: () => Promise<void>
   onToggleArchive?: () => Promise<void>
+  onOpenWorkspaceDetails?: () => void
   clearPending?: boolean
   compactPending?: boolean
   archivePending?: boolean

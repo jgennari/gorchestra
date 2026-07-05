@@ -1,7 +1,7 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { Archive, Ellipsis, Eraser, Loader2, Minimize2, RefreshCw, Square, Terminal } from 'lucide-react'
+import { Archive, Ellipsis, Eraser, Loader2, Minimize2, PanelRightOpen, RefreshCw, Square, Terminal } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { consoleWebSocketURL, getConsoleStatus, killConsole, type ConsoleStatus } from '@/lib/api'
@@ -27,6 +27,7 @@ export function HostConsole({
   onClear,
   onCompact,
   onToggleArchive,
+  onOpenWorkspaceDetails,
   clearPending = false,
   compactPending = false,
   archivePending = false,
@@ -41,6 +42,7 @@ export function HostConsole({
   onClear?: () => Promise<void>
   onCompact?: () => Promise<void>
   onToggleArchive?: () => Promise<void>
+  onOpenWorkspaceDetails?: () => void
   clearPending?: boolean
   compactPending?: boolean
   archivePending?: boolean
@@ -267,6 +269,7 @@ export function HostConsole({
             onClear,
             onCompact,
             onToggleArchive,
+            onOpenWorkspaceDetails,
             clearPending,
             compactPending,
             archivePending,
@@ -453,6 +456,17 @@ function ConsoleMenu({
             <div className="mt-2 space-y-1 border-t border-border/70 pt-2 lg:hidden">
               <button
                 type="button"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground"
+                onClick={() => {
+                  setOpen(false)
+                  mobileSessionActions.onOpenWorkspaceDetails?.()
+                }}
+              >
+                <PanelRightOpen className="size-4" aria-hidden="true" />
+                Workspace details
+              </button>
+              <button
+                type="button"
                 className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45"
                 disabled={mobileCodexActionDisabled}
                 onClick={() => {
@@ -518,6 +532,7 @@ type MobileSessionActions = {
   onClear?: () => Promise<void>
   onCompact?: () => Promise<void>
   onToggleArchive?: () => Promise<void>
+  onOpenWorkspaceDetails?: () => void
   clearPending?: boolean
   compactPending?: boolean
   archivePending?: boolean

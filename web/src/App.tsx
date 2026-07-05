@@ -1,18 +1,15 @@
-import Editor from '@monaco-editor/react'
-import { Code2, Eye, FileText, Menu, MessageSquare, Plus, Save, Terminal, X } from 'lucide-react'
+import { Folder, Menu, MessageSquare, Plus, Terminal, X } from 'lucide-react'
 import {
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type ComponentProps,
   type CSSProperties,
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import './App.css'
 import type {
   AgentEvent,
@@ -40,7 +37,6 @@ import {
   sessionActivityStreamURL,
   submitMessage,
   updateSessionAgentOptions,
-  updateSessionFileContent,
   updateSessionTitle,
 } from '@/lib/api'
 import { isTerminalEvent, knownEventTypes, lastSeq, shouldRefreshWorkspaceFilesForEvent, statusFromEvent } from '@/lib/events'
@@ -53,11 +49,12 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, Di
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { HostConsole } from '@/components/host-console'
 import { RunHealthRail } from '@/components/run-health-rail'
-import { SessionDetail } from '@/components/session-detail'
+import { ChatSessionHeader, SessionDetail } from '@/components/session-detail'
 import { defaultSessionListFilters, SessionList, type SessionListFilters } from '@/components/session-list'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { WorkspaceFilesView } from '@/components/workspace-files'
 import { hasSessionAttention, latestSessionSeq } from '@/lib/session-attention'
-import { sessionIDFromPathname, sessionPath } from '@/lib/routes'
+import { sessionPath, sessionRouteFromPathname, type SessionRouteView } from '@/lib/routes'
 import {
   readCachedSession as readPersistentCachedSession,
   writeCachedSession as writePersistentCachedSession,
@@ -71,10 +68,8 @@ type PaneWidths = {
   left: number
   right: number
 }
-type FileOverlayMode = 'preview' | 'edit'
-type FileSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error'
 type CodexSessionAction = 'clear' | 'compact'
-type AppView = 'session' | 'console'
+type AppView = SessionRouteView
 type PendingSessionAction = {
   action: CodexSessionAction
   sessionID: string
@@ -115,6 +110,7 @@ function App() {
   const [routeSelectedSessionID, setRouteSelectedSessionID] = useState<string | null>(() => selectedSessionIDFromLocation())
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileListOpen, setMobileListOpen] = useState(false)
+  const [mobileRailOpen, setMobileRailOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(true)
   const [refreshingSessions, setRefreshingSessions] = useState(false)
   const [error, setError] = useState('')
@@ -133,8 +129,9 @@ function App() {
   const [titleEditorStates, setTitleEditorStates] = useState<Record<string, { editing: boolean; dirty: boolean }>>({})
   const [sessionSearchQuery, setSessionSearchQuery] = useState('')
   const [sessionListFilters, setSessionListFilters] = useState<SessionListFilters>(defaultSessionListFilters)
-  const [appView, setAppView] = useState<AppView>('session')
+  const [appView, setAppView] = useState<AppView>(() => selectedSessionRouteFromLocation().view)
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
+  const appViewRef = useRef<AppView>(appView)
   const sessionsRef = useRef<Session[]>([])
   const paneWidthsRef = useRef(paneWidths)
 
@@ -180,9 +177,18 @@ function App() {
     })
     setSelectedSessionID(sessionID)
     if (historyMode !== 'none') {
-      writeSelectedSessionRoute(sessionID, historyMode)
+      writeSelectedSessionRoute(sessionID, historyMode, appViewRef.current)
     }
   }, [])
+
+  const selectAppView = useCallback(
+    (view: AppView, historyMode: Exclude<SessionRouteHistoryMode, 'none'> = 'push') => {
+      appViewRef.current = view
+      setAppView(view)
+      writeSelectedSessionRoute(selectedSessionIDRef.current, historyMode, view)
+    },
+    [],
+  )
 
   const completeSessionSelection = useCallback(
     (sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
@@ -254,6 +260,10 @@ function App() {
   }, [selectedSessionID])
 
   useEffect(() => {
+    appViewRef.current = appView
+  }, [appView])
+
+  useEffect(() => {
     sessionsRef.current = sessions
   }, [sessions])
 
@@ -264,7 +274,10 @@ function App() {
 
   useEffect(() => {
     function handlePopState() {
-      requestSessionSelection(selectedSessionIDFromLocation(), 'none')
+      const route = selectedSessionRouteFromLocation()
+      appViewRef.current = route.view
+      setAppView(route.view)
+      requestSessionSelection(route.sessionID, 'none')
     }
 
     window.addEventListener('popstate', handlePopState)
@@ -687,11 +700,21 @@ function App() {
           workspaceRelativeFilePath(path, selectedSession.workspace_path),
         )
         setOpenWorkspaceFile(content)
+        selectAppView('files')
       } catch (openError) {
         setError(messageFromError(openError))
       }
     },
-    [selectedSession, selectedSessionID],
+    [selectAppView, selectedSession, selectedSessionID],
+  )
+
+  const handleOpenWorkspaceFile = useCallback(
+    (file: WorkspaceFileContent) => {
+      setMobileRailOpen(false)
+      selectAppView('files')
+      setOpenWorkspaceFile(file)
+    },
+    [selectAppView],
   )
 
   function beginPaneResize(side: PaneSide, event: ReactPointerEvent<HTMLButtonElement>) {
@@ -780,13 +803,15 @@ function App() {
   const navigationTargetSession = confirmSessionNavigation?.targetSessionID
     ? (sessions.find((session) => session.id === confirmSessionNavigation.targetSessionID) ?? null)
     : null
+  const viewOffsetClassName =
+    appView === 'console' ? 'translate-x-9' : appView === 'files' ? 'translate-x-[4.5rem]' : 'translate-x-0'
   const viewToggle = (
-    <div className="relative grid shrink-0 grid-cols-2 rounded-md bg-muted p-1 shadow-inner">
+    <div className="relative grid shrink-0 grid-cols-3 rounded-md bg-muted p-1 shadow-inner">
       <span
         aria-hidden="true"
         className={cn(
           'absolute bottom-1 left-1 top-1 w-9 rounded-sm bg-background shadow-sm transition-transform duration-150 ease-out',
-          appView === 'console' ? 'translate-x-9' : 'translate-x-0',
+          viewOffsetClassName,
         )}
       />
       <button
@@ -797,7 +822,7 @@ function App() {
           'relative z-10 flex h-8 w-9 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           appView === 'session' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
         )}
-        onClick={() => setAppView('session')}
+        onClick={() => selectAppView('session')}
       >
         <MessageSquare className="size-4" />
       </button>
@@ -809,9 +834,21 @@ function App() {
           'relative z-10 flex h-8 w-9 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           appView === 'console' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
         )}
-        onClick={() => setAppView('console')}
+        onClick={() => selectAppView('console')}
       >
         <Terminal className="size-4" />
+      </button>
+      <button
+        type="button"
+        aria-label="Show files"
+        aria-pressed={appView === 'files'}
+        className={cn(
+          'relative z-10 flex h-8 w-9 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          appView === 'files' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+        )}
+        onClick={() => selectAppView('files')}
+      >
+        <Folder className="size-4" />
       </button>
     </div>
   )
@@ -869,6 +906,7 @@ function App() {
                 requestArchiveSession()
                 return Promise.resolve()
               }}
+              onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
               clearPending={
                 selectedSession
                   ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
@@ -883,6 +921,92 @@ function App() {
               onUpdateTitle={handleUpdateTitle}
               onTitleEditStateChange={handleTitleEditStateChange}
             />
+          ) : appView === 'files' ? (
+            <>
+              <div
+                data-testid="mobile-floating-files-header"
+                className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden"
+              >
+                <FilesWorkspaceHeader
+                  session={selectedSession}
+                  resolvingSessionID={resolvingSelectedSessionID}
+                  errorMessage={error || streamError}
+                  leadingAction={openSessionsButton}
+                  headerActions={viewToggle}
+                  onUpdateTitle={handleUpdateTitle}
+                  onTitleEditStateChange={handleTitleEditStateChange}
+                  onUpdateAgentOptions={handleUpdateAgentOptions}
+                  onClear={() => {
+                    requestSessionAction('clear')
+                    return Promise.resolve()
+                  }}
+                  onCompact={() => {
+                    requestSessionAction('compact')
+                    return Promise.resolve()
+                  }}
+                  onToggleArchive={() => {
+                    requestArchiveSession()
+                    return Promise.resolve()
+                  }}
+                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
+                  clearPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      : false
+                  }
+                  compactPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      : false
+                  }
+                  archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+                />
+              </div>
+              <div data-testid="floating-files-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
+                <FilesWorkspaceHeader
+                  session={selectedSession}
+                  resolvingSessionID={resolvingSelectedSessionID}
+                  errorMessage={error || streamError}
+                  headerActions={viewToggle}
+                  onUpdateTitle={handleUpdateTitle}
+                  onTitleEditStateChange={handleTitleEditStateChange}
+                  onUpdateAgentOptions={handleUpdateAgentOptions}
+                  onClear={() => {
+                    requestSessionAction('clear')
+                    return Promise.resolve()
+                  }}
+                  onCompact={() => {
+                    requestSessionAction('compact')
+                    return Promise.resolve()
+                  }}
+                  onToggleArchive={() => {
+                    requestArchiveSession()
+                    return Promise.resolve()
+                  }}
+                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
+                  clearPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      : false
+                  }
+                  compactPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      : false
+                  }
+                  archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+                />
+              </div>
+              <WorkspaceFilesView
+                session={selectedSession}
+                resolvingSessionID={resolvingSelectedSessionID}
+                refreshKey={fileRefreshKey}
+                selectedFile={openWorkspaceFile}
+                resolvedTheme={theme.resolvedTheme}
+                onOpenFile={handleOpenWorkspaceFile}
+                onFileSaved={setOpenWorkspaceFile}
+              />
+            </>
           ) : (
             <SessionDetail
               session={selectedSession}
@@ -916,6 +1040,7 @@ function App() {
                 requestArchiveSession()
                 return Promise.resolve()
               }}
+              onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
               clearPending={
                 selectedSession
                   ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
@@ -931,15 +1056,6 @@ function App() {
               mobileLeadingAction={openSessionsButton}
             />
           )}
-          {appView === 'session' && openWorkspaceFile ? (
-            <WorkspaceFileOverlay
-              sessionID={selectedSessionID ?? ''}
-              file={openWorkspaceFile}
-              resolvedTheme={theme.resolvedTheme}
-              onFileSaved={setOpenWorkspaceFile}
-              onClose={() => setOpenWorkspaceFile(null)}
-            />
-          ) : null}
         </div>
       </section>
 
@@ -972,7 +1088,7 @@ function App() {
             requestArchiveSession()
             return Promise.resolve()
           }}
-          onOpenFile={setOpenWorkspaceFile}
+          onOpenFile={handleOpenWorkspaceFile}
           clearPending={
             selectedSession
               ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
@@ -1075,9 +1191,141 @@ function App() {
           <div className="min-h-0 overflow-hidden">{mobileList}</div>
         </DialogContent>
       </Dialog>
+      <Dialog open={mobileRailOpen} onOpenChange={setMobileRailOpen}>
+        <DialogContent
+          showClose={false}
+          className="command-chat-header grid max-h-[min(44rem,calc(100dvh-4rem))] w-[calc(100vw-1.5rem)] max-w-md grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden border-border/90 p-0 shadow-[0_18px_60px_hsl(var(--foreground)/0.18)] lg:hidden"
+        >
+          <DialogHeader className="border-b border-border/70 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <DialogTitle>Workspace details</DialogTitle>
+              <DialogClose asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Close workspace details"
+                  className="text-muted-foreground hover:bg-background/50 hover:text-foreground"
+                >
+                  <X />
+                </Button>
+              </DialogClose>
+            </div>
+          </DialogHeader>
+          <div className="min-h-0 overflow-hidden">
+            <RunHealthRail
+              session={selectedSession}
+              resolvingSessionID={resolvingSelectedSessionID}
+              events={events}
+              streamState={streamState}
+              streamError={streamError}
+              fileRefreshKey={fileRefreshKey}
+              showFiles={false}
+              onClear={() => {
+                requestSessionAction('clear')
+                return Promise.resolve()
+              }}
+              onCompact={() => {
+                requestSessionAction('compact')
+                return Promise.resolve()
+              }}
+              onToggleArchive={() => {
+                requestArchiveSession()
+                return Promise.resolve()
+              }}
+              onOpenFile={handleOpenWorkspaceFile}
+              clearPending={
+                selectedSession
+                  ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                  : false
+              }
+              compactPending={
+                selectedSession
+                  ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                  : false
+              }
+              archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
       {viewportDebug ? <ViewportDebugPanel /> : null}
     </main>
+  )
+}
+
+function FilesWorkspaceHeader({
+  session,
+  resolvingSessionID,
+  errorMessage,
+  leadingAction,
+  headerActions,
+  onUpdateTitle,
+  onTitleEditStateChange,
+  onUpdateAgentOptions,
+  onClear,
+  onCompact,
+  onToggleArchive,
+  onOpenWorkspaceDetails,
+  clearPending,
+  compactPending,
+  archivePending,
+}: {
+  session: Session | null
+  resolvingSessionID: string | null
+  errorMessage: string
+  leadingAction?: ReactNode
+  headerActions?: ReactNode
+  onUpdateTitle: (title: string) => Promise<void>
+  onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
+  onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
+  onClear?: () => Promise<void>
+  onCompact?: () => Promise<void>
+  onToggleArchive?: () => Promise<void>
+  onOpenWorkspaceDetails?: () => void
+  clearPending?: boolean
+  compactPending?: boolean
+  archivePending?: boolean
+}) {
+  if (session) {
+    return (
+      <ChatSessionHeader
+        sessionID={session.id}
+        agentType={session.agent_type}
+        workspacePath={session.workspace_path}
+        agentOptions={session.agent_options}
+        title={session.title}
+        errorMessage={errorMessage}
+        onUpdateTitle={onUpdateTitle}
+        onTitleEditStateChange={onTitleEditStateChange}
+        onUpdateAgentOptions={onUpdateAgentOptions}
+        headerActions={headerActions}
+        leadingAction={leadingAction}
+        mobileSessionActions={{
+          session,
+          onClear,
+          onCompact,
+          onToggleArchive,
+          onOpenWorkspaceDetails,
+          clearPending,
+          compactPending,
+          archivePending,
+        }}
+      />
+    )
+  }
+
+  return (
+    <div className="pointer-events-auto">
+      <div className="command-chat-header flex min-h-14 items-center justify-between gap-3 rounded-xl border border-border/90 px-3 py-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]">
+        {leadingAction ? <div className="shrink-0">{leadingAction}</div> : null}
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-lg font-semibold">{resolvingSessionID ? 'Loading session...' : 'Files'}</p>
+        </div>
+        {headerActions}
+      </div>
+    </div>
   )
 }
 
@@ -1288,292 +1536,6 @@ function sessionActionDialogCopy(action: CodexSessionAction) {
   }
 }
 
-function WorkspaceFileOverlay({
-  sessionID,
-  file,
-  resolvedTheme,
-  onFileSaved,
-  onClose,
-}: {
-  sessionID: string
-  file: WorkspaceFileContent
-  resolvedTheme: 'light' | 'dark'
-  onFileSaved: (file: WorkspaceFileContent) => void
-  onClose: () => void
-}) {
-  const markdown = file.encoding !== 'binary' && isMarkdownFile(file)
-  const editable = file.encoding === 'utf-8' && !file.truncated
-  const displayPath = file.path || file.name
-  const [mode, setMode] = useState<FileOverlayMode>(markdown ? 'preview' : 'edit')
-  const [draft, setDraft] = useState(file.content)
-  const [saveState, setSaveState] = useState<FileSaveState>('clean')
-  const [saveError, setSaveError] = useState('')
-  const saveResetTimerRef = useRef<number | null>(null)
-  const dirty = draft !== file.content
-
-  const clearSaveResetTimer = useCallback(() => {
-    if (saveResetTimerRef.current === null) {
-      return
-    }
-    window.clearTimeout(saveResetTimerRef.current)
-    saveResetTimerRef.current = null
-  }, [])
-
-  useEffect(() => {
-    clearSaveResetTimer()
-    setMode(markdown ? 'preview' : 'edit')
-    setDraft(file.content)
-    setSaveState('clean')
-    setSaveError('')
-  }, [clearSaveResetTimer, file.content, file.path, file.name, markdown])
-
-  useEffect(() => clearSaveResetTimer, [clearSaveResetTimer])
-
-  function handleDraftChange(value: string | undefined) {
-    clearSaveResetTimer()
-    const nextValue = value ?? ''
-    setDraft(nextValue)
-    setSaveState(nextValue === file.content ? 'clean' : 'dirty')
-    setSaveError('')
-  }
-
-  async function handleSave() {
-    if (!sessionID || !editable || !dirty || saveState === 'saving') {
-      return
-    }
-    setSaveState('saving')
-    setSaveError('')
-    try {
-      const updated = await updateSessionFileContent(sessionID, file.path, draft)
-      onFileSaved(updated)
-      setDraft(updated.content)
-      setSaveState('saved')
-      clearSaveResetTimer()
-      saveResetTimerRef.current = window.setTimeout(() => {
-        setSaveState('clean')
-        saveResetTimerRef.current = null
-      }, 1400)
-    } catch (saveError) {
-      setSaveState('error')
-      setSaveError(saveError instanceof Error ? saveError.message : 'Failed to save file')
-    }
-  }
-
-  return (
-    <section
-      role="dialog"
-      aria-modal="true"
-      aria-label={`File viewer: ${file.name}`}
-      className="command-file-overlay absolute inset-0 z-50 flex min-h-0 flex-col"
-    >
-      <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-border/70 px-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-          <h2 className="min-w-0 truncate font-mono text-xs font-semibold" title={displayPath}>
-            {displayPath}
-          </h2>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {markdown && editable ? (
-            <div className="flex items-center rounded-md border border-border/70 bg-background/60 p-0.5">
-              <Button
-                type="button"
-                size="sm"
-                variant={mode === 'preview' ? 'secondary' : 'ghost'}
-                className="h-7 px-2"
-                onClick={() => setMode('preview')}
-              >
-                <Eye className="size-3.5" aria-hidden="true" />
-                Preview
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={mode === 'edit' ? 'secondary' : 'ghost'}
-                className="h-7 px-2"
-                onClick={() => setMode('edit')}
-              >
-                <Code2 className="size-3.5" aria-hidden="true" />
-                Edit
-              </Button>
-            </div>
-          ) : null}
-          {editable ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={!dirty || saveState === 'saving' || !sessionID}
-              onClick={() => void handleSave()}
-            >
-              <Save className="size-3.5" aria-hidden="true" />
-              {saveState === 'saving' ? 'Saving' : 'Save'}
-            </Button>
-          ) : null}
-          <span className="text-xs text-muted-foreground">{formatBytes(file.size_bytes)}</span>
-          <button
-            type="button"
-            className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Close file viewer"
-            onClick={onClose}
-          >
-            <X className="size-4" aria-hidden="true" />
-          </button>
-        </div>
-      </header>
-
-      <div className={cn('min-h-0 flex-1 p-4', editable && mode === 'edit' ? 'overflow-hidden' : 'overflow-auto')}>
-        {file.encoding === 'binary' ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            Binary preview unavailable
-          </div>
-        ) : markdown ? (
-          mode === 'preview' ? (
-            <MarkdownFilePreview content={draft} />
-          ) : (
-            <WorkspaceFileEditor file={file} value={draft} resolvedTheme={resolvedTheme} onChange={handleDraftChange} />
-          )
-        ) : editable ? (
-          <WorkspaceFileEditor file={file} value={draft} resolvedTheme={resolvedTheme} onChange={handleDraftChange} />
-        ) : (
-          <pre className="min-h-full overflow-auto rounded-md bg-surface-muted/80 p-4 text-xs leading-relaxed text-foreground">
-            <code>{file.content}</code>
-          </pre>
-        )}
-      </div>
-
-      {file.truncated || saveState !== 'clean' ? (
-        <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border/70 px-4 py-2 text-xs text-muted-foreground">
-          <span>{file.truncated ? 'Preview truncated' : saveStatusText(saveState)}</span>
-          {saveError ? <span className="text-destructive">{saveError}</span> : null}
-        </footer>
-      ) : null}
-    </section>
-  )
-}
-
-function WorkspaceFileEditor({
-  file,
-  value,
-  resolvedTheme,
-  onChange,
-}: {
-  file: WorkspaceFileContent
-  value: string
-  resolvedTheme: 'light' | 'dark'
-  onChange: (value: string | undefined) => void
-}) {
-  return (
-    <div className="h-full min-h-[320px] overflow-hidden rounded-md border border-border/70 bg-background">
-      <Editor
-        height="100%"
-        path={file.path || file.name}
-        language={editorLanguageForFile(file)}
-        theme={resolvedTheme === 'dark' ? 'vs-dark' : 'light'}
-        value={value}
-        onChange={onChange}
-        options={{
-          automaticLayout: true,
-          fontSize: 13,
-          lineNumbersMinChars: 3,
-          minimap: { enabled: false },
-          scrollBeyondLastLine: false,
-          wordWrap: 'on',
-        }}
-      />
-    </div>
-  )
-}
-
-function MarkdownFilePreview({ content }: { content: string }) {
-  return (
-    <article className="mx-auto min-h-full max-w-3xl rounded-md bg-background/72 px-6 py-5 text-sm leading-7 text-foreground shadow-sm ring-1 ring-border/60">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          h1: ({ children }) => <h1 className="mb-4 mt-0 text-2xl font-semibold leading-tight">{children}</h1>,
-          h2: ({ children }) => <h2 className="mb-3 mt-7 text-xl font-semibold leading-tight">{children}</h2>,
-          h3: ({ children }) => <h3 className="mb-2 mt-6 text-base font-semibold leading-tight">{children}</h3>,
-          p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{children}</p>,
-          a: ({ children, href }) => (
-            <a href={href} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">
-              {children}
-            </a>
-          ),
-          ul: ({ children }) => <ul className="my-3 list-disc space-y-1 pl-5">{children}</ul>,
-          ol: ({ children }) => <ol className="my-3 list-decimal space-y-1 pl-5">{children}</ol>,
-          li: ({ children }) => <li>{children}</li>,
-          blockquote: ({ children }) => (
-            <blockquote className="my-4 border-l-2 border-border pl-4 text-muted-foreground">{children}</blockquote>
-          ),
-          code: MarkdownPreviewCode,
-          pre: ({ children }) => <>{children}</>,
-          table: ({ children }) => (
-            <div className="my-4 overflow-auto">
-              <table className="w-full border-collapse text-xs">{children}</table>
-            </div>
-          ),
-          th: ({ children }) => <th className="border border-border px-2 py-1 text-left font-medium">{children}</th>,
-          td: ({ children }) => <td className="border border-border px-2 py-1 align-top">{children}</td>,
-          hr: () => <hr className="my-6 border-border" />,
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </article>
-  )
-}
-
-function MarkdownPreviewCode({ children, className }: ComponentProps<'code'>) {
-  const block = className?.startsWith('language-') || String(children ?? '').includes('\n')
-  if (block) {
-    return (
-      <code className="my-4 block overflow-auto rounded-md bg-surface-muted p-3 font-mono text-xs leading-relaxed">
-        {children}
-      </code>
-    )
-  }
-  return <code className="rounded bg-surface-muted px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
-}
-
-function isMarkdownFile(file: WorkspaceFileContent) {
-  const name = `${file.path || file.name}`.toLowerCase()
-  return name.endsWith('.md') || name.endsWith('.markdown') || name.endsWith('.mdown') || name.endsWith('.mdx')
-}
-
-function saveStatusText(state: FileSaveState) {
-  switch (state) {
-    case 'dirty':
-      return 'Unsaved changes'
-    case 'saving':
-      return 'Saving changes'
-    case 'saved':
-      return 'Saved'
-    case 'error':
-      return 'Save failed'
-    default:
-      return ''
-  }
-}
-
-function editorLanguageForFile(file: WorkspaceFileContent) {
-  const name = `${file.path || file.name}`.toLowerCase()
-  if (name.endsWith('.md') || name.endsWith('.markdown') || name.endsWith('.mdown')) return 'markdown'
-  if (name.endsWith('.mdx')) return 'mdx'
-  if (name.endsWith('.ts') || name.endsWith('.tsx')) return 'typescript'
-  if (name.endsWith('.js') || name.endsWith('.jsx') || name.endsWith('.mjs') || name.endsWith('.cjs'))
-    return 'javascript'
-  if (name.endsWith('.json')) return 'json'
-  if (name.endsWith('.go')) return 'go'
-  if (name.endsWith('.css')) return 'css'
-  if (name.endsWith('.html') || name.endsWith('.htm')) return 'html'
-  if (name.endsWith('.yml') || name.endsWith('.yaml')) return 'yaml'
-  if (name.endsWith('.sh') || name.endsWith('.bash') || name.endsWith('.zsh')) return 'shell'
-  if (name.endsWith('.sql')) return 'sql'
-  if (name.endsWith('.toml')) return 'toml'
-  return 'plaintext'
-}
-
 function PaneResizeHandle({
   label,
   value,
@@ -1778,12 +1740,6 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
 }
 
-function formatBytes(value: number) {
-  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
-  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
-  return `${value} B`
-}
-
 function workspaceRelativeFilePath(path: string, workspacePath: string) {
   const filePath = path.trim().replaceAll('\\', '/').replace(/:\d+(?::\d+)?$/, '')
   if (!filePath) {
@@ -1904,18 +1860,26 @@ function round2(value: number) {
 }
 
 function selectedSessionIDFromLocation() {
-  if (typeof window === 'undefined') {
-    return null
-  }
-  return sessionIDFromPathname(window.location.pathname)
+  return selectedSessionRouteFromLocation().sessionID
 }
 
-function writeSelectedSessionRoute(sessionID: string | null, historyMode: Exclude<SessionRouteHistoryMode, 'none'>) {
+function selectedSessionRouteFromLocation() {
+  if (typeof window === 'undefined') {
+    return { sessionID: null, view: 'session' as const }
+  }
+  return sessionRouteFromPathname(window.location.pathname)
+}
+
+function writeSelectedSessionRoute(
+  sessionID: string | null,
+  historyMode: Exclude<SessionRouteHistoryMode, 'none'>,
+  view: AppView = 'session',
+) {
   if (typeof window === 'undefined') {
     return
   }
 
-  const path = sessionPath(sessionID)
+  const path = sessionPath(sessionID, view)
   if (window.location.pathname === path) {
     return
   }

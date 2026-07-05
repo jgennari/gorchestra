@@ -122,15 +122,20 @@ test('mobile session details menu exposes right-rail session actions', async () 
   const onClear = vi.fn(async () => undefined)
   const onCompact = vi.fn(async () => undefined)
   const onToggleArchive = vi.fn(async () => undefined)
+  const onOpenWorkspaceDetails = vi.fn()
 
   renderDetail({
     session: { ...baseSession, agent_type: 'codex', provider_session_id: 'thread_1' },
     onClear,
     onCompact,
     onToggleArchive,
+    onOpenWorkspaceDetails,
   })
 
   const mobileHeader = screen.getByTestId('mobile-floating-session-header')
+
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Workspace details' }))
 
   await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
   await user.click(within(mobileHeader).getByRole('button', { name: 'Clear context' }))
@@ -141,6 +146,7 @@ test('mobile session details menu exposes right-rail session actions', async () 
   await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
   await user.click(within(mobileHeader).getByRole('button', { name: 'Archive session' }))
 
+  expect(onOpenWorkspaceDetails).toHaveBeenCalledOnce()
   expect(onClear).toHaveBeenCalledOnce()
   expect(onCompact).toHaveBeenCalledOnce()
   expect(onToggleArchive).toHaveBeenCalledOnce()
@@ -163,6 +169,7 @@ test('desktop session details menu does not duplicate right-rail actions', async
   expect(within(dialog).queryByRole('button', { name: 'Clear context' })).not.toBeInTheDocument()
   expect(within(dialog).queryByRole('button', { name: 'Compact context' })).not.toBeInTheDocument()
   expect(within(dialog).queryByRole('button', { name: 'Archive session' })).not.toBeInTheDocument()
+  expect(within(dialog).queryByRole('button', { name: 'Workspace details' })).not.toBeInTheDocument()
 })
 
 test('floating chat header shows session details and copies the session key', async () => {
