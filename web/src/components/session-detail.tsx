@@ -1,5 +1,5 @@
 import { Archive, Check, Copy, Ellipsis, Eraser, Loader2, Minimize2, PanelRightOpen } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
   MessageAttachment,
@@ -90,6 +90,8 @@ export function SessionDetail({
   headerActions,
   mobileLeadingAction,
 }: Props) {
+  const bottomStackRef = useRef<HTMLDivElement>(null)
+  const [bottomInsetHeight, setBottomInsetHeight] = useState(176)
   const userInputRequest = useMemo(
     () => (session?.status === 'running' ? pendingUserInputRequest(events) : null),
     [events, session?.status],
@@ -117,6 +119,33 @@ export function SessionDetail({
       : null
   const latestTerminal = useMemo(() => latestTerminalEvent(events), [events])
   const latestQueueEvent = useMemo(() => latestQueuedMessageEvent(events), [events])
+
+  useLayoutEffect(() => {
+    const element = bottomStackRef.current
+    if (!element) {
+      return
+    }
+    const target = element
+
+    function updateHeight() {
+      const nextHeight = measureBottomStackHeight(target)
+      if (nextHeight < 1) {
+        return
+      }
+      setBottomInsetHeight((current) => (current === nextHeight ? current : nextHeight))
+    }
+
+    updateHeight()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateHeight)
+      return () => window.removeEventListener('resize', updateHeight)
+    }
+
+    const observer = new ResizeObserver(() => updateHeight())
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [session?.id, userInputRequest])
 
   if (!session) {
     if (resolvingSessionID) {
@@ -159,13 +188,14 @@ export function SessionDetail({
   const disabledReason = session.status === 'running' ? 'This session is running.' : ''
 
   return (
-    <section className="relative grid h-full w-full min-h-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-transparent">
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+    <section className="relative h-full w-full min-h-0 overflow-hidden bg-transparent">
+      <div className="absolute inset-0 overflow-hidden">
         <ChatTranscript
           events={events}
           loading={streamState === 'loading'}
           error=""
           topInset={errorMessage ? 'sessionHeaderAlert' : 'sessionHeader'}
+          bottomInsetHeight={bottomInsetHeight}
           activityStatus={activityStatus}
           showDebugEvents={showDebugEvents}
           hasOlderEvents={hasOlderEvents}
@@ -218,27 +248,33 @@ export function SessionDetail({
           />
         </div>
       </div>
-      <div data-testid="session-bottom-stack" className="relative z-20 min-h-0 shrink-0">
-        <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
-        <PromptComposer
-          key={session.id}
-          sessionID={session.id}
-          agentType={session.agent_type}
-          sessionStatus={session.status}
-          hasPendingUserInput={Boolean(userInputRequest)}
-          latestTerminalEvent={latestTerminal}
-          latestQueueEvent={latestQueueEvent}
-          disabled={composerDisabled}
-          disabledReason={disabledReason}
-          showDebugEvents={showDebugEvents}
-          onSubmit={onSubmitPrompt}
-          onShowDebugEventsChange={onShowDebugEventsChange}
-          onCancel={session.status === 'running' ? onCancel : undefined}
-          onError={onErrorMessageChange}
-        />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
+        <div ref={bottomStackRef} data-testid="session-bottom-stack" className="pointer-events-auto relative">
+          <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
+          <PromptComposer
+            key={session.id}
+            sessionID={session.id}
+            agentType={session.agent_type}
+            sessionStatus={session.status}
+            hasPendingUserInput={Boolean(userInputRequest)}
+            latestTerminalEvent={latestTerminal}
+            latestQueueEvent={latestQueueEvent}
+            disabled={composerDisabled}
+            disabledReason={disabledReason}
+            showDebugEvents={showDebugEvents}
+            onSubmit={onSubmitPrompt}
+            onShowDebugEventsChange={onShowDebugEventsChange}
+            onCancel={session.status === 'running' ? onCancel : undefined}
+            onError={onErrorMessageChange}
+          />
+        </div>
       </div>
     </section>
   )
+}
+
+function measureBottomStackHeight(element: HTMLElement) {
+  return Math.ceil(element.getBoundingClientRect().height)
 }
 
 export function ChatSessionHeader({

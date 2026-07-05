@@ -150,13 +150,24 @@ test('load older control invokes the older event loader', async () => {
 })
 
 test('uses fixed transcript bottom breathing room', () => {
-  const { container } = render(
+  render(
     <ChatTranscript
       events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })]}
     />,
   )
 
-  expect(container.querySelector('.p-4')).toHaveStyle({ paddingBottom: '8px' })
+  expect(screen.getByTestId('chat-transcript-tail-spacer')).toHaveStyle({ height: '8px' })
+})
+
+test('uses measured bottom inset height for transcript tail spacer', () => {
+  render(
+    <ChatTranscript
+      bottomInsetHeight={260}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })]}
+    />,
+  )
+
+  expect(screen.getByTestId('chat-transcript-tail-spacer')).toHaveStyle({ height: '268px' })
 })
 
 test('renders thinking activity status where the transcript tail indicator appears', () => {
@@ -379,6 +390,28 @@ test('scrolls to bottom when content grows while following latest', async () => 
   await waitFor(() => expect(log.scrollTop).toBe(1160))
 })
 
+test('scrolls to bottom when the bottom overlay inset grows while following latest', async () => {
+  const { rerender } = render(
+    <ChatTranscript
+      bottomInsetHeight={176}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 1000, scrollHeight: 1000, clientHeight: 400 })
+
+  setScrollMetrics(log, { scrollTop: 1000, scrollHeight: 1160, clientHeight: 400 })
+  rerender(
+    <ChatTranscript
+      bottomInsetHeight={336}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+    />,
+  )
+
+  await waitFor(() => expect(log.scrollTop).toBe(1160))
+})
+
 test('keeps first-load restored content above the composer when content reflows', async () => {
   const originalResizeObserver = globalThis.ResizeObserver
   const resizeObservers: Array<{ trigger: () => void }> = []
@@ -433,6 +466,31 @@ test('does not scroll on content growth while auto-scroll is paused', () => {
         event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' }),
         event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Two' }),
       ]}
+    />,
+  )
+
+  expect(log.scrollTop).toBe(120)
+  expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+})
+
+test('does not scroll on bottom overlay inset growth while auto-scroll is paused', () => {
+  const { rerender } = render(
+    <ChatTranscript
+      bottomInsetHeight={176}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1000, clientHeight: 400 })
+  fireEvent.wheel(log)
+  fireEvent.scroll(log)
+
+  setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1160, clientHeight: 400 })
+  rerender(
+    <ChatTranscript
+      bottomInsetHeight={336}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
     />,
   )
 

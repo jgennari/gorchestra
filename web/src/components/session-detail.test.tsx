@@ -210,11 +210,13 @@ test('session detail uses matching floating headers on mobile and desktop', () =
   expect(screen.queryByText(/Last event:/)).not.toBeInTheDocument()
 })
 
-test('composer stack reserves layout space below the transcript', () => {
+test('composer stack floats over the transcript while reserving tail inset', () => {
   renderDetail()
 
   const bottomStack = screen.getByTestId('session-bottom-stack')
-  expect(bottomStack).not.toHaveClass('absolute')
+  expect(bottomStack).toHaveClass('pointer-events-auto')
+  expect(bottomStack.parentElement).toHaveClass('absolute')
+  expect(bottomStack.parentElement).toHaveClass('bottom-0')
   expect(bottomStack).toContainElement(screen.getByLabelText('Prompt'))
   expect(screen.getByText('No messages yet. Submit a prompt to start the chat.')).toBeInTheDocument()
 })

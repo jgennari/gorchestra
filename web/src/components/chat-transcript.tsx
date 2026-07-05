@@ -38,6 +38,7 @@ type Props = {
   loading?: boolean
   error?: string
   topInset?: 'none' | 'sessionHeader' | 'sessionHeaderAlert'
+  bottomInsetHeight?: number
   activityStatus?: ChatActivityStatus | null
   showDebugEvents?: boolean
   hasOlderEvents?: boolean
@@ -52,6 +53,7 @@ export function ChatTranscript({
   loading = false,
   error = '',
   topInset = 'none',
+  bottomInsetHeight = 0,
   activityStatus = null,
   showDebugEvents = false,
   hasOlderEvents = false,
@@ -74,7 +76,7 @@ export function ChatTranscript({
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
   const firstTimelineSeq = timeline[0]?.startSeq ?? 0
   const lastSeq = timeline.at(-1)?.endSeq ?? 0
-  const bottomAnchorKey = `${lastSeq}:${activityStatus ? activityStatus.kind : 'idle'}`
+  const bottomAnchorKey = `${lastSeq}:${activityStatus ? activityStatus.kind : 'idle'}:${bottomInsetHeight}`
 
   function setAutoScrollPausedState(paused: boolean) {
     autoScrollPausedRef.current = paused
@@ -279,8 +281,8 @@ export function ChatTranscript({
   }
 
   const latestMessageIndex = timeline.reduce((latest, item, index) => (item.kind === 'message' ? index : latest), -1)
-  const contentBottomPadding = 8
-  const jumpButtonBottom = 16
+  const tailSpacerHeight = Math.max(8, bottomInsetHeight + 8)
+  const jumpButtonBottom = Math.max(16, bottomInsetHeight + 12)
 
   return (
     <div className="chat-canvas relative h-full min-h-0 overflow-hidden">
@@ -304,7 +306,7 @@ export function ChatTranscript({
             topInset === 'sessionHeader' && 'lg:pt-24',
             topInset === 'sessionHeaderAlert' && 'lg:pt-36',
           )}
-          style={{ paddingBottom: `${contentBottomPadding}px` }}
+          style={{ paddingBottom: 0 }}
         >
           {hasOlderEvents || loadingOlderEvents ? (
             <LoadOlderEventsButton loading={loadingOlderEvents} onLoad={requestOlderEvents} />
@@ -326,6 +328,7 @@ export function ChatTranscript({
               <ActivityIndicatorRow status={activityStatus} />
             </div>
           ) : null}
+          <div data-testid="chat-transcript-tail-spacer" aria-hidden="true" style={{ height: `${tailSpacerHeight}px` }} />
         </div>
       </ScrollArea>
       {autoScrollPaused ? (
