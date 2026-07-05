@@ -1,6 +1,9 @@
 import type { AgentEvent } from '@/lib/api'
 import {
+  activeRunActivity,
+  activeStreamingResponse,
   activeThinking,
+  activeToolActivity,
   appendEvent,
   appendEvents,
   buildChatTranscript,
@@ -34,6 +37,14 @@ function failedEvent(seq: number, type = 'agent.run.failed', payload: Record<str
   return {
     ...event(seq, type, payload),
     status: 'failed',
+  }
+}
+
+function timedEvent(seq: number, type: string, createdAt: string, payload: Record<string, unknown> = {}) {
+  return {
+    ...event(seq, type, payload),
+    status: type.endsWith('.completed') ? 'completed' : 'started',
+    created_at: createdAt,
   }
 }
 
@@ -398,6 +409,118 @@ test('active thinking restarts when a new reasoning item starts after completion
     activeThinking([
       event(1, 'agent.thinking.started', { item_id: 'rs_2' }),
       event(2, 'agent.thinking.completed', { item_id: 'rs_2', text: '' }),
+    ]),
+  ).toBe(false)
+})
+
+test('active run activity starts from run start and ignores provider noise', () => {
+  const activity = activeRunActivity([
+    timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+    timedEvent(2, 'provider.codex.event', '2026-06-12T16:00:05Z', { provider_event_type: 'thread/tokenUsage/updated' }),
+    timedEvent(3, 'session.status.updated', '2026-06-12T16:00:06Z', { status: 'running' }),
+  ])
+
+  expect(activity).toEqual({
+    runStartedAt: '2026-06-12T16:00:00Z',
+    lastVisibleActivityAt: '2026-06-12T16:00:00Z',
+    lastVisibleActivitySeq: 1,
+  })
+})
+
+test('active run activity advances on visible agent, tool, and file events', () => {
+  const activity = activeRunActivity([
+    timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+    timedEvent(2, 'agent.status.started', '2026-06-12T16:00:01Z'),
+    timedEvent(3, 'agent.thinking.completed', '2026-06-12T16:00:04Z', { item_id: 'rs_1' }),
+    timedEvent(4, 'tool.call.started', '2026-06-12T16:00:08Z'),
+    timedEvent(5, 'file.change.completed', '2026-06-12T16:00:12Z'),
+  ])
+
+  expect(activity?.lastVisibleActivityAt).toBe('2026-06-12T16:00:12Z')
+  expect(activity?.lastVisibleActivitySeq).toBe(5)
+})
+
+test('active run activity clears on terminal run events', () => {
+  expect(
+    activeRunActivity([
+      timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+      timedEvent(2, 'tool.call.started', '2026-06-12T16:00:02Z'),
+      timedEvent(3, 'agent.run.completed', '2026-06-12T16:00:10Z'),
+    ]),
+  ).toBeNull()
+})
+
+test('active streaming response tracks assistant and plan text streams during a run', () => {
+  expect(
+    activeStreamingResponse([
+      timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+      timedEvent(2, 'agent.message.delta', '2026-06-12T16:00:01Z', { item_id: 'msg_1', text: 'Working' }),
+    ]),
+  ).toBe(true)
+
+  expect(
+    activeStreamingResponse([
+      timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+      timedEvent(2, 'agent.plan.delta', '2026-06-12T16:00:01Z', { item_id: 'plan_1', text: '- Check' }),
+    ]),
+  ).toBe(true)
+
+  expect(
+    activeStreamingResponse([
+      timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+      timedEvent(2, 'agent.message.delta', '2026-06-12T16:00:01Z', { item_id: 'msg_1', text: 'Working' }),
+      timedEvent(3, 'agent.message.completed', '2026-06-12T16:00:02Z', { item_id: 'msg_1', text: 'Working' }),
+    ]),
+  ).toBe(false)
+})
+
+test('active streaming response ignores active tools and clears on terminal run events', () => {
+  expect(
+    activeStreamingResponse([
+      timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+      timedEvent(2, 'tool.call.started', '2026-06-12T16:00:01Z', { item_id: 'tool_1' }),
+    ]),
+  ).toBe(false)
+
+  expect(
+    activeStreamingResponse([
+      timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+      timedEvent(2, 'agent.message.delta', '2026-06-12T16:00:01Z', { item_id: 'msg_1', text: 'Working' }),
+      timedEvent(3, 'agent.run.cancelled', '2026-06-12T16:00:02Z'),
+    ]),
+  ).toBe(false)
+})
+
+test('active tool activity tracks running tool and file-change groups', () => {
+  expect(
+    activeToolActivity([
+      timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+      timedEvent(2, 'tool.call.started', '2026-06-12T16:00:01Z', { item_id: 'tool_1' }),
+    ]),
+  ).toBe(true)
+
+  expect(
+    activeToolActivity([
+      timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+      timedEvent(2, 'file.change.started', '2026-06-12T16:00:01Z', { item_id: 'edit_1' }),
+    ]),
+  ).toBe(true)
+})
+
+test('active tool activity clears completed groups and terminal runs', () => {
+  expect(
+    activeToolActivity([
+      timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+      timedEvent(2, 'tool.call.started', '2026-06-12T16:00:01Z', { item_id: 'tool_1' }),
+      timedEvent(3, 'tool.call.completed', '2026-06-12T16:00:02Z', { item_id: 'tool_1' }),
+    ]),
+  ).toBe(false)
+
+  expect(
+    activeToolActivity([
+      timedEvent(1, 'agent.run.started', '2026-06-12T16:00:00Z'),
+      timedEvent(2, 'tool.call.started', '2026-06-12T16:00:01Z', { item_id: 'tool_1' }),
+      timedEvent(3, 'agent.run.failed', '2026-06-12T16:00:02Z'),
     ]),
   ).toBe(false)
 })

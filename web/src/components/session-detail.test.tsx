@@ -103,6 +103,99 @@ test('thinking indicator follows active reasoning events while running', () => {
   expect(screen.getByRole('status', { name: /thinking/i })).toBeInTheDocument()
 })
 
+test('running session shows working status after visible activity goes quiet', () => {
+  renderDetail({
+    session: { ...baseSession, status: 'running' },
+    events: [event(1, 'agent.run.started', {})],
+  })
+
+  expect(screen.getByRole('status', { name: /working/i })).toBeInTheDocument()
+})
+
+test('running session suppresses working status while assistant text streams', () => {
+  renderDetail({
+    session: { ...baseSession, status: 'running' },
+    events: [
+      event(1, 'agent.run.started', {}),
+      event(2, 'agent.message.delta', { item_id: 'msg_1', text: 'Streaming answer' }),
+    ],
+  })
+
+  expect(screen.queryByRole('status', { name: /working/i })).not.toBeInTheDocument()
+  expect(screen.getByText('Streaming answer')).toBeInTheDocument()
+})
+
+test('running session shows working status after streamed assistant text completes', () => {
+  renderDetail({
+    session: { ...baseSession, status: 'running' },
+    events: [
+      event(1, 'agent.run.started', {}),
+      event(2, 'agent.message.delta', { item_id: 'msg_1', text: 'Streaming answer' }),
+      event(3, 'agent.message.completed', { item_id: 'msg_1', text: 'Streaming answer' }),
+    ],
+  })
+
+  expect(screen.getByRole('status', { name: /working/i })).toBeInTheDocument()
+  expect(screen.getByText('Streaming answer')).toBeInTheDocument()
+})
+
+test('running session suppresses working status while a tool is active', () => {
+  renderDetail({
+    session: { ...baseSession, status: 'running' },
+    events: [
+      event(1, 'agent.run.started', {}),
+      event(2, 'agent.message.completed', { item_id: 'msg_1', text: 'Running checks.' }),
+      event(3, 'tool.call.started', { item_id: 'tool_1', command: 'sleep 20' }),
+    ],
+  })
+
+  expect(screen.queryByRole('status', { name: /working/i })).not.toBeInTheDocument()
+  expect(screen.getByText('sleep 20')).toBeInTheDocument()
+})
+
+test('running session prefers thinking status over quiet working status', () => {
+  renderDetail({
+    session: { ...baseSession, status: 'running' },
+    events: [
+      event(1, 'agent.run.started', {}),
+      event(2, 'agent.thinking.started', {
+        provider_event_type: 'item/started',
+        item_type: 'reasoning',
+        item_id: 'rs_1',
+      }),
+    ],
+  })
+
+  expect(screen.getByRole('status', { name: /thinking/i })).toBeInTheDocument()
+  expect(screen.queryByRole('status', { name: /working/i })).not.toBeInTheDocument()
+})
+
+test('pending user input suppresses quiet working status', () => {
+  renderDetail({
+    session: { ...baseSession, status: 'running' },
+    events: [
+      event(1, 'agent.run.started', {}),
+      event(2, 'agent.input.requested', {
+        request_id: 'call_test',
+        provider: 'codex',
+        provider_event_type: 'item/tool/requestUserInput',
+        item_id: 'call_test',
+        questions: [
+          {
+            id: 'approval',
+            header: 'Trust',
+            question: 'Approve this action?',
+            options: [{ label: 'Approve', description: 'Allow the action.' }],
+          },
+        ],
+      }),
+    ],
+  })
+
+  expect(screen.queryByRole('status', { name: /working/i })).not.toBeInTheDocument()
+  expect(screen.getByText('Approve this action?')).toBeInTheDocument()
+})
+
 test('session detail uses matching floating headers on mobile and desktop', () => {
   renderDetail({ mobileLeadingAction: <button type="button">Open sessions</button> })
 
@@ -115,6 +208,15 @@ test('session detail uses matching floating headers on mobile and desktop', () =
   expect(screen.queryByText(/Created:/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Updated:/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Last event:/)).not.toBeInTheDocument()
+})
+
+test('composer stack reserves layout space below the transcript', () => {
+  renderDetail()
+
+  const bottomStack = screen.getByTestId('session-bottom-stack')
+  expect(bottomStack).not.toHaveClass('absolute')
+  expect(bottomStack).toContainElement(screen.getByLabelText('Prompt'))
+  expect(screen.getByText('No messages yet. Submit a prompt to start the chat.')).toBeInTheDocument()
 })
 
 test('mobile session details menu exposes right-rail session actions', async () => {

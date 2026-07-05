@@ -1,5 +1,5 @@
 import { Archive, Check, Copy, Ellipsis, Eraser, Loader2, Minimize2, PanelRightOpen } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
   MessageAttachment,
@@ -14,7 +14,14 @@ import { ChatTranscript } from '@/components/chat-transcript'
 import { PromptComposer } from '@/components/prompt-composer'
 import { SessionTitleEditor } from '@/components/session-title-editor'
 import { UserInputCard } from '@/components/user-input-card'
-import { activeThinking, latestTerminalEvent, pendingUserInputRequest } from '@/lib/events'
+import {
+  activeRunActivity,
+  activeStreamingResponse,
+  activeThinking,
+  activeToolActivity,
+  latestTerminalEvent,
+  pendingUserInputRequest,
+} from '@/lib/events'
 import { cn } from '@/lib/utils'
 
 type Props = {
@@ -91,34 +98,25 @@ export function SessionDetail({
     () => session?.status === 'running' && !userInputRequest && activeThinking(events),
     [events, session?.status, userInputRequest],
   )
+  const runActivity = useMemo(
+    () => (session?.status === 'running' && !userInputRequest ? activeRunActivity(events) : null),
+    [events, session?.status, userInputRequest],
+  )
+  const streamingResponse = useMemo(
+    () => session?.status === 'running' && !userInputRequest && activeStreamingResponse(events),
+    [events, session?.status, userInputRequest],
+  )
+  const activeTool = useMemo(
+    () => session?.status === 'running' && !userInputRequest && activeToolActivity(events),
+    [events, session?.status, userInputRequest],
+  )
+  const activityStatus = thinking
+    ? ({ kind: 'thinking' } as const)
+    : runActivity && !streamingResponse && !activeTool
+      ? ({ kind: 'working', since: runActivity.lastVisibleActivityAt } as const)
+      : null
   const latestTerminal = useMemo(() => latestTerminalEvent(events), [events])
   const latestQueueEvent = useMemo(() => latestQueuedMessageEvent(events), [events])
-  const bottomStackRef = useRef<HTMLDivElement>(null)
-  const [bottomInsetHeight, setBottomInsetHeight] = useState(176)
-
-  useLayoutEffect(() => {
-    const element = bottomStackRef.current
-    if (!element) {
-      return
-    }
-    const target = element
-
-    function updateHeight() {
-      const nextHeight = Math.ceil(target.getBoundingClientRect().height)
-      setBottomInsetHeight((current) => (current === nextHeight ? current : nextHeight))
-    }
-
-    updateHeight()
-
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateHeight)
-      return () => window.removeEventListener('resize', updateHeight)
-    }
-
-    const observer = new ResizeObserver(() => updateHeight())
-    observer.observe(target)
-    return () => observer.disconnect()
-  }, [session?.id, userInputRequest])
 
   if (!session) {
     if (resolvingSessionID) {
@@ -161,15 +159,14 @@ export function SessionDetail({
   const disabledReason = session.status === 'running' ? 'This session is running.' : ''
 
   return (
-    <section className="relative flex h-full w-full min-h-0 flex-col overflow-hidden bg-transparent">
+    <section className="relative grid h-full w-full min-h-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-transparent">
       <div className="relative min-h-0 flex-1 overflow-hidden">
         <ChatTranscript
           events={events}
           loading={streamState === 'loading'}
           error=""
           topInset={errorMessage ? 'sessionHeaderAlert' : 'sessionHeader'}
-          bottomInsetHeight={bottomInsetHeight}
-          thinking={thinking}
+          activityStatus={activityStatus}
           showDebugEvents={showDebugEvents}
           hasOlderEvents={hasOlderEvents}
           loadingOlderEvents={loadingOlderEvents}
@@ -221,26 +218,24 @@ export function SessionDetail({
           />
         </div>
       </div>
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
-        <div ref={bottomStackRef} className="pointer-events-auto relative">
-          <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
-          <PromptComposer
-            key={session.id}
-            sessionID={session.id}
-            agentType={session.agent_type}
-            sessionStatus={session.status}
-            hasPendingUserInput={Boolean(userInputRequest)}
-            latestTerminalEvent={latestTerminal}
-            latestQueueEvent={latestQueueEvent}
-            disabled={composerDisabled}
-            disabledReason={disabledReason}
-            showDebugEvents={showDebugEvents}
-            onSubmit={onSubmitPrompt}
-            onShowDebugEventsChange={onShowDebugEventsChange}
-            onCancel={session.status === 'running' ? onCancel : undefined}
-            onError={onErrorMessageChange}
-          />
-        </div>
+      <div data-testid="session-bottom-stack" className="relative z-20 min-h-0 shrink-0">
+        <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
+        <PromptComposer
+          key={session.id}
+          sessionID={session.id}
+          agentType={session.agent_type}
+          sessionStatus={session.status}
+          hasPendingUserInput={Boolean(userInputRequest)}
+          latestTerminalEvent={latestTerminal}
+          latestQueueEvent={latestQueueEvent}
+          disabled={composerDisabled}
+          disabledReason={disabledReason}
+          showDebugEvents={showDebugEvents}
+          onSubmit={onSubmitPrompt}
+          onShowDebugEventsChange={onShowDebugEventsChange}
+          onCancel={session.status === 'running' ? onCancel : undefined}
+          onError={onErrorMessageChange}
+        />
       </div>
     </section>
   )

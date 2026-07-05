@@ -209,7 +209,10 @@ test('prompt composer queues enter submissions while running', async () => {
   expect(await screen.findByText('Draft next message')).toBeInTheDocument()
   await waitFor(() => expect(prompt).toHaveFocus())
 
-  await user.click(screen.getByRole('button', { name: 'Cancel running session' }))
+  const cancelButton = screen.getByRole('button', { name: 'Cancel running session' })
+  expect(cancelButton).toHaveClass('running-stop-button')
+
+  await user.click(cancelButton)
 
   expect(onCancel).toHaveBeenCalledOnce()
 })

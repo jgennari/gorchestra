@@ -31,13 +31,14 @@ const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
 const AUTO_LOAD_OLDER_THRESHOLD_PX = 160
 const scrollIntentKeys = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])
 
+type ChatActivityStatus = { kind: 'thinking' } | { kind: 'working'; since: string }
+
 type Props = {
   events: AgentEvent[]
   loading?: boolean
   error?: string
   topInset?: 'none' | 'sessionHeader' | 'sessionHeaderAlert'
-  bottomInsetHeight?: number
-  thinking?: boolean
+  activityStatus?: ChatActivityStatus | null
   showDebugEvents?: boolean
   hasOlderEvents?: boolean
   loadingOlderEvents?: boolean
@@ -51,8 +52,7 @@ export function ChatTranscript({
   loading = false,
   error = '',
   topInset = 'none',
-  bottomInsetHeight = 176,
-  thinking = false,
+  activityStatus = null,
   showDebugEvents = false,
   hasOlderEvents = false,
   loadingOlderEvents = false,
@@ -62,7 +62,9 @@ export function ChatTranscript({
 }: Props) {
   const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
   const scrollRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const scrollIdleTimer = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const scrollFrameRef = useRef<number | null>(null)
   const autoLoadOlderRef = useRef(false)
   const prependAnchorRef = useRef<{ firstSeq: number; scrollHeight: number; scrollTop: number } | null>(null)
   const autoScrollPausedRef = useRef(false)
@@ -72,7 +74,7 @@ export function ChatTranscript({
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
   const firstTimelineSeq = timeline[0]?.startSeq ?? 0
   const lastSeq = timeline.at(-1)?.endSeq ?? 0
-  const bottomAnchorKey = `${lastSeq}:${thinking ? 'thinking' : 'idle'}`
+  const bottomAnchorKey = `${lastSeq}:${activityStatus ? activityStatus.kind : 'idle'}`
 
   function setAutoScrollPausedState(paused: boolean) {
     autoScrollPausedRef.current = paused
@@ -84,23 +86,50 @@ export function ChatTranscript({
     lastScrollTopRef.current = element.scrollTop
   }
 
+  function scheduleScrollToBottom() {
+    const element = scrollRef.current
+    if (!element) {
+      return
+    }
+
+    scrollToBottom(element)
+    if (scrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollFrameRef.current)
+    }
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null
+      if (!autoScrollPausedRef.current && scrollRef.current) {
+        scrollToBottom(scrollRef.current)
+      }
+    })
+  }
+
   useLayoutEffect(() => {
     const element = scrollRef.current
     if (!element) {
       return
     }
     if (!autoScrollPausedRef.current) {
-      scrollToBottom(element)
+      scheduleScrollToBottom()
     }
   }, [bottomAnchorKey])
 
   useLayoutEffect(() => {
-    const element = scrollRef.current
-    if (!element || autoScrollPausedRef.current) {
+    const scrollElement = scrollRef.current
+    const contentElement = contentRef.current
+    if (!scrollElement || !contentElement || typeof ResizeObserver === 'undefined') {
       return
     }
-    scrollToBottom(element)
-  }, [bottomInsetHeight])
+
+    const observer = new ResizeObserver(() => {
+      if (!autoScrollPausedRef.current) {
+        scheduleScrollToBottom()
+      }
+    })
+    observer.observe(scrollElement)
+    observer.observe(contentElement)
+    return () => observer.disconnect()
+  }, [])
 
   useLayoutEffect(() => {
     const anchor = prependAnchorRef.current
@@ -141,6 +170,9 @@ export function ChatTranscript({
     return () => {
       if (scrollIdleTimer.current) {
         window.clearTimeout(scrollIdleTimer.current)
+      }
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current)
       }
     }
   }, [])
@@ -238,7 +270,7 @@ export function ChatTranscript({
     )
   }
 
-  if (timeline.length === 0 && !thinking) {
+  if (timeline.length === 0 && !activityStatus) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
         No messages yet. Submit a prompt to start the chat.
@@ -247,8 +279,8 @@ export function ChatTranscript({
   }
 
   const latestMessageIndex = timeline.reduce((latest, item, index) => (item.kind === 'message' ? index : latest), -1)
-  const contentBottomPadding = Math.max(64, bottomInsetHeight + 16)
-  const jumpButtonBottom = Math.max(16, bottomInsetHeight + 12)
+  const contentBottomPadding = 8
+  const jumpButtonBottom = 16
 
   return (
     <div className="chat-canvas relative h-full min-h-0 overflow-hidden">
@@ -266,6 +298,7 @@ export function ChatTranscript({
         aria-relevant="additions text"
       >
         <div
+          ref={contentRef}
           className={cn(
             'p-4',
             topInset === 'sessionHeader' && 'lg:pt-24',
@@ -288,9 +321,9 @@ export function ChatTranscript({
               />
             </div>
           ))}
-          {thinking ? (
+          {activityStatus ? (
             <div className={timeline.length > 0 || hasOlderEvents || loadingOlderEvents ? 'mt-5' : ''}>
-              <ThinkingIndicatorRow />
+              <ActivityIndicatorRow status={activityStatus} />
             </div>
           ) : null}
         </div>
@@ -315,6 +348,13 @@ export function ChatTranscript({
       ) : null}
     </div>
   )
+}
+
+function ActivityIndicatorRow({ status }: { status: ChatActivityStatus }) {
+  if (status.kind === 'thinking') {
+    return <ThinkingIndicatorRow />
+  }
+  return <WorkingIndicatorRow since={status.since} />
 }
 
 function ThinkingIndicatorRow() {
@@ -349,6 +389,45 @@ function ThinkingIndicatorRow() {
       </div>
     </article>
   )
+}
+
+function WorkingIndicatorRow({ since }: { since: string }) {
+  const label = useWorkingLabel(since)
+
+  return (
+    <article className="flex justify-start">
+      <div
+        role="status"
+        aria-label={label}
+        aria-live="polite"
+        className="thinking-indicator inline-flex max-w-full sm:max-w-[min(48rem,90%)] items-center gap-2 px-1 py-1 text-sm font-medium"
+      >
+        <Loader2 className="size-4 animate-spin text-primary" aria-hidden="true" />
+        <span className="thinking-indicator__text">{label}</span>
+      </div>
+    </article>
+  )
+}
+
+function useWorkingLabel(since: string) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    setNow(Date.now())
+    const interval = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [since])
+
+  const startedAt = Date.parse(since)
+  if (!Number.isFinite(startedAt)) {
+    return 'Working'
+  }
+
+  const elapsedSeconds = Math.max(0, Math.floor((now - startedAt) / 1000))
+  if (elapsedSeconds < 1) {
+    return 'Working'
+  }
+  return `Working for ${elapsedSeconds} ${elapsedSeconds === 1 ? 'second' : 'seconds'}`
 }
 
 function isScrolledNearBottom(element: HTMLDivElement) {
@@ -1111,6 +1190,6 @@ function RunErrorRow({ error }: { error: ChatRunError }) {
 
 function toolStatusDotClassName(tool: ChatTranscriptTool) {
   if (tool.error || tool.status === 'failed') return 'bg-destructive'
-  if (tool.status !== 'completed') return 'animate-pulse bg-muted-foreground/45'
+  if (tool.status !== 'completed') return 'tool-activity-dot'
   return ''
 }

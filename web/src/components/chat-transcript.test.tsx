@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AgentEvent } from '@/lib/api'
 import { ChatTranscript } from '@/components/chat-transcript'
@@ -149,15 +149,43 @@ test('load older control invokes the older event loader', async () => {
   expect(onLoadOlderEvents).toHaveBeenCalledTimes(1)
 })
 
-test('uses the measured bottom inset height for transcript padding', () => {
+test('uses fixed transcript bottom breathing room', () => {
   const { container } = render(
     <ChatTranscript
-      bottomInsetHeight={260}
       events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })]}
     />,
   )
 
-  expect(container.querySelector('.p-4')).toHaveStyle({ paddingBottom: '276px' })
+  expect(container.querySelector('.p-4')).toHaveStyle({ paddingBottom: '8px' })
+})
+
+test('renders thinking activity status where the transcript tail indicator appears', () => {
+  render(<ChatTranscript activityStatus={{ kind: 'thinking' }} events={[]} />)
+
+  expect(screen.getByRole('status', { name: 'Thinking' })).toBeInTheDocument()
+  expect(screen.getByRole('log', { name: 'Chat messages' })).toContainElement(
+    screen.getByRole('status', { name: 'Thinking' }),
+  )
+})
+
+test('renders working activity status with a quiet-time counter', () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-06-12T16:00:05Z'))
+
+  try {
+    render(<ChatTranscript activityStatus={{ kind: 'working', since: '2026-06-12T16:00:00Z' }} events={[]} />)
+
+    expect(screen.getByRole('status', { name: 'Working for 5 seconds' })).toBeInTheDocument()
+
+    act(() => {
+      vi.setSystemTime(new Date('2026-06-12T16:00:07Z'))
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(screen.getByRole('status', { name: 'Working for 8 seconds' })).toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 test('scrolling near the top auto-loads older events and leaves the manual button', async () => {
@@ -328,10 +356,9 @@ test('keeps auto-scroll active when content growth emits a scroll event', async 
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 })
 
-test('scrolls to bottom when the composer bottom inset grows while following latest', async () => {
+test('scrolls to bottom when content grows while following latest', async () => {
   const { rerender } = render(
     <ChatTranscript
-      bottomInsetHeight={176}
       events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
     />,
   )
@@ -342,18 +369,54 @@ test('scrolls to bottom when the composer bottom inset grows while following lat
   setScrollMetrics(log, { scrollTop: 1000, scrollHeight: 1160, clientHeight: 400 })
   rerender(
     <ChatTranscript
-      bottomInsetHeight={336}
-      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' }),
+        event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Two' }),
+      ]}
     />,
   )
 
   await waitFor(() => expect(log.scrollTop).toBe(1160))
 })
 
-test('does not scroll on composer bottom inset growth while auto-scroll is paused', () => {
+test('keeps first-load restored content above the composer when content reflows', async () => {
+  const originalResizeObserver = globalThis.ResizeObserver
+  const resizeObservers: Array<{ trigger: () => void }> = []
+  class TestResizeObserver {
+    private callback: ResizeObserverCallback
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback
+      resizeObservers.push({ trigger: () => this.callback([], this as unknown as ResizeObserver) })
+    }
+
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver
+
+  try {
+    render(
+      <ChatTranscript
+        events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Restored answer' })]}
+      />,
+    )
+    const log = screen.getByRole('log', { name: 'Chat messages' })
+
+    setScrollMetrics(log, { scrollTop: 1000, scrollHeight: 1000, clientHeight: 400 })
+    setScrollMetrics(log, { scrollTop: 1000, scrollHeight: 1280, clientHeight: 400 })
+
+    resizeObservers.forEach((observer) => observer.trigger())
+
+    await waitFor(() => expect(log.scrollTop).toBe(1280))
+  } finally {
+    globalThis.ResizeObserver = originalResizeObserver
+  }
+})
+
+test('does not scroll on content growth while auto-scroll is paused', () => {
   const { rerender } = render(
     <ChatTranscript
-      bottomInsetHeight={176}
       events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
     />,
   )
@@ -366,8 +429,10 @@ test('does not scroll on composer bottom inset growth while auto-scroll is pause
   setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1160, clientHeight: 400 })
   rerender(
     <ChatTranscript
-      bottomInsetHeight={336}
-      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' }),
+        event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Two' }),
+      ]}
     />,
   )
 
@@ -572,6 +637,24 @@ test('shows web search query details in expandable tool output', async () => {
   expect(screen.getByText(/- weather: 33445, United States/)).toBeInTheDocument()
 })
 
+test('renders active tool indicators with the animated activity dot', () => {
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { item_id: 'msg_1', text: 'Running a tool.' }),
+        event(2, 'tool.call.started', 'assistant', 'started', {
+          item_id: 'tool_1',
+          command: 'sleep 20',
+        }),
+      ]}
+    />,
+  )
+
+  const toolButton = screen.getByRole('button', { name: /expand sleep 20/i })
+  expect(toolButton.querySelector('.tool-activity-dot')).toBeInTheDocument()
+  expect(toolButton.querySelector('.animate-pulse')).not.toBeInTheDocument()
+})
+
 test('shows all tool calls for the latest message bubble', () => {
   const events = [
     event(1, 'agent.message.completed', 'assistant', 'completed', { item_id: 'msg_1', text: 'Working through tools.' }),
@@ -682,7 +765,7 @@ test('renders streaming assistant messages without a badge', () => {
 test('renders active thinking inline in the chat log', () => {
   render(
     <ChatTranscript
-      thinking
+      activityStatus={{ kind: 'thinking' }}
       events={[event(1, 'user.message.completed', 'user', 'completed', { text: 'Hello' })]}
     />,
   )
@@ -694,7 +777,7 @@ test('renders active thinking inline in the chat log', () => {
 })
 
 test('renders active thinking instead of the empty transcript state', () => {
-  render(<ChatTranscript thinking events={[]} />)
+  render(<ChatTranscript activityStatus={{ kind: 'thinking' }} events={[]} />)
 
   expect(screen.getByRole('status', { name: 'Thinking' })).toBeInTheDocument()
   expect(screen.queryByText('No messages yet. Submit a prompt to start the chat.')).not.toBeInTheDocument()

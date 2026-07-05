@@ -112,6 +112,12 @@ export type ChatDebugEvent = {
   createdAt: string
 }
 
+export type ActiveRunActivity = {
+  runStartedAt: string
+  lastVisibleActivityAt: string
+  lastVisibleActivitySeq: number
+}
+
 export type ChatActionBreak = {
   id: string
   action: string
@@ -490,6 +496,135 @@ export function activeThinking(events: AgentEvent[]) {
   }
 
   return activeGenericThinking || activeThinkingItems.size > 0
+}
+
+export function activeRunActivity(events: AgentEvent[]): ActiveRunActivity | null {
+  let activity: ActiveRunActivity | null = null
+
+  for (const event of sortedUniqueEvents(events)) {
+    if (event.type === 'agent.run.started') {
+      activity = {
+        runStartedAt: event.created_at,
+        lastVisibleActivityAt: event.created_at,
+        lastVisibleActivitySeq: event.seq,
+      }
+      continue
+    }
+
+    if (!activity) {
+      continue
+    }
+
+    if (isTerminalEvent(event.type)) {
+      activity = null
+      continue
+    }
+
+    if (isVisibleRunActivity(event)) {
+      activity = {
+        ...activity,
+        lastVisibleActivityAt: event.created_at,
+        lastVisibleActivitySeq: event.seq,
+      }
+    }
+  }
+
+  return activity
+}
+
+export function activeStreamingResponse(events: AgentEvent[]) {
+  let runActive = false
+  let activeGenericStream = false
+  const activeStreamItems = new Set<string>()
+
+  for (const event of sortedUniqueEvents(events)) {
+    if (event.type === 'agent.run.started') {
+      runActive = true
+      activeGenericStream = false
+      activeStreamItems.clear()
+      continue
+    }
+
+    if (!runActive) {
+      continue
+    }
+
+    if (isTerminalEvent(event.type)) {
+      runActive = false
+      activeGenericStream = false
+      activeStreamItems.clear()
+      continue
+    }
+
+    if (event.type === 'agent.message.delta' || isPlanDeltaEvent(event)) {
+      const itemID = streamingResponseItemID(event)
+      if (itemID) {
+        activeStreamItems.add(itemID)
+      } else {
+        activeGenericStream = true
+      }
+      continue
+    }
+
+    if (event.type === 'agent.message.completed' || event.type === 'agent.plan.completed' || legacyProviderPlanKind(event) === 'completed') {
+      const itemID = streamingResponseItemID(event)
+      if (itemID) {
+        activeStreamItems.delete(itemID)
+      } else {
+        activeGenericStream = false
+      }
+    }
+  }
+
+  return activeGenericStream || activeStreamItems.size > 0
+}
+
+export function activeToolActivity(events: AgentEvent[]) {
+  let runActive = false
+  let activeGenericTool = false
+  const activeTools = new Set<string>()
+
+  for (const event of sortedUniqueEvents(events)) {
+    if (event.type === 'agent.run.started') {
+      runActive = true
+      activeGenericTool = false
+      activeTools.clear()
+      continue
+    }
+
+    if (!runActive) {
+      continue
+    }
+
+    if (isTerminalEvent(event.type)) {
+      runActive = false
+      activeGenericTool = false
+      activeTools.clear()
+      continue
+    }
+
+    if (!event.type.startsWith('tool.call') && !event.type.startsWith('file.change')) {
+      continue
+    }
+
+    const activityID = activeToolActivityID(event)
+    if (event.type.endsWith('.completed')) {
+      if (activityID) {
+        activeTools.delete(activityID)
+      } else {
+        activeGenericTool = false
+      }
+      continue
+    }
+
+    if (activityID) {
+      activeTools.add(activityID)
+    } else {
+      activeGenericTool = true
+    }
+  }
+
+  return activeGenericTool || activeTools.size > 0
 }
 
 export function eventLabel(eventOrType: AgentEvent | string) {
@@ -1024,6 +1159,20 @@ function payloadItemID(payload: unknown) {
   return payloadString(payload, ['item_id', 'itemId', 'id'])
 }
 
+function streamingResponseItemID(event: AgentEvent) {
+  return payloadString(event.payload, ['item_id', 'itemId', 'message_id', 'messageId', 'id'])
+}
+
+function activeToolActivityID(event: AgentEvent) {
+  if (event.type.startsWith('tool.call')) {
+    return toolGroupID(event)
+  }
+  if (event.type.startsWith('file.change')) {
+    return fileChangeGroupID(event)
+  }
+  return ''
+}
+
 function clearsActiveThinking(event: AgentEvent) {
   return (
     event.type.startsWith('agent.message') ||
@@ -1033,6 +1182,20 @@ function clearsActiveThinking(event: AgentEvent) {
     event.type.startsWith('file.change') ||
     event.type === 'agent.input.requested' ||
     isTerminalEvent(event.type)
+  )
+}
+
+function isVisibleRunActivity(event: AgentEvent) {
+  return (
+    event.type === 'agent.status.started' ||
+    event.type.startsWith('agent.message') ||
+    event.type.startsWith('agent.plan') ||
+    isLegacyProviderPlanEvent(event) ||
+    event.type.startsWith('agent.thinking') ||
+    event.type === 'agent.log.delta' ||
+    event.type === 'agent.input.requested' ||
+    event.type.startsWith('tool.call') ||
+    event.type.startsWith('file.change')
   )
 }
 

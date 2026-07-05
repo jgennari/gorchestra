@@ -732,7 +732,9 @@ export function PromptComposer({
                 size="icon"
                 disabled={cancelling}
                 onClick={() => void handleCancel()}
-                className="h-8 w-8 border-destructive/40 text-destructive hover:bg-destructive/10"
+                className={cn(
+                  'running-stop-button h-8 w-8 border-destructive/40 text-destructive hover:bg-destructive/10',
+                )}
                 aria-label="Cancel running session"
               >
                 <Square />
