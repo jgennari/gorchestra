@@ -122,7 +122,7 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
             disabled={disabled || submitting}
             onClick={() => void selectAnswer(option.label)}
             className={cn(
-              'flex min-h-12 w-full min-w-0 items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors disabled:pointer-events-none disabled:opacity-60',
+              'flex min-h-12 w-full min-w-0 items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors disabled:pointer-events-none disabled:opacity-60 sm:items-center',
               selectedValue === option.label
                 ? 'border-primary/60 bg-primary/10 text-foreground'
                 : 'border-border/72 bg-transparent text-foreground hover:border-border',
@@ -131,14 +131,18 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
             <span
               aria-hidden="true"
               className={cn(
-                'size-2.5 shrink-0 rounded-full border',
+                'mt-1.5 size-2.5 shrink-0 rounded-full border sm:mt-0',
                 selectedValue === option.label ? 'border-primary bg-primary' : 'border-muted-foreground/35',
               )}
             />
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-medium">{option.label}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block whitespace-normal break-words text-sm font-medium leading-snug sm:truncate">
+                {option.label}
+              </span>
               {option.description ? (
-                <span className="block truncate text-xs text-muted-foreground">{option.description}</span>
+                <span className="mt-0.5 block whitespace-normal break-words text-xs leading-snug text-muted-foreground sm:truncate">
+                  {option.description}
+                </span>
               ) : null}
             </span>
           </button>

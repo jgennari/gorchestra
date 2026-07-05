@@ -409,6 +409,28 @@ func TestCreateSessionAcceptsAvailableOpenCodeAgent(t *testing.T) {
 	}
 }
 
+func TestCreateSessionAcceptsAvailablePiAgent(t *testing.T) {
+	ctx := context.Background()
+	piAgent := availabilityAgent{agentType: "pi"}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, piAgent)
+
+	rec := postJSON(handler, "/api/sessions", `{"agent_type":"pi","title":"Pi run"}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	var response createSessionResponse
+	decodeJSON(t, rec, &response)
+	session, err := dbStore.GetSession(ctx, response.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.AgentType != "pi" {
+		t.Fatalf("expected pi agent type, got %q", session.AgentType)
+	}
+}
+
 func TestCreateSessionStoresCodexRunDangerouslyOption(t *testing.T) {
 	ctx := context.Background()
 	codexAgent := availabilityAgent{agentType: "codex"}
@@ -1220,6 +1242,41 @@ func TestMessageSubmissionPassesClaudeOptionsToAgentMetadata(t *testing.T) {
 	}
 }
 
+func TestMessageSubmissionPassesPiOptionsToAgentMetadata(t *testing.T) {
+	ctx := context.Background()
+	agent := newBlockingAgent()
+	agent.agentType = "pi"
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Pi run",
+		AgentType: "pi",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(agent.release)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{
+		"content":"Inspect this repo",
+		"agent_options":{"pi":{"model":"anthropic/claude-sonnet-4-5","thinking_level":"high"}}
+	}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	select {
+	case input := <-agent.started:
+		options, ok := input.Metadata["pi_options"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected pi options metadata, got %#v", input.Metadata["pi_options"])
+		}
+		assertMetadataValue(t, options, "model", "anthropic/claude-sonnet-4-5")
+		assertMetadataValue(t, options, "thinking_level", "high")
+	case <-time.After(2 * time.Second):
+		t.Fatal("context ended before agent started")
+	}
+}
+
 func TestMessageSubmissionPassesProviderSessionIDToCodexAgent(t *testing.T) {
 	ctx := context.Background()
 	agent := newBlockingAgent()
@@ -1345,6 +1402,37 @@ func TestOpenCodeRunStartedPersistsProviderSessionID(t *testing.T) {
 	}
 	if updated.ProviderSessionID != "ses_created" {
 		t.Fatalf("expected provider session id ses_created, got %q", updated.ProviderSessionID)
+	}
+}
+
+func TestPiRunStartedPersistsProviderSessionID(t *testing.T) {
+	ctx := context.Background()
+	agent := piSessionAgent{sessionID: "pi_created"}
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Pi run",
+		AgentType: "pi",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Start"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	waitFor(t, func() bool {
+		session, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && session.Status == store.SessionStatusIdle
+	})
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated.ProviderSessionID != "pi_created" {
+		t.Fatalf("expected provider session id pi_created, got %q", updated.ProviderSessionID)
 	}
 }
 
@@ -2690,6 +2778,27 @@ func (a opencodeSessionAgent) Run(ctx context.Context, input agents.AgentInput, 
 		Payload: map[string]any{
 			"provider":            "opencode",
 			"provider_event_type": "session/new",
+			"provider_session_id": a.sessionID,
+		},
+	})
+}
+
+type piSessionAgent struct {
+	sessionID string
+}
+
+func (a piSessionAgent) Type() string {
+	return "pi"
+}
+
+func (a piSessionAgent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
+	return emit(ctx, agents.AgentEvent{
+		Type:   "agent.run.started",
+		Role:   "assistant",
+		Status: string(store.EventStatusStarted),
+		Payload: map[string]any{
+			"provider":            "pi",
+			"provider_event_type": "get_state",
 			"provider_session_id": a.sessionID,
 		},
 	})

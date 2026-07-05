@@ -25,6 +25,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents/codex"
 	"github.com/jgennari/gorchestra/internal/agents/fake"
 	"github.com/jgennari/gorchestra/internal/agents/opencode"
+	"github.com/jgennari/gorchestra/internal/agents/pi"
 	"github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/httpapi"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
@@ -52,6 +53,7 @@ type config struct {
 	claudeBin      string
 	claudeModel    string
 	opencodeBin    string
+	piBin          string
 	open           bool
 	showVersion    bool
 }
@@ -122,7 +124,17 @@ func main() {
 		log.Printf("opencode available: %s", version)
 	}
 
-	agentRegistry, err := agents.NewRegistry(fake.New(), codexAgent, claudeAgent, opencodeAgent)
+	piAgent := pi.New(
+		pi.WithBinary(cfg.piBin),
+		pi.WithWorkspace(cfg.workspace),
+	)
+	if version, err := piAgent.CheckAvailability(ctx); err != nil {
+		log.Printf("pi unavailable: %v", err)
+	} else {
+		log.Printf("pi available: %s", version)
+	}
+
+	agentRegistry, err := agents.NewRegistry(fake.New(), codexAgent, claudeAgent, opencodeAgent, piAgent)
 	if err != nil {
 		log.Fatalf("agent registry startup failed: %v", err)
 	}
@@ -198,6 +210,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	flags.StringVar(&cfg.claudeBin, "claude-bin", "", "path to the Claude CLI binary")
 	flags.StringVar(&cfg.claudeModel, "claude-model", "", "optional Claude model override")
 	flags.StringVar(&cfg.opencodeBin, "opencode-bin", "", "path to the OpenCode CLI binary")
+	flags.StringVar(&cfg.piBin, "pi-bin", "", "path to the Pi CLI binary")
 	flags.BoolVar(&cfg.open, "open", false, "open the app in the default browser after startup")
 	flags.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -217,6 +230,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	claudeBinFlag := flagWasSet(flags, "claude-bin")
 	claudeModelFlag := flagWasSet(flags, "claude-model")
 	opencodeBinFlag := flagWasSet(flags, "opencode-bin")
+	piBinFlag := flagWasSet(flags, "pi-bin")
 	openFlag := flagWasSet(flags, "open")
 	workspaceRootsFlag := flagWasSet(flags, "workspace-root")
 	if cfg.showVersion {
@@ -273,6 +287,9 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	}
 	if !opencodeBinFlag {
 		cfg.opencodeBin = defaultOpenCodeBin(configGetenv)
+	}
+	if !piBinFlag {
+		cfg.piBin = envOr(configGetenv, "GORCHESTRA_PI_BIN", "pi")
 	}
 	if !openFlag {
 		cfg.open = envBool(configGetenv, "GORCHESTRA_OPEN", false)

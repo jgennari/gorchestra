@@ -154,6 +154,7 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
                 <SelectItem value="codex">Codex</SelectItem>
                 <SelectItem value="claude">Claude</SelectItem>
                 <SelectItem value="opencode">OpenCode</SelectItem>
+                <SelectItem value="pi">Pi</SelectItem>
               </SelectContent>
             </Select>
           </div>

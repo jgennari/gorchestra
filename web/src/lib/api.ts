@@ -1,5 +1,5 @@
 export type SessionStatus = 'idle' | 'running' | 'failed'
-export type AgentType = 'fake' | 'codex' | 'claude' | 'opencode'
+export type AgentType = 'fake' | 'codex' | 'claude' | 'opencode' | 'pi'
 
 export type Session = {
   id: string
@@ -77,6 +77,7 @@ export type CodexAgentOptions = {
 }
 
 export type OpenCodeAgentOptions = CodexAgentOptions
+export type PiAgentOptions = CodexAgentOptions
 
 export type CodexSubmitOptions = {
   model?: string
@@ -97,10 +98,16 @@ export type OpenCodeSubmitOptions = {
   planning_mode?: boolean
 }
 
+export type PiSubmitOptions = {
+  model?: string
+  thinking_level?: string
+}
+
 export type SubmitAgentOptions = {
   codex?: CodexSubmitOptions
   claude?: ClaudeSubmitOptions
   opencode?: OpenCodeSubmitOptions
+  pi?: PiSubmitOptions
 }
 
 export type QueuedMessage = {
@@ -267,7 +274,7 @@ export class APIError extends Error {
 }
 
 export function isAgentType(value: string): value is AgentType {
-  return value === 'fake' || value === 'codex' || value === 'claude' || value === 'opencode'
+  return value === 'fake' || value === 'codex' || value === 'claude' || value === 'opencode' || value === 'pi'
 }
 
 export async function fetchHealth() {
@@ -346,10 +353,12 @@ export async function compactSession(sessionID: string) {
 }
 
 export async function fetchAgentOptions(agentType: AgentType) {
-  if (agentType !== 'codex' && agentType !== 'opencode') {
+  if (agentType !== 'codex' && agentType !== 'opencode' && agentType !== 'pi') {
     throw new Error(`No options API for ${agentType}`)
   }
-  return requestJSON<CodexAgentOptions | OpenCodeAgentOptions>(`/api/agents/${encodeURIComponent(agentType)}/options`)
+  return requestJSON<CodexAgentOptions | OpenCodeAgentOptions | PiAgentOptions>(
+    `/api/agents/${encodeURIComponent(agentType)}/options`,
+  )
 }
 
 export async function listWorkspaceRoots() {

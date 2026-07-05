@@ -306,6 +306,7 @@ const agentFilterOptions: Array<{ value: SessionListAgentFilter; label: string }
   { value: 'codex', label: 'Codex' },
   { value: 'claude', label: 'Claude' },
   { value: 'opencode', label: 'OpenCode' },
+  { value: 'pi', label: 'Pi' },
   { value: 'fake', label: 'Fake' },
 ]
 

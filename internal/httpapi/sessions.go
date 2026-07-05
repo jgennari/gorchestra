@@ -82,6 +82,7 @@ type submitAgentOptions struct {
 	Codex    *submitCodexOptions    `json:"codex,omitempty"`
 	Claude   *submitClaudeOptions   `json:"claude,omitempty"`
 	OpenCode *submitOpenCodeOptions `json:"opencode,omitempty"`
+	Pi       *submitPiOptions       `json:"pi,omitempty"`
 }
 
 type submitCodexOptions struct {
@@ -101,6 +102,11 @@ type submitClaudeOptions struct {
 type submitOpenCodeOptions struct {
 	Model        string `json:"model,omitempty"`
 	PlanningMode bool   `json:"planning_mode,omitempty"`
+}
+
+type submitPiOptions struct {
+	Model         string `json:"model,omitempty"`
+	ThinkingLevel string `json:"thinking_level,omitempty"`
 }
 
 type submitAttachment struct {
@@ -578,6 +584,7 @@ func submitOptionsMetadata(agentType string, sessionAgentOptions json.RawMessage
 	codexOptions := map[string]any{}
 	claudeOptions := map[string]any{}
 	opencodeOptions := map[string]any{}
+	piOptions := map[string]any{}
 	if len(sessionAgentOptions) > 0 {
 		var persisted map[string]map[string]any
 		if err := json.Unmarshal(sessionAgentOptions, &persisted); err != nil {
@@ -592,8 +599,11 @@ func submitOptionsMetadata(agentType string, sessionAgentOptions json.RawMessage
 		for key, value := range persisted["opencode"] {
 			opencodeOptions[key] = value
 		}
+		for key, value := range persisted["pi"] {
+			piOptions[key] = value
+		}
 	}
-	if options == nil || options.Codex == nil && options.Claude == nil && options.OpenCode == nil {
+	if options == nil || options.Codex == nil && options.Claude == nil && options.OpenCode == nil && options.Pi == nil {
 		responseOptions := map[string]any{}
 		if len(codexOptions) > 0 {
 			metadata["codex_options"] = codexOptions
@@ -607,10 +617,26 @@ func submitOptionsMetadata(agentType string, sessionAgentOptions json.RawMessage
 			metadata["opencode_options"] = opencodeOptions
 			responseOptions["opencode"] = opencodeOptions
 		}
+		if len(piOptions) > 0 {
+			metadata["pi_options"] = piOptions
+			responseOptions["pi"] = piOptions
+		}
 		if len(responseOptions) == 0 {
 			return metadata, nil, nil
 		}
 		return metadata, responseOptions, nil
+	}
+	if options.Pi != nil {
+		if options.Codex != nil || options.Claude != nil || options.OpenCode != nil {
+			return nil, nil, fmt.Errorf("only one agent options block is supported")
+		}
+		if agentType != "pi" {
+			return nil, nil, fmt.Errorf("pi options require a pi session")
+		}
+		piOptions["model"] = strings.TrimSpace(options.Pi.Model)
+		piOptions["thinking_level"] = strings.TrimSpace(options.Pi.ThinkingLevel)
+		metadata["pi_options"] = piOptions
+		return metadata, map[string]any{"pi": piOptions}, nil
 	}
 	if options.OpenCode != nil {
 		if options.Codex != nil || options.Claude != nil {
@@ -1655,6 +1681,11 @@ func providerSessionIDFromAgentEvent(agentType string, event agents.AgentEvent) 
 		default:
 			return ""
 		}
+	case "pi":
+		if payloadString(payload, "provider") != "pi" || payloadString(payload, "provider_event_type") != "get_state" {
+			return ""
+		}
+		return payloadString(payload, "provider_session_id")
 	default:
 		return ""
 	}

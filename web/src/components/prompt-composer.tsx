@@ -34,6 +34,7 @@ import {
   type CodexServiceTierOption,
   type MessageAttachment,
   type OpenCodeAgentOptions,
+  type PiAgentOptions,
   type QueuedMessage,
   removeQueuedMessage as deleteQueuedMessage,
   type SubmitAgentOptions,
@@ -94,11 +95,17 @@ type OpenCodeSelection = {
   planning_mode: boolean
 }
 
+type PiSelection = {
+  model: string
+  thinking_level: string
+}
+
 type ComposerStorageValue = {
   draft?: string
   codexSelection?: Partial<CodexSelection>
   claudeSelection?: Partial<ClaudeSelection>
   opencodeSelection?: Partial<OpenCodeSelection>
+  piSelection?: Partial<PiSelection>
 }
 
 type ComposerAttachment = MessageAttachment & {
@@ -133,9 +140,13 @@ export function PromptComposer({
   const [opencodeOptions, setOpenCodeOptions] = useState<OpenCodeAgentOptions | null>(null)
   const [opencodeOptionsLoading, setOpenCodeOptionsLoading] = useState(false)
   const [opencodeOptionsError, setOpenCodeOptionsError] = useState('')
+  const [piOptions, setPiOptions] = useState<PiAgentOptions | null>(null)
+  const [piOptionsLoading, setPiOptionsLoading] = useState(false)
+  const [piOptionsError, setPiOptionsError] = useState('')
   const [codexSelection, setCodexSelection] = useState<CodexSelection>(() => loadCodexSelection(sessionID))
   const [claudeSelection, setClaudeSelection] = useState<ClaudeSelection>(() => loadClaudeSelection(sessionID))
   const [opencodeSelection, setOpenCodeSelection] = useState<OpenCodeSelection>(() => loadOpenCodeSelection(sessionID))
+  const [piSelection, setPiSelection] = useState<PiSelection>(() => loadPiSelection(sessionID))
   const hasAttachments = attachments.length > 0
   const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments)
   const queueBlockedByAttachments = hasAttachments
@@ -152,6 +163,7 @@ export function PromptComposer({
   const codexToolbarVisible = agentType === 'codex'
   const claudeToolbarVisible = agentType === 'claude'
   const opencodeToolbarVisible = agentType === 'opencode'
+  const piToolbarVisible = agentType === 'pi'
   const selectedCodexModel = useMemo(
     () => selectedModel(codexOptions, codexSelection.model),
     [codexOptions, codexSelection.model],
@@ -159,6 +171,7 @@ export function PromptComposer({
   const selectedFastTier = useMemo(() => fastTierForModel(selectedCodexModel), [selectedCodexModel])
   const codexControlsDisabled = disabled || submitting || codexOptionsLoading || !codexOptions
   const opencodeControlsDisabled = disabled || submitting || opencodeOptionsLoading || !opencodeOptions
+  const piControlsDisabled = disabled || submitting || piOptionsLoading || !piOptions
 
   useLayoutEffect(() => {
     resizePromptTextarea(textareaRef.current)
@@ -219,6 +232,33 @@ export function PromptComposer({
   }, [agentType])
 
   useEffect(() => {
+    if (agentType !== 'pi') {
+      return
+    }
+
+    let cancelled = false
+    setPiOptionsLoading(true)
+    setPiOptionsError('')
+    void fetchAgentOptions('pi')
+      .then((options) => {
+        if (cancelled) return
+        setPiOptions(options)
+        setPiSelection((current) => reconcilePiSelection(current, options))
+      })
+      .catch((loadError) => {
+        if (cancelled) return
+        setPiOptionsError(loadError instanceof Error ? loadError.message : 'Failed to load Pi options')
+      })
+      .finally(() => {
+        if (!cancelled) setPiOptionsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [agentType])
+
+  useEffect(() => {
     saveDraft(sessionID, content)
   }, [content, sessionID])
 
@@ -254,6 +294,10 @@ export function PromptComposer({
     saveOpenCodeSelection(sessionID, opencodeSelection)
   }, [opencodeSelection, sessionID])
 
+  useEffect(() => {
+    savePiSelection(sessionID, piSelection)
+  }, [piSelection, sessionID])
+
   function currentSubmitOptions() {
     if (codexToolbarVisible) {
       return submitOptionsForCodex(codexSelection, selectedFastTier)
@@ -263,6 +307,9 @@ export function PromptComposer({
     }
     if (opencodeToolbarVisible) {
       return submitOptionsForOpenCode(opencodeSelection)
+    }
+    if (piToolbarVisible) {
+      return submitOptionsForPi(piSelection)
     }
     return undefined
   }
@@ -604,6 +651,27 @@ export function PromptComposer({
                 error={opencodeOptionsError}
                 disabled={opencodeControlsDisabled}
                 onChange={setOpenCodeSelection}
+              />
+            </>
+          ) : null}
+          {piToolbarVisible ? (
+            <>
+              <PiToolbar
+                options={piOptions}
+                selection={piSelection}
+                loading={piOptionsLoading}
+                error={piOptionsError}
+                disabled={piControlsDisabled}
+                onChange={setPiSelection}
+                className="hidden sm:flex"
+              />
+              <MobilePiOptions
+                options={piOptions}
+                selection={piSelection}
+                loading={piOptionsLoading}
+                error={piOptionsError}
+                disabled={piControlsDisabled}
+                onChange={setPiSelection}
               />
             </>
           ) : null}
@@ -1204,6 +1272,173 @@ function MobileOpenCodeOptions({
   )
 }
 
+function PiToolbar({
+  options,
+  selection,
+  loading,
+  error,
+  disabled,
+  onChange,
+  className,
+}: {
+  options: PiAgentOptions | null
+  selection: PiSelection
+  loading: boolean
+  error: string
+  disabled: boolean
+  onChange: (selection: PiSelection) => void
+  className?: string
+}) {
+  const [openMenu, setOpenMenu] = useState<'model' | 'thinking' | null>(null)
+  const model = selectedPiModel(options, selection.model)
+  const thinkingOptions = thinkingOptionsForModel(model)
+
+  return (
+    <div
+      className={cn(
+        'flex min-w-0 flex-wrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
+        className,
+      )}
+    >
+      <SlidersHorizontal className="size-4 shrink-0" aria-hidden="true" />
+      <OptionMenu
+        label="Model"
+        value={loading && !options ? 'Loading' : error && !options ? 'Unavailable' : model?.display_name || 'Model'}
+        open={openMenu === 'model'}
+        onOpenChange={(open) => setOpenMenu(open ? 'model' : null)}
+        disabled={disabled || !options?.models.length}
+        options={(options?.models ?? []).map((item) => ({ value: item.model, label: item.display_name }))}
+        onSelect={(modelValue) => onChange(reconcilePiSelection({ ...selection, model: modelValue }, options))}
+      />
+      <span aria-hidden="true" className="text-muted-foreground/70">
+        ·
+      </span>
+      <OptionMenu
+        label="Thinking"
+        value={selection.thinking_level || 'Default'}
+        open={openMenu === 'thinking'}
+        onOpenChange={(open) => setOpenMenu(open ? 'thinking' : null)}
+        disabled={disabled || thinkingOptions.length === 0}
+        options={thinkingOptions}
+        onSelect={(thinkingLevel) => onChange({ ...selection, thinking_level: thinkingLevel })}
+      />
+    </div>
+  )
+}
+
+function MobilePiOptions({
+  options,
+  selection,
+  loading,
+  error,
+  disabled,
+  onChange,
+}: {
+  options: PiAgentOptions | null
+  selection: PiSelection
+  loading: boolean
+  error: string
+  disabled: boolean
+  onChange: (selection: PiSelection) => void
+}) {
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [openMenu, setOpenMenu] = useState<'model' | 'thinking' | null>(null)
+  const model = selectedPiModel(options, selection.model)
+  const thinkingOptions = thinkingOptionsForModel(model)
+  const hasActiveMode = Boolean(selection.thinking_level)
+  const summary =
+    loading && !options
+      ? 'Loading'
+      : error && !options
+        ? 'Unavailable'
+        : [model?.display_name || 'Model', selection.thinking_level || 'Default'].filter(Boolean).join(' / ')
+
+  useEffect(() => {
+    if (!open) {
+      setOpenMenu(null)
+      return
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div ref={menuRef} className="relative sm:hidden">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label="Composer options"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className={cn(
+          'h-8 w-8 text-muted-foreground hover:text-foreground',
+          hasActiveMode && 'bg-primary/12 text-primary hover:bg-primary/16 hover:text-primary',
+        )}
+      >
+        <SlidersHorizontal aria-hidden="true" />
+      </Button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label="Composer options"
+          className="absolute bottom-full left-0 z-50 mb-2 w-[min(20rem,calc(100vw-2rem))] rounded-lg border border-border/80 bg-popover p-3 text-popover-foreground shadow-lg"
+        >
+          <div className="mb-3 flex min-w-0 items-center justify-between gap-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Options</p>
+            <p className="min-w-0 truncate text-right text-xs text-muted-foreground">{summary}</p>
+          </div>
+          <div className="space-y-2">
+            <OptionMenu
+              label="Model"
+              value={model?.display_name || selection.model || 'Model'}
+              open={openMenu === 'model'}
+              onOpenChange={(nextOpen) => setOpenMenu(nextOpen ? 'model' : null)}
+              disabled={disabled || !options?.models.length}
+              options={(options?.models ?? []).map((item) => ({ value: item.model, label: item.display_name }))}
+              onSelect={(modelValue) => onChange(reconcilePiSelection({ ...selection, model: modelValue }, options))}
+              buttonClassName="w-full justify-between rounded-md border border-border/80 bg-surface-muted/40 px-2"
+              valueClassName="max-w-[13rem]"
+              menuLayout="inline"
+            />
+            <OptionMenu
+              label="Thinking"
+              value={selection.thinking_level || 'Default'}
+              open={openMenu === 'thinking'}
+              onOpenChange={(nextOpen) => setOpenMenu(nextOpen ? 'thinking' : null)}
+              disabled={disabled || thinkingOptions.length === 0}
+              options={thinkingOptions}
+              onSelect={(thinkingLevel) => onChange({ ...selection, thinking_level: thinkingLevel })}
+              buttonClassName="w-full justify-between rounded-md border border-border/80 bg-surface-muted/40 px-2"
+              valueClassName="max-w-[13rem]"
+              menuLayout="inline"
+            />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function ClaudeToolbar({
   selection,
   disabled,
@@ -1552,6 +1787,15 @@ function submitOptionsForOpenCode(selection: OpenCodeSelection): SubmitAgentOpti
   }
 }
 
+function submitOptionsForPi(selection: PiSelection): SubmitAgentOptions {
+  return {
+    pi: {
+      model: selection.model || undefined,
+      thinking_level: selection.thinking_level || undefined,
+    },
+  }
+}
+
 function reconcileCodexSelection(selection: CodexSelection, options: CodexAgentOptions | null): CodexSelection {
   if (!options || options.models.length === 0) {
     return selection
@@ -1597,6 +1841,27 @@ function reconcileOpenCodeSelection(
   }
 }
 
+function reconcilePiSelection(selection: PiSelection, options: PiAgentOptions | null): PiSelection {
+  if (!options || options.models.length === 0) {
+    return selection
+  }
+
+  const model =
+    options.models.find((item) => item.model === selection.model) ??
+    options.models.find((item) => item.model === options.default_model) ??
+    options.models.find((item) => item.is_default) ??
+    options.models[0]
+  const thinkingLevels = model.supported_reasoning_efforts.map((item) => item.reasoning_effort)
+  const thinkingLevel = thinkingLevels.includes(selection.thinking_level)
+    ? selection.thinking_level
+    : model.default_reasoning_effort || thinkingLevels[0] || ''
+
+  return {
+    model: model.model,
+    thinking_level: thinkingLevel,
+  }
+}
+
 function selectedModel(options: CodexAgentOptions | null, model: string) {
   if (!options) {
     return null
@@ -1621,6 +1886,23 @@ function selectedOpenCodeModel(options: OpenCodeAgentOptions | null, model: stri
     options.models[0] ??
     null
   )
+}
+
+function selectedPiModel(options: PiAgentOptions | null, model: string) {
+  if (!options) {
+    return null
+  }
+  return (
+    options.models.find((item) => item.model === model) ??
+    options.models.find((item) => item.model === options.default_model) ??
+    options.models.find((item) => item.is_default) ??
+    options.models[0] ??
+    null
+  )
+}
+
+function thinkingOptionsForModel(model: CodexModelOption | null) {
+  return model?.supported_reasoning_efforts.map((item) => ({ value: item.reasoning_effort, label: item.reasoning_effort })) ?? []
 }
 
 function fastTierForModel(model: CodexModelOption | null): CodexServiceTierOption | null {
@@ -1709,6 +1991,21 @@ function saveOpenCodeSelection(sessionID: string | undefined, selection: OpenCod
   saveComposerStorage(sessionID, {
     ...loadComposerStorage(sessionID),
     opencodeSelection: selection,
+  })
+}
+
+function loadPiSelection(sessionID: string | undefined): PiSelection {
+  const stored = loadComposerStorage(sessionID).piSelection ?? {}
+  return {
+    model: typeof stored.model === 'string' ? stored.model : '',
+    thinking_level: typeof stored.thinking_level === 'string' ? stored.thinking_level : '',
+  }
+}
+
+function savePiSelection(sessionID: string | undefined, selection: PiSelection) {
+  saveComposerStorage(sessionID, {
+    ...loadComposerStorage(sessionID),
+    piSelection: selection,
   })
 }
 

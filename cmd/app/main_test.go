@@ -105,6 +105,7 @@ GORCHESTRA_CODEX_MODEL=gpt-test
 GORCHESTRA_CLAUDE_BIN=/opt/claude/bin/claude
 GORCHESTRA_CLAUDE_MODEL=claude-test
 GORCHESTRA_OPENCODE_BIN=/opt/opencode/bin/opencode
+GORCHESTRA_PI_BIN=/opt/pi/bin/pi
 GORCHESTRA_OPEN=true
 `, dataDir, workspace, firstRoot, os.PathListSeparator, secondRoot))
 
@@ -145,6 +146,9 @@ GORCHESTRA_OPEN=true
 	}
 	if cfg.opencodeBin != "/opt/opencode/bin/opencode" {
 		t.Fatalf("expected opencode config values, got %#v", cfg)
+	}
+	if cfg.piBin != "/opt/pi/bin/pi" {
+		t.Fatalf("expected pi config values, got %#v", cfg)
 	}
 	if cfg.codexNetwork || !cfg.open {
 		t.Fatalf("expected boolean config values, got network=%v open=%v", cfg.codexNetwork, cfg.open)

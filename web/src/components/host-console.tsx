@@ -257,7 +257,10 @@ export function HostConsole({
           {errorMessage}
         </div>
       ) : null}
-      <div className={cn('min-h-0 flex-1 p-2 lg:px-3 lg:pb-3', !errorMessage && 'lg:pt-[4.75rem]')}>
+      <div
+        data-testid="host-console-frame"
+        className={cn('min-h-0 flex-1 p-2 lg:px-3 lg:pb-3', !errorMessage && 'host-console-frame')}
+      >
         <div ref={terminalElementRef} className="host-console h-full min-h-0 overflow-hidden rounded-xl border border-border/90" />
       </div>
     </div>

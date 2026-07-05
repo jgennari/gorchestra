@@ -496,6 +496,36 @@ test('claude toolbar submits selected options with the prompt', async () => {
   })
 })
 
+test('pi toolbar submits selected options with the prompt', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn(async () => undefined)
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => jsonResponse(piOptionsResponse())),
+  )
+
+  render(<PromptComposer agentType="pi" disabled={false} disabledReason="" onSubmit={onSubmit} />)
+
+  expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('Claude Sonnet 4.5')
+  expect(screen.getByRole('button', { name: 'Thinking' })).toHaveTextContent('medium')
+
+  await user.click(screen.getByRole('button', { name: 'Model' }))
+  await user.click(screen.getByRole('option', { name: 'GPT-5.5' }))
+  await user.click(screen.getByRole('button', { name: 'Thinking' }))
+  await user.click(screen.getByRole('option', { name: 'high' }))
+
+  await user.type(screen.getByLabelText('Prompt'), 'Hello Pi{enter}')
+
+  await waitFor(() => {
+    expect(onSubmit).toHaveBeenCalledWith('Hello Pi', {
+      pi: {
+        model: 'openai/gpt-5.5',
+        thinking_level: 'high',
+      },
+    })
+  })
+})
+
 test('codex toolbar settings persist per session', async () => {
   const user = userEvent.setup()
   vi.stubGlobal(
@@ -627,6 +657,45 @@ function codexOptionsResponse() {
       { name: 'Plan', mode: 'plan', reasoning_effort: 'medium' },
       { name: 'Default', mode: 'default' },
     ],
+  }
+}
+
+function piOptionsResponse() {
+  return {
+    default_model: 'anthropic/claude-sonnet-4-5',
+    models: [
+      {
+        id: 'anthropic/claude-sonnet-4-5',
+        model: 'anthropic/claude-sonnet-4-5',
+        display_name: 'Claude Sonnet 4.5',
+        description: 'Default Pi model',
+        hidden: false,
+        supported_reasoning_efforts: [
+          { reasoning_effort: 'medium', description: 'Medium' },
+          { reasoning_effort: 'high', description: 'High' },
+        ],
+        default_reasoning_effort: 'medium',
+        service_tiers: [],
+        default_service_tier: '',
+        is_default: true,
+      },
+      {
+        id: 'openai/gpt-5.5',
+        model: 'openai/gpt-5.5',
+        display_name: 'GPT-5.5',
+        description: 'OpenAI model',
+        hidden: false,
+        supported_reasoning_efforts: [
+          { reasoning_effort: 'medium', description: 'Medium' },
+          { reasoning_effort: 'high', description: 'High' },
+        ],
+        default_reasoning_effort: 'medium',
+        service_tiers: [],
+        default_service_tier: '',
+        is_default: false,
+      },
+    ],
+    collaboration_modes: [],
   }
 }
 
