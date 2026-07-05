@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event'
 import App from '@/App'
 import type { AgentEvent, Session } from '@/lib/api'
 import { clearSessionEventCacheForTest } from '@/hooks/use-session-events'
+import { readCachedSessionEvents, writeCachedSession, writeCachedSessionEvents } from '@/lib/session-cache'
+import { createFakeIndexedDB } from '@/test/fake-indexeddb'
 
 vi.mock('@monaco-editor/react', () => ({
   default: ({ value, onChange }: { value?: string; onChange?: (value: string | undefined) => void }) => (
@@ -87,6 +89,122 @@ test('loading with a session route selects that session', async () => {
       .getAllByRole('button', { name: /Write docs/ })
       .some((button) => button.getAttribute('aria-current') === 'true'),
   ).toBe(true)
+})
+
+test('session route shows loading instead of no selection while sessions load', async () => {
+  window.history.replaceState({}, '', '/sessions/sess_1')
+  let resolveSessions: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/health') {
+      return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions?limit=50') {
+      await new Promise<void>((resolve) => {
+        resolveSessions = resolve
+      })
+      return jsonResponse({ sessions: [firstSession, secondSession] })
+    }
+    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+      return jsonResponse({ events: [] })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  expect(await screen.findByText('Loading session...')).toBeInTheDocument()
+  expect(screen.queryByText('No session selected')).not.toBeInTheDocument()
+
+  await act(async () => {
+    resolveSessions?.()
+    await Promise.resolve()
+  })
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+})
+
+test('session route keeps one loading state while initial chat history loads', async () => {
+  window.history.replaceState({}, '', '/sessions/sess_1')
+  let resolveEvents: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/health') {
+      return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions?limit=50') {
+      return jsonResponse({ sessions: [firstSession, secondSession] })
+    }
+    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+      await new Promise<void>((resolve) => {
+        resolveEvents = resolve
+      })
+      return jsonResponse({ events: [] })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  expect(await screen.findByText('Loading session...')).toBeInTheDocument()
+  expect(screen.queryByText('Loading chat history...')).not.toBeInTheDocument()
+
+  await act(async () => {
+    resolveEvents?.()
+    await Promise.resolve()
+  })
+
+  await waitFor(() => expect(screen.queryByText('Loading session...')).not.toBeInTheDocument())
+})
+
+test('session route restores cached transcript before network session loading finishes', async () => {
+  window.history.replaceState({}, '', '/sessions/sess_1')
+  vi.stubGlobal('indexedDB', createFakeIndexedDB())
+  clearSessionEventCacheForTest()
+  await writeCachedSession(firstSession)
+  await writeCachedSessionEvents(
+    'sess_1',
+    [
+      event(10, 'user.message.completed', { text: 'Cached prompt' }),
+      event(11, 'agent.message.completed', { text: 'Cached answer' }),
+    ],
+    false,
+  )
+  expect(await readCachedSessionEvents('sess_1')).toMatchObject({ lastSeq: 11 })
+
+  let resolveSessions: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/health') {
+      return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions?limit=50') {
+      await new Promise<void>((resolve) => {
+        resolveSessions = resolve
+      })
+      return jsonResponse({ sessions: [firstSession, secondSession] })
+    }
+    if (path === '/api/sessions/sess_1') {
+      return jsonResponse(firstSession)
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getByText('Cached answer')).toBeInTheDocument(), { timeout: 3000 })
+  expect(screen.queryByText('Loading session...')).not.toBeInTheDocument()
+  expect(FakeEventSource.instances.some((source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=11')).toBe(
+    true,
+  )
+
+  await act(async () => {
+    resolveSessions?.()
+    await Promise.resolve()
+  })
 })
 
 test('switching sessions during a title edit requires confirmation', async () => {

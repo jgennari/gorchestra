@@ -35,6 +35,24 @@ test('prompt composer remains enabled after a completed run returns to idle', ()
   expect(screen.getByLabelText('Prompt')).toBeEnabled()
 })
 
+test('session detail shows loading while a routed session resolves', () => {
+  renderDetail({ session: null, resolvingSessionID: 'sess_1' })
+
+  expect(screen.getByText('Loading session...')).toBeInTheDocument()
+  expect(screen.queryByText('No session selected')).not.toBeInTheDocument()
+})
+
+test('session detail keeps session loading visible while initial chat history loads', () => {
+  renderDetail({
+    resolvingSessionID: 'sess_1',
+    streamState: 'loading',
+    events: [],
+  })
+
+  expect(screen.getByText('Loading session...')).toBeInTheDocument()
+  expect(screen.queryByText('Loading chat history...')).not.toBeInTheDocument()
+})
+
 test('thinking indicator follows active reasoning events while running', () => {
   const { rerender } = renderDetail()
 
@@ -97,6 +115,54 @@ test('session detail uses matching floating headers on mobile and desktop', () =
   expect(screen.queryByText(/Created:/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Updated:/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Last event:/)).not.toBeInTheDocument()
+})
+
+test('mobile session details menu exposes right-rail session actions', async () => {
+  const user = userEvent.setup()
+  const onClear = vi.fn(async () => undefined)
+  const onCompact = vi.fn(async () => undefined)
+  const onToggleArchive = vi.fn(async () => undefined)
+
+  renderDetail({
+    session: { ...baseSession, agent_type: 'codex', provider_session_id: 'thread_1' },
+    onClear,
+    onCompact,
+    onToggleArchive,
+  })
+
+  const mobileHeader = screen.getByTestId('mobile-floating-session-header')
+
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Clear context' }))
+
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Compact context' }))
+
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Archive session' }))
+
+  expect(onClear).toHaveBeenCalledOnce()
+  expect(onCompact).toHaveBeenCalledOnce()
+  expect(onToggleArchive).toHaveBeenCalledOnce()
+})
+
+test('desktop session details menu does not duplicate right-rail actions', async () => {
+  const user = userEvent.setup()
+
+  renderDetail({
+    session: { ...baseSession, agent_type: 'codex', provider_session_id: 'thread_1' },
+    onClear: async () => undefined,
+    onCompact: async () => undefined,
+    onToggleArchive: async () => undefined,
+  })
+
+  const desktopHeader = desktopFloatingHeader()
+  await user.click(within(desktopHeader).getByRole('button', { name: 'Session details' }))
+  const dialog = within(desktopHeader).getByRole('dialog', { name: 'Session details' })
+
+  expect(within(dialog).queryByRole('button', { name: 'Clear context' })).not.toBeInTheDocument()
+  expect(within(dialog).queryByRole('button', { name: 'Compact context' })).not.toBeInTheDocument()
+  expect(within(dialog).queryByRole('button', { name: 'Archive session' })).not.toBeInTheDocument()
 })
 
 test('floating chat header shows session details and copies the session key', async () => {

@@ -2,6 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentEvent } from '@/lib/api'
 import { eventStreamURL, listEventsBefore, listRecentEvents } from '@/lib/api'
 import { appendEvent, appendEvents, knownEventTypes, lastSeq } from '@/lib/events'
+import {
+  clearSessionCacheForTest,
+  readCachedSessionEvents as readPersistentCachedSessionEvents,
+  writeCachedSessionEvents as writePersistentCachedSessionEvents,
+} from '@/lib/session-cache'
 
 export type StreamState = 'idle' | 'loading' | 'connected' | 'reconnecting' | 'disconnected'
 
@@ -30,6 +35,7 @@ const recentEventsRequests = new Map<string, Promise<AgentEvent[]>>()
 export function clearSessionEventCacheForTest() {
   sessionEventCache.clear()
   recentEventsRequests.clear()
+  clearSessionCacheForTest()
 }
 
 export function useSessionEvents(sessionID: string | null, options: Options = {}) {
@@ -152,7 +158,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       }
     }
 
-    async function load() {
+    async function loadRecentHistory() {
       setStreamState('loading')
       try {
         const history = await listRecentEventsOnce(activeSessionID, refreshKey)
@@ -189,11 +195,34 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       }
     }
 
+    async function hydratePersistentCacheOrLoad() {
+      setStreamState('loading')
+      const persistentSession = await readPersistentCachedSessionEvents(activeSessionID)
+      if (closed) {
+        return
+      }
+      if (!persistentSession) {
+        await loadRecentHistory()
+        return
+      }
+
+      lastSeqRef.current = persistentSession.lastSeq
+      oldestSeqRef.current = persistentSession.oldestSeq
+      loadedSessionIDRef.current = activeSessionID
+      setEvents(persistentSession.events)
+      setHasOlderEvents(persistentSession.hasOlderEvents)
+      writeCachedSessionEvents(activeSessionID, persistentSession.events, persistentSession.hasOlderEvents)
+      setStreamState('reconnecting')
+      connect(lastSeqRef.current)
+    }
+
     if (cachedSession && !sameSessionRefresh) {
       setStreamState('reconnecting')
       connect(lastSeqRef.current)
+    } else if (!sameSessionRefresh && !cachedSession) {
+      void hydratePersistentCacheOrLoad()
     } else {
-      void load()
+      void loadRecentHistory()
     }
 
     return () => {
@@ -321,6 +350,7 @@ function writeCachedSessionEvents(sessionID: string, events: AgentEvent[], hasOl
     usedAt: Date.now(),
   })
   evictOldSessionEventCaches()
+  void writePersistentCachedSessionEvents(sessionID, trimmedEvents, hasOlderEvents || trimmedOlderEvents)
 }
 
 export function trimEventsWindow(events: AgentEvent[], limit: number) {

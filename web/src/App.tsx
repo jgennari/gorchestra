@@ -58,6 +58,11 @@ import { defaultSessionListFilters, SessionList, type SessionListFilters } from 
 import { ThemeToggle } from '@/components/theme-toggle'
 import { hasSessionAttention, latestSessionSeq } from '@/lib/session-attention'
 import { sessionIDFromPathname, sessionPath } from '@/lib/routes'
+import {
+  readCachedSession as readPersistentCachedSession,
+  writeCachedSession as writePersistentCachedSession,
+  writeCachedSessions as writePersistentCachedSessions,
+} from '@/lib/session-cache'
 import { cn } from '@/lib/utils'
 
 type SessionRouteHistoryMode = 'push' | 'replace' | 'none'
@@ -107,6 +112,7 @@ function App() {
   const viewportDebug = useMemo(() => loadViewportDebugPreference(), [])
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedSessionID, setSelectedSessionID] = useState<string | null>(() => selectedSessionIDFromLocation())
+  const [routeSelectedSessionID, setRouteSelectedSessionID] = useState<string | null>(() => selectedSessionIDFromLocation())
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileListOpen, setMobileListOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(true)
@@ -152,6 +158,7 @@ function App() {
   useFavicon(hasFaviconAttention)
 
   const applySession = useCallback((session: Session) => {
+    void writePersistentCachedSession(session)
     setSessions((current) => {
       if (session.archived_at && !sessionListFilters.includeArchived) {
         return current.filter((item) => item.id !== session.id)
@@ -162,6 +169,15 @@ function App() {
 
   const selectSession = useCallback((sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
     selectedSessionIDRef.current = sessionID
+    setRouteSelectedSessionID((current) => {
+      if (historyMode === 'none') {
+        return sessionID
+      }
+      if (historyMode === 'replace') {
+        return current === sessionID ? current : null
+      }
+      return null
+    })
     setSelectedSessionID(sessionID)
     if (historyMode !== 'none') {
       writeSelectedSessionRoute(sessionID, historyMode)
@@ -265,16 +281,47 @@ function App() {
     setTitleEditorStates({})
   }, [selectedSessionID])
 
+  useEffect(() => {
+    if (!selectedSessionID || selectedSession) {
+      return
+    }
+
+    let cancelled = false
+    const sessionID = selectedSessionID
+    void readPersistentCachedSession(sessionID).then((cachedSession) => {
+      if (
+        cancelled ||
+        !cachedSession ||
+        selectedSessionIDRef.current !== sessionID ||
+        sessionsRef.current.some((session) => session.id === sessionID) ||
+        (cachedSession.archived_at && !sessionListFilters.includeArchived)
+      ) {
+        return
+      }
+      applySession(cachedSession)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [applySession, selectedSession, selectedSessionID, sessionListFilters.includeArchived])
+
   const applySessionActivityEvent = useCallback(
     (event: AgentEvent) => {
       const status = statusFromEvent(event)
-      setSessions((current) =>
-        sortSessions(
-          current.map((session) =>
-            session.id === event.session_id ? applySessionEvent(session, event, status) : session,
-          ),
-        ),
-      )
+      setSessions((current) => {
+        const next = sortSessions(
+          current.map((session) => {
+            if (session.id !== event.session_id) {
+              return session
+            }
+            const updatedSession = applySessionEvent(session, event, status)
+            void writePersistentCachedSession(updatedSession)
+            return updatedSession
+          }),
+        )
+        return next
+      })
     },
     [],
   )
@@ -347,6 +394,7 @@ function App() {
         selectedID,
         sessionListFilters.includeArchived,
       )
+      void writePersistentCachedSessions(mergedSessions)
       const nextSelectedID =
         selectedID && mergedSessions.some((session) => session.id === selectedID)
           ? selectedID
@@ -451,15 +499,18 @@ function App() {
     }
     const response = await submitMessage(selectedSessionID, content, agentOptions, attachments, queue)
     setSessions((current) =>
-      current.map((session) =>
-        session.id === selectedSessionID
-          ? {
-              ...session,
-              status: response.status,
-              completed_at: response.status === 'running' ? null : session.completed_at,
-            }
-          : session,
-      ),
+      current.map((session) => {
+        if (session.id !== selectedSessionID) {
+          return session
+        }
+        const updatedSession = {
+          ...session,
+          status: response.status,
+          completed_at: response.status === 'running' ? null : session.completed_at,
+        }
+        void writePersistentCachedSession(updatedSession)
+        return updatedSession
+      }),
     )
     setEventRefreshKey((value) => value + 1)
   }
@@ -593,16 +644,19 @@ function App() {
     try {
       const response = action === 'clear' ? await clearSession(sessionID) : await compactSession(sessionID)
       setSessions((current) =>
-        current.map((session) =>
-          session.id === sessionID
-            ? {
-                ...session,
-                status: response.status,
-                provider_session_id: action === 'clear' ? undefined : session.provider_session_id,
-                completed_at: response.status === 'running' ? null : session.completed_at,
-              }
-            : session,
-        ),
+        current.map((session) => {
+          if (session.id !== sessionID) {
+            return session
+          }
+          const updatedSession = {
+            ...session,
+            status: response.status,
+            provider_session_id: action === 'clear' ? undefined : session.provider_session_id,
+            completed_at: response.status === 'running' ? null : session.completed_at,
+          }
+          void writePersistentCachedSession(updatedSession)
+          return updatedSession
+        }),
       )
       if (action === 'clear') {
         await refreshSession(sessionID)
@@ -773,6 +827,11 @@ function App() {
       <Menu />
     </Button>
   )
+  const resolvingSelectedSessionID = selectedSession ? null : selectedSessionID
+  const loadingRouteChatHistory =
+    routeSelectedSessionID === selectedSessionID && streamState === 'loading' && events.length === 0
+  const resolvingChatSessionID =
+    selectedSessionID && (!selectedSession || loadingRouteChatHistory) ? selectedSessionID : null
 
   return (
     <main className="app-shell">
@@ -794,15 +853,40 @@ function App() {
           {appView === 'console' ? (
             <HostConsole
               session={selectedSession}
+              resolvingSessionID={resolvingSelectedSessionID}
               resolvedTheme={theme.resolvedTheme}
               headerActions={viewToggle}
               mobileLeadingAction={openSessionsButton}
+              onClear={() => {
+                requestSessionAction('clear')
+                return Promise.resolve()
+              }}
+              onCompact={() => {
+                requestSessionAction('compact')
+                return Promise.resolve()
+              }}
+              onToggleArchive={() => {
+                requestArchiveSession()
+                return Promise.resolve()
+              }}
+              clearPending={
+                selectedSession
+                  ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                  : false
+              }
+              compactPending={
+                selectedSession
+                  ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                  : false
+              }
+              archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
               onUpdateTitle={handleUpdateTitle}
               onTitleEditStateChange={handleTitleEditStateChange}
             />
           ) : (
             <SessionDetail
               session={selectedSession}
+              resolvingSessionID={resolvingChatSessionID}
               events={events}
               streamState={streamState}
               hasOlderEvents={hasOlderEvents}
@@ -820,6 +904,29 @@ function App() {
               onUpdateAgentOptions={handleUpdateAgentOptions}
               onOpenFilePath={handleOpenWorkspacePath}
               onErrorMessageChange={setError}
+              onClear={() => {
+                requestSessionAction('clear')
+                return Promise.resolve()
+              }}
+              onCompact={() => {
+                requestSessionAction('compact')
+                return Promise.resolve()
+              }}
+              onToggleArchive={() => {
+                requestArchiveSession()
+                return Promise.resolve()
+              }}
+              clearPending={
+                selectedSession
+                  ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                  : false
+              }
+              compactPending={
+                selectedSession
+                  ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                  : false
+              }
+              archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
               headerActions={viewToggle}
               mobileLeadingAction={openSessionsButton}
             />
@@ -848,6 +955,7 @@ function App() {
       <div className="hidden min-h-0 shrink-0 lg:flex" style={paneWidthStyle(paneWidths.right)}>
         <RunHealthRail
           session={selectedSession}
+          resolvingSessionID={resolvingSelectedSessionID}
           events={events}
           streamState={streamState}
           streamError={streamError}

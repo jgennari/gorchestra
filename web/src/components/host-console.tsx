@@ -1,7 +1,7 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { Ellipsis, RefreshCw, Square, Terminal } from 'lucide-react'
+import { Archive, Ellipsis, Eraser, Loader2, Minimize2, RefreshCw, Square, Terminal } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { consoleWebSocketURL, getConsoleStatus, killConsole, type ConsoleStatus } from '@/lib/api'
@@ -18,18 +18,32 @@ type ConsoleMessage = {
 
 export function HostConsole({
   session,
+  resolvingSessionID = null,
   resolvedTheme,
   headerActions,
   mobileLeadingAction,
   onUpdateTitle,
   onTitleEditStateChange,
+  onClear,
+  onCompact,
+  onToggleArchive,
+  clearPending = false,
+  compactPending = false,
+  archivePending = false,
 }: {
   session: Session | null
+  resolvingSessionID?: string | null
   resolvedTheme: 'light' | 'dark'
   headerActions?: ReactNode
   mobileLeadingAction?: ReactNode
   onUpdateTitle: (title: string) => Promise<void>
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
+  onClear?: () => Promise<void>
+  onCompact?: () => Promise<void>
+  onToggleArchive?: () => Promise<void>
+  clearPending?: boolean
+  compactPending?: boolean
+  archivePending?: boolean
 }) {
   const terminalElementRef = useRef<HTMLDivElement | null>(null)
   const terminalRef = useRef<XTerm | null>(null)
@@ -213,6 +227,18 @@ export function HostConsole({
   }
 
   if (!session) {
+    if (resolvingSessionID) {
+      return (
+        <div className="flex h-full w-full min-h-0 items-center justify-center bg-background p-8 text-center">
+          <div>
+            <Loader2 className="mx-auto mb-3 size-6 animate-spin text-muted-foreground" aria-hidden="true" />
+            <p className="text-sm font-medium">Loading session...</p>
+            <p className="mt-1 text-xs text-muted-foreground">Restoring the selected console from the route.</p>
+          </div>
+        </div>
+      )
+    }
+
     return (
       <div className="flex h-full w-full min-h-0 items-center justify-center bg-background">
         <div className="text-center">
@@ -236,6 +262,15 @@ export function HostConsole({
           onStop={() => void killConsole(sessionID)}
           onUpdateTitle={onUpdateTitle}
           onTitleEditStateChange={onTitleEditStateChange}
+          mobileSessionActions={{
+            session,
+            onClear,
+            onCompact,
+            onToggleArchive,
+            clearPending,
+            compactPending,
+            archivePending,
+          }}
           className="command-chat-header pointer-events-auto rounded-xl border border-border/90 px-3 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
         />
       </div>
@@ -249,6 +284,7 @@ export function HostConsole({
           onStop={() => void killConsole(sessionID)}
           onUpdateTitle={onUpdateTitle}
           onTitleEditStateChange={onTitleEditStateChange}
+          mobileSessionActions={null}
           className="command-chat-header pointer-events-auto rounded-xl border border-border/90 px-3 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
         />
       </div>
@@ -277,6 +313,7 @@ function ConsoleHeader({
   onStop,
   onUpdateTitle,
   onTitleEditStateChange,
+  mobileSessionActions,
   className,
 }: {
   session: Session
@@ -288,6 +325,7 @@ function ConsoleHeader({
   onStop: () => void
   onUpdateTitle: (title: string) => Promise<void>
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
+  mobileSessionActions?: MobileSessionActions | null
   className?: string
 }) {
   return (
@@ -303,7 +341,13 @@ function ConsoleHeader({
       </div>
       <div className="flex shrink-0 items-center gap-3">
         {headerActions}
-        <ConsoleMenu workspacePath={workspacePath} restarting={restarting} onRestart={onRestart} onStop={onStop} />
+        <ConsoleMenu
+          workspacePath={workspacePath}
+          restarting={restarting}
+          onRestart={onRestart}
+          onStop={onStop}
+          mobileSessionActions={mobileSessionActions}
+        />
       </div>
     </div>
   )
@@ -314,14 +358,29 @@ function ConsoleMenu({
   restarting,
   onRestart,
   onStop,
+  mobileSessionActions,
 }: {
   workspacePath: string
   restarting: boolean
   onRestart: () => void
   onStop: () => void
+  mobileSessionActions?: MobileSessionActions | null
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
+  const mobileActionPending =
+    mobileSessionActions?.clearPending || mobileSessionActions?.compactPending || mobileSessionActions?.archivePending
+  const mobileCodexActionDisabled =
+    !mobileSessionActions?.session ||
+    mobileSessionActions.session.agent_type !== 'codex' ||
+    mobileSessionActions.session.status === 'running' ||
+    Boolean(mobileSessionActions.session.archived_at) ||
+    Boolean(mobileActionPending)
+  const mobileCompactDisabled = mobileCodexActionDisabled || !mobileSessionActions?.session?.provider_session_id
+  const mobileArchiveDisabled =
+    !mobileSessionActions?.session ||
+    mobileSessionActions.session.status === 'running' ||
+    Boolean(mobileSessionActions.archivePending)
 
   useEffect(() => {
     if (!open) return
@@ -390,10 +449,78 @@ function ConsoleMenu({
             <Square className="size-4" />
             Stop console
           </button>
+          {mobileSessionActions ? (
+            <div className="mt-2 space-y-1 border-t border-border/70 pt-2 lg:hidden">
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45"
+                disabled={mobileCodexActionDisabled}
+                onClick={() => {
+                  setOpen(false)
+                  void mobileSessionActions.onClear?.()
+                }}
+              >
+                {mobileSessionActions.clearPending ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Eraser className="size-4" aria-hidden="true" />
+                )}
+                {mobileSessionActions.clearPending ? 'Clearing' : 'Clear context'}
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45"
+                disabled={mobileCompactDisabled}
+                onClick={() => {
+                  setOpen(false)
+                  void mobileSessionActions.onCompact?.()
+                }}
+              >
+                {mobileSessionActions.compactPending ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Minimize2 className="size-4" aria-hidden="true" />
+                )}
+                {mobileSessionActions.compactPending ? 'Compacting' : 'Compact context'}
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-45"
+                disabled={mobileArchiveDisabled}
+                onClick={() => {
+                  setOpen(false)
+                  void mobileSessionActions.onToggleArchive?.()
+                }}
+              >
+                {mobileSessionActions.archivePending ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Archive className="size-4" aria-hidden="true" />
+                )}
+                {mobileSessionActions.archivePending
+                  ? mobileSessionActions.session?.archived_at
+                    ? 'Restoring'
+                    : 'Archiving'
+                  : mobileSessionActions.session?.archived_at
+                    ? 'Restore session'
+                    : 'Archive session'}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
   )
+}
+
+type MobileSessionActions = {
+  session: Session | null
+  onClear?: () => Promise<void>
+  onCompact?: () => Promise<void>
+  onToggleArchive?: () => Promise<void>
+  clearPending?: boolean
+  compactPending?: boolean
+  archivePending?: boolean
 }
 
 function parseConsoleMessage(data: string): ConsoleMessage | null {

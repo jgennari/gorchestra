@@ -1,4 +1,4 @@
-import { Check, Copy, Ellipsis } from 'lucide-react'
+import { Archive, Check, Copy, Ellipsis, Eraser, Loader2, Minimize2 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils'
 
 type Props = {
   session: Session | null
+  resolvingSessionID?: string | null
   events: AgentEvent[]
   streamState: StreamState
   hasOlderEvents?: boolean
@@ -41,12 +42,19 @@ type Props = {
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onOpenFilePath?: (path: string) => Promise<void> | void
   onErrorMessageChange?: (message: string) => void
+  onClear?: () => Promise<void>
+  onCompact?: () => Promise<void>
+  onToggleArchive?: () => Promise<void>
+  clearPending?: boolean
+  compactPending?: boolean
+  archivePending?: boolean
   headerActions?: ReactNode
   mobileLeadingAction?: ReactNode
 }
 
 export function SessionDetail({
   session,
+  resolvingSessionID = null,
   events,
   streamState,
   hasOlderEvents = false,
@@ -64,6 +72,12 @@ export function SessionDetail({
   onUpdateAgentOptions,
   onOpenFilePath,
   onErrorMessageChange,
+  onClear,
+  onCompact,
+  onToggleArchive,
+  clearPending = false,
+  compactPending = false,
+  archivePending = false,
   headerActions,
   mobileLeadingAction,
 }: Props) {
@@ -105,6 +119,16 @@ export function SessionDetail({
   }, [session?.id, userInputRequest])
 
   if (!session) {
+    if (resolvingSessionID) {
+      return (
+        <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
+          <Loader2 className="mb-3 size-5 animate-spin text-muted-foreground" aria-hidden="true" />
+          <h2 className="text-lg font-semibold">Loading session...</h2>
+          <p className="mt-2 max-w-sm text-sm text-muted-foreground">Loading session details and chat history.</p>
+        </section>
+      )
+    }
+
     return (
       <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
         <h2 className="text-lg font-semibold">No session selected</h2>
@@ -117,6 +141,16 @@ export function SessionDetail({
             Create or select a session to monitor agent work.
           </p>
         )}
+      </section>
+    )
+  }
+
+  if (resolvingSessionID && streamState === 'loading' && events.length === 0) {
+    return (
+      <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
+        <Loader2 className="mb-3 size-5 animate-spin text-muted-foreground" aria-hidden="true" />
+        <h2 className="text-lg font-semibold">Loading session...</h2>
+        <p className="mt-2 max-w-sm text-sm text-muted-foreground">Loading session details and chat history.</p>
       </section>
     )
   }
@@ -157,6 +191,15 @@ export function SessionDetail({
             onUpdateAgentOptions={onUpdateAgentOptions}
             headerActions={headerActions}
             leadingAction={mobileLeadingAction}
+            mobileSessionActions={{
+              session,
+              onClear,
+              onCompact,
+              onToggleArchive,
+              clearPending,
+              compactPending,
+              archivePending,
+            }}
           />
         </div>
         <div data-testid="floating-session-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
@@ -171,6 +214,7 @@ export function SessionDetail({
             onTitleEditStateChange={onTitleEditStateChange}
             onUpdateAgentOptions={onUpdateAgentOptions}
             headerActions={headerActions}
+            mobileSessionActions={null}
           />
         </div>
       </div>
@@ -211,6 +255,7 @@ function ChatSessionHeader({
   onUpdateAgentOptions,
   headerActions,
   leadingAction,
+  mobileSessionActions,
 }: {
   sessionID: string
   agentType: Session['agent_type']
@@ -223,6 +268,7 @@ function ChatSessionHeader({
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   headerActions?: ReactNode
   leadingAction?: ReactNode
+  mobileSessionActions?: MobileSessionActions | null
 }) {
   return (
     <div className="pointer-events-auto">
@@ -248,6 +294,7 @@ function ChatSessionHeader({
           workspacePath={workspacePath}
           agentOptions={agentOptions}
           onUpdateAgentOptions={onUpdateAgentOptions}
+          mobileSessionActions={mobileSessionActions}
         />
       </div>
       {errorMessage ? (
@@ -268,12 +315,14 @@ function SessionDetailsMenu({
   workspacePath,
   agentOptions,
   onUpdateAgentOptions,
+  mobileSessionActions,
 }: {
   sessionID: string
   agentType: Session['agent_type']
   workspacePath: string
   agentOptions?: SessionAgentOptions
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
+  mobileSessionActions?: MobileSessionActions | null
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -281,6 +330,19 @@ function SessionDetailsMenu({
   const [savingRunDangerously, setSavingRunDangerously] = useState(false)
   const runDangerously =
     agentType === 'claude' ? agentOptions?.claude?.run_dangerously === true : agentOptions?.codex?.run_dangerously === true
+  const mobileActionPending =
+    mobileSessionActions?.clearPending || mobileSessionActions?.compactPending || mobileSessionActions?.archivePending
+  const mobileCodexActionDisabled =
+    !mobileSessionActions?.session ||
+    mobileSessionActions.session.agent_type !== 'codex' ||
+    mobileSessionActions.session.status === 'running' ||
+    Boolean(mobileSessionActions.session.archived_at) ||
+    Boolean(mobileActionPending)
+  const mobileCompactDisabled = mobileCodexActionDisabled || !mobileSessionActions?.session?.provider_session_id
+  const mobileArchiveDisabled =
+    !mobileSessionActions?.session ||
+    mobileSessionActions.session.status === 'running' ||
+    Boolean(mobileSessionActions.archivePending)
 
   useEffect(() => {
     if (!open) return
@@ -385,11 +447,81 @@ function SessionDetailsMenu({
                 </span>
               </label>
             ) : null}
+            {mobileSessionActions ? (
+              <div className="space-y-1 border-t border-border/70 pt-3 lg:hidden">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45"
+                  disabled={mobileCodexActionDisabled}
+                  onClick={() => {
+                    setOpen(false)
+                    void mobileSessionActions.onClear?.()
+                  }}
+                >
+                  {mobileSessionActions.clearPending ? (
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Eraser className="size-4" aria-hidden="true" />
+                  )}
+                  <span>{mobileSessionActions.clearPending ? 'Clearing' : 'Clear context'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45"
+                  disabled={mobileCompactDisabled}
+                  onClick={() => {
+                    setOpen(false)
+                    void mobileSessionActions.onCompact?.()
+                  }}
+                >
+                  {mobileSessionActions.compactPending ? (
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Minimize2 className="size-4" aria-hidden="true" />
+                  )}
+                  <span>{mobileSessionActions.compactPending ? 'Compacting' : 'Compact context'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-45"
+                  disabled={mobileArchiveDisabled}
+                  onClick={() => {
+                    setOpen(false)
+                    void mobileSessionActions.onToggleArchive?.()
+                  }}
+                >
+                  {mobileSessionActions.archivePending ? (
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Archive className="size-4" aria-hidden="true" />
+                  )}
+                  <span>
+                    {mobileSessionActions.archivePending
+                      ? mobileSessionActions.session?.archived_at
+                        ? 'Restoring'
+                        : 'Archiving'
+                      : mobileSessionActions.session?.archived_at
+                        ? 'Restore session'
+                        : 'Archive session'}
+                  </span>
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
     </div>
   )
+}
+
+type MobileSessionActions = {
+  session: Session | null
+  onClear?: () => Promise<void>
+  onCompact?: () => Promise<void>
+  onToggleArchive?: () => Promise<void>
+  clearPending?: boolean
+  compactPending?: boolean
+  archivePending?: boolean
 }
 
 function CopyableDetailBox({

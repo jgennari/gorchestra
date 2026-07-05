@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 
 type Props = {
   session: Session | null
+  resolvingSessionID?: string | null
   events: AgentEvent[]
   streamState: StreamState
   streamError: string
@@ -33,6 +34,7 @@ type Props = {
 
 export function RunHealthRail({
   session,
+  resolvingSessionID = null,
   events,
   streamState,
   streamError,
@@ -94,7 +96,12 @@ export function RunHealthRail({
       </div>
 
       <div className="mt-3 min-h-0 flex-1">
-        <FileExplorer session={session} refreshKey={fileRefreshKey} onOpenFile={onOpenFile} />
+        <FileExplorer
+          session={session}
+          resolvingSessionID={resolvingSessionID}
+          refreshKey={fileRefreshKey}
+          onOpenFile={onOpenFile}
+        />
       </div>
 
       <div className="mt-auto space-y-3 pt-3">
@@ -137,10 +144,12 @@ export function RunHealthRail({
 
 function FileExplorer({
   session,
+  resolvingSessionID = null,
   refreshKey,
   onOpenFile = () => undefined,
 }: {
   session: Session | null
+  resolvingSessionID?: string | null
   refreshKey: number
   onOpenFile?: (file: WorkspaceFileContent) => void
 }) {
@@ -317,11 +326,16 @@ function FileExplorer({
       </div>
 
       <p className="mt-2 truncate text-[11px] text-muted-foreground" title={session?.workspace_path || undefined}>
-        {session ? pathLabel : 'No session selected'}
+        {session ? pathLabel : resolvingSessionID ? 'Loading session' : 'No session selected'}
       </p>
 
       <div className="mt-1 min-h-0 flex-1 overflow-auto">
-        {!sessionID ? (
+        {resolvingSessionID && !sessionID ? (
+          <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+            Loading session
+          </div>
+        ) : !sessionID ? (
           <p className="py-3 text-xs text-muted-foreground">Select a session to browse files.</p>
         ) : loading && entries.length === 0 ? (
           <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">

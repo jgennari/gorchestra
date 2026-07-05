@@ -75,6 +75,23 @@ test('run health rail shows metrics and active chat status without session ident
   expect(screen.getByRole('button', { name: 'Archive selected session' })).toBeDisabled()
 })
 
+test('run health rail shows loading while a routed session resolves', () => {
+  render(
+    <RunHealthRail
+      session={null}
+      resolvingSessionID="sess_1"
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  expect(screen.getAllByText('Loading session')).toHaveLength(2)
+  expect(screen.queryByText('No session selected')).not.toBeInTheDocument()
+  expect(screen.queryByText('Select a session to browse files.')).not.toBeInTheDocument()
+})
+
 test('run health rail archives an idle session from the slice action', async () => {
   const user = userEvent.setup()
   const onToggleArchive = vi.fn(async () => undefined)
