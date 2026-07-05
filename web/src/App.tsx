@@ -54,7 +54,14 @@ import { defaultSessionListFilters, SessionList, type SessionListFilters } from 
 import { ThemeToggle } from '@/components/theme-toggle'
 import { WorkspaceFilesView } from '@/components/workspace-files'
 import { hasSessionAttention, latestSessionSeq } from '@/lib/session-attention'
-import { sessionPath, sessionRouteFromPathname, type SessionRouteView } from '@/lib/routes'
+import {
+  sessionPath,
+  sessionRouteFromPathname,
+  sessionSlugPath,
+  sessionTitleSlug,
+  type SessionRoute,
+  type SessionRouteView,
+} from '@/lib/routes'
 import {
   readCachedSession as readPersistentCachedSession,
   writeCachedSession as writePersistentCachedSession,
@@ -132,6 +139,7 @@ function App() {
   const [appView, setAppView] = useState<AppView>(() => selectedSessionRouteFromLocation().view)
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
   const appViewRef = useRef<AppView>(appView)
+  const openWorkspaceFileRef = useRef<WorkspaceFileContent | null>(openWorkspaceFile)
   const sessionsRef = useRef<Session[]>([])
   const paneWidthsRef = useRef(paneWidths)
 
@@ -157,10 +165,14 @@ function App() {
   const applySession = useCallback((session: Session) => {
     void writePersistentCachedSession(session)
     setSessions((current) => {
+      let next: Session[]
       if (session.archived_at && !sessionListFilters.includeArchived) {
-        return current.filter((item) => item.id !== session.id)
+        next = current.filter((item) => item.id !== session.id)
+      } else {
+        next = sortSessions([session, ...current.filter((item) => item.id !== session.id)])
       }
-      return sortSessions([session, ...current.filter((item) => item.id !== session.id)])
+      sessionsRef.current = next
+      return next
     })
   }, [sessionListFilters.includeArchived])
 
@@ -177,15 +189,21 @@ function App() {
     })
     setSelectedSessionID(sessionID)
     if (historyMode !== 'none') {
-      writeSelectedSessionRoute(sessionID, historyMode, appViewRef.current)
+      writeSelectedSessionRoute(sessionID, historyMode, appViewRef.current, sessionsRef.current)
     }
   }, [])
 
   const selectAppView = useCallback(
-    (view: AppView, historyMode: Exclude<SessionRouteHistoryMode, 'none'> = 'push') => {
+    (view: AppView, historyMode: Exclude<SessionRouteHistoryMode, 'none'> = 'push', filePath: string | null = null) => {
       appViewRef.current = view
       setAppView(view)
-      writeSelectedSessionRoute(selectedSessionIDRef.current, historyMode, view)
+      writeSelectedSessionRoute(
+        selectedSessionIDRef.current,
+        historyMode,
+        view,
+        sessionsRef.current,
+        view === 'files' ? (filePath ?? openWorkspaceFileRef.current?.path ?? null) : null,
+      )
     },
     [],
   )
@@ -264,6 +282,10 @@ function App() {
   }, [appView])
 
   useEffect(() => {
+    openWorkspaceFileRef.current = openWorkspaceFile
+  }, [openWorkspaceFile])
+
+  useEffect(() => {
     sessionsRef.current = sessions
   }, [sessions])
 
@@ -277,7 +299,7 @@ function App() {
       const route = selectedSessionRouteFromLocation()
       appViewRef.current = route.view
       setAppView(route.view)
-      requestSessionSelection(route.sessionID, 'none')
+      requestSessionSelection(resolveSessionRouteSessionID(route, sessionsRef.current), 'none')
     }
 
     window.addEventListener('popstate', handlePopState)
@@ -289,6 +311,46 @@ function App() {
     setOpenWorkspaceFile(null)
     setFollowingLatest(true)
   }, [selectedSessionID])
+
+  useEffect(() => {
+    if (appView !== 'files') {
+      return
+    }
+
+    const route = selectedSessionRouteFromLocation()
+    if (route.view !== 'files') {
+      return
+    }
+
+    if (!route.filePath) {
+      if (openWorkspaceFileRef.current) {
+        setOpenWorkspaceFile(null)
+      }
+      return
+    }
+
+    if (!selectedSessionID || !selectedSession || openWorkspaceFileRef.current?.path === route.filePath) {
+      return
+    }
+
+    let cancelled = false
+    setError('')
+    void getSessionFileContent(selectedSessionID, route.filePath)
+      .then((content) => {
+        if (!cancelled) {
+          setOpenWorkspaceFile(content)
+        }
+      })
+      .catch((openError) => {
+        if (!cancelled) {
+          setError(messageFromError(openError))
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [appView, selectedSession, selectedSessionID])
 
   useEffect(() => {
     setTitleEditorStates({})
@@ -408,13 +470,20 @@ function App() {
         sessionListFilters.includeArchived,
       )
       void writePersistentCachedSessions(mergedSessions)
+      const route = selectedSessionRouteFromLocation()
+      const routeSelectedID = resolveSessionRouteSessionID(route, mergedSessions)
+      const preserveSlugRoute = Boolean(route.sessionSlug && routeSelectedID)
       const nextSelectedID =
-        selectedID && mergedSessions.some((session) => session.id === selectedID)
+        routeSelectedID && mergedSessions.some((session) => session.id === routeSelectedID)
+          ? routeSelectedID
+          : selectedID && mergedSessions.some((session) => session.id === selectedID)
           ? selectedID
           : (nextSessions[0]?.id ?? mergedSessions[0]?.id ?? null)
 
-      setSessions(sortSessions(mergedSessions))
-      selectSession(nextSelectedID, 'replace')
+      const sortedSessions = sortSessions(mergedSessions)
+      sessionsRef.current = sortedSessions
+      setSessions(sortedSessions)
+      selectSession(nextSelectedID, preserveSlugRoute ? 'none' : 'replace')
     } catch (loadError) {
       if (showLoading) {
         setError(messageFromError(loadError))
@@ -700,7 +769,7 @@ function App() {
           workspaceRelativeFilePath(path, selectedSession.workspace_path),
         )
         setOpenWorkspaceFile(content)
-        selectAppView('files')
+        selectAppView('files', 'push', content.path)
       } catch (openError) {
         setError(messageFromError(openError))
       }
@@ -711,11 +780,16 @@ function App() {
   const handleOpenWorkspaceFile = useCallback(
     (file: WorkspaceFileContent) => {
       setMobileRailOpen(false)
-      selectAppView('files')
       setOpenWorkspaceFile(file)
+      selectAppView('files', 'push', file.path)
     },
     [selectAppView],
   )
+
+  const handleCloseWorkspaceFile = useCallback(() => {
+    setOpenWorkspaceFile(null)
+    writeSelectedSessionRoute(selectedSessionIDRef.current, 'push', 'files', sessionsRef.current)
+  }, [])
 
   function beginPaneResize(side: PaneSide, event: ReactPointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) {
@@ -864,11 +938,18 @@ function App() {
       <Menu />
     </Button>
   )
-  const resolvingSelectedSessionID = selectedSession ? null : selectedSessionID
+  const currentSessionRoute = selectedSessionRouteFromLocation()
+  const unresolvedRouteSessionKey =
+    loadingSessions && !selectedSessionID ? (currentSessionRoute.sessionSlug ?? currentSessionRoute.sessionID) : null
+  const resolvingSelectedSessionID = selectedSession ? null : (selectedSessionID ?? unresolvedRouteSessionKey)
   const loadingRouteChatHistory =
     routeSelectedSessionID === selectedSessionID && streamState === 'loading' && events.length === 0
   const resolvingChatSessionID =
-    selectedSessionID && (!selectedSession || loadingRouteChatHistory) ? selectedSessionID : null
+    selectedSessionID && (!selectedSession || loadingRouteChatHistory)
+      ? selectedSessionID
+      : selectedSession
+        ? null
+        : unresolvedRouteSessionKey
 
   return (
     <main className="app-shell">
@@ -1005,6 +1086,7 @@ function App() {
                 resolvedTheme={theme.resolvedTheme}
                 onOpenFile={handleOpenWorkspaceFile}
                 onFileSaved={setOpenWorkspaceFile}
+                onCloseFile={handleCloseWorkspaceFile}
               />
             </>
           ) : (
@@ -1865,21 +1947,41 @@ function selectedSessionIDFromLocation() {
 
 function selectedSessionRouteFromLocation() {
   if (typeof window === 'undefined') {
-    return { sessionID: null, view: 'session' as const }
+    return { sessionID: null, sessionSlug: null, view: 'session' as const, filePath: null }
   }
   return sessionRouteFromPathname(window.location.pathname)
+}
+
+function resolveSessionRouteSessionID(route: SessionRoute, sessions: Session[]) {
+  if (route.sessionID) {
+    return route.sessionID
+  }
+  if (!route.sessionSlug) {
+    return null
+  }
+  return sessions.find((session) => sessionTitleSlug(session.title) === route.sessionSlug)?.id ?? null
 }
 
 function writeSelectedSessionRoute(
   sessionID: string | null,
   historyMode: Exclude<SessionRouteHistoryMode, 'none'>,
   view: AppView = 'session',
+  sessions: Session[] = [],
+  filePath: string | null = null,
 ) {
   if (typeof window === 'undefined') {
     return
   }
 
-  const path = sessionPath(sessionID, view)
+  const currentRoute = selectedSessionRouteFromLocation()
+  const routeSession = sessionID ? sessions.find((session) => session.id === sessionID) : null
+  const currentRouteSessionID = resolveSessionRouteSessionID(currentRoute, sessions)
+  const path =
+    routeSession
+      ? sessionSlugPath(sessionTitleSlug(routeSession.title), view, filePath)
+      : currentRoute.sessionSlug && currentRouteSessionID === sessionID
+        ? sessionSlugPath(currentRoute.sessionSlug, view, filePath)
+        : sessionPath(sessionID, view, filePath)
   if (window.location.pathname === path) {
     return
   }

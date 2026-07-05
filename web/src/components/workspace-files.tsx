@@ -25,6 +25,7 @@ export function WorkspaceFilesView({
   resolvedTheme,
   onOpenFile,
   onFileSaved,
+  onCloseFile,
 }: {
   session: Session | null
   resolvingSessionID?: string | null
@@ -33,25 +34,35 @@ export function WorkspaceFilesView({
   resolvedTheme: 'light' | 'dark'
   onOpenFile: (file: WorkspaceFileContent) => void
   onFileSaved: (file: WorkspaceFileContent) => void
+  onCloseFile: () => void
 }) {
   return (
-    <section className="flex h-full min-h-0 w-full flex-col bg-transparent">
-      <div className="host-console-frame grid min-h-0 flex-1 grid-cols-1 gap-3 p-2 lg:grid-cols-[minmax(15rem,20rem)_minmax(0,1fr)] lg:px-3 lg:pb-3">
+    <section className="relative flex h-full min-h-0 w-full flex-col bg-transparent">
+      <div className="host-console-frame relative grid min-h-0 flex-1 grid-cols-1 gap-3 p-2 lg:grid-cols-[minmax(15rem,20rem)_minmax(0,1fr)] lg:px-3 lg:pb-3">
         <WorkspaceFileBrowser
           session={session}
           resolvingSessionID={resolvingSessionID}
           refreshKey={refreshKey}
           onOpenFile={onOpenFile}
           selectedFilePath={selectedFile?.path ?? null}
-          className="min-h-[16rem]"
+          className="min-h-0"
         />
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border/80 bg-background/72 shadow-sm">
+        <section
+          className={cn(
+            'min-h-0 flex-col overflow-hidden rounded-lg border border-border/80 bg-background/72 shadow-sm',
+            selectedFile
+              ? 'mobile-file-viewer-panel absolute inset-x-2 bottom-2 z-30 flex bg-background shadow-2xl lg:static lg:z-auto lg:bg-background/72 lg:shadow-sm'
+              : 'hidden lg:flex',
+          )}
+        >
           {selectedFile ? (
             <WorkspaceFileContentView
               sessionID={session?.id ?? ''}
               file={selectedFile}
               resolvedTheme={resolvedTheme}
               onFileSaved={onFileSaved}
+              onClose={onCloseFile}
+              closeButtonClassName="lg:hidden"
             />
           ) : (
             <div className="flex h-full min-h-[20rem] flex-col items-center justify-center p-8 text-center">
@@ -323,12 +334,14 @@ export function WorkspaceFileContentView({
   resolvedTheme,
   onFileSaved,
   onClose,
+  closeButtonClassName,
 }: {
   sessionID: string
   file: WorkspaceFileContent
   resolvedTheme: 'light' | 'dark'
   onFileSaved: (file: WorkspaceFileContent) => void
   onClose?: () => void
+  closeButtonClassName?: string
 }) {
   const markdown = file.encoding !== 'binary' && isMarkdownFile(file)
   const editable = file.encoding === 'utf-8' && !file.truncated
@@ -438,7 +451,10 @@ export function WorkspaceFileContentView({
           {onClose ? (
             <button
               type="button"
-              className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className={cn(
+                'inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                closeButtonClassName,
+              )}
               aria-label="Close file viewer"
               onClick={onClose}
             >

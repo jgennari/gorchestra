@@ -64,9 +64,17 @@
   padding-top: calc(max(env(safe-area-inset-top, 0px), 2rem) + 5rem);
 }
 
+.mobile-file-viewer-panel {
+  top: calc(max(env(safe-area-inset-top, 0px), 2rem) + 5rem);
+}
+
 @media (min-width: 1024px) {
   .host-console-frame {
     padding-top: 4.75rem;
+  }
+
+  .mobile-file-viewer-panel {
+    top: auto;
   }
 }
 

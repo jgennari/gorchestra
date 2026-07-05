@@ -63,11 +63,11 @@ test('selecting a session updates the browser route', async () => {
   render(<App />)
 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo'))
 
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
 
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
 })
 
 test('switching app views updates the session route and browser history', async () => {
@@ -76,10 +76,10 @@ test('switching app views updates the session route and browser history', async 
   render(<App />)
 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo'))
 
   await user.click(screen.getAllByRole('button', { name: 'Show console' })[0])
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/console'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/console'))
   expect(
     screen
       .getAllByRole('button', { name: 'Show console' })
@@ -87,7 +87,7 @@ test('switching app views updates the session route and browser history', async 
   ).toBe(true)
 
   await user.click(screen.getAllByRole('button', { name: 'Show files' })[0])
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/files'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/files'))
   expect(
     screen
       .getAllByRole('button', { name: 'Show files' })
@@ -96,7 +96,7 @@ test('switching app views updates the session route and browser history', async 
 
   await act(async () => {
     window.history.back()
-    await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/console'))
+    await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/console'))
   })
   expect(
     screen
@@ -106,7 +106,7 @@ test('switching app views updates the session route and browser history', async 
 
   await act(async () => {
     window.history.back()
-    await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1'))
+    await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo'))
   })
   expect(
     screen
@@ -165,7 +165,7 @@ test('mobile sessions button opens a floating session dialog', async () => {
 
   await user.click(within(dialog).getByRole('button', { name: /Write docs/ }))
 
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Sessions' })).not.toBeInTheDocument())
 })
 
@@ -196,7 +196,7 @@ test('header files view opens workspace files inline', async () => {
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
 
   await user.click(screen.getAllByRole('button', { name: 'Show files' })[0])
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/files'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/files'))
   const filesHeader = screen.getByTestId('floating-files-header')
   expect(within(filesHeader).getByRole('button', { name: 'Session details' })).toBeInTheDocument()
   expect(screen.getByText('No file selected').closest('.host-console-frame')).toBeTruthy()
@@ -213,12 +213,84 @@ test('loading with a session route selects that session', async () => {
   render(<App />)
 
   await waitFor(() => expect(screen.getAllByText('Write docs').length).toBeGreaterThan(0))
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
   expect(
     screen
       .getAllByRole('button', { name: /Write docs/ })
       .some((button) => button.getAttribute('aria-current') === 'true'),
   ).toBe(true)
+})
+
+test('loading with a session slug route selects that session without replacing the slug', async () => {
+  window.history.replaceState({}, '', '/sessions/write-docs')
+  let resolveSessions: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/health') {
+      return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions?limit=50') {
+      await new Promise<void>((resolve) => {
+        resolveSessions = resolve
+      })
+      return jsonResponse({ sessions: [firstSession, secondSession] })
+    }
+    if (path === '/api/sessions/sess_2') {
+      return jsonResponse(secondSession)
+    }
+    if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
+      return jsonResponse({ events: [] })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  expect(screen.getByText('Loading session...')).toBeInTheDocument()
+
+  await act(async () => {
+    resolveSessions?.()
+    await Promise.resolve()
+  })
+
+  await waitFor(() => expect(screen.getAllByText('Write docs').length).toBeGreaterThan(0))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
+  expect(
+    screen
+      .getAllByRole('button', { name: /Write docs/ })
+      .some((button) => button.getAttribute('aria-current') === 'true'),
+  ).toBe(true)
+})
+
+test('loading with a session slug view route restores the view and preserves slug navigation', async () => {
+  const user = userEvent.setup()
+  window.history.replaceState({}, '', '/sessions/write-docs/files')
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Write docs').length).toBeGreaterThan(0))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs/files'))
+  expect(
+    screen
+      .getAllByRole('button', { name: 'Show files' })
+      .some((button) => button.getAttribute('aria-pressed') === 'true'),
+  ).toBe(true)
+
+  await user.click(screen.getAllByRole('button', { name: 'Show console' })[0])
+
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs/console'))
+})
+
+test('loading with a session file route opens the routed file', async () => {
+  vi.stubGlobal('fetch', fetchMock({ fileEntry: true }))
+  window.history.replaceState({}, '', '/sessions/inspect-repo/files/main.go')
+
+  render(<App />)
+
+  const fileViewer = await screen.findByRole('region', { name: 'File viewer: main.go' })
+  expect(within(fileViewer).getByLabelText('File editor')).toHaveValue('package main\n')
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/files/main.go'))
 })
 
 test('session route shows loading instead of no selection while sessions load', async () => {
@@ -353,18 +425,18 @@ test('switching sessions during a title edit requires confirmation', async () =>
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
 
   const dialog = await screen.findByRole('dialog', { name: 'Discard title edit?' })
-  expect(window.location.pathname).toBe('/sessions/sess_1')
+  expect(window.location.pathname).toBe('/sessions/inspect-repo')
 
   await user.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard title edit?' })).not.toBeInTheDocument())
-  expect(window.location.pathname).toBe('/sessions/sess_1')
+  expect(window.location.pathname).toBe('/sessions/inspect-repo')
   expect(screen.getByRole('textbox', { name: 'Session title' })).toHaveValue('Renamed session')
 
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
   const confirmDialog = await screen.findByRole('dialog', { name: 'Discard title edit?' })
   await user.click(within(confirmDialog).getByRole('button', { name: 'Discard and switch' }))
 
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
   expect(
     screen
       .getAllByRole('button', { name: /Write docs/ })
@@ -588,7 +660,7 @@ test('switching back to a cached session restores transcript before replaying st
   expect(await screen.findByText('Cached prompt')).toBeInTheDocument()
 
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_2'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
 
   await user.click(screen.getAllByRole('button', { name: /Inspect repo/ })[0])
 
@@ -733,13 +805,20 @@ test('file browser opens the inline files view', async () => {
   await user.click(await screen.findByRole('button', { name: /main\.go/i }))
 
   const fileViewer = await screen.findByRole('region', { name: 'File viewer: main.go' })
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/files'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/files/main.go'))
   expect(fileViewer).toBeInTheDocument()
+  expect(fileViewer.closest('.mobile-file-viewer-panel')).toBeTruthy()
   expect(within(fileViewer).getAllByText('main.go')).toHaveLength(1)
   expect(within(fileViewer).getByLabelText('File editor')).toHaveValue('package main\n')
   expect(screen.getAllByRole('button', { name: 'Show files' }).some((button) => button.getAttribute('aria-pressed') === 'true')).toBe(
     true,
   )
+
+  await user.click(within(fileViewer).getByRole('button', { name: 'Close file viewer' }))
+
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'File viewer: main.go' })).not.toBeInTheDocument())
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/files'))
+  expect(screen.getByText('No file selected')).toBeInTheDocument()
 })
 
 test('file browser renders markdown files as markdown', async () => {
@@ -810,7 +889,7 @@ test('file change diff actions open absolute paths in the file editor', async ()
   await user.click(screen.getByRole('button', { name: 'Show in File Editor' }))
 
   const fileViewer = await screen.findByRole('region', { name: 'File viewer: src/main.go' })
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_1/files'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/files/src%2Fmain.go'))
   expect(within(fileViewer).getByLabelText('File editor')).toHaveValue('package main\n')
   expect(screen.getAllByRole('button', { name: 'Show files' }).some((button) => button.getAttribute('aria-pressed') === 'true')).toBe(
     true,
