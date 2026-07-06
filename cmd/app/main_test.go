@@ -106,6 +106,7 @@ GORCHESTRA_CLAUDE_BIN=/opt/claude/bin/claude
 GORCHESTRA_CLAUDE_MODEL=claude-test
 GORCHESTRA_OPENCODE_BIN=/opt/opencode/bin/opencode
 GORCHESTRA_PI_BIN=/opt/pi/bin/pi
+GORCHESTRA_PUSH_SUBJECT=mailto:ops@example.com
 GORCHESTRA_OPEN=true
 `, dataDir, workspace, firstRoot, os.PathListSeparator, secondRoot))
 
@@ -150,6 +151,9 @@ GORCHESTRA_OPEN=true
 	if cfg.piBin != "/opt/pi/bin/pi" {
 		t.Fatalf("expected pi config values, got %#v", cfg)
 	}
+	if cfg.pushSubject != "mailto:ops@example.com" {
+		t.Fatalf("expected push subject from config, got %#v", cfg)
+	}
 	if cfg.codexNetwork || !cfg.open {
 		t.Fatalf("expected boolean config values, got network=%v open=%v", cfg.codexNetwork, cfg.open)
 	}
@@ -181,6 +185,25 @@ GORCHESTRA_WORKSPACE=%s
 	}
 	if cfg.port != "19090" {
 		t.Fatalf("expected flag port to override environment and config, got %q", cfg.port)
+	}
+}
+
+func TestParseConfigPushSubjectFlagOverridesEnvironment(t *testing.T) {
+	workspace := t.TempDir()
+
+	cfg, err := parseConfigArgs([]string{
+		"--workspace", workspace,
+		"--data-dir", filepath.Join(t.TempDir(), "data"),
+		"--push-subject", "https://example.com/gorchestra",
+	}, envMap(map[string]string{
+		"GORCHESTRA_PUSH_SUBJECT": "mailto:ops@example.com",
+	}))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	if cfg.pushSubject != "https://example.com/gorchestra" {
+		t.Fatalf("expected flag push subject, got %q", cfg.pushSubject)
 	}
 }
 

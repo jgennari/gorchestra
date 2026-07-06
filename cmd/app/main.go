@@ -55,6 +55,7 @@ type config struct {
 	claudeModel    string
 	opencodeBin    string
 	piBin          string
+	pushSubject    string
 	open           bool
 	showVersion    bool
 }
@@ -86,7 +87,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("event service startup failed: %v", err)
 	}
-	notificationService := notifications.NewService(dbStore)
+	notificationService := notifications.NewService(dbStore, notifications.WithSubscriber(cfg.pushSubject))
 	notificationService.Start(ctx, eventService)
 	if err := recoverInterruptedRuns(ctx, dbStore, eventService); err != nil {
 		log.Fatalf("recover interrupted runs failed: %v", err)
@@ -214,6 +215,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	flags.StringVar(&cfg.claudeModel, "claude-model", "", "optional Claude model override")
 	flags.StringVar(&cfg.opencodeBin, "opencode-bin", "", "path to the OpenCode CLI binary")
 	flags.StringVar(&cfg.piBin, "pi-bin", "", "path to the Pi CLI binary")
+	flags.StringVar(&cfg.pushSubject, "push-subject", "", "VAPID subject for Web Push notifications")
 	flags.BoolVar(&cfg.open, "open", false, "open the app in the default browser after startup")
 	flags.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -234,6 +236,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	claudeModelFlag := flagWasSet(flags, "claude-model")
 	opencodeBinFlag := flagWasSet(flags, "opencode-bin")
 	piBinFlag := flagWasSet(flags, "pi-bin")
+	pushSubjectFlag := flagWasSet(flags, "push-subject")
 	openFlag := flagWasSet(flags, "open")
 	workspaceRootsFlag := flagWasSet(flags, "workspace-root")
 	if cfg.showVersion {
@@ -293,6 +296,9 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	}
 	if !piBinFlag {
 		cfg.piBin = envOr(configGetenv, "GORCHESTRA_PI_BIN", "pi")
+	}
+	if !pushSubjectFlag {
+		cfg.pushSubject = envOr(configGetenv, "GORCHESTRA_PUSH_SUBJECT", notifications.DefaultSubscriber)
 	}
 	if !openFlag {
 		cfg.open = envBool(configGetenv, "GORCHESTRA_OPEN", false)

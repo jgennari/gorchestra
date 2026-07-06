@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	defaultSubscriber = "mailto:gorchestra@localhost"
+	DefaultSubscriber = "https://github.com/jgennari/gorchestra"
 	sendTimeout       = 15 * time.Second
 )
 
@@ -81,8 +81,8 @@ func WithSubscriber(subscriber string) Option {
 func NewService(store Store, opts ...Option) *Service {
 	service := &Service{
 		store:      store,
-		sender:     webPushSender{subscriber: defaultSubscriber},
-		subscriber: defaultSubscriber,
+		sender:     webPushSender{subscriber: DefaultSubscriber},
+		subscriber: DefaultSubscriber,
 		logger:     log.Default(),
 	}
 	for _, opt := range opts {
