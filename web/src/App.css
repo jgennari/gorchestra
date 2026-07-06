@@ -74,7 +74,7 @@
   }
 
   .mobile-floating-header-shell {
-    top: calc(env(safe-area-inset-top, 0px) + 0.375rem);
+    top: calc(env(safe-area-inset-top, 0px) + 0.125rem);
   }
 
   .session-bottom-safe-area {
@@ -82,11 +82,11 @@
   }
 
   .host-console-frame {
-    padding-top: calc(env(safe-area-inset-top, 0px) + 5.375rem);
+    padding-top: calc(env(safe-area-inset-top, 0px) + 5.125rem);
   }
 
   .mobile-file-viewer-panel {
-    top: calc(env(safe-area-inset-top, 0px) + 5.375rem);
+    top: calc(env(safe-area-inset-top, 0px) + 5.125rem);
   }
 }
 
