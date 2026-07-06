@@ -5,6 +5,10 @@ import type { AgentEvent, Session } from '@/lib/api'
 import { clearSessionEventCacheForTest } from '@/hooks/use-session-events'
 import { readCachedSessionEvents, writeCachedSession, writeCachedSessionEvents } from '@/lib/session-cache'
 import { createFakeIndexedDB } from '@/test/fake-indexeddb'
+import {
+  clearNotificationAttentionCacheForTest,
+  writeNotificationAttention,
+} from '@/lib/notification-attention'
 
 vi.mock('@monaco-editor/react', () => ({
   default: ({ value, onChange }: { value?: string; onChange?: (value: string | undefined) => void }) => (
@@ -44,6 +48,7 @@ beforeEach(() => {
   window.history.replaceState({}, '', '/')
   window.localStorage.clear()
   clearSessionEventCacheForTest()
+  clearNotificationAttentionCacheForTest()
   document.head.innerHTML = '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />'
   FakeEventSource.instances = []
   vi.stubGlobal('fetch', fetchMock())
@@ -51,6 +56,46 @@ beforeEach(() => {
   vi.stubGlobal('WebSocket', FakeWebSocket)
   vi.stubGlobal('ResizeObserver', FakeResizeObserver)
   vi.stubGlobal('matchMedia', matchMediaMock)
+})
+
+test('notification launch keeps the selected finished session unseen until deliberately selected', async () => {
+  const user = userEvent.setup()
+  const setAppBadge = vi.fn(() => Promise.resolve())
+  Object.defineProperty(navigator, 'setAppBadge', { configurable: true, value: setAppBadge })
+  vi.stubGlobal('indexedDB', createFakeIndexedDB())
+  window.history.replaceState({}, '', '/sessions/sess_1?notification_seq=5')
+  vi.stubGlobal('fetch', fetchMock({
+    sessions: [{ ...firstSession, last_event_seq: 5, event_count: 5 }],
+    events: [event(5, 'agent.run.completed', {})],
+  }))
+
+  render(<App />)
+
+  expect(await screen.findByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]')
+  await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(1))
+  expect(window.location.search).not.toContain('notification_seq')
+
+  await user.click(screen.getAllByRole('button', { name: /Inspect repo/ })[0])
+
+  await waitFor(() => expect(screen.queryByRole('img', { name: 'Session has unseen results' })).not.toBeInTheDocument())
+  await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(0))
+})
+
+test('background notification attention survives app launch for the selected session', async () => {
+  const setAppBadge = vi.fn(() => Promise.resolve())
+  Object.defineProperty(navigator, 'setAppBadge', { configurable: true, value: setAppBadge })
+  vi.stubGlobal('indexedDB', createFakeIndexedDB())
+  await writeNotificationAttention('sess_1', 5)
+  window.history.replaceState({}, '', '/sessions/sess_1')
+  vi.stubGlobal('fetch', fetchMock({
+    sessions: [{ ...firstSession, last_event_seq: 5, event_count: 5 }],
+    events: [event(5, 'agent.run.completed', {})],
+  }))
+
+  render(<App />)
+
+  expect(await screen.findByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]')
+  await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(1))
 })
 
 afterEach(() => {

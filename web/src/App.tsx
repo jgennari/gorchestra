@@ -67,6 +67,11 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { WorkspaceFilesView } from '@/components/workspace-files'
 import { hasSessionAttention, latestSessionSeq, sessionAttention } from '@/lib/session-attention'
 import {
+  clearNotificationAttention,
+  readNotificationAttentionSeqs,
+  writeNotificationAttention,
+} from '@/lib/notification-attention'
+import {
   sessionPath,
   sessionRouteFromPathname,
   sessionSlugPath,
@@ -146,6 +151,7 @@ function App() {
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
   const [followingLatest, setFollowingLatest] = useState(true)
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
+  const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
   const [titleEditorStates, setTitleEditorStates] = useState<Record<string, { editing: boolean; dirty: boolean }>>({})
   const [sessionSearchQuery, setSessionSearchQuery] = useState('')
   const [sessionListFilters, setSessionListFilters] = useState<SessionListFilters>(defaultSessionListFilters)
@@ -161,17 +167,21 @@ function App() {
     () => sessions.find((session) => session.id === selectedSessionID) ?? null,
     [selectedSessionID, sessions],
   )
+  const effectiveLastSeenSeqBySession = useMemo(
+    () => applyNotificationAttentionSeqs(lastSeenSeqBySession, notificationAttentionSeqBySession),
+    [lastSeenSeqBySession, notificationAttentionSeqBySession],
+  )
   const hasFaviconAttention = useMemo(
-    () => hasSessionAttention(sessions, lastSeenSeqBySession),
-    [lastSeenSeqBySession, sessions],
+    () => hasSessionAttention(sessions, effectiveLastSeenSeqBySession),
+    [effectiveLastSeenSeqBySession, sessions],
   )
   const appBadgeCount = useMemo(
     () =>
       sessions.reduce(
-        (count, session) => count + (sessionAttention(session, lastSeenSeqBySession) === null ? 0 : 1),
+        (count, session) => count + (sessionAttention(session, effectiveLastSeenSeqBySession) === null ? 0 : 1),
         0,
       ),
-    [lastSeenSeqBySession, sessions],
+    [effectiveLastSeenSeqBySession, sessions],
   )
   const hasOpenTitleEdit = useMemo(
     () => Object.values(titleEditorStates).some((state) => state.editing),
@@ -187,6 +197,42 @@ function App() {
   const showSessionStopNotification = pushNotifications.showSessionStopNotification
   useFavicon(hasFaviconAttention)
   useAppBadge(appBadgeCount)
+
+  useEffect(() => {
+    let cancelled = false
+    async function restoreNotificationAttention() {
+      const next = await readNotificationAttentionSeqs()
+      const routeAttention = notificationAttentionFromLocation()
+      if (routeAttention) {
+        next[routeAttention.sessionID] = Math.max(next[routeAttention.sessionID] ?? 0, routeAttention.seq)
+        void writeNotificationAttention(routeAttention.sessionID, routeAttention.seq)
+        clearNotificationAttentionSearchParam()
+      }
+      if (!cancelled) {
+        setNotificationAttentionSeqBySession(next)
+      }
+    }
+
+    void restoreNotificationAttention()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const clearNotificationAttentionForSession = useCallback((sessionID: string | null) => {
+    if (!sessionID) {
+      return
+    }
+    setNotificationAttentionSeqBySession((current) => {
+      if (!(sessionID in current)) {
+        return current
+      }
+      const next = { ...current }
+      delete next[sessionID]
+      return next
+    })
+    void clearNotificationAttention(sessionID)
+  }, [])
 
   const applySession = useCallback((session: Session) => {
     void writePersistentCachedSession(session)
@@ -236,15 +282,17 @@ function App() {
 
   const completeSessionSelection = useCallback(
     (sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
+      clearNotificationAttentionForSession(sessionID)
       selectSession(sessionID, historyMode)
       setMobileListOpen(false)
     },
-    [selectSession],
+    [clearNotificationAttentionForSession, selectSession],
   )
 
   const requestSessionSelection = useCallback(
     (sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
       if (sessionID === selectedSessionIDRef.current) {
+        clearNotificationAttentionForSession(sessionID)
         return
       }
       if (hasOpenTitleEdit) {
@@ -253,7 +301,7 @@ function App() {
       }
       completeSessionSelection(sessionID, historyMode)
     },
-    [completeSessionSelection, hasOpenTitleEdit],
+    [clearNotificationAttentionForSession, completeSessionSelection, hasOpenTitleEdit],
   )
 
   const refreshSession = useCallback(
@@ -499,8 +547,13 @@ function App() {
     if (!selectedSessionID) {
       return
     }
-    markSessionSeen(selectedSessionID, Math.max(lastSeq(events), latestSessionSeq(selectedSession)))
-  }, [events, markSessionSeen, selectedSession, selectedSessionID])
+    const latestSeq = Math.max(lastSeq(events), latestSessionSeq(selectedSession))
+    const heldAttentionSeq = notificationAttentionSeqBySession[selectedSessionID] ?? 0
+    if (heldAttentionSeq > 0 && latestSeq <= heldAttentionSeq) {
+      return
+    }
+    markSessionSeen(selectedSessionID, latestSeq)
+  }, [events, markSessionSeen, notificationAttentionSeqBySession, selectedSession, selectedSessionID])
 
   const loadSessions = useCallback(async (options: { showLoading?: boolean } = {}) => {
     const showLoading = options.showLoading ?? sessionsRef.current.length === 0
@@ -912,7 +965,7 @@ function App() {
   const sessionListProps = {
     sessions,
     selectedSessionID,
-    lastSeenSeqBySession,
+    lastSeenSeqBySession: effectiveLastSeenSeqBySession,
     loading: loadingSessions || refreshingSessions,
     query: sessionSearchQuery,
     onQueryChange: setSessionSearchQuery,
@@ -2008,6 +2061,60 @@ function saveSessionSeenSeqs(seenSeqs: Record<string, number>) {
   } catch {
     // Seen state is best-effort and browser-local.
   }
+}
+
+function applyNotificationAttentionSeqs(
+  seenSeqs: Record<string, number>,
+  notificationSeqs: Record<string, number>,
+): Record<string, number> {
+  let next = seenSeqs
+  for (const [sessionID, seq] of Object.entries(notificationSeqs)) {
+    if (!sessionID || !Number.isFinite(seq) || seq <= 0) {
+      continue
+    }
+    const heldSeenSeq = Math.max(0, seq - 1)
+    if ((next[sessionID] ?? 0) <= heldSeenSeq) {
+      continue
+    }
+    if (next === seenSeqs) {
+      next = { ...seenSeqs }
+    }
+    if (heldSeenSeq > 0) {
+      next[sessionID] = heldSeenSeq
+    } else {
+      delete next[sessionID]
+    }
+  }
+  return next
+}
+
+function notificationAttentionFromLocation(): { sessionID: string; seq: number } | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const route = selectedSessionRouteFromLocation()
+  if (!route.sessionID) {
+    return null
+  }
+  const seq = Number(new URLSearchParams(window.location.search).get('notification_seq'))
+  if (!Number.isFinite(seq) || seq <= 0) {
+    return null
+  }
+  return { sessionID: route.sessionID, seq }
+}
+
+function clearNotificationAttentionSearchParam() {
+  if (typeof window === 'undefined') {
+    return
+  }
+  const params = new URLSearchParams(window.location.search)
+  if (!params.has('notification_seq')) {
+    return
+  }
+  params.delete('notification_seq')
+  const nextSearch = params.toString()
+  const nextURL = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
+  window.history.replaceState({}, '', nextURL)
 }
 
 function debugStorageKey(sessionID: string) {

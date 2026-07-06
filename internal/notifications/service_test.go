@@ -31,6 +31,7 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 
 	service.notifyTerminalEvent(ctx, store.Event{
 		SessionID: "sess_1",
+		Seq:       8,
 		Type:      "agent.run.completed",
 		Status:    store.EventStatusCompleted,
 	})
@@ -44,8 +45,11 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 	if !bytes.Contains(sender.payloads[0], []byte(`"web_push":8030`)) {
 		t.Fatalf("expected declarative web push marker in payload, got %s", sender.payloads[0])
 	}
-	if !bytes.Contains(sender.payloads[0], []byte(`"navigate":"https://example.test/sessions/sess_1"`)) {
+	if !bytes.Contains(sender.payloads[0], []byte(`"navigate":"https://example.test/sessions/sess_1?notification_seq=8"`)) {
 		t.Fatalf("expected absolute declarative navigate URL in payload, got %s", sender.payloads[0])
+	}
+	if !bytes.Contains(sender.payloads[0], []byte(`"seq":8`)) {
+		t.Fatalf("expected terminal seq in payload, got %s", sender.payloads[0])
 	}
 	if !bytes.Contains(sender.payloads[0], []byte("Build release: The release build is complete")) {
 		t.Fatalf("expected response excerpt in payload, got %s", sender.payloads[0])

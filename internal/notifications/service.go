@@ -268,6 +268,7 @@ func (s *Service) notifyTerminalEvent(parent context.Context, event store.Event)
 		SessionID: event.SessionID,
 		EventType: event.Type,
 		Status:    string(event.Status),
+		Seq:       event.Seq,
 	}); err != nil {
 		s.logf("notification send failed: %v", err)
 	}
@@ -384,6 +385,7 @@ type notificationInput struct {
 	SessionID string
 	EventType string
 	Status    string
+	Seq       int64
 }
 
 type notificationPayload struct {
@@ -397,6 +399,7 @@ type notificationPayload struct {
 	EventType    string                  `json:"event_type,omitempty"`
 	Status       string                  `json:"status,omitempty"`
 	Kind         string                  `json:"kind,omitempty"`
+	Seq          int64                   `json:"seq,omitempty"`
 }
 
 type declarativeNotification struct {
@@ -411,6 +414,9 @@ func newNotificationPayload(input notificationInput, subscription store.PushSubs
 	path := input.Path
 	if path == "" {
 		path = "/"
+	}
+	if input.Seq > 0 && input.SessionID != "" {
+		path = pathWithNotificationSeq(path, input.Seq)
 	}
 	navigate := absoluteSubscriptionURL(subscription, path)
 	return notificationPayload{
@@ -430,6 +436,7 @@ func newNotificationPayload(input notificationInput, subscription store.PushSubs
 		EventType: input.EventType,
 		Status:    input.Status,
 		Kind:      input.Kind,
+		Seq:       input.Seq,
 	}
 }
 
@@ -454,11 +461,30 @@ func absoluteSubscriptionURL(subscription store.PushSubscription, path string) s
 	if err == nil && parsedPath.IsAbs() {
 		return parsedPath.String()
 	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
+	if err == nil {
+		if parsedPath.Path == "" {
+			parsedPath.Path = "/"
+		}
+		if !strings.HasPrefix(parsedPath.Path, "/") {
+			parsedPath.Path = "/" + parsedPath.Path
+		}
+		parsedOrigin.Path = parsedPath.Path
+		parsedOrigin.RawQuery = parsedPath.RawQuery
+		return parsedOrigin.String()
 	}
 	parsedOrigin.Path = path
 	return parsedOrigin.String()
+}
+
+func pathWithNotificationSeq(path string, seq int64) string {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return path
+	}
+	values := parsed.Query()
+	values.Set("notification_seq", fmt.Sprintf("%d", seq))
+	parsed.RawQuery = values.Encode()
+	return parsed.String()
 }
 
 type webPushSender struct {
