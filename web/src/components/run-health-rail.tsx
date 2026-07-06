@@ -192,6 +192,7 @@ function Metric({ label, value }: { label: string; value: number }) {
 }
 
 function TokenUsageView({ usage }: { usage: TokenUsageSummary }) {
+  const contextOnly = usage.kind === 'context'
   const contextTokens = usage.last.totalTokens > 0 ? usage.last.totalTokens : usage.total.totalTokens
   const contextPercent = contextTokens / usage.modelContextWindow
   const cachedPercent = usage.total.inputTokens > 0 ? usage.total.cachedInputTokens / usage.total.inputTokens : 0
@@ -213,20 +214,30 @@ function TokenUsageView({ usage }: { usage: TokenUsageSummary }) {
       <p className="mt-1 truncate text-[11px] text-muted-foreground">
         {formatTokenCount(contextTokens)} / {formatTokenCount(usage.modelContextWindow)} current
       </p>
-      <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-        {formatTokenCount(usage.total.totalTokens)} cumulative
-      </p>
+      {contextOnly ? (
+        usage.cost ? (
+          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{formatCost(usage.cost)} cost</p>
+        ) : null
+      ) : (
+        <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+          {formatTokenCount(usage.total.totalTokens)} cumulative
+        </p>
+      )}
 
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <TokenMetric label="Input" value={usage.total.inputTokens} />
-        <TokenMetric label="Output" value={usage.total.outputTokens} />
-      </div>
-      <p className="mt-2 truncate text-[11px] text-muted-foreground">
-        {formatTokenCount(usage.total.cachedInputTokens)} cached ({formatPercent(cachedPercent)})
-      </p>
-      <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-        {formatTokenCount(usage.total.reasoningOutputTokens)} reasoning
-      </p>
+      {contextOnly ? null : (
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <TokenMetric label="Input" value={usage.total.inputTokens} />
+            <TokenMetric label="Output" value={usage.total.outputTokens} />
+          </div>
+          <p className="mt-2 truncate text-[11px] text-muted-foreground">
+            {formatTokenCount(usage.total.cachedInputTokens)} cached ({formatPercent(cachedPercent)})
+          </p>
+          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+            {formatTokenCount(usage.total.reasoningOutputTokens)} reasoning
+          </p>
+        </>
+      )}
     </div>
   )
 }
@@ -340,6 +351,18 @@ function formatCompactCount(value: number) {
 
 function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`
+}
+
+function formatCost(cost: { amount: number; currency: string }) {
+  const currency = cost.currency.toUpperCase()
+  if (currency === 'USD') {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: cost.amount < 1 ? 4 : 2,
+    }).format(cost.amount)
+  }
+  return `${formatCompactCount(cost.amount)} ${currency}`
 }
 
 function formatShortDateTime(value: string) {

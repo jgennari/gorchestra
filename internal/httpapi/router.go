@@ -53,6 +53,7 @@ type Store interface {
 	ListEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error)
 	ListRecentEvents(ctx context.Context, sessionID string, limit int) ([]store.Event, error)
 	ListEventsBefore(ctx context.Context, sessionID string, beforeSeq int64, limit int) ([]store.Event, error)
+	ClearNotificationAttention(ctx context.Context, sessionID string) error
 }
 
 type EventService interface {
@@ -178,6 +179,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	if api.store != nil {
 		r.Get("/api/sessions", api.listSessionsHandler)
 		r.Get("/api/sessions/{sessionId}", api.getSessionHandler)
+		r.Post("/api/sessions/{sessionId}/notification-attention/clear", api.clearSessionNotificationAttentionHandler)
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
 	}
 	if api.store != nil && api.events != nil {
@@ -187,6 +189,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	if api.notifications != nil {
 		r.Get("/api/notifications/public-key", api.notificationPublicKeyHandler)
 		r.Get("/api/notifications/debug", api.notificationDebugHandler)
+		r.Post("/api/notifications/client-diagnostics", api.saveNotificationClientDiagnosticHandler)
 		r.Post("/api/notifications/subscriptions", api.saveNotificationSubscriptionHandler)
 		r.Delete("/api/notifications/subscriptions", api.deleteNotificationSubscriptionHandler)
 		r.Post("/api/notifications/test", api.testNotificationHandler)

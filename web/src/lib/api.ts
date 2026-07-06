@@ -12,6 +12,7 @@ export type Session = {
   event_count: number
   last_event_seq?: number
   tool_count: number
+  notification_attention_seq?: number
   pending_input?: boolean
   created_at: string
   updated_at: string
@@ -243,6 +244,30 @@ export type NotificationDebugAttempt = {
   created_at: string
 }
 
+export type NotificationClientDiagnostic = {
+  created_at: string
+  received_at: string
+  user_agent?: string
+  payload_web_push?: unknown
+  declarative: boolean
+  badge?: {
+    supported?: boolean
+    attempted?: boolean
+    ok?: boolean
+    count?: number
+    error?: string
+  }
+  attention_count?: number
+  show_notification?: {
+    attempted?: boolean
+    ok?: boolean
+    reason?: string
+    error?: string
+  }
+  session_id?: string
+  seq?: number
+}
+
 type ErrorResponse = {
   error?: string
 }
@@ -303,6 +328,7 @@ export type NotificationDebugResponse = {
   public_key_fingerprint: string
   subscriptions: NotificationDebugSubscription[]
   recent_attempts: NotificationDebugAttempt[]
+  client_diagnostics?: NotificationClientDiagnostic[]
 }
 
 type ListSessionsOptions = {
@@ -349,6 +375,12 @@ export async function listSessions(options: ListSessionsOptions | number = {}) {
 
 export async function getSession(sessionID: string) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`)
+}
+
+export async function clearSessionNotificationAttention(sessionID: string) {
+  return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}/notification-attention/clear`, {
+    method: 'POST',
+  })
 }
 
 export async function createSession(params: {

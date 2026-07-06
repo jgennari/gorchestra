@@ -354,6 +354,42 @@ test('latest token usage is derived from claude usage payloads', () => {
   })
 })
 
+test('latest token usage is derived from opencode usage updates', () => {
+  const usage = latestTokenUsage([
+    event(1, 'provider.opencode.event', {
+      provider: 'opencode',
+      provider_event_type: 'usage_update',
+      raw_update: {
+        sessionUpdate: 'usage_update',
+        used: 53_000,
+        size: 200_000,
+        cost: { amount: 0.1234, currency: 'USD' },
+      },
+    }),
+  ])
+
+  expect(usage).toMatchObject({
+    kind: 'context',
+    total: {
+      totalTokens: 53_000,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+    },
+    last: {
+      totalTokens: 53_000,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+    },
+    modelContextWindow: 200_000,
+    cost: { amount: 0.1234, currency: 'USD' },
+    seq: 1,
+  })
+})
+
 test('active thinking clears when codex reasoning item completes', () => {
   expect(activeThinking([event(1, 'agent.status.started', { provider_event_type: 'turn/started' })])).toBe(true)
 

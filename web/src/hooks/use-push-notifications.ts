@@ -7,9 +7,11 @@ import {
   savePushSubscription,
   sendTestNotification,
 } from '@/lib/api'
+import { readNotificationWorkerDiagnostic, type NotificationWorkerDiagnostic } from '@/lib/notification-attention'
 
 type NotificationStatus = 'unsupported' | 'default' | 'denied' | 'enabling' | 'enabled' | 'error'
 type NotificationTestState = 'idle' | 'sending' | 'sent'
+type BadgeTestState = 'idle' | 'setting' | 'set' | 'clearing' | 'cleared' | 'unsupported' | 'error'
 type SessionStopNotificationDetails = {
   title?: string
   excerpt?: string
@@ -24,10 +26,12 @@ export type BrowserNotificationDebug = {
   service_worker_controller: string
   current_subscription_hash: string
   window_push_manager: boolean
+  app_badge_supported: boolean
 }
 
 export type PushNotificationDebug = {
   browser: BrowserNotificationDebug
+  worker: NotificationWorkerDiagnostic | null
   server: NotificationDebugResponse | null
   updated_at: string
 }
@@ -44,6 +48,8 @@ export function usePushNotifications() {
   const [error, setError] = useState('')
   const [testState, setTestState] = useState<NotificationTestState>('idle')
   const [localTestState, setLocalTestState] = useState<NotificationTestState>('idle')
+  const [badgeTestState, setBadgeTestState] = useState<BadgeTestState>('idle')
+  const [badgeTestMessage, setBadgeTestMessage] = useState('')
   const [debug, setDebug] = useState<PushNotificationDebug | null>(null)
   const [soundEnabled, setSoundEnabledState] = useState(() => readBooleanStorage(soundStorageKey, false))
   const playedEventsRef = useRef<Set<string>>(new Set())
@@ -52,12 +58,14 @@ export function usePushNotifications() {
   const audioContextRef = useRef<AudioContext | null>(null)
 
   const refreshDebug = useCallback(async () => {
-    const [browser, server] = await Promise.all([
+    const [browser, worker, server] = await Promise.all([
       collectBrowserNotificationDebug(supported),
+      readNotificationWorkerDiagnostic().catch(() => null),
       fetchNotificationDebug().catch(() => null),
     ])
     setDebug({
       browser,
+      worker,
       server,
       updated_at: new Date().toISOString(),
     })
@@ -100,8 +108,8 @@ export function usePushNotifications() {
     let cancelled = false
     async function restoreExistingSubscription() {
       try {
-        const registration = await navigator.serviceWorker.getRegistration('/')
-        const subscription = registration ? await registration.pushManager.getSubscription() : null
+        const pushManager = await activePushManager()
+        const subscription = pushManager ? await pushManager.getSubscription() : null
         if (cancelled || !subscription) {
           return
         }
@@ -161,8 +169,8 @@ export function usePushNotifications() {
   const disable = useCallback(async () => {
     setError('')
     try {
-      const registration = supported ? await navigator.serviceWorker.getRegistration('/') : null
-      const subscription = registration ? await registration.pushManager.getSubscription() : null
+      const pushManager = supported ? await activePushManager() : null
+      const subscription = pushManager ? await pushManager.getSubscription() : null
       if (subscription?.endpoint) {
         await deletePushSubscription(subscription.endpoint)
         await subscription.unsubscribe()
@@ -209,6 +217,54 @@ export function usePushNotifications() {
       setLocalTestState('idle')
     }
   }, [refreshDebug, supported])
+
+  const setTestBadge = useCallback(async () => {
+    setBadgeTestState('setting')
+    setBadgeTestMessage('')
+    try {
+      const badgeNavigator = navigator as Navigator & { setAppBadge?: (contents?: number) => Promise<void> }
+      if (!badgeNavigator.setAppBadge) {
+        setBadgeTestState('unsupported')
+        setBadgeTestMessage('Badging API is not available in this context.')
+        await refreshDebug()
+        return
+      }
+      await badgeNavigator.setAppBadge(1)
+      setBadgeTestState('set')
+      setBadgeTestMessage('Badge set request succeeded.')
+      await refreshDebug()
+    } catch (badgeError) {
+      setBadgeTestState('error')
+      setBadgeTestMessage(messageFromUnknown(badgeError))
+    }
+  }, [refreshDebug])
+
+  const clearTestBadge = useCallback(async () => {
+    setBadgeTestState('clearing')
+    setBadgeTestMessage('')
+    try {
+      const badgeNavigator = navigator as Navigator & {
+        clearAppBadge?: () => Promise<void>
+        setAppBadge?: (contents?: number) => Promise<void>
+      }
+      if (badgeNavigator.clearAppBadge) {
+        await badgeNavigator.clearAppBadge()
+      } else if (badgeNavigator.setAppBadge) {
+        await badgeNavigator.setAppBadge(0)
+      } else {
+        setBadgeTestState('unsupported')
+        setBadgeTestMessage('Badging API is not available in this context.')
+        await refreshDebug()
+        return
+      }
+      setBadgeTestState('cleared')
+      setBadgeTestMessage('Badge clear request succeeded.')
+      await refreshDebug()
+    } catch (badgeError) {
+      setBadgeTestState('error')
+      setBadgeTestMessage(messageFromUnknown(badgeError))
+    }
+  }, [refreshDebug])
 
   const setSoundEnabled = useCallback((enabled: boolean) => {
     writeBooleanStorage(soundStorageKey, enabled)
@@ -274,12 +330,16 @@ export function usePushNotifications() {
     error,
     testState,
     localTestState,
+    badgeTestState,
+    badgeTestMessage,
     debug,
     soundEnabled,
     enable,
     disable,
     sendTest,
     sendLocalTest,
+    setTestBadge,
+    clearTestBadge,
     refreshDebug,
     setSoundEnabled,
     playSessionStopSound,
@@ -298,6 +358,7 @@ async function collectBrowserNotificationDebug(supported: boolean): Promise<Brow
     service_worker_controller: 'none',
     current_subscription_hash: '',
     window_push_manager: typeof window !== 'undefined' && 'pushManager' in window,
+    app_badge_supported: typeof navigator !== 'undefined' && 'setAppBadge' in navigator,
   }
   if (!supported) {
     return debug
@@ -305,10 +366,11 @@ async function collectBrowserNotificationDebug(supported: boolean): Promise<Brow
 
   try {
     const registration = await navigator.serviceWorker.getRegistration('/')
+    const pushManager = await activePushManager()
     debug.service_worker_state =
       registration?.active?.state || registration?.installing?.state || registration?.waiting?.state || 'none'
     debug.service_worker_controller = navigator.serviceWorker.controller?.state || 'none'
-    const subscription = registration ? await registration.pushManager.getSubscription() : null
+    const subscription = pushManager ? await pushManager.getSubscription() : null
     debug.current_subscription_hash = subscription?.endpoint ? await hashText(subscription.endpoint) : ''
   } catch {
     debug.service_worker_state = 'error'
@@ -380,10 +442,23 @@ function initialStatus(supported: boolean): NotificationStatus {
   return 'default'
 }
 
+async function activePushManager(): Promise<PushManager | null> {
+  const windowPushManager = (window as Window & { pushManager?: PushManager }).pushManager
+  if (windowPushManager) {
+    return windowPushManager
+  }
+  const registration = await navigator.serviceWorker.getRegistration('/')
+  return registration?.pushManager ?? null
+}
+
 async function ensurePushSubscription(force: boolean) {
-  const registration = await navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
+  await navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
   const { public_key: publicKey } = await fetchNotificationPublicKey()
-  const currentSubscription = await registration.pushManager.getSubscription()
+  const pushManager = await activePushManager()
+  if (!pushManager) {
+    throw new Error('Push manager is unavailable.')
+  }
+  const currentSubscription = await pushManager.getSubscription()
   if (currentSubscription && !force) {
     await savePushSubscription(currentSubscription.toJSON() as PushSubscriptionPayload)
     return currentSubscription
@@ -394,7 +469,7 @@ async function ensurePushSubscription(force: boolean) {
     await currentSubscription.unsubscribe().catch(() => undefined)
   }
 
-  const subscription = await registration.pushManager.subscribe({
+  const subscription = await pushManager.subscribe({
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(publicKey),
   })

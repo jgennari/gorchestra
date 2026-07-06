@@ -121,6 +121,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 		`SELECT id, title, agent_type, status, provider_session_id, workspace_path, agent_options_json,
 		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id) AS event_count,
 		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND type IN ('tool.call.started', 'file.change.started')) AS tool_count,
+		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
 		        created_at, updated_at, completed_at, archived_at
 		 FROM sessions
 		 WHERE id = ?`,
@@ -144,6 +145,7 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 	query := `SELECT id, title, agent_type, status, provider_session_id, workspace_path, agent_options_json,
 		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id) AS event_count,
 		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND type IN ('tool.call.started', 'file.change.started')) AS tool_count,
+		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
 		        created_at, updated_at, completed_at, archived_at
 		 FROM sessions`
 	args := []any{}
@@ -882,6 +884,7 @@ func scanSession(row rowScanner) (Session, error) {
 	var agentOptions string
 	var eventCount int64
 	var toolCount int64
+	var notificationAttentionSeq int64
 	var createdAt string
 	var updatedAt string
 	var completedAt sql.NullString
@@ -897,6 +900,7 @@ func scanSession(row rowScanner) (Session, error) {
 		&agentOptions,
 		&eventCount,
 		&toolCount,
+		&notificationAttentionSeq,
 		&createdAt,
 		&updatedAt,
 		&completedAt,
@@ -933,6 +937,7 @@ func scanSession(row rowScanner) (Session, error) {
 	session.AgentOptions = json.RawMessage(agentOptions)
 	session.EventCount = eventCount
 	session.ToolCount = toolCount
+	session.NotificationAttentionSeq = notificationAttentionSeq
 	session.CreatedAt = parsedCreatedAt
 	session.UpdatedAt = parsedUpdatedAt
 

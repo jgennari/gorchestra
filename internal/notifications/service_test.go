@@ -3,6 +3,7 @@ package notifications
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -51,11 +52,35 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 	if !bytes.Contains(sender.payloads[0], []byte(`"seq":8`)) {
 		t.Fatalf("expected terminal seq in payload, got %s", sender.payloads[0])
 	}
+	if !bytes.Contains(sender.payloads[0], []byte(`"app_badge":"1"`)) {
+		t.Fatalf("expected string app badge in payload, got %s", sender.payloads[0])
+	}
 	if !bytes.Contains(sender.payloads[0], []byte("Build release: The release build is complete")) {
 		t.Fatalf("expected response excerpt in payload, got %s", sender.payloads[0])
 	}
+	var payload map[string]any
+	if err := json.Unmarshal(sender.payloads[0], &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload) != 2 {
+		t.Fatalf("expected only web_push and notification top-level fields, got %s", sender.payloads[0])
+	}
+	notification, ok := payload["notification"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected notification object, got %#v", payload["notification"])
+	}
+	data, ok := notification["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected notification data object, got %#v", notification["data"])
+	}
+	if data["session_id"] != "sess_1" || data["event_type"] != "agent.run.completed" || data["seq"] != float64(8) {
+		t.Fatalf("expected metadata in notification data, got %#v", data)
+	}
 	if len(fakeStore.attempts) != 1 || fakeStore.attempts[0].HTTPStatus != http.StatusCreated {
 		t.Fatalf("expected recorded delivery attempt, got %#v", fakeStore.attempts)
+	}
+	if len(fakeStore.attention) != 1 || fakeStore.attention[0].SessionID != "sess_1" || fakeStore.attention[0].Seq != 8 {
+		t.Fatalf("expected notification attention recorded, got %#v", fakeStore.attention)
 	}
 }
 
@@ -99,6 +124,27 @@ func TestServiceIgnoresNonTerminalEvents(t *testing.T) {
 	}
 }
 
+func TestDeclarativeWebPushHTTPClientSetsNotificationContentType(t *testing.T) {
+	base := &recordingHTTPClient{}
+	client := declarativeWebPushHTTPClient{base: base}
+	request, err := http.NewRequest(http.MethodPost, "https://push.example.test", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/octet-stream")
+
+	if _, err := client.Do(request); err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+
+	if base.request == nil {
+		t.Fatal("expected wrapped client to receive request")
+	}
+	if got := base.request.Header.Get("Content-Type"); got != declarativeNotificationContentType {
+		t.Fatalf("expected content type %q, got %q", declarativeNotificationContentType, got)
+	}
+}
+
 type memoryStore struct {
 	keys          store.NotificationKeys
 	session       store.Session
@@ -106,6 +152,7 @@ type memoryStore struct {
 	subscriptions []store.PushSubscription
 	disabled      []store.DisablePushSubscriptionParams
 	attempts      []store.RecordPushDeliveryAttemptParams
+	attention     []store.MarkNotificationAttentionParams
 }
 
 func (s *memoryStore) GetNotificationKeys(context.Context) (store.NotificationKeys, error) {
@@ -161,6 +208,11 @@ func (s *memoryStore) RecordPushDeliveryAttempt(_ context.Context, params store.
 	}, nil
 }
 
+func (s *memoryStore) MarkNotificationAttention(_ context.Context, params store.MarkNotificationAttentionParams) error {
+	s.attention = append(s.attention, params)
+	return nil
+}
+
 func (s *memoryStore) ListPushDeliveryAttempts(context.Context, int) ([]store.PushDeliveryAttempt, error) {
 	attempts := make([]store.PushDeliveryAttempt, 0, len(s.attempts))
 	for index, attempt := range s.attempts {
@@ -201,6 +253,15 @@ func (s *recordingSender) Send(_ context.Context, _ store.NotificationKeys, _ st
 	response := s.responses[0]
 	s.responses = s.responses[1:]
 	return response, nil
+}
+
+type recordingHTTPClient struct {
+	request *http.Request
+}
+
+func (c *recordingHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	c.request = req
+	return testResponse(http.StatusCreated), nil
 }
 
 type memoryEventSource struct {

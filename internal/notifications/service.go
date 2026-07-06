@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	DefaultSubscriber = "https://github.com/jgennari/gorchestra"
-	sendTimeout       = 15 * time.Second
+	DefaultSubscriber                  = "https://github.com/jgennari/gorchestra"
+	declarativeNotificationContentType = "application/notification+json"
+	sendTimeout                        = 15 * time.Second
 )
 
 type Store interface {
@@ -32,6 +33,7 @@ type Store interface {
 	ListPushSubscriptions(ctx context.Context) ([]store.PushSubscription, error)
 	RecordPushDeliveryAttempt(ctx context.Context, params store.RecordPushDeliveryAttemptParams) (store.PushDeliveryAttempt, error)
 	ListPushDeliveryAttempts(ctx context.Context, limit int) ([]store.PushDeliveryAttempt, error)
+	MarkNotificationAttention(ctx context.Context, params store.MarkNotificationAttentionParams) error
 	GetSession(ctx context.Context, id string) (store.Session, error)
 	ListRecentEvents(ctx context.Context, sessionID string, limit int) ([]store.Event, error)
 }
@@ -291,6 +293,7 @@ func (s *Service) sendToActiveSubscriptions(ctx context.Context, input notificat
 	s.logf("notification send started: kind=%s subscriptions=%d", input.Kind, len(subscriptions))
 
 	var errs []error
+	attentionRecorded := false
 	for _, subscription := range subscriptions {
 		payload, err := json.Marshal(newNotificationPayload(input, subscription))
 		if err != nil {
@@ -314,6 +317,16 @@ func (s *Service) sendToActiveSubscriptions(ctx context.Context, input notificat
 		s.recordDeliveryAttempt(ctx, subscription, input, response.StatusCode, response.Status, "")
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
 			s.logf("notification send accepted: endpoint=%s status=%s", endpointFingerprint(subscription.Endpoint), response.Status)
+			if !attentionRecorded && input.SessionID != "" && input.Seq > 0 {
+				attentionRecorded = true
+				if err := s.store.MarkNotificationAttention(ctx, store.MarkNotificationAttentionParams{
+					SessionID: input.SessionID,
+					Seq:       input.Seq,
+					EventType: input.EventType,
+				}); err != nil {
+					s.logf("notification attention record failed: session_id=%s seq=%d error=%v", input.SessionID, input.Seq, err)
+				}
+			}
 			continue
 		}
 		statusText := response.Status
@@ -391,23 +404,24 @@ type notificationInput struct {
 type notificationPayload struct {
 	WebPush      int                     `json:"web_push"`
 	Notification declarativeNotification `json:"notification"`
-	Title        string                  `json:"title"`
-	Body         string                  `json:"body"`
-	URL          string                  `json:"url"`
-	Tag          string                  `json:"tag"`
-	SessionID    string                  `json:"session_id,omitempty"`
-	EventType    string                  `json:"event_type,omitempty"`
-	Status       string                  `json:"status,omitempty"`
-	Kind         string                  `json:"kind,omitempty"`
-	Seq          int64                   `json:"seq,omitempty"`
 }
 
 type declarativeNotification struct {
-	Title    string `json:"title"`
-	Body     string `json:"body,omitempty"`
-	Navigate string `json:"navigate,omitempty"`
-	Tag      string `json:"tag,omitempty"`
-	AppBadge string `json:"app_badge,omitempty"`
+	Title    string           `json:"title"`
+	Body     string           `json:"body,omitempty"`
+	Navigate string           `json:"navigate,omitempty"`
+	Tag      string           `json:"tag,omitempty"`
+	AppBadge string           `json:"app_badge,omitempty"`
+	Data     notificationData `json:"data,omitempty"`
+}
+
+type notificationData struct {
+	URL       string `json:"url,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	EventType string `json:"event_type,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Seq       int64  `json:"seq,omitempty"`
 }
 
 func newNotificationPayload(input notificationInput, subscription store.PushSubscription) notificationPayload {
@@ -427,16 +441,15 @@ func newNotificationPayload(input notificationInput, subscription store.PushSubs
 			Navigate: navigate,
 			Tag:      input.Tag,
 			AppBadge: "1",
+			Data: notificationData{
+				URL:       path,
+				SessionID: input.SessionID,
+				EventType: input.EventType,
+				Status:    input.Status,
+				Kind:      input.Kind,
+				Seq:       input.Seq,
+			},
 		},
-		Title:     input.Title,
-		Body:      input.Body,
-		URL:       path,
-		Tag:       input.Tag,
-		SessionID: input.SessionID,
-		EventType: input.EventType,
-		Status:    input.Status,
-		Kind:      input.Kind,
-		Seq:       input.Seq,
 	}
 }
 
@@ -503,6 +516,7 @@ func (s webPushSender) Send(ctx context.Context, keys store.NotificationKeys, su
 			},
 		},
 		&webpush.Options{
+			HTTPClient:      declarativeWebPushHTTPClient{},
 			Subscriber:      s.subscriber,
 			VAPIDPublicKey:  keys.PublicKey,
 			VAPIDPrivateKey: keys.PrivateKey,
@@ -510,6 +524,18 @@ func (s webPushSender) Send(ctx context.Context, keys store.NotificationKeys, su
 			Urgency:         webpush.UrgencyHigh,
 		},
 	)
+}
+
+type declarativeWebPushHTTPClient struct {
+	base webpush.HTTPClient
+}
+
+func (c declarativeWebPushHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Content-Type", declarativeNotificationContentType)
+	if c.base != nil {
+		return c.base.Do(req)
+	}
+	return http.DefaultClient.Do(req)
 }
 
 func isTerminalRunEvent(eventType string) bool {

@@ -33,19 +33,20 @@ const (
 )
 
 type Session struct {
-	ID                string
-	Title             string
-	AgentType         string
-	Status            SessionStatus
-	ProviderSessionID string
-	WorkspacePath     string
-	AgentOptions      json.RawMessage
-	EventCount        int64
-	ToolCount         int64
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	CompletedAt       *time.Time
-	ArchivedAt        *time.Time
+	ID                       string
+	Title                    string
+	AgentType                string
+	Status                   SessionStatus
+	ProviderSessionID        string
+	WorkspacePath            string
+	AgentOptions             json.RawMessage
+	EventCount               int64
+	ToolCount                int64
+	NotificationAttentionSeq int64
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	CompletedAt              *time.Time
+	ArchivedAt               *time.Time
 }
 
 type Event struct {
@@ -195,4 +196,10 @@ type RecordPushDeliveryAttemptParams struct {
 	HTTPStatus     int
 	ResponseStatus string
 	Error          string
+}
+
+type MarkNotificationAttentionParams struct {
+	SessionID string
+	Seq       int64
+	EventType string
 }

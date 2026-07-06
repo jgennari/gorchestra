@@ -102,6 +102,36 @@ test('background notification attention survives app launch for the selected ses
   await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(1))
 })
 
+test('server notification attention survives app launch for the selected session', async () => {
+  const user = userEvent.setup()
+  const setAppBadge = vi.fn(() => Promise.resolve())
+  Object.defineProperty(navigator, 'setAppBadge', { configurable: true, value: setAppBadge })
+  window.history.replaceState({}, '', '/sessions/sess_1')
+  const fetch = fetchMock({
+    sessions: [{ ...firstSession, event_count: 5, last_event_seq: 5, notification_attention_seq: 5 }],
+    events: [event(5, 'agent.run.completed', {})],
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() =>
+    expect(screen.getByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]'),
+  )
+  await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(1))
+
+  await user.click(screen.getAllByRole('button', { name: /Inspect repo/ })[0])
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_1/notification-attention/clear',
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+  await waitFor(() => expect(screen.queryByRole('img', { name: 'Session has unseen results' })).not.toBeInTheDocument())
+  await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(0))
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -1091,6 +1121,13 @@ function fetchMock({
       const matchedSession = sessions.find((session) => session.id === decodeURIComponent(sessionMatch[1]))
       if (matchedSession) {
         return jsonResponse(matchedSession)
+      }
+    }
+    const attentionClearMatch = path.match(/^\/api\/sessions\/([^/?]+)\/notification-attention\/clear$/)
+    if (attentionClearMatch && init?.method === 'POST') {
+      const matchedSession = sessions.find((session) => session.id === decodeURIComponent(attentionClearMatch[1]))
+      if (matchedSession) {
+        return jsonResponse({ ...matchedSession, notification_attention_seq: undefined })
       }
     }
     if (path === '/api/sessions/sess_1/clear' && init?.method === 'POST') {

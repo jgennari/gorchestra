@@ -5,6 +5,7 @@ import type { PushNotificationDebug } from '@/hooks/use-push-notifications'
 
 type NotificationStatus = 'unsupported' | 'default' | 'denied' | 'enabling' | 'enabled' | 'error'
 type NotificationTestState = 'idle' | 'sending' | 'sent'
+type BadgeTestState = 'idle' | 'setting' | 'set' | 'clearing' | 'cleared' | 'unsupported' | 'error'
 
 type Props = {
   open: boolean
@@ -14,12 +15,16 @@ type Props = {
   error: string
   testState: NotificationTestState
   localTestState: NotificationTestState
+  badgeTestState: BadgeTestState
+  badgeTestMessage: string
   debug: PushNotificationDebug | null
   soundEnabled: boolean
   onEnable: () => void
   onDisable: () => void
   onSendTest: () => void
   onSendLocalTest: () => void
+  onSetBadge: () => void
+  onClearBadge: () => void
   onRefreshDebug: () => void
   onSoundEnabledChange: (enabled: boolean) => void
 }
@@ -32,12 +37,16 @@ export function NotificationsDialog({
   error,
   testState,
   localTestState,
+  badgeTestState,
+  badgeTestMessage,
   debug,
   soundEnabled,
   onEnable,
   onDisable,
   onSendTest,
   onSendLocalTest,
+  onSetBadge,
+  onClearBadge,
   onRefreshDebug,
   onSoundEnabledChange,
 }: Props) {
@@ -46,9 +55,12 @@ export function NotificationsDialog({
   const denied = status === 'denied'
   const sendingTest = testState === 'sending'
   const sendingLocalTest = localTestState === 'sending'
+  const settingBadge = badgeTestState === 'setting'
+  const clearingBadge = badgeTestState === 'clearing'
   const message = notificationMessage(status, supported)
   const serverSubscription = debug?.server?.subscriptions[0] ?? null
   const lastAttempt = debug?.server?.recent_attempts[0] ?? null
+  const workerDiagnostic = debug?.worker ?? null
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -86,11 +98,22 @@ export function NotificationsDialog({
             <Bell />
             {sendingLocalTest ? 'Showing...' : 'Show local notification'}
           </Button>
+
+          <div className="grid grid-cols-2 gap-2">
+            <Button type="button" variant="outline" onClick={onSetBadge} disabled={settingBadge}>
+              <Bell />
+              {settingBadge ? 'Setting...' : 'Set badge'}
+            </Button>
+            <Button type="button" variant="outline" onClick={onClearBadge} disabled={clearingBadge}>
+              <BellOff />
+              {clearingBadge ? 'Clearing...' : 'Clear badge'}
+            </Button>
+          </div>
         </div>
 
-        {testState === 'sent' || localTestState === 'sent' ? (
+        {testState === 'sent' || localTestState === 'sent' || badgeTestMessage ? (
           <p className="rounded-md border border-border/70 bg-background/60 px-3 py-2 text-sm text-muted-foreground">
-            {testState === 'sent' ? 'Remote push sent.' : 'Local notification shown.'}
+            {badgeTestMessage || (testState === 'sent' ? 'Remote push sent.' : 'Local notification shown.')}
           </p>
         ) : null}
 
@@ -121,6 +144,7 @@ export function NotificationsDialog({
           <DebugRow label="Display" value={debug?.browser.display_mode || 'unknown'} />
           <DebugRow label="Permission" value={debug?.browser.permission || 'unknown'} />
           <DebugRow label="Service worker" value={debug?.browser.service_worker_state || 'unknown'} />
+          <DebugRow label="Badging" value={debug?.browser.app_badge_supported ? 'supported' : 'not supported'} />
           <DebugRow label="Browser sub" value={debug?.browser.current_subscription_hash || 'none'} />
           <DebugRow
             label="Server sub"
@@ -138,10 +162,42 @@ export function NotificationsDialog({
                 : 'none'
             }
           />
+          <DebugRow label="Worker push" value={workerPushValue(workerDiagnostic)} />
+          <DebugRow label="Worker badge" value={workerBadgeValue(workerDiagnostic)} />
         </div>
       </DialogContent>
     </Dialog>
   )
+}
+
+function workerPushValue(worker: PushNotificationDebug['worker']) {
+  if (!worker) {
+    return 'none'
+  }
+  const mode = worker.declarative ? 'declarative' : 'showNotification'
+  const shown = worker.showNotification?.attempted
+    ? worker.showNotification.ok
+      ? 'shown'
+      : `show failed${worker.showNotification.error ? `: ${worker.showNotification.error}` : ''}`
+    : (worker.showNotification?.reason ?? 'not shown')
+  const time = worker.createdAt ? shortTime(new Date(worker.createdAt).toISOString()) : 'unknown'
+  return `${mode}, ${shown}, ${time}`
+}
+
+function workerBadgeValue(worker: PushNotificationDebug['worker']) {
+  if (!worker?.badge) {
+    return 'none'
+  }
+  if (!worker.badge.supported) {
+    return 'not supported in worker'
+  }
+  if (!worker.badge.attempted) {
+    return 'not attempted'
+  }
+  if (worker.badge.ok) {
+    return `set ${worker.badge.count ?? 1}`
+  }
+  return `failed${worker.badge.error ? `: ${worker.badge.error}` : ''}`
 }
 
 function DebugRow({ label, value }: { label: string; value: string }) {

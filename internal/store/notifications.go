@@ -225,6 +225,47 @@ func (s *Store) RecordPushDeliveryAttempt(ctx context.Context, params RecordPush
 	}, nil
 }
 
+func (s *Store) MarkNotificationAttention(ctx context.Context, params MarkNotificationAttentionParams) error {
+	sessionID := strings.TrimSpace(params.SessionID)
+	if sessionID == "" {
+		return fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
+	}
+	if params.Seq <= 0 {
+		return fmt.Errorf("%w: seq is required", ErrInvalidArgument)
+	}
+
+	now := s.now()
+	if _, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO notification_attention (session_id, seq, event_type, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET
+		   seq = CASE WHEN excluded.seq > notification_attention.seq THEN excluded.seq ELSE notification_attention.seq END,
+		   event_type = CASE WHEN excluded.seq >= notification_attention.seq THEN excluded.event_type ELSE notification_attention.event_type END,
+		   updated_at = excluded.updated_at`,
+		sessionID,
+		params.Seq,
+		strings.TrimSpace(params.EventType),
+		formatTime(now),
+		formatTime(now),
+	); err != nil {
+		return fmt.Errorf("mark notification attention: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) ClearNotificationAttention(ctx context.Context, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM notification_attention WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("clear notification attention: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ListPushDeliveryAttempts(ctx context.Context, limit int) ([]PushDeliveryAttempt, error) {
 	if limit <= 0 {
 		limit = 20

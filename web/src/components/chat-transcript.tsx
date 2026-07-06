@@ -324,7 +324,7 @@ export function ChatTranscript({
             </div>
           ))}
           {activityStatus ? (
-            <div className={timeline.length > 0 || hasOlderEvents || loadingOlderEvents ? 'mt-5' : ''}>
+            <div className={timeline.length > 0 || hasOlderEvents || loadingOlderEvents ? 'mt-3' : ''}>
               <ActivityIndicatorRow status={activityStatus} />
             </div>
           ) : null}
@@ -369,7 +369,7 @@ function ThinkingIndicatorRow() {
         role="status"
         aria-label="Thinking"
         aria-live="polite"
-        className="thinking-indicator inline-flex max-w-full sm:max-w-[min(48rem,90%)] items-center gap-2 px-1 py-1 text-sm font-medium"
+        className="thinking-indicator inline-flex max-w-full sm:max-w-[min(48rem,90%)] items-center gap-2 px-1 py-0.5 text-sm font-medium"
       >
         <Brain className="thinking-indicator__icon size-4" aria-hidden="true" stroke={`url(#${gradientId})`}>
           <defs>
@@ -403,7 +403,7 @@ function WorkingIndicatorRow({ since }: { since: string }) {
         role="status"
         aria-label={label}
         aria-live="polite"
-        className="thinking-indicator inline-flex max-w-full sm:max-w-[min(48rem,90%)] items-center gap-2 px-1 py-1 text-sm font-medium"
+        className="thinking-indicator inline-flex max-w-full sm:max-w-[min(48rem,90%)] items-center gap-2 px-1 py-0.5 text-sm font-medium"
       >
         <Loader2 className="size-4 animate-spin text-primary" aria-hidden="true" />
         <span className="thinking-indicator__text">{label}</span>

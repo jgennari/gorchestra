@@ -233,6 +233,38 @@ test('run health rail shows latest token usage summary', () => {
   expect(screen.getByText('0 reasoning')).toBeInTheDocument()
 })
 
+test('run health rail shows OpenCode context usage without token breakdown rows', () => {
+  render(
+    <RunHealthRail
+      session={{ ...session, agent_type: 'opencode' }}
+      events={[
+        event(1, 'provider.opencode.event', 'system', 'completed', {
+          provider: 'opencode',
+          provider_event_type: 'usage_update',
+          raw_update: {
+            sessionUpdate: 'usage_update',
+            used: 53_000,
+            size: 200_000,
+            cost: { amount: 0.1234, currency: 'USD' },
+          },
+        }),
+      ]}
+      streamState="connected"
+      streamError=""
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  expect(screen.getByText('Tokens')).toBeInTheDocument()
+  expect(screen.getByText('27%')).toBeInTheDocument()
+  expect(screen.getByText('53k / 200k current')).toBeInTheDocument()
+  expect(screen.getByText('$0.1234 cost')).toBeInTheDocument()
+  expect(screen.queryByText('Input')).not.toBeInTheDocument()
+  expect(screen.queryByText('Output')).not.toBeInTheDocument()
+  expect(screen.queryByText(/cached/)).not.toBeInTheDocument()
+  expect(screen.queryByText(/reasoning/)).not.toBeInTheDocument()
+})
+
 test('run health rail active chat dot shows disconnected state', () => {
   render(
     <RunHealthRail

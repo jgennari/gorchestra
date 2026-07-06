@@ -444,6 +444,42 @@ func TestGetSessionReturns404ForUnknownSession(t *testing.T) {
 	assertErrorResponse(t, rec, "session not found")
 }
 
+func TestClearSessionNotificationAttentionReturnsUpdatedSession(t *testing.T) {
+	fakeStore := newFakeHTTPStore()
+	fakeStore.addSessionWith(store.Session{
+		ID:                       testSessionID,
+		Title:                    "Inspect repository",
+		AgentType:                "codex",
+		Status:                   store.SessionStatusIdle,
+		NotificationAttentionSeq: 7,
+		CreatedAt:                testCreatedAt,
+		UpdatedAt:                testCreatedAt,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+testSessionID+"/notification-attention/clear", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: fakeStore}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response sessionResponse
+	decodeJSON(t, rec, &response)
+	if response.NotificationAttentionSeq != 0 {
+		t.Fatalf("expected notification attention cleared, got %d", response.NotificationAttentionSeq)
+	}
+
+	session, err := fakeStore.GetSession(context.Background(), testSessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.NotificationAttentionSeq != 0 {
+		t.Fatalf("expected store notification attention cleared, got %d", session.NotificationAttentionSeq)
+	}
+}
+
 func TestEventHistoryReturnsEventsAfterSeq(t *testing.T) {
 	store := newFakeHTTPStore()
 	store.addSession(testSessionID)
@@ -1331,6 +1367,23 @@ func (s *fakeHTTPStore) ClearSessionProviderSessionID(_ context.Context, params 
 	session.UpdatedAt = testCreatedAt
 	s.sessions[params.ID] = session
 	return session, nil
+}
+
+func (s *fakeHTTPStore) ClearNotificationAttention(_ context.Context, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if strings.TrimSpace(sessionID) == "" {
+		return store.ErrInvalidArgument
+	}
+
+	session, ok := s.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	session.NotificationAttentionSeq = 0
+	s.sessions[sessionID] = session
+	return nil
 }
 
 func (s *fakeHTTPStore) EnqueueMessage(context.Context, store.EnqueueMessageParams) (store.QueuedMessage, error) {

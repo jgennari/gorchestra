@@ -188,9 +188,14 @@ export type TokenUsageSnapshot = {
 }
 
 export type TokenUsageSummary = {
+  kind?: 'tokens' | 'context'
   total: TokenUsageSnapshot
   last: TokenUsageSnapshot
   modelContextWindow: number
+  cost?: {
+    amount: number
+    currency: string
+  }
   updatedAt: string
   seq: number
 }
@@ -1892,6 +1897,11 @@ function tokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
     return claudeUsage
   }
 
+  const openCodeUsage = openCodeTokenUsageFromEvent(event)
+  if (openCodeUsage) {
+    return openCodeUsage
+  }
+
   if (
     event.type !== 'provider.codex.event' ||
     payloadString(event.payload, ['provider_event_type']) !== 'thread/tokenUsage/updated'
@@ -1915,9 +1925,45 @@ function tokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
   }
 
   return {
+    kind: 'tokens',
     total,
     last,
     modelContextWindow,
+    updatedAt: event.created_at,
+    seq: event.seq,
+  }
+}
+
+function openCodeTokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
+  if (
+    event.type !== 'provider.opencode.event' ||
+    payloadString(event.payload, ['provider_event_type']) !== 'usage_update' ||
+    !isRecord(event.payload)
+  ) {
+    return null
+  }
+
+  const usageUpdate = isRecord(event.payload.raw_update) ? event.payload.raw_update : event.payload
+  const used = payloadNumber(usageUpdate, ['used'])
+  const size = payloadNumber(usageUpdate, ['size'])
+  if (used <= 0 || size <= 0) {
+    return null
+  }
+
+  const snapshot = {
+    totalTokens: used,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+  }
+
+  return {
+    kind: 'context',
+    total: snapshot,
+    last: snapshot,
+    modelContextWindow: size,
+    cost: openCodeCost(usageUpdate),
     updatedAt: event.created_at,
     seq: event.seq,
   }
@@ -1941,12 +1987,25 @@ function claudeTokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null 
   }
 
   return {
+    kind: 'tokens',
     total: snapshot,
     last: snapshot,
     modelContextWindow: claudeModelContextWindow(event.payload),
     updatedAt: event.created_at,
     seq: event.seq,
   }
+}
+
+function openCodeCost(usageUpdate: Record<string, unknown>) {
+  if (!isRecord(usageUpdate.cost)) {
+    return undefined
+  }
+  const amount = payloadNumber(usageUpdate.cost, ['amount'])
+  const currency = payloadString(usageUpdate.cost, ['currency'])
+  if (!Number.isFinite(amount) || amount < 0 || !currency) {
+    return undefined
+  }
+  return { amount, currency }
 }
 
 function claudeTokenUsageSnapshot(usage: Record<string, unknown>): TokenUsageSnapshot | null {

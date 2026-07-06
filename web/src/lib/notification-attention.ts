@@ -2,11 +2,36 @@ export type NotificationAttentionRecord = {
   sessionID: string
   seq: number
   createdAt: number
+  diagnostic?: NotificationWorkerDiagnostic
+}
+
+export type NotificationWorkerDiagnostic = {
+  createdAt?: number
+  userAgent?: string
+  payloadWebPush?: number | null
+  declarative?: boolean
+  attentionCount?: number
+  badge?: {
+    supported?: boolean
+    attempted?: boolean
+    ok?: boolean
+    count?: number
+    error?: string
+  }
+  showNotification?: {
+    attempted?: boolean
+    ok?: boolean
+    reason?: string
+    error?: string
+  }
+  sessionID?: string
+  seq?: number
 }
 
 const dbName = 'gorchestra-notification-attention'
 const dbVersion = 1
 const attentionStore = 'sessions'
+const diagnosticsKey = '__diagnostics__'
 
 let dbPromise: Promise<IDBDatabase | null> | null = null
 
@@ -22,6 +47,14 @@ export async function readNotificationAttentionSeqs(): Promise<Record<string, nu
     }
   }
   return seqs
+}
+
+export async function readNotificationWorkerDiagnostic(): Promise<NotificationWorkerDiagnostic | null> {
+  const db = await openAttentionDB()
+  if (!db) return null
+
+  const record = await getRecord<NotificationAttentionRecord>(db, attentionStore, diagnosticsKey)
+  return record?.diagnostic ?? null
 }
 
 export async function writeNotificationAttention(sessionID: string, seq: number): Promise<void> {
@@ -76,6 +109,15 @@ function getAllRecords<T>(db: IDBDatabase, storeName: string): Promise<T[]> {
     const request = transaction.objectStore(storeName).getAll()
     request.onerror = () => resolve([])
     request.onsuccess = () => resolve((request.result as T[] | undefined) ?? [])
+  })
+}
+
+function getRecord<T>(db: IDBDatabase, storeName: string, key: string): Promise<T | null> {
+  return new Promise((resolve) => {
+    const transaction = db.transaction(storeName, 'readonly')
+    const request = transaction.objectStore(storeName).get(key)
+    request.onerror = () => resolve(null)
+    request.onsuccess = () => resolve((request.result as T | undefined) ?? null)
   })
 }
 

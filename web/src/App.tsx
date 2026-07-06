@@ -28,6 +28,7 @@ import {
   archiveSession,
   cancelSession,
   clearSession,
+  clearSessionNotificationAttention,
   compactSession,
   createSession,
   getSession,
@@ -167,9 +168,17 @@ function App() {
     () => sessions.find((session) => session.id === selectedSessionID) ?? null,
     [selectedSessionID, sessions],
   )
+  const serverNotificationAttentionSeqBySession = useMemo(
+    () => notificationAttentionSeqsFromSessions(sessions),
+    [sessions],
+  )
+  const effectiveNotificationAttentionSeqBySession = useMemo(
+    () => mergeNotificationAttentionSeqs(serverNotificationAttentionSeqBySession, notificationAttentionSeqBySession),
+    [notificationAttentionSeqBySession, serverNotificationAttentionSeqBySession],
+  )
   const effectiveLastSeenSeqBySession = useMemo(
-    () => applyNotificationAttentionSeqs(lastSeenSeqBySession, notificationAttentionSeqBySession),
-    [lastSeenSeqBySession, notificationAttentionSeqBySession],
+    () => applyNotificationAttentionSeqs(lastSeenSeqBySession, effectiveNotificationAttentionSeqBySession),
+    [effectiveNotificationAttentionSeqBySession, lastSeenSeqBySession],
   )
   const hasFaviconAttention = useMemo(
     () => hasSessionAttention(sessions, effectiveLastSeenSeqBySession),
@@ -232,6 +241,38 @@ function App() {
       return next
     })
     void clearNotificationAttention(sessionID)
+    setSessions((current) => {
+      let changed = false
+      const next = current.map((session) => {
+        if (session.id !== sessionID || !session.notification_attention_seq) {
+          return session
+        }
+        changed = true
+        return { ...session, notification_attention_seq: undefined }
+      })
+      if (!changed) {
+        return current
+      }
+      sessionsRef.current = next
+      const clearedSession = next.find((session) => session.id === sessionID)
+      if (clearedSession) {
+        void writePersistentCachedSession(clearedSession)
+      }
+      return next
+    })
+    void clearSessionNotificationAttention(sessionID)
+      .then((updatedSession) => {
+        setSessions((current) => {
+          if (!current.some((session) => session.id === updatedSession.id)) {
+            return current
+          }
+          const next = sortSessions(current.map((session) => (session.id === updatedSession.id ? updatedSession : session)))
+          sessionsRef.current = next
+          void writePersistentCachedSession(updatedSession)
+          return next
+        })
+      })
+      .catch(() => undefined)
   }, [])
 
   const applySession = useCallback((session: Session) => {
@@ -548,12 +589,12 @@ function App() {
       return
     }
     const latestSeq = Math.max(lastSeq(events), latestSessionSeq(selectedSession))
-    const heldAttentionSeq = notificationAttentionSeqBySession[selectedSessionID] ?? 0
+    const heldAttentionSeq = effectiveNotificationAttentionSeqBySession[selectedSessionID] ?? 0
     if (heldAttentionSeq > 0 && latestSeq <= heldAttentionSeq) {
       return
     }
     markSessionSeen(selectedSessionID, latestSeq)
-  }, [events, markSessionSeen, notificationAttentionSeqBySession, selectedSession, selectedSessionID])
+  }, [effectiveNotificationAttentionSeqBySession, events, markSessionSeen, selectedSession, selectedSessionID])
 
   const loadSessions = useCallback(async (options: { showLoading?: boolean } = {}) => {
     const showLoading = options.showLoading ?? sessionsRef.current.length === 0
@@ -1353,12 +1394,16 @@ function App() {
         error={pushNotifications.error}
         testState={pushNotifications.testState}
         localTestState={pushNotifications.localTestState}
+        badgeTestState={pushNotifications.badgeTestState}
+        badgeTestMessage={pushNotifications.badgeTestMessage}
         debug={pushNotifications.debug}
         soundEnabled={pushNotifications.soundEnabled}
         onEnable={() => void pushNotifications.enable()}
         onDisable={() => void pushNotifications.disable()}
         onSendTest={() => void pushNotifications.sendTest()}
         onSendLocalTest={() => void pushNotifications.sendLocalTest()}
+        onSetBadge={() => void pushNotifications.setTestBadge()}
+        onClearBadge={() => void pushNotifications.clearTestBadge()}
         onRefreshDebug={() => void pushNotifications.refreshDebug()}
         onSoundEnabledChange={pushNotifications.setSoundEnabled}
       />
@@ -2086,6 +2131,33 @@ function applyNotificationAttentionSeqs(
     }
   }
   return next
+}
+
+function notificationAttentionSeqsFromSessions(sessions: Session[]): Record<string, number> {
+  const seqs: Record<string, number> = {}
+  for (const session of sessions) {
+    const seq = Number(session.notification_attention_seq)
+    if (session.id && Number.isFinite(seq) && seq > 0) {
+      seqs[session.id] = Math.max(seqs[session.id] ?? 0, seq)
+    }
+  }
+  return seqs
+}
+
+function mergeNotificationAttentionSeqs(
+  first: Record<string, number>,
+  second: Record<string, number>,
+): Record<string, number> {
+  const merged: Record<string, number> = {}
+  for (const source of [first, second]) {
+    for (const [sessionID, value] of Object.entries(source)) {
+      const seq = Number(value)
+      if (sessionID && Number.isFinite(seq) && seq > 0) {
+        merged[sessionID] = Math.max(merged[sessionID] ?? 0, seq)
+      }
+    }
+  }
+  return merged
 }
 
 function notificationAttentionFromLocation(): { sessionID: string; seq: number } | null {

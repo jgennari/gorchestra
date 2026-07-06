@@ -50,21 +50,22 @@ type createSessionResponse struct {
 }
 
 type sessionResponse struct {
-	ID                string  `json:"id"`
-	Title             string  `json:"title"`
-	AgentType         string  `json:"agent_type"`
-	Status            string  `json:"status"`
-	ProviderSessionID string  `json:"provider_session_id,omitempty"`
-	WorkspacePath     string  `json:"workspace_path"`
-	AgentOptions      any     `json:"agent_options"`
-	EventCount        int64   `json:"event_count"`
-	LastEventSeq      int64   `json:"last_event_seq"`
-	ToolCount         int64   `json:"tool_count"`
-	PendingInput      bool    `json:"pending_input"`
-	CreatedAt         string  `json:"created_at"`
-	UpdatedAt         string  `json:"updated_at"`
-	CompletedAt       *string `json:"completed_at"`
-	ArchivedAt        *string `json:"archived_at"`
+	ID                       string  `json:"id"`
+	Title                    string  `json:"title"`
+	AgentType                string  `json:"agent_type"`
+	Status                   string  `json:"status"`
+	ProviderSessionID        string  `json:"provider_session_id,omitempty"`
+	WorkspacePath            string  `json:"workspace_path"`
+	AgentOptions             any     `json:"agent_options"`
+	EventCount               int64   `json:"event_count"`
+	LastEventSeq             int64   `json:"last_event_seq"`
+	ToolCount                int64   `json:"tool_count"`
+	NotificationAttentionSeq int64   `json:"notification_attention_seq,omitempty"`
+	PendingInput             bool    `json:"pending_input"`
+	CreatedAt                string  `json:"created_at"`
+	UpdatedAt                string  `json:"updated_at"`
+	CompletedAt              *string `json:"completed_at"`
+	ArchivedAt               *string `json:"archived_at"`
 }
 
 type listSessionsResponse struct {
@@ -192,6 +193,36 @@ func (api API) listSessionsHandler(w http.ResponseWriter, r *http.Request) {
 
 func (api API) getSessionHandler(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
+	session, err := api.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load session")
+		return
+	}
+
+	response, err := api.sessionResponse(r.Context(), session)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load session activity")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (api API) clearSessionNotificationAttentionHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	if err := api.store.ClearNotificationAttention(r.Context(), sessionID); err != nil {
+		if errors.Is(err, store.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to clear notification attention")
+		return
+	}
+
 	session, err := api.store.GetSession(r.Context(), sessionID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -445,21 +476,22 @@ func sessionResponseFromStore(session store.Session, pendingInput bool) sessionR
 	}
 
 	return sessionResponse{
-		ID:                session.ID,
-		Title:             session.Title,
-		AgentType:         session.AgentType,
-		Status:            string(session.Status),
-		ProviderSessionID: session.ProviderSessionID,
-		WorkspacePath:     session.WorkspacePath,
-		AgentOptions:      agentOptions,
-		EventCount:        session.EventCount,
-		LastEventSeq:      session.EventCount,
-		ToolCount:         session.ToolCount,
-		PendingInput:      pendingInput,
-		CreatedAt:         session.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:         session.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		CompletedAt:       completedAt,
-		ArchivedAt:        archivedAt,
+		ID:                       session.ID,
+		Title:                    session.Title,
+		AgentType:                session.AgentType,
+		Status:                   string(session.Status),
+		ProviderSessionID:        session.ProviderSessionID,
+		WorkspacePath:            session.WorkspacePath,
+		AgentOptions:             agentOptions,
+		EventCount:               session.EventCount,
+		LastEventSeq:             session.EventCount,
+		ToolCount:                session.ToolCount,
+		NotificationAttentionSeq: session.NotificationAttentionSeq,
+		PendingInput:             pendingInput,
+		CreatedAt:                session.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:                session.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		CompletedAt:              completedAt,
+		ArchivedAt:               archivedAt,
 	}
 }
 

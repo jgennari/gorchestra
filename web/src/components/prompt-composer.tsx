@@ -169,9 +169,11 @@ export function PromptComposer({
     [codexOptions, codexSelection.model],
   )
   const selectedFastTier = useMemo(() => fastTierForModel(selectedCodexModel), [selectedCodexModel])
-  const codexControlsDisabled = disabled || submitting || codexOptionsLoading || !codexOptions
-  const opencodeControlsDisabled = disabled || submitting || opencodeOptionsLoading || !opencodeOptions
-  const piControlsDisabled = disabled || submitting || piOptionsLoading || !piOptions
+  const codexControlsDisabled = submitting || codexOptionsLoading || !codexOptions
+  const opencodeControlsDisabled = submitting || opencodeOptionsLoading || !opencodeOptions
+  const piControlsDisabled = submitting || piOptionsLoading || !piOptions
+  const codexPlanAvailable = Boolean(codexOptions?.collaboration_modes.some((mode) => mode.mode === 'plan'))
+  const openCodePlanAvailable = opencodeOptions?.collaboration_modes.some((mode) => mode.mode === 'plan') ?? false
 
   useLayoutEffect(() => {
     resizePromptTextarea(textareaRef.current)
@@ -569,7 +571,8 @@ export function PromptComposer({
         className={cn(
           'command-composer relative z-10 rounded-xl border border-border/90 p-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)] transition-colors',
           ((codexToolbarVisible && codexSelection.planning_mode) ||
-            (claudeToolbarVisible && claudeSelection.planning_mode)) &&
+            (claudeToolbarVisible && claudeSelection.planning_mode) ||
+            (opencodeToolbarVisible && opencodeSelection.planning_mode)) &&
             'codex-plan-composer',
           dragActive && 'border-primary/70 bg-primary/5 ring-2 ring-primary/20',
         )}
@@ -616,21 +619,42 @@ export function PromptComposer({
                 disabled={codexControlsDisabled}
                 onChange={setCodexSelection}
               />
+              <span className="sm:hidden">
+                <SwitchControl
+                  label="Plan"
+                  active={codexSelection.planning_mode && codexPlanAvailable}
+                  disabled={submitting || !codexPlanAvailable}
+                  onClick={() =>
+                    setCodexSelection({
+                      ...codexSelection,
+                      planning_mode: codexPlanAvailable ? !codexSelection.planning_mode : false,
+                    })
+                  }
+                />
+              </span>
             </>
           ) : null}
           {claudeToolbarVisible ? (
             <>
               <ClaudeToolbar
                 selection={claudeSelection}
-                disabled={disabled || submitting}
+                disabled={submitting}
                 onChange={setClaudeSelection}
                 className="hidden sm:flex"
               />
               <MobileClaudeOptions
                 selection={claudeSelection}
-                disabled={disabled || submitting}
+                disabled={submitting}
                 onChange={setClaudeSelection}
               />
+              <span className="sm:hidden">
+                <SwitchControl
+                  label="Plan"
+                  active={claudeSelection.planning_mode}
+                  disabled={submitting}
+                  onClick={() => setClaudeSelection({ ...claudeSelection, planning_mode: !claudeSelection.planning_mode })}
+                />
+              </span>
             </>
           ) : null}
           {opencodeToolbarVisible ? (
@@ -652,6 +676,19 @@ export function PromptComposer({
                 disabled={opencodeControlsDisabled}
                 onChange={setOpenCodeSelection}
               />
+              <span className="sm:hidden">
+                <SwitchControl
+                  label="Plan"
+                  active={opencodeSelection.planning_mode && openCodePlanAvailable}
+                  disabled={submitting || !openCodePlanAvailable}
+                  onClick={() =>
+                    setOpenCodeSelection({
+                      ...opencodeSelection,
+                      planning_mode: openCodePlanAvailable ? !opencodeSelection.planning_mode : false,
+                    })
+                  }
+                />
+              </span>
             </>
           ) : null}
           {piToolbarVisible ? (
@@ -966,8 +1003,7 @@ function MobileCodexOptions({
   const model = selectedModel(options, selection.model)
   const reasoningOptions = model?.supported_reasoning_efforts ?? []
   const fastTier = fastTierForModel(model)
-  const planAvailable = Boolean(options?.collaboration_modes.some((mode) => mode.mode === 'plan'))
-  const hasActiveMode = (selection.fast_mode && Boolean(fastTier)) || (selection.planning_mode && planAvailable)
+  const hasActiveMode = selection.fast_mode && Boolean(fastTier)
   const summary = mobileCodexSummary({
     loading,
     error,
@@ -1073,14 +1109,6 @@ function MobileCodexOptions({
                   disabled={disabled || !fastTier}
                   onClick={() => onChange({ ...selection, fast_mode: fastTier ? !selection.fast_mode : false })}
                 />
-                <SwitchControl
-                  label="Plan"
-                  active={selection.planning_mode && planAvailable}
-                  disabled={disabled || !planAvailable}
-                  onClick={() =>
-                    onChange({ ...selection, planning_mode: planAvailable ? !selection.planning_mode : false })
-                  }
-                />
               </div>
             </div>
           )}
@@ -1182,8 +1210,7 @@ function MobileOpenCodeOptions({
   const [open, setOpen] = useState(false)
   const [openMenu, setOpenMenu] = useState<'model' | null>(null)
   const model = selectedOpenCodeModel(options, selection.model)
-  const planAvailable = options?.collaboration_modes.some((mode) => mode.mode === 'plan') ?? false
-  const hasActiveMode = selection.planning_mode
+  const hasActiveMode = false
   const summary =
     loading && !options
       ? 'Loading'
@@ -1257,16 +1284,6 @@ function MobileOpenCodeOptions({
               valueClassName="max-w-[13rem]"
               menuLayout="inline"
             />
-            <div className="pt-1">
-              <SwitchControl
-                label="Plan"
-                active={selection.planning_mode && planAvailable}
-                disabled={disabled || !planAvailable}
-                onClick={() =>
-                  onChange({ ...selection, planning_mode: planAvailable ? !selection.planning_mode : false })
-                }
-              />
-            </div>
           </div>
         </div>
       ) : null}
@@ -1505,7 +1522,7 @@ function MobileClaudeOptions({
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [openMenu, setOpenMenu] = useState<'model' | 'effort' | null>(null)
-  const hasActiveMode = selection.planning_mode
+  const hasActiveMode = false
   const summary = [claudeModelLabel(selection.model), selection.effort].filter(Boolean).join(' / ')
 
   useEffect(() => {
@@ -1586,14 +1603,6 @@ function MobileClaudeOptions({
               valueClassName="max-w-[13rem]"
               menuLayout="inline"
             />
-            <div className="pt-1">
-              <SwitchControl
-                label="Plan"
-                active={selection.planning_mode}
-                disabled={disabled}
-                onClick={() => onChange({ ...selection, planning_mode: !selection.planning_mode })}
-              />
-            </div>
           </div>
         </div>
       ) : null}

@@ -21,6 +21,7 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "notification_keys")
 	assertTableExists(t, ctx, store, "push_subscriptions")
 	assertTableExists(t, ctx, store, "push_delivery_attempts")
+	assertTableExists(t, ctx, store, "notification_attention")
 	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
 	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
 	assertColumnExists(t, ctx, store, "push_subscriptions", "origin")
@@ -38,8 +39,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 10 {
-		t.Fatalf("expected ten recorded migrations, got %d", count)
+	if count != 11 {
+		t.Fatalf("expected eleven recorded migrations, got %d", count)
 	}
 }
 
@@ -394,6 +395,76 @@ func TestPushDeliveryAttemptLifecycle(t *testing.T) {
 	}
 	if attempts[0].HTTPStatus != 201 || attempts[0].ResponseStatus != "201 Created" {
 		t.Fatalf("unexpected listed attempt: %#v", attempts[0])
+	}
+}
+
+func TestNotificationAttentionLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	session, err := store.CreateSession(ctx, CreateSessionParams{
+		Title:     "Inspect repository",
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	if err := store.MarkNotificationAttention(ctx, MarkNotificationAttentionParams{
+		SessionID: session.ID,
+		Seq:       5,
+		EventType: "agent.run.completed",
+	}); err != nil {
+		t.Fatalf("mark notification attention: %v", err)
+	}
+
+	persisted, err := store.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if persisted.NotificationAttentionSeq != 5 {
+		t.Fatalf("expected notification attention seq 5, got %d", persisted.NotificationAttentionSeq)
+	}
+
+	if err := store.MarkNotificationAttention(ctx, MarkNotificationAttentionParams{
+		SessionID: session.ID,
+		Seq:       4,
+		EventType: "agent.run.failed",
+	}); err != nil {
+		t.Fatalf("mark older notification attention: %v", err)
+	}
+	persisted, err = store.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get after older mark: %v", err)
+	}
+	if persisted.NotificationAttentionSeq != 5 {
+		t.Fatalf("expected older mark to preserve seq 5, got %d", persisted.NotificationAttentionSeq)
+	}
+
+	if err := store.MarkNotificationAttention(ctx, MarkNotificationAttentionParams{
+		SessionID: session.ID,
+		Seq:       8,
+		EventType: "agent.run.completed",
+	}); err != nil {
+		t.Fatalf("mark newer notification attention: %v", err)
+	}
+	sessions, err := store.ListSessions(ctx, ListSessionsParams{Limit: 10})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].NotificationAttentionSeq != 8 {
+		t.Fatalf("expected listed notification attention seq 8, got %#v", sessions)
+	}
+
+	if err := store.ClearNotificationAttention(ctx, session.ID); err != nil {
+		t.Fatalf("clear notification attention: %v", err)
+	}
+	persisted, err = store.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get after clear: %v", err)
+	}
+	if persisted.NotificationAttentionSeq != 0 {
+		t.Fatalf("expected notification attention cleared, got %d", persisted.NotificationAttentionSeq)
 	}
 }
 

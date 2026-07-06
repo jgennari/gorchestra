@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jgennari/gorchestra/internal/notifications"
@@ -42,6 +43,7 @@ type notificationDebugResponse struct {
 	PublicKeyFingerprint string                                  `json:"public_key_fingerprint"`
 	Subscriptions        []notificationDebugSubscriptionResponse `json:"subscriptions"`
 	RecentAttempts       []notificationDebugAttemptResponse      `json:"recent_attempts"`
+	ClientDiagnostics    []notificationClientDiagnosticResponse  `json:"client_diagnostics,omitempty"`
 }
 
 type notificationDebugSubscriptionResponse struct {
@@ -66,6 +68,41 @@ type notificationDebugAttemptResponse struct {
 	Error          string `json:"error,omitempty"`
 	CreatedAt      string `json:"created_at"`
 }
+
+type notificationClientDiagnosticRequest struct {
+	CreatedAt        int64           `json:"createdAt,omitempty"`
+	UserAgent        string          `json:"userAgent,omitempty"`
+	PayloadWebPush   any             `json:"payloadWebPush,omitempty"`
+	Declarative      bool            `json:"declarative,omitempty"`
+	Badge            json.RawMessage `json:"badge,omitempty"`
+	AttentionCount   int             `json:"attentionCount,omitempty"`
+	ShowNotification json.RawMessage `json:"showNotification,omitempty"`
+	SessionID        string          `json:"sessionID,omitempty"`
+	Seq              int64           `json:"seq,omitempty"`
+}
+
+type notificationClientDiagnosticResponse struct {
+	CreatedAt        string          `json:"created_at"`
+	ReceivedAt       string          `json:"received_at"`
+	UserAgent        string          `json:"user_agent,omitempty"`
+	PayloadWebPush   any             `json:"payload_web_push,omitempty"`
+	Declarative      bool            `json:"declarative"`
+	Badge            json.RawMessage `json:"badge,omitempty"`
+	AttentionCount   int             `json:"attention_count,omitempty"`
+	ShowNotification json.RawMessage `json:"show_notification,omitempty"`
+	SessionID        string          `json:"session_id,omitempty"`
+	Seq              int64           `json:"seq,omitempty"`
+}
+
+type notificationClientDiagnosticRecord struct {
+	request    notificationClientDiagnosticRequest
+	receivedAt time.Time
+}
+
+var notificationClientDiagnostics = struct {
+	sync.Mutex
+	records []notificationClientDiagnosticRecord
+}{}
 
 func (api API) notificationPublicKeyHandler(w http.ResponseWriter, r *http.Request) {
 	publicKey, err := api.notifications.PublicKey(r.Context())
@@ -145,6 +182,7 @@ func (api API) notificationDebugHandler(w http.ResponseWriter, r *http.Request) 
 		PublicKeyFingerprint: state.PublicKeyFingerprint,
 		Subscriptions:        make([]notificationDebugSubscriptionResponse, 0, len(state.Subscriptions)),
 		RecentAttempts:       make([]notificationDebugAttemptResponse, 0, len(state.RecentAttempts)),
+		ClientDiagnostics:    recentNotificationClientDiagnostics(),
 	}
 	for _, subscription := range state.Subscriptions {
 		item := notificationDebugSubscriptionResponse{
@@ -176,6 +214,58 @@ func (api API) notificationDebugHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (api API) saveNotificationClientDiagnosticHandler(w http.ResponseWriter, r *http.Request) {
+	var request notificationClientDiagnosticRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	request.UserAgent = strings.TrimSpace(request.UserAgent)
+	request.SessionID = strings.TrimSpace(request.SessionID)
+	saveNotificationClientDiagnostic(request)
+	writeJSON(w, http.StatusOK, map[string]bool{"saved": true})
+}
+
+func saveNotificationClientDiagnostic(request notificationClientDiagnosticRequest) {
+	notificationClientDiagnostics.Lock()
+	defer notificationClientDiagnostics.Unlock()
+
+	notificationClientDiagnostics.records = append([]notificationClientDiagnosticRecord{{
+		request:    request,
+		receivedAt: time.Now(),
+	}}, notificationClientDiagnostics.records...)
+	if len(notificationClientDiagnostics.records) > 20 {
+		notificationClientDiagnostics.records = notificationClientDiagnostics.records[:20]
+	}
+}
+
+func recentNotificationClientDiagnostics() []notificationClientDiagnosticResponse {
+	notificationClientDiagnostics.Lock()
+	defer notificationClientDiagnostics.Unlock()
+
+	response := make([]notificationClientDiagnosticResponse, 0, len(notificationClientDiagnostics.records))
+	for _, record := range notificationClientDiagnostics.records {
+		createdAt := record.receivedAt
+		if record.request.CreatedAt > 0 {
+			createdAt = time.UnixMilli(record.request.CreatedAt)
+		}
+		response = append(response, notificationClientDiagnosticResponse{
+			CreatedAt:        formatAPITime(createdAt),
+			ReceivedAt:       formatAPITime(record.receivedAt),
+			UserAgent:        record.request.UserAgent,
+			PayloadWebPush:   record.request.PayloadWebPush,
+			Declarative:      record.request.Declarative,
+			Badge:            record.request.Badge,
+			AttentionCount:   record.request.AttentionCount,
+			ShowNotification: record.request.ShowNotification,
+			SessionID:        record.request.SessionID,
+			Seq:              record.request.Seq,
+		})
+	}
+	return response
 }
 
 func requestOrigin(r *http.Request) string {
