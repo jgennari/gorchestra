@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -29,6 +30,8 @@ type Store interface {
 	DeletePushSubscription(ctx context.Context, endpoint string) error
 	DisablePushSubscription(ctx context.Context, params store.DisablePushSubscriptionParams) error
 	ListPushSubscriptions(ctx context.Context) ([]store.PushSubscription, error)
+	RecordPushDeliveryAttempt(ctx context.Context, params store.RecordPushDeliveryAttemptParams) (store.PushDeliveryAttempt, error)
+	ListPushDeliveryAttempts(ctx context.Context, limit int) ([]store.PushDeliveryAttempt, error)
 	GetSession(ctx context.Context, id string) (store.Session, error)
 	ListRecentEvents(ctx context.Context, sessionID string, limit int) ([]store.Event, error)
 }
@@ -42,6 +45,7 @@ type SubscriptionInput struct {
 	P256DH    string
 	Auth      string
 	UserAgent string
+	Origin    string
 }
 
 type Sender interface {
@@ -53,6 +57,35 @@ type Service struct {
 	sender     Sender
 	subscriber string
 	logger     *log.Logger
+}
+
+type DebugState struct {
+	PublicKeyFingerprint string
+	Subscriptions        []DebugSubscription
+	RecentAttempts       []DebugDeliveryAttempt
+}
+
+type DebugSubscription struct {
+	EndpointHash string
+	Origin       string
+	UserAgent    string
+	LastError    string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	DisabledAt   *time.Time
+}
+
+type DebugDeliveryAttempt struct {
+	ID             int64
+	EndpointHash   string
+	Origin         string
+	PayloadKind    string
+	SessionID      string
+	EventType      string
+	HTTPStatus     int
+	ResponseStatus string
+	Error          string
+	CreatedAt      time.Time
 }
 
 type Option func(*Service)
@@ -112,11 +145,12 @@ func (s *Service) SaveSubscription(ctx context.Context, input SubscriptionInput)
 		P256DH:    input.P256DH,
 		Auth:      input.Auth,
 		UserAgent: input.UserAgent,
+		Origin:    input.Origin,
 	})
 	if err != nil {
 		return store.PushSubscription{}, err
 	}
-	s.logf("notification subscription saved: endpoint=%s user_agent=%q", endpointFingerprint(subscription.Endpoint), subscription.UserAgent)
+	s.logf("notification subscription saved: endpoint=%s origin=%q user_agent=%q", endpointFingerprint(subscription.Endpoint), subscription.Origin, subscription.UserAgent)
 	return subscription, nil
 }
 
@@ -129,16 +163,60 @@ func (s *Service) DeleteSubscription(ctx context.Context, endpoint string) error
 }
 
 func (s *Service) SendTest(ctx context.Context) error {
-	payload, err := json.Marshal(notificationPayload{
+	return s.sendToActiveSubscriptions(ctx, notificationInput{
+		Kind:  "test",
 		Title: "Gorchestra notifications enabled",
 		Body:  "You will be notified when a session stops.",
-		URL:   "/",
+		Path:  "/",
 		Tag:   "gorchestra-test",
 	})
+}
+
+func (s *Service) Debug(ctx context.Context) (DebugState, error) {
+	keys, err := s.ensureKeys(ctx)
 	if err != nil {
-		return err
+		return DebugState{}, err
 	}
-	return s.sendToActiveSubscriptions(ctx, payload)
+	subscriptions, err := s.store.ListPushSubscriptions(ctx)
+	if err != nil {
+		return DebugState{}, err
+	}
+	attempts, err := s.store.ListPushDeliveryAttempts(ctx, 20)
+	if err != nil {
+		return DebugState{}, err
+	}
+
+	state := DebugState{
+		PublicKeyFingerprint: endpointFingerprint(keys.PublicKey),
+		Subscriptions:        make([]DebugSubscription, 0, len(subscriptions)),
+		RecentAttempts:       make([]DebugDeliveryAttempt, 0, len(attempts)),
+	}
+	for _, subscription := range subscriptions {
+		state.Subscriptions = append(state.Subscriptions, DebugSubscription{
+			EndpointHash: endpointFingerprint(subscription.Endpoint),
+			Origin:       subscription.Origin,
+			UserAgent:    subscription.UserAgent,
+			LastError:    subscription.LastError,
+			CreatedAt:    subscription.CreatedAt,
+			UpdatedAt:    subscription.UpdatedAt,
+			DisabledAt:   subscription.DisabledAt,
+		})
+	}
+	for _, attempt := range attempts {
+		state.RecentAttempts = append(state.RecentAttempts, DebugDeliveryAttempt{
+			ID:             attempt.ID,
+			EndpointHash:   attempt.EndpointHash,
+			Origin:         attempt.Origin,
+			PayloadKind:    attempt.PayloadKind,
+			SessionID:      attempt.SessionID,
+			EventType:      attempt.EventType,
+			HTTPStatus:     attempt.HTTPStatus,
+			ResponseStatus: attempt.ResponseStatus,
+			Error:          attempt.Error,
+			CreatedAt:      attempt.CreatedAt,
+		})
+	}
+	return state, nil
 }
 
 func (s *Service) Start(ctx context.Context, source EventSource) {
@@ -181,26 +259,21 @@ func (s *Service) notifyTerminalEvent(parent context.Context, event store.Event)
 	}
 	excerpt := latestAgentMessageExcerpt(recentEvents)
 
-	payload, err := json.Marshal(notificationPayload{
+	if err := s.sendToActiveSubscriptions(ctx, notificationInput{
+		Kind:      "terminal",
 		Title:     terminalNotificationTitle(event.Type),
 		Body:      terminalNotificationBody(session, excerpt),
-		URL:       "/sessions/" + event.SessionID,
+		Path:      "/sessions/" + event.SessionID,
 		Tag:       "gorchestra-session-" + event.SessionID,
 		SessionID: event.SessionID,
 		EventType: event.Type,
 		Status:    string(event.Status),
-	})
-	if err != nil {
-		s.logf("notification payload failed: %v", err)
-		return
-	}
-
-	if err := s.sendToActiveSubscriptions(ctx, payload); err != nil {
+	}); err != nil {
 		s.logf("notification send failed: %v", err)
 	}
 }
 
-func (s *Service) sendToActiveSubscriptions(ctx context.Context, payload []byte) error {
+func (s *Service) sendToActiveSubscriptions(ctx context.Context, input notificationInput) error {
 	keys, err := s.ensureKeys(ctx)
 	if err != nil {
 		return err
@@ -214,22 +287,30 @@ func (s *Service) sendToActiveSubscriptions(ctx context.Context, payload []byte)
 		s.logf("notification send skipped: no active push subscriptions")
 		return nil
 	}
-	s.logf("notification send started: subscriptions=%d payload_bytes=%d", len(subscriptions), len(payload))
+	s.logf("notification send started: kind=%s subscriptions=%d", input.Kind, len(subscriptions))
 
 	var errs []error
 	for _, subscription := range subscriptions {
+		payload, err := json.Marshal(newNotificationPayload(input, subscription))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("build push payload for %s: %w", subscription.Endpoint, err))
+			continue
+		}
 		response, err := s.sender.Send(ctx, keys, subscription, payload)
 		if err != nil {
 			s.logf("notification send transport failed: endpoint=%s error=%v", endpointFingerprint(subscription.Endpoint), err)
+			s.recordDeliveryAttempt(ctx, subscription, input, 0, "", err.Error())
 			errs = append(errs, fmt.Errorf("%s: %w", subscription.Endpoint, err))
 			continue
 		}
 		if response == nil {
 			s.logf("notification send completed: endpoint=%s response=nil", endpointFingerprint(subscription.Endpoint))
+			s.recordDeliveryAttempt(ctx, subscription, input, 0, "nil", "")
 			continue
 		}
 		_, _ = io.Copy(io.Discard, response.Body)
 		_ = response.Body.Close()
+		s.recordDeliveryAttempt(ctx, subscription, input, response.StatusCode, response.Status, "")
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
 			s.logf("notification send accepted: endpoint=%s status=%s", endpointFingerprint(subscription.Endpoint), response.Status)
 			continue
@@ -250,6 +331,21 @@ func (s *Service) sendToActiveSubscriptions(ctx context.Context, payload []byte)
 	}
 
 	return errors.Join(errs...)
+}
+
+func (s *Service) recordDeliveryAttempt(ctx context.Context, subscription store.PushSubscription, input notificationInput, httpStatus int, responseStatus string, errorMessage string) {
+	if _, err := s.store.RecordPushDeliveryAttempt(ctx, store.RecordPushDeliveryAttemptParams{
+		EndpointHash:   endpointFingerprint(subscription.Endpoint),
+		Origin:         subscription.Origin,
+		PayloadKind:    input.Kind,
+		SessionID:      input.SessionID,
+		EventType:      input.EventType,
+		HTTPStatus:     httpStatus,
+		ResponseStatus: responseStatus,
+		Error:          errorMessage,
+	}); err != nil {
+		s.logf("notification delivery attempt record failed: endpoint=%s error=%v", endpointFingerprint(subscription.Endpoint), err)
+	}
 }
 
 func (s *Service) ensureKeys(ctx context.Context) (store.NotificationKeys, error) {
@@ -279,14 +375,90 @@ func (s *Service) logf(format string, args ...any) {
 	s.logger.Printf(format, args...)
 }
 
+type notificationInput struct {
+	Kind      string
+	Title     string
+	Body      string
+	Path      string
+	Tag       string
+	SessionID string
+	EventType string
+	Status    string
+}
+
 type notificationPayload struct {
-	Title     string `json:"title"`
-	Body      string `json:"body"`
-	URL       string `json:"url"`
-	Tag       string `json:"tag"`
-	SessionID string `json:"session_id,omitempty"`
-	EventType string `json:"event_type,omitempty"`
-	Status    string `json:"status,omitempty"`
+	WebPush      int                     `json:"web_push"`
+	Notification declarativeNotification `json:"notification"`
+	Title        string                  `json:"title"`
+	Body         string                  `json:"body"`
+	URL          string                  `json:"url"`
+	Tag          string                  `json:"tag"`
+	SessionID    string                  `json:"session_id,omitempty"`
+	EventType    string                  `json:"event_type,omitempty"`
+	Status       string                  `json:"status,omitempty"`
+	Kind         string                  `json:"kind,omitempty"`
+}
+
+type declarativeNotification struct {
+	Title    string `json:"title"`
+	Body     string `json:"body,omitempty"`
+	Navigate string `json:"navigate,omitempty"`
+	Tag      string `json:"tag,omitempty"`
+	AppBadge string `json:"app_badge,omitempty"`
+}
+
+func newNotificationPayload(input notificationInput, subscription store.PushSubscription) notificationPayload {
+	path := input.Path
+	if path == "" {
+		path = "/"
+	}
+	navigate := absoluteSubscriptionURL(subscription, path)
+	return notificationPayload{
+		WebPush: 8030,
+		Notification: declarativeNotification{
+			Title:    input.Title,
+			Body:     input.Body,
+			Navigate: navigate,
+			Tag:      input.Tag,
+			AppBadge: "1",
+		},
+		Title:     input.Title,
+		Body:      input.Body,
+		URL:       path,
+		Tag:       input.Tag,
+		SessionID: input.SessionID,
+		EventType: input.EventType,
+		Status:    input.Status,
+		Kind:      input.Kind,
+	}
+}
+
+func absoluteSubscriptionURL(subscription store.PushSubscription, path string) string {
+	origin := strings.TrimSpace(subscription.Origin)
+	if origin == "" {
+		return path
+	}
+	parsedOrigin, err := url.Parse(origin)
+	if err != nil || parsedOrigin.Scheme == "" || parsedOrigin.Host == "" {
+		return path
+	}
+	parsedOrigin.Path = ""
+	parsedOrigin.RawPath = ""
+	parsedOrigin.RawQuery = ""
+	parsedOrigin.Fragment = ""
+
+	if strings.TrimSpace(path) == "" {
+		path = "/"
+	}
+	parsedPath, err := url.Parse(path)
+	if err == nil && parsedPath.IsAbs() {
+		return parsedPath.String()
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	parsedOrigin.Path = path
+	return parsedOrigin.String()
 }
 
 type webPushSender struct {

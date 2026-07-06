@@ -82,10 +82,24 @@ type PushSubscription struct {
 	P256DH     string
 	Auth       string
 	UserAgent  string
+	Origin     string
 	LastError  string
 	DisabledAt *time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+type PushDeliveryAttempt struct {
+	ID             int64
+	EndpointHash   string
+	Origin         string
+	PayloadKind    string
+	SessionID      string
+	EventType      string
+	HTTPStatus     int
+	ResponseStatus string
+	Error          string
+	CreatedAt      time.Time
 }
 
 type CreateSessionParams struct {
@@ -164,9 +178,21 @@ type SavePushSubscriptionParams struct {
 	P256DH    string
 	Auth      string
 	UserAgent string
+	Origin    string
 }
 
 type DisablePushSubscriptionParams struct {
 	Endpoint  string
 	LastError string
+}
+
+type RecordPushDeliveryAttemptParams struct {
+	EndpointHash   string
+	Origin         string
+	PayloadKind    string
+	SessionID      string
+	EventType      string
+	HTTPStatus     int
+	ResponseStatus string
+	Error          string
 }

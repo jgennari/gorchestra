@@ -23,7 +23,7 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 			{Type: "agent.message.completed", Payload: []byte(`{"text":"The release build is complete and ready to verify."}`)},
 		},
 		subscriptions: []store.PushSubscription{
-			{Endpoint: "endpoint-1", P256DH: "p256dh", Auth: "auth"},
+			{Endpoint: "endpoint-1", P256DH: "p256dh", Auth: "auth", Origin: "https://example.test"},
 		},
 	}
 	sender := &recordingSender{responses: []*http.Response{testResponse(http.StatusCreated)}}
@@ -41,8 +41,17 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 	if !bytes.Contains(sender.payloads[0], []byte(`"title":"Completed"`)) {
 		t.Fatalf("expected completion title in payload, got %s", sender.payloads[0])
 	}
+	if !bytes.Contains(sender.payloads[0], []byte(`"web_push":8030`)) {
+		t.Fatalf("expected declarative web push marker in payload, got %s", sender.payloads[0])
+	}
+	if !bytes.Contains(sender.payloads[0], []byte(`"navigate":"https://example.test/sessions/sess_1"`)) {
+		t.Fatalf("expected absolute declarative navigate URL in payload, got %s", sender.payloads[0])
+	}
 	if !bytes.Contains(sender.payloads[0], []byte("Build release: The release build is complete")) {
 		t.Fatalf("expected response excerpt in payload, got %s", sender.payloads[0])
+	}
+	if len(fakeStore.attempts) != 1 || fakeStore.attempts[0].HTTPStatus != http.StatusCreated {
+		t.Fatalf("expected recorded delivery attempt, got %#v", fakeStore.attempts)
 	}
 }
 
@@ -92,6 +101,7 @@ type memoryStore struct {
 	recentEvents  []store.Event
 	subscriptions []store.PushSubscription
 	disabled      []store.DisablePushSubscriptionParams
+	attempts      []store.RecordPushDeliveryAttemptParams
 }
 
 func (s *memoryStore) GetNotificationKeys(context.Context) (store.NotificationKeys, error) {
@@ -112,6 +122,7 @@ func (s *memoryStore) SavePushSubscription(_ context.Context, params store.SaveP
 		P256DH:    params.P256DH,
 		Auth:      params.Auth,
 		UserAgent: params.UserAgent,
+		Origin:    params.Origin,
 	}
 	s.subscriptions = append(s.subscriptions, subscription)
 	return subscription, nil
@@ -128,6 +139,41 @@ func (s *memoryStore) DisablePushSubscription(_ context.Context, params store.Di
 
 func (s *memoryStore) ListPushSubscriptions(context.Context) ([]store.PushSubscription, error) {
 	return s.subscriptions, nil
+}
+
+func (s *memoryStore) RecordPushDeliveryAttempt(_ context.Context, params store.RecordPushDeliveryAttemptParams) (store.PushDeliveryAttempt, error) {
+	s.attempts = append(s.attempts, params)
+	return store.PushDeliveryAttempt{
+		ID:             int64(len(s.attempts)),
+		EndpointHash:   params.EndpointHash,
+		Origin:         params.Origin,
+		PayloadKind:    params.PayloadKind,
+		SessionID:      params.SessionID,
+		EventType:      params.EventType,
+		HTTPStatus:     params.HTTPStatus,
+		ResponseStatus: params.ResponseStatus,
+		Error:          params.Error,
+		CreatedAt:      time.Now(),
+	}, nil
+}
+
+func (s *memoryStore) ListPushDeliveryAttempts(context.Context, int) ([]store.PushDeliveryAttempt, error) {
+	attempts := make([]store.PushDeliveryAttempt, 0, len(s.attempts))
+	for index, attempt := range s.attempts {
+		attempts = append(attempts, store.PushDeliveryAttempt{
+			ID:             int64(index + 1),
+			EndpointHash:   attempt.EndpointHash,
+			Origin:         attempt.Origin,
+			PayloadKind:    attempt.PayloadKind,
+			SessionID:      attempt.SessionID,
+			EventType:      attempt.EventType,
+			HTTPStatus:     attempt.HTTPStatus,
+			ResponseStatus: attempt.ResponseStatus,
+			Error:          attempt.Error,
+			CreatedAt:      time.Now(),
+		})
+	}
+	return attempts, nil
 }
 
 func (s *memoryStore) GetSession(context.Context, string) (store.Session, error) {

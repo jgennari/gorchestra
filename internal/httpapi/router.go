@@ -79,6 +79,7 @@ type NotificationService interface {
 	SaveSubscription(ctx context.Context, input notifications.SubscriptionInput) (store.PushSubscription, error)
 	DeleteSubscription(ctx context.Context, endpoint string) error
 	SendTest(ctx context.Context) error
+	Debug(ctx context.Context) (notifications.DebugState, error)
 }
 
 type Dependencies struct {
@@ -185,6 +186,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	}
 	if api.notifications != nil {
 		r.Get("/api/notifications/public-key", api.notificationPublicKeyHandler)
+		r.Get("/api/notifications/debug", api.notificationDebugHandler)
 		r.Post("/api/notifications/subscriptions", api.saveNotificationSubscriptionHandler)
 		r.Delete("/api/notifications/subscriptions", api.deleteNotificationSubscriptionHandler)
 		r.Post("/api/notifications/test", api.testNotificationHandler)

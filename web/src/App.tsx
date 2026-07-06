@@ -1299,10 +1299,14 @@ function App() {
         status={pushNotifications.status}
         error={pushNotifications.error}
         testState={pushNotifications.testState}
+        localTestState={pushNotifications.localTestState}
+        debug={pushNotifications.debug}
         soundEnabled={pushNotifications.soundEnabled}
         onEnable={() => void pushNotifications.enable()}
         onDisable={() => void pushNotifications.disable()}
         onSendTest={() => void pushNotifications.sendTest()}
+        onSendLocalTest={() => void pushNotifications.sendLocalTest()}
+        onRefreshDebug={() => void pushNotifications.refreshDebug()}
         onSoundEnabledChange={pushNotifications.setSoundEnabled}
       />
       <Dialog open={mobileListOpen} onOpenChange={setMobileListOpen}>

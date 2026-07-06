@@ -8,14 +8,16 @@ self.addEventListener('push', (event) => {
     }
   }
 
-  const title = payload.title || 'Gorchestra'
+  const notification = payload.notification || {}
+  const title = notification.title || payload.title || 'Gorchestra'
+  const targetURL = notification.navigate || payload.url || '/'
   const options = {
-    body: payload.body || 'A session stopped.',
+    body: notification.body || payload.body || 'A session stopped.',
     badge: '/favicon-notify.svg',
     icon: '/icon.svg',
-    tag: payload.tag || 'gorchestra-session',
+    tag: notification.tag || payload.tag || 'gorchestra-session',
     data: {
-      url: payload.url || '/',
+      url: targetURL,
       session_id: payload.session_id || '',
       event_type: payload.event_type || '',
     },

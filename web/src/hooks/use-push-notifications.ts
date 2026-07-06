@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import type { AgentEvent, PushSubscriptionPayload } from '@/lib/api'
+import type { AgentEvent, NotificationDebugResponse, PushSubscriptionPayload } from '@/lib/api'
 import {
   deletePushSubscription,
+  fetchNotificationDebug,
   fetchNotificationPublicKey,
   savePushSubscription,
   sendTestNotification,
@@ -12,6 +13,23 @@ type NotificationTestState = 'idle' | 'sending' | 'sent'
 type SessionStopNotificationDetails = {
   title?: string
   excerpt?: string
+}
+export type BrowserNotificationDebug = {
+  supported: boolean
+  secure_context: boolean
+  origin: string
+  display_mode: string
+  permission: string
+  service_worker_state: string
+  service_worker_controller: string
+  current_subscription_hash: string
+  window_push_manager: boolean
+}
+
+export type PushNotificationDebug = {
+  browser: BrowserNotificationDebug
+  server: NotificationDebugResponse | null
+  updated_at: string
 }
 
 type WindowWithWebkitAudio = Window & {
@@ -25,11 +43,25 @@ export function usePushNotifications() {
   const [status, setStatus] = useState<NotificationStatus>(() => initialStatus(supported))
   const [error, setError] = useState('')
   const [testState, setTestState] = useState<NotificationTestState>('idle')
+  const [localTestState, setLocalTestState] = useState<NotificationTestState>('idle')
+  const [debug, setDebug] = useState<PushNotificationDebug | null>(null)
   const [soundEnabled, setSoundEnabledState] = useState(() => readBooleanStorage(soundStorageKey, false))
   const playedEventsRef = useRef<Set<string>>(new Set())
   const shownTerminalNotificationsRef = useRef<Set<string>>(new Set())
   const foregroundNotificationsStartedAtRef = useRef(Date.now())
   const audioContextRef = useRef<AudioContext | null>(null)
+
+  const refreshDebug = useCallback(async () => {
+    const [browser, server] = await Promise.all([
+      collectBrowserNotificationDebug(supported),
+      fetchNotificationDebug().catch(() => null),
+    ])
+    setDebug({
+      browser,
+      server,
+      updated_at: new Date().toISOString(),
+    })
+  }, [supported])
 
   useEffect(() => {
     if (!supported) {
@@ -46,6 +78,10 @@ export function usePushNotifications() {
     }
     setStatus('default')
   }, [supported])
+
+  useEffect(() => {
+    void refreshDebug()
+  }, [refreshDebug])
 
   useEffect(() => {
     if (!supported || Notification.permission !== 'granted') {
@@ -66,6 +102,7 @@ export function usePushNotifications() {
         }
         writeBooleanStorage(enabledStorageKey, true)
         setStatus('enabled')
+        void refreshDebug()
       } catch {
         // Keep the current UI state; explicit enable/test actions will surface API errors.
       }
@@ -75,7 +112,7 @@ export function usePushNotifications() {
     return () => {
       cancelled = true
     }
-  }, [supported])
+  }, [refreshDebug, supported])
 
   const enable = useCallback(async () => {
     if (!supported) {
@@ -104,12 +141,13 @@ export function usePushNotifications() {
       await ensurePushSubscription(false)
       writeBooleanStorage(enabledStorageKey, true)
       setStatus('enabled')
+      await refreshDebug()
     } catch (enableError) {
       writeBooleanStorage(enabledStorageKey, false)
       setError(messageFromUnknown(enableError))
       setStatus('error')
     }
-  }, [supported])
+  }, [refreshDebug, supported])
 
   const disable = useCallback(async () => {
     setError('')
@@ -122,28 +160,44 @@ export function usePushNotifications() {
       }
       writeBooleanStorage(enabledStorageKey, false)
       setStatus(supported && Notification.permission === 'denied' ? 'denied' : supported ? 'default' : 'unsupported')
+      await refreshDebug()
     } catch (disableError) {
       setError(messageFromUnknown(disableError))
       setStatus('error')
     }
-  }, [supported])
+  }, [refreshDebug, supported])
 
   const sendTest = useCallback(async () => {
     setError('')
     setTestState('sending')
+    setLocalTestState('idle')
     try {
       if (supported && Notification.permission === 'granted') {
         await ensurePushSubscription(true)
       }
       await sendTestNotification()
-      await showLocalTestNotification(supported)
+      await refreshDebug()
       setTestState('sent')
     } catch (testError) {
       setError(messageFromUnknown(testError))
       setStatus((current) => (current === 'enabled' ? current : 'error'))
       setTestState('idle')
     }
-  }, [supported])
+  }, [refreshDebug, supported])
+
+  const sendLocalTest = useCallback(async () => {
+    setError('')
+    setLocalTestState('sending')
+    setTestState('idle')
+    try {
+      await showLocalTestNotification(supported)
+      await refreshDebug()
+      setLocalTestState('sent')
+    } catch (testError) {
+      setError(messageFromUnknown(testError))
+      setLocalTestState('idle')
+    }
+  }, [refreshDebug, supported])
 
   const setSoundEnabled = useCallback((enabled: boolean) => {
     writeBooleanStorage(soundStorageKey, enabled)
@@ -208,14 +262,88 @@ export function usePushNotifications() {
     status,
     error,
     testState,
+    localTestState,
+    debug,
     soundEnabled,
     enable,
     disable,
     sendTest,
+    sendLocalTest,
+    refreshDebug,
     setSoundEnabled,
     playSessionStopSound,
     showSessionStopNotification,
   }
+}
+
+async function collectBrowserNotificationDebug(supported: boolean): Promise<BrowserNotificationDebug> {
+  const debug: BrowserNotificationDebug = {
+    supported,
+    secure_context: typeof window !== 'undefined' ? window.isSecureContext : false,
+    origin: typeof window !== 'undefined' ? window.location.origin : '',
+    display_mode: displayMode(),
+    permission: typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
+    service_worker_state: 'unsupported',
+    service_worker_controller: 'none',
+    current_subscription_hash: '',
+    window_push_manager: typeof window !== 'undefined' && 'pushManager' in window,
+  }
+  if (!supported) {
+    return debug
+  }
+
+  try {
+    const registration = await navigator.serviceWorker.getRegistration('/')
+    debug.service_worker_state =
+      registration?.active?.state || registration?.installing?.state || registration?.waiting?.state || 'none'
+    debug.service_worker_controller = navigator.serviceWorker.controller?.state || 'none'
+    const subscription = registration ? await registration.pushManager.getSubscription() : null
+    debug.current_subscription_hash = subscription?.endpoint ? await hashText(subscription.endpoint) : ''
+  } catch {
+    debug.service_worker_state = 'error'
+  }
+
+  return debug
+}
+
+function displayMode() {
+  if (typeof window === 'undefined') {
+    return 'unknown'
+  }
+  const standaloneNavigator = navigator as Navigator & { standalone?: boolean }
+  if (standaloneNavigator.standalone) {
+    return 'standalone'
+  }
+  if (window.matchMedia('(display-mode: standalone)').matches) {
+    return 'standalone'
+  }
+  if (window.matchMedia('(display-mode: fullscreen)').matches) {
+    return 'fullscreen'
+  }
+  if (window.matchMedia('(display-mode: minimal-ui)').matches) {
+    return 'minimal-ui'
+  }
+  return 'browser'
+}
+
+async function hashText(value: string) {
+  if (!window.crypto?.subtle) {
+    return fallbackHash(value)
+  }
+  const bytes = new TextEncoder().encode(value)
+  const digest = await window.crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(digest))
+    .slice(0, 6)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+function fallbackHash(value: string) {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
 }
 
 function supportsPushNotifications() {

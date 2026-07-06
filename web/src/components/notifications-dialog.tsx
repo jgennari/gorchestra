@@ -1,6 +1,7 @@
-import { Bell, BellOff, Volume2, VolumeX } from 'lucide-react'
+import { Bell, BellOff, RefreshCw, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import type { PushNotificationDebug } from '@/hooks/use-push-notifications'
 
 type NotificationStatus = 'unsupported' | 'default' | 'denied' | 'enabling' | 'enabled' | 'error'
 type NotificationTestState = 'idle' | 'sending' | 'sent'
@@ -12,10 +13,14 @@ type Props = {
   status: NotificationStatus
   error: string
   testState: NotificationTestState
+  localTestState: NotificationTestState
+  debug: PushNotificationDebug | null
   soundEnabled: boolean
   onEnable: () => void
   onDisable: () => void
   onSendTest: () => void
+  onSendLocalTest: () => void
+  onRefreshDebug: () => void
   onSoundEnabledChange: (enabled: boolean) => void
 }
 
@@ -26,21 +31,28 @@ export function NotificationsDialog({
   status,
   error,
   testState,
+  localTestState,
+  debug,
   soundEnabled,
   onEnable,
   onDisable,
   onSendTest,
+  onSendLocalTest,
+  onRefreshDebug,
   onSoundEnabledChange,
 }: Props) {
   const enabled = status === 'enabled'
   const enabling = status === 'enabling'
   const denied = status === 'denied'
   const sendingTest = testState === 'sending'
+  const sendingLocalTest = localTestState === 'sending'
   const message = notificationMessage(status, supported)
+  const serverSubscription = debug?.server?.subscriptions[0] ?? null
+  const lastAttempt = debug?.server?.recent_attempts[0] ?? null
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-sm gap-4 border-border/90 p-5">
+      <DialogContent className="max-w-lg gap-4 border-border/90 p-5">
         <DialogHeader>
           <DialogTitle>Notifications</DialogTitle>
           <DialogDescription>{message}</DialogDescription>
@@ -67,13 +79,18 @@ export function NotificationsDialog({
 
           <Button type="button" variant="outline" onClick={onSendTest} disabled={sendingTest}>
             <Bell />
-            {sendingTest ? 'Sending...' : 'Send test'}
+            {sendingTest ? 'Sending...' : 'Send remote push'}
+          </Button>
+
+          <Button type="button" variant="outline" onClick={onSendLocalTest} disabled={sendingLocalTest}>
+            <Bell />
+            {sendingLocalTest ? 'Showing...' : 'Show local notification'}
           </Button>
         </div>
 
-        {testState === 'sent' ? (
+        {testState === 'sent' || localTestState === 'sent' ? (
           <p className="rounded-md border border-border/70 bg-background/60 px-3 py-2 text-sm text-muted-foreground">
-            Test sent.
+            {testState === 'sent' ? 'Remote push sent.' : 'Local notification shown.'}
           </p>
         ) : null}
 
@@ -91,9 +108,57 @@ export function NotificationsDialog({
             {soundEnabled ? 'On' : 'Off'}
           </Button>
         </div>
+
+        <div className="grid gap-2 rounded-md border border-border/70 bg-background/60 p-3 text-xs text-muted-foreground">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm font-medium text-foreground">Diagnostics</span>
+            <Button type="button" size="sm" variant="ghost" onClick={onRefreshDebug}>
+              <RefreshCw className="size-3.5" />
+              Refresh
+            </Button>
+          </div>
+          <DebugRow label="Origin" value={debug?.browser.origin || 'unknown'} />
+          <DebugRow label="Display" value={debug?.browser.display_mode || 'unknown'} />
+          <DebugRow label="Permission" value={debug?.browser.permission || 'unknown'} />
+          <DebugRow label="Service worker" value={debug?.browser.service_worker_state || 'unknown'} />
+          <DebugRow label="Browser sub" value={debug?.browser.current_subscription_hash || 'none'} />
+          <DebugRow
+            label="Server sub"
+            value={
+              serverSubscription
+                ? `${serverSubscription.endpoint_hash} ${serverSubscription.origin || 'no-origin'}`
+                : 'none'
+            }
+          />
+          <DebugRow
+            label="Last push"
+            value={
+              lastAttempt
+                ? `${lastAttempt.response_status || lastAttempt.error || 'pending'} ${shortTime(lastAttempt.created_at)}`
+                : 'none'
+            }
+          />
+        </div>
       </DialogContent>
     </Dialog>
   )
+}
+
+function DebugRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-2">
+      <span>{label}</span>
+      <span className="min-w-0 break-words font-mono text-foreground/90">{value}</span>
+    </div>
+  )
+}
+
+function shortTime(value: string) {
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) {
+    return value
+  }
+  return new Date(timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })
 }
 
 function notificationMessage(status: NotificationStatus, supported: boolean) {

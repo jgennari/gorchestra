@@ -20,8 +20,10 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "events")
 	assertTableExists(t, ctx, store, "notification_keys")
 	assertTableExists(t, ctx, store, "push_subscriptions")
+	assertTableExists(t, ctx, store, "push_delivery_attempts")
 	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
 	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
+	assertColumnExists(t, ctx, store, "push_subscriptions", "origin")
 }
 
 func TestMigrationsAreIdempotent(t *testing.T) {
@@ -36,8 +38,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 8 {
-		t.Fatalf("expected eight recorded migrations, got %d", count)
+	if count != 9 {
+		t.Fatalf("expected nine recorded migrations, got %d", count)
 	}
 }
 
@@ -246,11 +248,12 @@ func TestPushSubscriptionLifecycle(t *testing.T) {
 		P256DH:    "p256dh",
 		Auth:      "auth",
 		UserAgent: "test browser",
+		Origin:    "https://example.test",
 	})
 	if err != nil {
 		t.Fatalf("save push subscription: %v", err)
 	}
-	if saved.Endpoint != "https://push.example/subscription" || saved.UserAgent != "test browser" {
+	if saved.Endpoint != "https://push.example/subscription" || saved.UserAgent != "test browser" || saved.Origin != "https://example.test" {
 		t.Fatalf("unexpected saved subscription: %#v", saved)
 	}
 
@@ -258,11 +261,12 @@ func TestPushSubscriptionLifecycle(t *testing.T) {
 		Endpoint: "https://push.example/subscription",
 		P256DH:   "p256dh-updated",
 		Auth:     "auth-updated",
+		Origin:   "https://updated.example.test",
 	})
 	if err != nil {
 		t.Fatalf("update push subscription: %v", err)
 	}
-	if updated.P256DH != "p256dh-updated" || updated.Auth != "auth-updated" || updated.DisabledAt != nil {
+	if updated.P256DH != "p256dh-updated" || updated.Auth != "auth-updated" || updated.Origin != "https://updated.example.test" || updated.DisabledAt != nil {
 		t.Fatalf("unexpected updated subscription: %#v", updated)
 	}
 
@@ -290,6 +294,38 @@ func TestPushSubscriptionLifecycle(t *testing.T) {
 
 	if err := store.DeletePushSubscription(ctx, saved.Endpoint); err != nil {
 		t.Fatalf("delete push subscription: %v", err)
+	}
+}
+
+func TestPushDeliveryAttemptLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	recorded, err := store.RecordPushDeliveryAttempt(ctx, RecordPushDeliveryAttemptParams{
+		EndpointHash:   "abc123",
+		Origin:         "https://example.test",
+		PayloadKind:    "terminal",
+		SessionID:      "sess_1",
+		EventType:      "agent.run.completed",
+		HTTPStatus:     201,
+		ResponseStatus: "201 Created",
+	})
+	if err != nil {
+		t.Fatalf("record push delivery attempt: %v", err)
+	}
+	if recorded.ID == 0 || recorded.EndpointHash != "abc123" || recorded.PayloadKind != "terminal" {
+		t.Fatalf("unexpected recorded attempt: %#v", recorded)
+	}
+
+	attempts, err := store.ListPushDeliveryAttempts(ctx, 10)
+	if err != nil {
+		t.Fatalf("list push delivery attempts: %v", err)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("expected one delivery attempt, got %d", len(attempts))
+	}
+	if attempts[0].HTTPStatus != 201 || attempts[0].ResponseStatus != "201 Created" {
+		t.Fatalf("unexpected listed attempt: %#v", attempts[0])
 	}
 }
 
