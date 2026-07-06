@@ -38,8 +38,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 9 {
-		t.Fatalf("expected nine recorded migrations, got %d", count)
+	if count != 10 {
+		t.Fatalf("expected ten recorded migrations, got %d", count)
 	}
 }
 
@@ -294,6 +294,74 @@ func TestPushSubscriptionLifecycle(t *testing.T) {
 
 	if err := store.DeletePushSubscription(ctx, saved.Endpoint); err != nil {
 		t.Fatalf("delete push subscription: %v", err)
+	}
+}
+
+func TestOriginlessPushSubscriptionMigrationDisablesLegacyRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-originless-push.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	now := formatTime(time.Date(2026, 7, 6, 3, 0, 0, 0, time.UTC))
+	_, err = db.ExecContext(ctx, `
+CREATE TABLE schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at DATETIME NOT NULL
+);
+CREATE TABLE push_subscriptions (
+  endpoint TEXT PRIMARY KEY,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  last_error TEXT,
+  disabled_at DATETIME,
+  origin TEXT
+);
+INSERT INTO schema_migrations (version, name, applied_at)
+  VALUES
+    (1, '001_initial.sql', ?),
+    (2, '002_collapse_terminal_session_statuses.sql', ?),
+    (3, '003_archive_sessions.sql', ?),
+    (5, '005_provider_session_id.sql', ?),
+    (6, '006_session_workspace_path.sql', ?),
+    (7, '007_session_agent_options.sql', ?),
+    (8, '008_queued_messages.sql', ?),
+    (9, '009_push_notifications.sql', ?),
+    (10, '010_push_notification_diagnostics.sql', ?);
+INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_agent, origin, created_at, updated_at)
+  VALUES
+    ('https://push.example/legacy', 'p256dh', 'auth', 'ua', '', ?, ?),
+    ('https://push.example/current', 'p256dh', 'auth', 'ua', 'https://example.test', ?, ?);
+`, now, now, now, now, now, now, now, now, now, now, now, now, now)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("seed legacy db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	subscriptions, err := store.ListPushSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("list push subscriptions: %v", err)
+	}
+	if len(subscriptions) != 1 || subscriptions[0].Endpoint != "https://push.example/current" {
+		t.Fatalf("expected only current subscription active, got %#v", subscriptions)
 	}
 }
 
