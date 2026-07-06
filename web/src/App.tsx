@@ -1257,7 +1257,6 @@ function App() {
         supported={pushNotifications.supported}
         status={pushNotifications.status}
         error={pushNotifications.error}
-        canSendTest={pushNotifications.canSendTest}
         soundEnabled={pushNotifications.soundEnabled}
         onEnable={() => void pushNotifications.enable()}
         onDisable={() => void pushNotifications.disable()}

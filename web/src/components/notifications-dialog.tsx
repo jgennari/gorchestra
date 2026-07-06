@@ -10,7 +10,6 @@ type Props = {
   supported: boolean
   status: NotificationStatus
   error: string
-  canSendTest: boolean
   soundEnabled: boolean
   onEnable: () => void
   onDisable: () => void
@@ -24,7 +23,6 @@ export function NotificationsDialog({
   supported,
   status,
   error,
-  canSendTest,
   soundEnabled,
   onEnable,
   onDisable,
@@ -63,7 +61,7 @@ export function NotificationsDialog({
             </Button>
           )}
 
-          <Button type="button" variant="outline" onClick={onSendTest} disabled={!canSendTest}>
+          <Button type="button" variant="outline" onClick={onSendTest}>
             <Bell />
             Send test
           </Button>

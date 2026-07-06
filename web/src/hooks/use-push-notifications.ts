@@ -173,7 +173,6 @@ export function usePushNotifications() {
     supported,
     status,
     error,
-    canSendTest: supported && status !== 'enabling',
     soundEnabled,
     enable,
     disable,
