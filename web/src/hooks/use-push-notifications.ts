@@ -24,6 +24,7 @@ export function usePushNotifications() {
   const [testState, setTestState] = useState<NotificationTestState>('idle')
   const [soundEnabled, setSoundEnabledState] = useState(() => readBooleanStorage(soundStorageKey, false))
   const playedEventsRef = useRef<Set<string>>(new Set())
+  const shownTerminalNotificationsRef = useRef<Set<string>>(new Set())
   const audioContextRef = useRef<AudioContext | null>(null)
 
   useEffect(() => {
@@ -175,6 +176,34 @@ export function usePushNotifications() {
     [soundEnabled],
   )
 
+  const showSessionStopNotification = useCallback(
+    (event: AgentEvent) => {
+      if (
+        !supported ||
+        !isPushNotificationTerminalEvent(event.type) ||
+        Notification.permission !== 'granted' ||
+        document.visibilityState !== 'visible'
+      ) {
+        return
+      }
+
+      const eventKey = event.id || `${event.session_id}:${event.seq}`
+      if (shownTerminalNotificationsRef.current.has(eventKey)) {
+        return
+      }
+      shownTerminalNotificationsRef.current.add(eventKey)
+      if (shownTerminalNotificationsRef.current.size > 200) {
+        const firstKey = shownTerminalNotificationsRef.current.values().next().value
+        if (firstKey) {
+          shownTerminalNotificationsRef.current.delete(firstKey)
+        }
+      }
+
+      void showLocalSessionStopNotification(event)
+    },
+    [supported],
+  )
+
   return {
     supported,
     status,
@@ -186,6 +215,7 @@ export function usePushNotifications() {
     sendTest,
     setSoundEnabled,
     playSessionStopSound,
+    showSessionStopNotification,
   }
 }
 
@@ -277,8 +307,38 @@ async function showLocalTestNotification(supported: boolean) {
   })
 }
 
+async function showLocalSessionStopNotification(event: AgentEvent) {
+  try {
+    const registration = await navigator.serviceWorker.ready
+    await registration.showNotification('Gorchestra', {
+      body: sessionStopNotificationBody(event.type),
+      badge: '/favicon-notify.svg',
+      icon: '/icon.svg',
+      tag: `gorchestra-session-${event.session_id}`,
+      data: { url: `/sessions/${event.session_id}`, session_id: event.session_id, event_type: event.type },
+    })
+
+    const badgeNavigator = navigator as Navigator & { setAppBadge?: (contents?: number) => Promise<void> }
+    if (badgeNavigator.setAppBadge) {
+      await badgeNavigator.setAppBadge(1).catch(() => undefined)
+    }
+  } catch {
+    // Local foreground notifications are best-effort; background push remains the primary path.
+  }
+}
+
 function isPushNotificationTerminalEvent(type: string) {
   return type === 'agent.run.completed' || type === 'agent.run.failed' || type === 'agent.run.cancelled'
+}
+
+function sessionStopNotificationBody(type: string) {
+  if (type === 'agent.run.completed') {
+    return 'Session completed.'
+  }
+  if (type === 'agent.run.cancelled') {
+    return 'Session was cancelled.'
+  }
+  return 'Session failed.'
 }
 
 function readBooleanStorage(key: string, fallback: boolean) {

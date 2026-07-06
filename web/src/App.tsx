@@ -175,6 +175,7 @@ function App() {
   const theme = useTheme()
   const pushNotifications = usePushNotifications()
   const playSessionStopSound = pushNotifications.playSessionStopSound
+  const showSessionStopNotification = pushNotifications.showSessionStopNotification
   useFavicon(hasFaviconAttention)
   useAppBadge(appBadgeCount)
 
@@ -421,6 +422,7 @@ function App() {
     (event: AgentEvent) => {
       applySessionActivityEvent(event)
       playSessionStopSound(event)
+      showSessionStopNotification(event)
       if (shouldRefreshWorkspaceFilesForEvent(event) && event.session_id === selectedSessionIDRef.current) {
         setFileRefreshKey((value) => value + 1)
       }
@@ -430,13 +432,14 @@ function App() {
         }, 250)
       }
     },
-    [applySessionActivityEvent, playSessionStopSound, refreshSession],
+    [applySessionActivityEvent, playSessionStopSound, refreshSession, showSessionStopNotification],
   )
 
   const handleActivityEvent = useCallback(
     (event: AgentEvent) => {
       applySessionActivityEvent(event)
       playSessionStopSound(event)
+      showSessionStopNotification(event)
       const knownSession = sessionsRef.current.find((session) => session.id === event.session_id)
       const terminalUnselected = isTerminalEvent(event.type) && event.session_id !== selectedSessionIDRef.current
       if (terminalUnselected && event.seq >= latestSessionSeq(knownSession ?? null)) {
@@ -448,7 +451,7 @@ function App() {
         }, 250)
       }
     },
-    [applySessionActivityEvent, markSessionUnseenAfter, playSessionStopSound, refreshSession],
+    [applySessionActivityEvent, markSessionUnseenAfter, playSessionStopSound, refreshSession, showSessionStopNotification],
   )
 
   const {
