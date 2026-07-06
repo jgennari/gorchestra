@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
 type NotificationStatus = 'unsupported' | 'default' | 'denied' | 'enabling' | 'enabled' | 'error'
+type NotificationTestState = 'idle' | 'sending' | 'sent'
 
 type Props = {
   open: boolean
@@ -10,6 +11,7 @@ type Props = {
   supported: boolean
   status: NotificationStatus
   error: string
+  testState: NotificationTestState
   soundEnabled: boolean
   onEnable: () => void
   onDisable: () => void
@@ -23,6 +25,7 @@ export function NotificationsDialog({
   supported,
   status,
   error,
+  testState,
   soundEnabled,
   onEnable,
   onDisable,
@@ -32,6 +35,7 @@ export function NotificationsDialog({
   const enabled = status === 'enabled'
   const enabling = status === 'enabling'
   const denied = status === 'denied'
+  const sendingTest = testState === 'sending'
   const message = notificationMessage(status, supported)
 
   return (
@@ -61,11 +65,17 @@ export function NotificationsDialog({
             </Button>
           )}
 
-          <Button type="button" variant="outline" onClick={onSendTest}>
+          <Button type="button" variant="outline" onClick={onSendTest} disabled={sendingTest}>
             <Bell />
-            Send test
+            {sendingTest ? 'Sending...' : 'Send test'}
           </Button>
         </div>
+
+        {testState === 'sent' ? (
+          <p className="rounded-md border border-border/70 bg-background/60 px-3 py-2 text-sm text-muted-foreground">
+            Test sent.
+          </p>
+        ) : null}
 
         <div className="flex items-center justify-between gap-3 rounded-md border border-border/70 bg-background/60 px-3 py-2">
           <div className="flex items-center gap-2 text-sm font-medium">

@@ -8,6 +8,7 @@ import {
 } from '@/lib/api'
 
 type NotificationStatus = 'unsupported' | 'default' | 'denied' | 'enabling' | 'enabled' | 'error'
+type NotificationTestState = 'idle' | 'sending' | 'sent'
 
 type WindowWithWebkitAudio = Window & {
   webkitAudioContext?: typeof AudioContext
@@ -20,6 +21,7 @@ export function usePushNotifications() {
   const supported = useMemo(() => supportsPushNotifications(), [])
   const [status, setStatus] = useState<NotificationStatus>(() => initialStatus(supported))
   const [error, setError] = useState('')
+  const [testState, setTestState] = useState<NotificationTestState>('idle')
   const [soundEnabled, setSoundEnabledState] = useState(() => readBooleanStorage(soundStorageKey, false))
   const playedEventsRef = useRef<Set<string>>(new Set())
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -132,13 +134,17 @@ export function usePushNotifications() {
 
   const sendTest = useCallback(async () => {
     setError('')
+    setTestState('sending')
     try {
       await sendTestNotification()
+      await showLocalTestNotification(supported)
+      setTestState('sent')
     } catch (testError) {
       setError(messageFromUnknown(testError))
       setStatus((current) => (current === 'enabled' ? current : 'error'))
+      setTestState('idle')
     }
-  }, [])
+  }, [supported])
 
   const setSoundEnabled = useCallback((enabled: boolean) => {
     writeBooleanStorage(soundStorageKey, enabled)
@@ -173,6 +179,7 @@ export function usePushNotifications() {
     supported,
     status,
     error,
+    testState,
     soundEnabled,
     enable,
     disable,
@@ -254,6 +261,20 @@ async function playNotificationTone(audioContextRef: MutableRefObject<AudioConte
     oscillator.start(start + offset)
     oscillator.stop(start + offset + 0.18)
   }
+}
+
+async function showLocalTestNotification(supported: boolean) {
+  if (!supported || Notification.permission !== 'granted') {
+    return
+  }
+  const registration = await navigator.serviceWorker.ready
+  await registration.showNotification('Gorchestra notifications enabled', {
+    body: 'Test notification from this device.',
+    badge: '/favicon-notify.svg',
+    icon: '/icon.svg',
+    tag: 'gorchestra-local-test',
+    data: { url: '/' },
+  })
 }
 
 function isPushNotificationTerminalEvent(type: string) {
