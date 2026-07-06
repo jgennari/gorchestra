@@ -2,6 +2,8 @@ package notifications
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -105,16 +107,25 @@ func (s *Service) PublicKey(ctx context.Context) (string, error) {
 }
 
 func (s *Service) SaveSubscription(ctx context.Context, input SubscriptionInput) (store.PushSubscription, error) {
-	return s.store.SavePushSubscription(ctx, store.SavePushSubscriptionParams{
+	subscription, err := s.store.SavePushSubscription(ctx, store.SavePushSubscriptionParams{
 		Endpoint:  input.Endpoint,
 		P256DH:    input.P256DH,
 		Auth:      input.Auth,
 		UserAgent: input.UserAgent,
 	})
+	if err != nil {
+		return store.PushSubscription{}, err
+	}
+	s.logf("notification subscription saved: endpoint=%s user_agent=%q", endpointFingerprint(subscription.Endpoint), subscription.UserAgent)
+	return subscription, nil
 }
 
 func (s *Service) DeleteSubscription(ctx context.Context, endpoint string) error {
-	return s.store.DeletePushSubscription(ctx, endpoint)
+	if err := s.store.DeletePushSubscription(ctx, endpoint); err != nil {
+		return err
+	}
+	s.logf("notification subscription deleted: endpoint=%s", endpointFingerprint(endpoint))
+	return nil
 }
 
 func (s *Service) SendTest(ctx context.Context) error {
@@ -200,22 +211,27 @@ func (s *Service) sendToActiveSubscriptions(ctx context.Context, payload []byte)
 		return err
 	}
 	if len(subscriptions) == 0 {
+		s.logf("notification send skipped: no active push subscriptions")
 		return nil
 	}
+	s.logf("notification send started: subscriptions=%d payload_bytes=%d", len(subscriptions), len(payload))
 
 	var errs []error
 	for _, subscription := range subscriptions {
 		response, err := s.sender.Send(ctx, keys, subscription, payload)
 		if err != nil {
+			s.logf("notification send transport failed: endpoint=%s error=%v", endpointFingerprint(subscription.Endpoint), err)
 			errs = append(errs, fmt.Errorf("%s: %w", subscription.Endpoint, err))
 			continue
 		}
 		if response == nil {
+			s.logf("notification send completed: endpoint=%s response=nil", endpointFingerprint(subscription.Endpoint))
 			continue
 		}
 		_, _ = io.Copy(io.Discard, response.Body)
 		_ = response.Body.Close()
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			s.logf("notification send accepted: endpoint=%s status=%s", endpointFingerprint(subscription.Endpoint), response.Status)
 			continue
 		}
 		statusText := response.Status
@@ -226,8 +242,10 @@ func (s *Service) sendToActiveSubscriptions(ctx context.Context, payload []byte)
 			}); err != nil {
 				errs = append(errs, fmt.Errorf("disable stale subscription %s: %w", subscription.Endpoint, err))
 			}
+			s.logf("notification subscription disabled: endpoint=%s status=%s", endpointFingerprint(subscription.Endpoint), statusText)
 			continue
 		}
+		s.logf("notification send rejected: endpoint=%s status=%s", endpointFingerprint(subscription.Endpoint), statusText)
 		errs = append(errs, fmt.Errorf("%s: push service returned %s", subscription.Endpoint, statusText))
 	}
 
@@ -365,4 +383,12 @@ func notificationExcerpt(text string) string {
 
 func singleLineText(text string) string {
 	return strings.Join(strings.Fields(text), " ")
+}
+
+func endpointFingerprint(endpoint string) string {
+	if endpoint == "" {
+		return "empty"
+	}
+	sum := sha256.Sum256([]byte(endpoint))
+	return hex.EncodeToString(sum[:])[:12]
 }
