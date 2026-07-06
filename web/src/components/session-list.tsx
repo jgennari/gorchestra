@@ -1,32 +1,21 @@
 import { Archive, ListFilter, LoaderCircle, Plus, Search } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AgentType, Session, SessionStatus } from '@/lib/api'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { Session } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { StatusBadge } from '@/components/status-badge'
 import { ThemeToggle } from '@/components/theme-toggle'
+import {
+  defaultSessionListFilters,
+  type SessionListAgentFilter,
+  type SessionListFilters,
+  type SessionListStatusFilter,
+} from '@/components/session-list-filters'
 import type { ResolvedTheme, ThemePreference } from '@/hooks/use-theme'
 import { sessionAttention } from '@/lib/session-attention'
 import { cn } from '@/lib/utils'
-
-export type SessionListStatusFilter = 'all' | SessionStatus | 'pending-input'
-export type SessionListAgentFilter = 'all' | AgentType
-
-export type SessionListFilters = {
-  status: SessionListStatusFilter
-  agent: SessionListAgentFilter
-  attentionOnly: boolean
-  includeArchived: boolean
-}
-
-export const defaultSessionListFilters: SessionListFilters = {
-  status: 'all',
-  agent: 'all',
-  attentionOnly: false,
-  includeArchived: false,
-}
 
 type Props = {
   sessions: Session[]
@@ -42,6 +31,7 @@ type Props = {
   themePreference: ThemePreference
   resolvedTheme: ResolvedTheme
   onThemeToggle: () => void
+  notificationsAction?: ReactNode
   variant?: 'full' | 'embedded'
 }
 
@@ -59,6 +49,7 @@ export function SessionList({
   themePreference,
   resolvedTheme,
   onThemeToggle,
+  notificationsAction,
   variant = 'full',
 }: Props) {
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -114,6 +105,7 @@ export function SessionList({
         <div className="flex items-center justify-between gap-3 border-b border-border/70 p-4">
           <img src="/icon.svg" alt="Gorchestra" className="sidebar-logo-mark h-9 w-9 shrink-0" />
           <div className="flex shrink-0 items-center gap-2">
+            {notificationsAction}
             <ThemeToggle
               preference={themePreference}
               resolvedTheme={resolvedTheme}

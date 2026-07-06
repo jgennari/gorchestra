@@ -2,7 +2,8 @@ import { useState, type ComponentProps } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session } from '@/lib/api'
-import { defaultSessionListFilters, SessionList, type SessionListFilters } from '@/components/session-list'
+import { SessionList } from '@/components/session-list'
+import { defaultSessionListFilters } from '@/components/session-list-filters'
 
 const sessions: Session[] = [
   {
@@ -205,7 +206,7 @@ function baseProps() {
     query: '',
     filters: defaultSessionListFilters,
     onQueryChange: () => undefined,
-    onFiltersChange: (_filters: SessionListFilters) => undefined,
+    onFiltersChange: () => undefined,
     onSelect: () => undefined,
     onCreate: () => undefined,
     themePreference: 'system' as const,

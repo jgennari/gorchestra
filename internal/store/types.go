@@ -70,6 +70,24 @@ type QueuedMessage struct {
 	UpdatedAt    time.Time
 }
 
+type NotificationKeys struct {
+	PublicKey  string
+	PrivateKey string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type PushSubscription struct {
+	Endpoint   string
+	P256DH     string
+	Auth       string
+	UserAgent  string
+	LastError  string
+	DisabledAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type CreateSessionParams struct {
 	Title         string
 	AgentType     string
@@ -134,4 +152,21 @@ type EnqueueMessageParams struct {
 type QueueMessageIDParams struct {
 	SessionID string
 	ID        string
+}
+
+type SetNotificationKeysParams struct {
+	PublicKey  string
+	PrivateKey string
+}
+
+type SavePushSubscriptionParams struct {
+	Endpoint  string
+	P256DH    string
+	Auth      string
+	UserAgent string
+}
+
+type DisablePushSubscriptionParams struct {
+	Endpoint  string
+	LastError string
 }

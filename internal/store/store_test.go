@@ -18,6 +18,8 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "schema_migrations")
 	assertTableExists(t, ctx, store, "sessions")
 	assertTableExists(t, ctx, store, "events")
+	assertTableExists(t, ctx, store, "notification_keys")
+	assertTableExists(t, ctx, store, "push_subscriptions")
 	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
 	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
 }
@@ -34,8 +36,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 7 {
-		t.Fatalf("expected seven recorded migrations, got %d", count)
+	if count != 8 {
+		t.Fatalf("expected eight recorded migrations, got %d", count)
 	}
 }
 
@@ -198,6 +200,111 @@ INSERT INTO session_provider_state (session_id, provider, provider_session_id, c
 	}
 	if session.ProviderSessionID != "thread_first" {
 		t.Fatalf("expected provider session id thread_first, got %q", session.ProviderSessionID)
+	}
+}
+
+func TestNotificationKeysAreStable(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	if _, err := store.GetNotificationKeys(ctx); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound before keys exist, got %v", err)
+	}
+
+	created, err := store.SetNotificationKeys(ctx, SetNotificationKeysParams{
+		PublicKey:  "public-1",
+		PrivateKey: "private-1",
+	})
+	if err != nil {
+		t.Fatalf("set notification keys: %v", err)
+	}
+	if created.PublicKey != "public-1" || created.PrivateKey != "private-1" {
+		t.Fatalf("unexpected keys: %#v", created)
+	}
+
+	unchanged, err := store.SetNotificationKeys(ctx, SetNotificationKeysParams{
+		PublicKey:  "public-2",
+		PrivateKey: "private-2",
+	})
+	if err != nil {
+		t.Fatalf("set existing notification keys: %v", err)
+	}
+	if unchanged.PublicKey != "public-1" || unchanged.PrivateKey != "private-1" {
+		t.Fatalf("expected existing keys to remain stable, got %#v", unchanged)
+	}
+	if unchanged.CreatedAt.IsZero() || unchanged.UpdatedAt.IsZero() {
+		t.Fatal("expected notification key timestamps")
+	}
+}
+
+func TestPushSubscriptionLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	saved, err := store.SavePushSubscription(ctx, SavePushSubscriptionParams{
+		Endpoint:  "https://push.example/subscription",
+		P256DH:    "p256dh",
+		Auth:      "auth",
+		UserAgent: "test browser",
+	})
+	if err != nil {
+		t.Fatalf("save push subscription: %v", err)
+	}
+	if saved.Endpoint != "https://push.example/subscription" || saved.UserAgent != "test browser" {
+		t.Fatalf("unexpected saved subscription: %#v", saved)
+	}
+
+	updated, err := store.SavePushSubscription(ctx, SavePushSubscriptionParams{
+		Endpoint: "https://push.example/subscription",
+		P256DH:   "p256dh-updated",
+		Auth:     "auth-updated",
+	})
+	if err != nil {
+		t.Fatalf("update push subscription: %v", err)
+	}
+	if updated.P256DH != "p256dh-updated" || updated.Auth != "auth-updated" || updated.DisabledAt != nil {
+		t.Fatalf("unexpected updated subscription: %#v", updated)
+	}
+
+	subscriptions, err := store.ListPushSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("list push subscriptions: %v", err)
+	}
+	if len(subscriptions) != 1 {
+		t.Fatalf("expected one active subscription, got %d", len(subscriptions))
+	}
+
+	if err := store.DisablePushSubscription(ctx, DisablePushSubscriptionParams{
+		Endpoint:  saved.Endpoint,
+		LastError: "410 Gone",
+	}); err != nil {
+		t.Fatalf("disable push subscription: %v", err)
+	}
+	subscriptions, err = store.ListPushSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("list after disable: %v", err)
+	}
+	if len(subscriptions) != 0 {
+		t.Fatalf("expected disabled subscription excluded, got %d", len(subscriptions))
+	}
+
+	if err := store.DeletePushSubscription(ctx, saved.Endpoint); err != nil {
+		t.Fatalf("delete push subscription: %v", err)
+	}
+}
+
+func TestSavePushSubscriptionRejectsMissingFields(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	for _, params := range []SavePushSubscriptionParams{
+		{P256DH: "p256dh", Auth: "auth"},
+		{Endpoint: "endpoint", Auth: "auth"},
+		{Endpoint: "endpoint", P256DH: "p256dh"},
+	} {
+		if _, err := store.SavePushSubscription(ctx, params); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("expected ErrInvalidArgument for params %#v, got %v", params, err)
+		}
 	}
 }
 

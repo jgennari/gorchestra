@@ -212,6 +212,14 @@ export type ConsoleStatus = {
   exit_code?: number | null
 }
 
+export type PushSubscriptionPayload = {
+  endpoint?: string | null
+  keys?: {
+    p256dh?: string
+    auth?: string
+  }
+}
+
 type ErrorResponse = {
   error?: string
 }
@@ -253,6 +261,19 @@ type AnswerUserInputResponse = {
 
 type EventHistoryResponse = {
   events: AgentEvent[]
+}
+
+type NotificationPublicKeyResponse = {
+  public_key: string
+  supported: boolean
+}
+
+type NotificationStateResponse = {
+  enabled: boolean
+}
+
+type NotificationTestResponse = {
+  sent: boolean
 }
 
 type ListSessionsOptions = {
@@ -492,6 +513,30 @@ export function eventStreamURL(sessionID: string, afterSeq: number) {
 
 export function sessionActivityStreamURL() {
   return '/api/sessions/activity/stream'
+}
+
+export async function fetchNotificationPublicKey() {
+  return requestJSON<NotificationPublicKeyResponse>('/api/notifications/public-key')
+}
+
+export async function savePushSubscription(subscription: PushSubscriptionPayload) {
+  return requestJSON<NotificationStateResponse>('/api/notifications/subscriptions', {
+    method: 'POST',
+    body: JSON.stringify(subscription),
+  })
+}
+
+export async function deletePushSubscription(endpoint: string) {
+  return requestJSON<NotificationStateResponse>('/api/notifications/subscriptions', {
+    method: 'DELETE',
+    body: JSON.stringify({ endpoint }),
+  })
+}
+
+export async function sendTestNotification() {
+  return requestJSON<NotificationTestResponse>('/api/notifications/test', {
+    method: 'POST',
+  })
 }
 
 export async function getConsoleStatus(sessionID: string) {

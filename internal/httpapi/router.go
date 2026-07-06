@@ -18,6 +18,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents"
 	"github.com/jgennari/gorchestra/internal/console"
 	eventservice "github.com/jgennari/gorchestra/internal/events"
+	"github.com/jgennari/gorchestra/internal/notifications"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 )
@@ -73,26 +74,35 @@ type RunManager interface {
 	AnswerUserInput(sessionID string, requestID string, response agents.UserInputResponse) error
 }
 
+type NotificationService interface {
+	PublicKey(ctx context.Context) (string, error)
+	SaveSubscription(ctx context.Context, input notifications.SubscriptionInput) (store.PushSubscription, error)
+	DeleteSubscription(ctx context.Context, endpoint string) error
+	SendTest(ctx context.Context) error
+}
+
 type Dependencies struct {
 	Store          Store
 	Events         EventService
 	Agents         AgentRegistry
 	Runs           RunManager
 	Console        *console.Manager
+	Notifications  NotificationService
 	Workdir        string
 	WorkspaceRoots []string
 	StaticAssets   fs.FS
 }
 
 type API struct {
-	store        Store
-	events       EventService
-	agents       AgentRegistry
-	runs         RunManager
-	console      *console.Manager
-	workdir      string
-	workspaces   workspaceConfig
-	staticAssets fs.FS
+	store         Store
+	events        EventService
+	agents        AgentRegistry
+	runs          RunManager
+	console       *console.Manager
+	notifications NotificationService
+	workdir       string
+	workspaces    workspaceConfig
+	staticAssets  fs.FS
 }
 
 var _ RunManager = (*runcontrol.Manager)(nil)
@@ -128,6 +138,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.agents = deps[0].Agents
 		api.runs = deps[0].Runs
 		api.console = deps[0].Console
+		api.notifications = deps[0].Notifications
 		api.workdir = deps[0].Workdir
 		api.workspaces = newWorkspaceConfig(deps[0].Workdir, deps[0].WorkspaceRoots)
 		api.staticAssets = deps[0].StaticAssets
@@ -171,6 +182,12 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	if api.store != nil && api.events != nil {
 		r.Get("/api/sessions/{sessionId}/events/stream", api.eventStreamHandler)
 		r.Get("/api/sessions/activity/stream", api.sessionActivityStreamHandler)
+	}
+	if api.notifications != nil {
+		r.Get("/api/notifications/public-key", api.notificationPublicKeyHandler)
+		r.Post("/api/notifications/subscriptions", api.saveNotificationSubscriptionHandler)
+		r.Delete("/api/notifications/subscriptions", api.deleteNotificationSubscriptionHandler)
+		r.Post("/api/notifications/test", api.testNotificationHandler)
 	}
 	r.NotFound(api.notFoundHandler)
 
@@ -216,7 +233,12 @@ func serveStaticAsset(assets fs.FS, w http.ResponseWriter, r *http.Request) {
 }
 
 func isFrontendAssetPath(name string) bool {
-	return strings.HasPrefix(name, "assets/") || name == "favicon.svg"
+	return strings.HasPrefix(name, "assets/") ||
+		name == "favicon.svg" ||
+		name == "favicon-notify.svg" ||
+		name == "icon.svg" ||
+		name == "manifest.webmanifest" ||
+		name == "service-worker.js"
 }
 
 func staticAssetExists(assets fs.FS, name string) bool {

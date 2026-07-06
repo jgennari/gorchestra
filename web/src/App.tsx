@@ -1,4 +1,4 @@
-import { Folder, Menu, MessageSquare, Plus, Terminal, X } from 'lucide-react'
+import { Bell, Folder, Menu, MessageSquare, Plus, Terminal, X } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -43,14 +43,17 @@ import { isTerminalEvent, knownEventTypes, lastSeq, shouldRefreshWorkspaceFilesF
 import { nextSessionIDAfterArchive } from '@/lib/sessions'
 import { useSessionEvents } from '@/hooks/use-session-events'
 import { useFavicon } from '@/hooks/use-favicon'
+import { usePushNotifications } from '@/hooks/use-push-notifications'
 import { useTheme } from '@/hooks/use-theme'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { HostConsole } from '@/components/host-console'
+import { NotificationsDialog } from '@/components/notifications-dialog'
 import { RunHealthRail } from '@/components/run-health-rail'
 import { ChatSessionHeader, SessionDetail } from '@/components/session-detail'
-import { defaultSessionListFilters, SessionList, type SessionListFilters } from '@/components/session-list'
+import { SessionList } from '@/components/session-list'
+import { defaultSessionListFilters, type SessionListFilters } from '@/components/session-list-filters'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { WorkspaceFilesView } from '@/components/workspace-files'
 import { hasSessionAttention, latestSessionSeq } from '@/lib/session-attention'
@@ -118,6 +121,7 @@ function App() {
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileListOpen, setMobileListOpen] = useState(false)
   const [mobileRailOpen, setMobileRailOpen] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(true)
   const [refreshingSessions, setRefreshingSessions] = useState(false)
   const [error, setError] = useState('')
@@ -160,6 +164,8 @@ function App() {
     [titleEditorStates],
   )
   const theme = useTheme()
+  const pushNotifications = usePushNotifications()
+  const playSessionStopSound = pushNotifications.playSessionStopSound
   useFavicon(hasFaviconAttention)
 
   const applySession = useCallback((session: Session) => {
@@ -404,6 +410,7 @@ function App() {
   const handleSessionEvent = useCallback(
     (event: AgentEvent) => {
       applySessionActivityEvent(event)
+      playSessionStopSound(event)
       if (shouldRefreshWorkspaceFilesForEvent(event) && event.session_id === selectedSessionIDRef.current) {
         setFileRefreshKey((value) => value + 1)
       }
@@ -413,12 +420,13 @@ function App() {
         }, 250)
       }
     },
-    [applySessionActivityEvent, refreshSession],
+    [applySessionActivityEvent, playSessionStopSound, refreshSession],
   )
 
   const handleActivityEvent = useCallback(
     (event: AgentEvent) => {
       applySessionActivityEvent(event)
+      playSessionStopSound(event)
       const knownSession = sessionsRef.current.find((session) => session.id === event.session_id)
       const terminalUnselected = isTerminalEvent(event.type) && event.session_id !== selectedSessionIDRef.current
       if (terminalUnselected && event.seq >= latestSessionSeq(knownSession ?? null)) {
@@ -430,7 +438,7 @@ function App() {
         }, 250)
       }
     },
-    [applySessionActivityEvent, markSessionUnseenAfter, refreshSession],
+    [applySessionActivityEvent, markSessionUnseenAfter, playSessionStopSound, refreshSession],
   )
 
   const {
@@ -847,6 +855,19 @@ function App() {
     )
   }
 
+  const renderNotificationButton = () => (
+    <Button
+      type="button"
+      aria-label="Notifications"
+      size="icon"
+      variant={pushNotifications.status === 'enabled' ? 'secondary' : 'outline'}
+      onClick={() => setNotificationsOpen(true)}
+      className="shadow-sm"
+    >
+      <Bell />
+    </Button>
+  )
+
   const sessionListProps = {
     sessions,
     selectedSessionID,
@@ -861,6 +882,7 @@ function App() {
     themePreference: theme.preference,
     resolvedTheme: theme.resolvedTheme,
     onThemeToggle: theme.nextPreference,
+    notificationsAction: renderNotificationButton(),
   }
   const list = <SessionList {...sessionListProps} />
   const mobileList = <SessionList {...sessionListProps} variant="embedded" />
@@ -1229,6 +1251,18 @@ function App() {
           completeSessionSelection(targetSessionID, historyMode)
         }}
       />
+      <NotificationsDialog
+        open={notificationsOpen}
+        onOpenChange={setNotificationsOpen}
+        supported={pushNotifications.supported}
+        status={pushNotifications.status}
+        error={pushNotifications.error}
+        soundEnabled={pushNotifications.soundEnabled}
+        onEnable={() => void pushNotifications.enable()}
+        onDisable={() => void pushNotifications.disable()}
+        onSendTest={() => void pushNotifications.sendTest()}
+        onSoundEnabledChange={pushNotifications.setSoundEnabled}
+      />
       <Dialog open={mobileListOpen} onOpenChange={setMobileListOpen}>
         <DialogContent
           showClose={false}
@@ -1238,6 +1272,7 @@ function App() {
             <div className="flex items-center justify-between gap-3">
               <DialogTitle>Sessions</DialogTitle>
               <div className="flex shrink-0 items-center gap-2">
+                {renderNotificationButton()}
                 <ThemeToggle
                   preference={theme.preference}
                   resolvedTheme={theme.resolvedTheme}

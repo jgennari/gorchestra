@@ -28,6 +28,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents/pi"
 	"github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/httpapi"
+	"github.com/jgennari/gorchestra/internal/notifications"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 	"github.com/jgennari/gorchestra/internal/webassets"
@@ -85,6 +86,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("event service startup failed: %v", err)
 	}
+	notificationService := notifications.NewService(dbStore)
+	notificationService.Start(ctx, eventService)
 	if err := recoverInterruptedRuns(ctx, dbStore, eventService); err != nil {
 		log.Fatalf("recover interrupted runs failed: %v", err)
 	}
@@ -148,7 +151,7 @@ func main() {
 	addr := net.JoinHostPort(cfg.host, cfg.port)
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets}),
+		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
