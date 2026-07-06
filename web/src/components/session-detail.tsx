@@ -90,7 +90,7 @@ export function SessionDetail({
   headerActions,
   mobileLeadingAction,
 }: Props) {
-  const bottomStackRef = useRef<HTMLDivElement>(null)
+  const bottomInsetRef = useRef<HTMLDivElement>(null)
   const [bottomInsetHeight, setBottomInsetHeight] = useState(176)
   const userInputRequest = useMemo(
     () => (session?.status === 'running' ? pendingUserInputRequest(events) : null),
@@ -121,7 +121,7 @@ export function SessionDetail({
   const latestQueueEvent = useMemo(() => latestQueuedMessageEvent(events), [events])
 
   useLayoutEffect(() => {
-    const element = bottomStackRef.current
+    const element = bottomInsetRef.current
     if (!element) {
       return
     }
@@ -248,8 +248,8 @@ export function SessionDetail({
           />
         </div>
       </div>
-      <div className="session-bottom-safe-area pointer-events-none absolute inset-x-0 bottom-0 z-20">
-        <div ref={bottomStackRef} data-testid="session-bottom-stack" className="pointer-events-auto relative">
+      <div ref={bottomInsetRef} className="session-bottom-safe-area pointer-events-none absolute inset-x-0 bottom-0 z-20">
+        <div data-testid="session-bottom-stack" className="pointer-events-auto relative">
           <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
           <PromptComposer
             key={session.id}
