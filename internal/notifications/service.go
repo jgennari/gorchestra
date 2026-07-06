@@ -301,7 +301,7 @@ func isTerminalRunEvent(eventType string) bool {
 }
 
 func notificationTitle(session store.Session) string {
-	title := strings.TrimSpace(session.Title)
+	title := singleLineText(session.Title)
 	if title == "" {
 		return "Gorchestra"
 	}
@@ -343,7 +343,7 @@ func latestAgentMessageExcerpt(events []store.Event) string {
 }
 
 func notificationExcerpt(text string) string {
-	fields := strings.Fields(text)
+	fields := strings.Fields(singleLineText(text))
 	if len(fields) == 0 {
 		return ""
 	}
@@ -358,4 +358,8 @@ func notificationExcerpt(text string) string {
 		excerpt += "..."
 	}
 	return excerpt
+}
+
+func singleLineText(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }

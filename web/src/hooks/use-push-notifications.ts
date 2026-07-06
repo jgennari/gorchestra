@@ -336,7 +336,7 @@ function isPushNotificationTerminalEvent(type: string) {
 }
 
 function notificationTitle(details: SessionStopNotificationDetails) {
-  const title = details.title?.trim()
+  const title = singleLineText(details.title ?? '')
   return title || 'Gorchestra'
 }
 
@@ -349,10 +349,15 @@ function sessionStopNotificationBody(type: string, excerpt: string) {
   } else {
     status = 'Failed.'
   }
-  if (!excerpt) {
+  const cleanedExcerpt = singleLineText(excerpt)
+  if (!cleanedExcerpt) {
     return status
   }
-  return `${status} ${excerpt}`
+  return `${status} ${cleanedExcerpt}`
+}
+
+function singleLineText(text: string) {
+  return text.trim().split(/\s+/).filter(Boolean).join(' ')
 }
 
 function readBooleanStorage(key: string, fallback: boolean) {
