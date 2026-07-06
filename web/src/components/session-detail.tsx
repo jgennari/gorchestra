@@ -248,7 +248,7 @@ export function SessionDetail({
           />
         </div>
       </div>
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
+      <div className="session-bottom-safe-area pointer-events-none absolute inset-x-0 bottom-0 z-20">
         <div ref={bottomStackRef} data-testid="session-bottom-stack" className="pointer-events-auto relative">
           <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
           <PromptComposer

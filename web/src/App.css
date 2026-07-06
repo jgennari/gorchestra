@@ -68,6 +68,28 @@
   top: calc(max(env(safe-area-inset-top, 0px), 2rem) + 5rem);
 }
 
+@media (display-mode: standalone) and (max-width: 1023px) {
+  .app-shell {
+    top: 0;
+  }
+
+  .mobile-floating-header-shell {
+    top: calc(env(safe-area-inset-top, 0px) + 0.75rem);
+  }
+
+  .session-bottom-safe-area {
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
+  }
+
+  .host-console-frame {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 5.75rem);
+  }
+
+  .mobile-file-viewer-panel {
+    top: calc(env(safe-area-inset-top, 0px) + 5.75rem);
+  }
+}
+
 @media (min-width: 1024px) {
   .host-console-frame {
     padding-top: 4.75rem;
