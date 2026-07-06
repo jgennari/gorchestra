@@ -106,7 +106,7 @@ export function usePushNotifications() {
       await sendTestNotification()
     } catch (testError) {
       setError(messageFromUnknown(testError))
-      setStatus('error')
+      setStatus((current) => (current === 'enabled' ? current : 'error'))
     }
   }, [])
 
