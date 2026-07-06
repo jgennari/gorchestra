@@ -20,6 +20,9 @@ export function usePushNotifications() {
   const supported = useMemo(() => supportsPushNotifications(), [])
   const [status, setStatus] = useState<NotificationStatus>(() => initialStatus(supported))
   const [error, setError] = useState('')
+  const [permission, setPermission] = useState<NotificationPermission>(() =>
+    supported ? Notification.permission : 'default',
+  )
   const [soundEnabled, setSoundEnabledState] = useState(() => readBooleanStorage(soundStorageKey, false))
   const playedEventsRef = useRef<Set<string>>(new Set())
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -29,6 +32,7 @@ export function usePushNotifications() {
       setStatus('unsupported')
       return
     }
+    setPermission(Notification.permission)
     if (Notification.permission === 'denied') {
       setStatus('denied')
       return
@@ -38,6 +42,37 @@ export function usePushNotifications() {
       return
     }
     setStatus('default')
+  }, [supported])
+
+  useEffect(() => {
+    if (!supported || Notification.permission !== 'granted') {
+      return
+    }
+
+    let cancelled = false
+    async function restoreExistingSubscription() {
+      try {
+        const registration = await navigator.serviceWorker.getRegistration('/')
+        const subscription = registration ? await registration.pushManager.getSubscription() : null
+        if (cancelled || !subscription) {
+          return
+        }
+        await savePushSubscription(subscription.toJSON() as PushSubscriptionPayload)
+        if (cancelled) {
+          return
+        }
+        writeBooleanStorage(enabledStorageKey, true)
+        setPermission('granted')
+        setStatus('enabled')
+      } catch {
+        // Keep the current UI state; explicit enable/test actions will surface API errors.
+      }
+    }
+
+    void restoreExistingSubscription()
+    return () => {
+      cancelled = true
+    }
   }, [supported])
 
   const enable = useCallback(async () => {
@@ -53,6 +88,7 @@ export function usePushNotifications() {
       if (permission === 'default') {
         permission = await Notification.requestPermission()
       }
+      setPermission(permission)
       if (permission === 'denied') {
         writeBooleanStorage(enabledStorageKey, false)
         setStatus('denied')
@@ -75,6 +111,7 @@ export function usePushNotifications() {
         }))
       await savePushSubscription(subscription.toJSON() as PushSubscriptionPayload)
       writeBooleanStorage(enabledStorageKey, true)
+      setPermission('granted')
       setStatus('enabled')
     } catch (enableError) {
       writeBooleanStorage(enabledStorageKey, false)
@@ -93,6 +130,7 @@ export function usePushNotifications() {
         await subscription.unsubscribe()
       }
       writeBooleanStorage(enabledStorageKey, false)
+      setPermission(supported ? Notification.permission : 'default')
       setStatus(supported && Notification.permission === 'denied' ? 'denied' : supported ? 'default' : 'unsupported')
     } catch (disableError) {
       setError(messageFromUnknown(disableError))
@@ -143,6 +181,7 @@ export function usePushNotifications() {
     supported,
     status,
     error,
+    canSendTest: supported && permission === 'granted' && status !== 'enabling',
     soundEnabled,
     enable,
     disable,
