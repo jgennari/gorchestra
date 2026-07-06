@@ -20,6 +20,7 @@ type WindowWithWebkitAudio = Window & {
 
 const enabledStorageKey = 'gorchestra.notifications.enabled'
 const soundStorageKey = 'gorchestra.notifications.sound'
+const foregroundNotificationMaxAgeMs = 30_000
 
 export function usePushNotifications() {
   const supported = useMemo(() => supportsPushNotifications(), [])
@@ -185,6 +186,7 @@ export function usePushNotifications() {
       if (
         !supported ||
         !isPushNotificationTerminalEvent(event.type) ||
+        !isFreshForegroundEvent(event) ||
         Notification.permission !== 'granted' ||
         document.visibilityState !== 'visible'
       ) {
@@ -333,6 +335,14 @@ async function showLocalSessionStopNotification(event: AgentEvent, details: Sess
 
 function isPushNotificationTerminalEvent(type: string) {
   return type === 'agent.run.completed' || type === 'agent.run.failed' || type === 'agent.run.cancelled'
+}
+
+function isFreshForegroundEvent(event: AgentEvent) {
+  const createdAt = Date.parse(event.created_at)
+  if (!Number.isFinite(createdAt)) {
+    return false
+  }
+  return Math.abs(Date.now() - createdAt) <= foregroundNotificationMaxAgeMs
 }
 
 function sessionNotificationName(details: SessionStopNotificationDetails) {
