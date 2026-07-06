@@ -101,16 +101,7 @@ export function usePushNotifications() {
         return
       }
 
-      const registration = await navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
-      const { public_key: publicKey } = await fetchNotificationPublicKey()
-      const currentSubscription = await registration.pushManager.getSubscription()
-      const subscription =
-        currentSubscription ??
-        (await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(publicKey),
-        }))
-      await savePushSubscription(subscription.toJSON() as PushSubscriptionPayload)
+      await ensurePushSubscription(false)
       writeBooleanStorage(enabledStorageKey, true)
       setStatus('enabled')
     } catch (enableError) {
@@ -141,6 +132,9 @@ export function usePushNotifications() {
     setError('')
     setTestState('sending')
     try {
+      if (supported && Notification.permission === 'granted') {
+        await ensurePushSubscription(true)
+      }
       await sendTestNotification()
       await showLocalTestNotification(supported)
       setTestState('sent')
@@ -245,6 +239,28 @@ function initialStatus(supported: boolean): NotificationStatus {
     return 'enabled'
   }
   return 'default'
+}
+
+async function ensurePushSubscription(force: boolean) {
+  const registration = await navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
+  const { public_key: publicKey } = await fetchNotificationPublicKey()
+  const currentSubscription = await registration.pushManager.getSubscription()
+  if (currentSubscription && !force) {
+    await savePushSubscription(currentSubscription.toJSON() as PushSubscriptionPayload)
+    return currentSubscription
+  }
+
+  if (currentSubscription) {
+    await deletePushSubscription(currentSubscription.endpoint).catch(() => undefined)
+    await currentSubscription.unsubscribe().catch(() => undefined)
+  }
+
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  })
+  await savePushSubscription(subscription.toJSON() as PushSubscriptionPayload)
+  return subscription
 }
 
 function urlBase64ToUint8Array(value: string) {
