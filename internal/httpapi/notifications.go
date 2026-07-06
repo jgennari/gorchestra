@@ -163,7 +163,7 @@ func (api API) deleteNotificationSubscriptionHandler(w http.ResponseWriter, r *h
 }
 
 func (api API) testNotificationHandler(w http.ResponseWriter, r *http.Request) {
-	if err := api.notifications.SendTest(r.Context()); err != nil {
+	if err := api.notifications.SendBadgeVariantTest(r.Context(), r.URL.Query().Get("variant")); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

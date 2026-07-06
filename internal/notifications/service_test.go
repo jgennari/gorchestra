@@ -43,17 +43,17 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 	if !bytes.Contains(sender.payloads[0], []byte(`"title":"Completed"`)) {
 		t.Fatalf("expected completion title in payload, got %s", sender.payloads[0])
 	}
-	if !bytes.Contains(sender.payloads[0], []byte(`"web_push":8030`)) {
-		t.Fatalf("expected declarative web push marker in payload, got %s", sender.payloads[0])
+	if bytes.Contains(sender.payloads[0], []byte(`"web_push"`)) {
+		t.Fatalf("expected classic service worker payload without web_push, got %s", sender.payloads[0])
 	}
-	if !bytes.Contains(sender.payloads[0], []byte(`"navigate":"https://example.test/sessions/sess_1?notification_seq=8"`)) {
-		t.Fatalf("expected absolute declarative navigate URL in payload, got %s", sender.payloads[0])
+	if !bytes.Contains(sender.payloads[0], []byte(`"url":"https://example.test/sessions/sess_1?notification_seq=8"`)) {
+		t.Fatalf("expected absolute notification URL in payload, got %s", sender.payloads[0])
 	}
 	if !bytes.Contains(sender.payloads[0], []byte(`"seq":8`)) {
 		t.Fatalf("expected terminal seq in payload, got %s", sender.payloads[0])
 	}
-	if !bytes.Contains(sender.payloads[0], []byte(`"app_badge":"1"`)) {
-		t.Fatalf("expected string app badge in payload, got %s", sender.payloads[0])
+	if !bytes.Contains(sender.payloads[0], []byte(`"session_id":"sess_1"`)) {
+		t.Fatalf("expected session id in payload, got %s", sender.payloads[0])
 	}
 	if !bytes.Contains(sender.payloads[0], []byte("Build release: The release build is complete")) {
 		t.Fatalf("expected response excerpt in payload, got %s", sender.payloads[0])
@@ -62,19 +62,11 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 	if err := json.Unmarshal(sender.payloads[0], &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	if len(payload) != 2 {
-		t.Fatalf("expected only web_push and notification top-level fields, got %s", sender.payloads[0])
+	if _, ok := payload["notification"]; ok {
+		t.Fatalf("expected classic payload without notification object, got %s", sender.payloads[0])
 	}
-	notification, ok := payload["notification"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected notification object, got %#v", payload["notification"])
-	}
-	data, ok := notification["data"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected notification data object, got %#v", notification["data"])
-	}
-	if data["session_id"] != "sess_1" || data["event_type"] != "agent.run.completed" || data["seq"] != float64(8) {
-		t.Fatalf("expected metadata in notification data, got %#v", data)
+	if payload["session_id"] != "sess_1" || payload["event_type"] != "agent.run.completed" || payload["seq"] != float64(8) {
+		t.Fatalf("expected metadata in notification payload, got %#v", payload)
 	}
 	if len(fakeStore.attempts) != 1 || fakeStore.attempts[0].HTTPStatus != http.StatusCreated {
 		t.Fatalf("expected recorded delivery attempt, got %#v", fakeStore.attempts)
@@ -107,6 +99,109 @@ func TestServiceDisablesGoneSubscriptions(t *testing.T) {
 	}
 }
 
+func TestServiceSendsBadgeVariantTestNotifications(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		variant       string
+		kind          string
+		declarative   bool
+		badge         any
+		expectTag     bool
+		expectData    bool
+		classicWorker bool
+	}{
+		{
+			name:        "declarative string",
+			variant:     "declarative-string",
+			kind:        "test-declarative-string",
+			declarative: true,
+			badge:       "1",
+			expectTag:   true,
+			expectData:  true,
+		},
+		{
+			name:        "declarative number",
+			variant:     "declarative-number",
+			kind:        "test-declarative-number",
+			declarative: true,
+			badge:       float64(1),
+			expectTag:   true,
+			expectData:  true,
+		},
+		{
+			name:        "minimal number",
+			variant:     "declarative-minimal-number",
+			kind:        "test-declarative-minimal-number",
+			declarative: true,
+			badge:       float64(1),
+		},
+		{
+			name:          "classic service worker",
+			variant:       "classic-sw-number",
+			kind:          "test-classic-sw-number",
+			classicWorker: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			fakeStore := &memoryStore{
+				keys: store.NotificationKeys{
+					PublicKey:  "public",
+					PrivateKey: "private",
+				},
+				subscriptions: []store.PushSubscription{
+					{Endpoint: "endpoint-1", P256DH: "p256dh", Auth: "auth", Origin: "https://example.test"},
+				},
+			}
+			sender := &recordingSender{responses: []*http.Response{testResponse(http.StatusCreated)}}
+			service := NewService(fakeStore, WithSender(sender))
+
+			if err := service.SendBadgeVariantTest(ctx, test.variant); err != nil {
+				t.Fatalf("send badge variant test: %v", err)
+			}
+
+			if len(sender.payloads) != 1 {
+				t.Fatalf("expected one push notification, got %d", len(sender.payloads))
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(sender.payloads[0], &payload); err != nil {
+				t.Fatalf("decode payload: %v", err)
+			}
+			if test.classicWorker {
+				if _, ok := payload["web_push"]; ok {
+					t.Fatalf("expected classic payload without web_push, got %s", sender.payloads[0])
+				}
+				if _, ok := payload["notification"]; ok {
+					t.Fatalf("expected classic payload without notification, got %s", sender.payloads[0])
+				}
+				if payload["url"] != "https://example.test/" {
+					t.Fatalf("expected absolute root url, got %s", sender.payloads[0])
+				}
+			} else {
+				notification, ok := payload["notification"].(map[string]any)
+				if !ok {
+					t.Fatalf("expected notification object, got %#v", payload["notification"])
+				}
+				if payload["web_push"] != float64(8030) || notification["app_badge"] != test.badge {
+					t.Fatalf("expected declarative app badge payload, got %s", sender.payloads[0])
+				}
+				if _, ok := notification["tag"]; ok != test.expectTag {
+					t.Fatalf("unexpected tag presence in payload %s", sender.payloads[0])
+				}
+				if _, ok := notification["data"]; ok != test.expectData {
+					t.Fatalf("unexpected data presence in payload %s", sender.payloads[0])
+				}
+				if notification["navigate"] != "https://example.test/" {
+					t.Fatalf("expected absolute root navigate URL, got %s", sender.payloads[0])
+				}
+			}
+			if len(fakeStore.attempts) != 1 || fakeStore.attempts[0].PayloadKind != test.kind {
+				t.Fatalf("expected delivery attempt kind %s, got %#v", test.kind, fakeStore.attempts)
+			}
+		})
+	}
+}
+
 func TestServiceIgnoresNonTerminalEvents(t *testing.T) {
 	fakeStore := &memoryStore{}
 	sender := &recordingSender{}
@@ -124,9 +219,9 @@ func TestServiceIgnoresNonTerminalEvents(t *testing.T) {
 	}
 }
 
-func TestDeclarativeWebPushHTTPClientSetsNotificationContentType(t *testing.T) {
+func TestWebPushHTTPClientSetsDeclarativeNotificationContentType(t *testing.T) {
 	base := &recordingHTTPClient{}
-	client := declarativeWebPushHTTPClient{base: base}
+	client := webPushHTTPClient{base: base, declarative: true}
 	request, err := http.NewRequest(http.MethodPost, "https://push.example.test", bytes.NewReader(nil))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -142,6 +237,27 @@ func TestDeclarativeWebPushHTTPClientSetsNotificationContentType(t *testing.T) {
 	}
 	if got := base.request.Header.Get("Content-Type"); got != declarativeNotificationContentType {
 		t.Fatalf("expected content type %q, got %q", declarativeNotificationContentType, got)
+	}
+}
+
+func TestWebPushHTTPClientPreservesClassicContentType(t *testing.T) {
+	base := &recordingHTTPClient{}
+	client := webPushHTTPClient{base: base}
+	request, err := http.NewRequest(http.MethodPost, "https://push.example.test", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/octet-stream")
+
+	if _, err := client.Do(request); err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+
+	if base.request == nil {
+		t.Fatal("expected wrapped client to receive request")
+	}
+	if got := base.request.Header.Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("expected classic content type preserved, got %q", got)
 	}
 }
 

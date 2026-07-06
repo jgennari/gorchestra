@@ -80,6 +80,7 @@ type NotificationService interface {
 	SaveSubscription(ctx context.Context, input notifications.SubscriptionInput) (store.PushSubscription, error)
 	DeleteSubscription(ctx context.Context, endpoint string) error
 	SendTest(ctx context.Context) error
+	SendBadgeVariantTest(ctx context.Context, variant string) error
 	Debug(ctx context.Context) (notifications.DebugState, error)
 }
 

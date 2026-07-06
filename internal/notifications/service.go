@@ -1,6 +1,7 @@
 package notifications
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -166,11 +167,76 @@ func (s *Service) DeleteSubscription(ctx context.Context, endpoint string) error
 
 func (s *Service) SendTest(ctx context.Context) error {
 	return s.sendToActiveSubscriptions(ctx, notificationInput{
-		Kind:  "test",
-		Title: "Gorchestra notifications enabled",
-		Body:  "You will be notified when a session stops.",
-		Path:  "/",
-		Tag:   "gorchestra-test",
+		Kind:    "test",
+		Title:   "Gorchestra notifications enabled",
+		Body:    "You will be notified when a session stops.",
+		Path:    "/",
+		Tag:     "gorchestra-test",
+		Classic: true,
+	})
+}
+
+func (s *Service) SendBadgeVariantTest(ctx context.Context, variant string) error {
+	switch strings.TrimSpace(variant) {
+	case "":
+		return s.SendTest(ctx)
+	case "declarative-string":
+		return s.sendToActiveSubscriptions(ctx, notificationInput{
+			Kind:            "test-declarative-string",
+			Title:           "Badge test",
+			Body:            "Declarative string badge",
+			Path:            "/",
+			Tag:             "gorchestra-test-declarative-string",
+			BadgeValue:      "1",
+			IncludeMetadata: true,
+		})
+	case "minimal-badge", "declarative-minimal-string":
+		return s.sendToActiveSubscriptions(ctx, notificationInput{
+			Kind:       "test-declarative-minimal-string",
+			Title:      "Badge test",
+			Body:       "Minimal declarative string badge",
+			Path:       "/",
+			BadgeValue: "1",
+		})
+	case "declarative-number":
+		return s.sendToActiveSubscriptions(ctx, notificationInput{
+			Kind:            "test-declarative-number",
+			Title:           "Badge test",
+			Body:            "Declarative numeric badge",
+			Path:            "/",
+			Tag:             "gorchestra-test-declarative-number",
+			BadgeValue:      1,
+			IncludeMetadata: true,
+		})
+	case "declarative-minimal-number":
+		return s.sendToActiveSubscriptions(ctx, notificationInput{
+			Kind:       "test-declarative-minimal-number",
+			Title:      "Badge test",
+			Body:       "Minimal declarative numeric badge",
+			Path:       "/",
+			BadgeValue: 1,
+		})
+	case "classic-sw-number":
+		return s.sendToActiveSubscriptions(ctx, notificationInput{
+			Kind:    "test-classic-sw-number",
+			Title:   "Badge test",
+			Body:    "Classic service worker badge",
+			Path:    "/",
+			Tag:     "gorchestra-test-classic-sw-number",
+			Classic: true,
+		})
+	default:
+		return fmt.Errorf("unsupported notification test variant %q", variant)
+	}
+}
+
+func (s *Service) SendMinimalBadgeTest(ctx context.Context) error {
+	return s.sendToActiveSubscriptions(ctx, notificationInput{
+		Kind:       "test-declarative-minimal-string",
+		Title:      "Badge test",
+		Body:       "Minimal declarative string badge",
+		Path:       "/",
+		BadgeValue: "1",
 	})
 }
 
@@ -271,6 +337,7 @@ func (s *Service) notifyTerminalEvent(parent context.Context, event store.Event)
 		EventType: event.Type,
 		Status:    string(event.Status),
 		Seq:       event.Seq,
+		Classic:   true,
 	}); err != nil {
 		s.logf("notification send failed: %v", err)
 	}
@@ -390,29 +457,41 @@ func (s *Service) logf(format string, args ...any) {
 }
 
 type notificationInput struct {
-	Kind      string
-	Title     string
-	Body      string
-	Path      string
-	Tag       string
-	SessionID string
-	EventType string
-	Status    string
-	Seq       int64
+	Kind            string
+	Title           string
+	Body            string
+	Path            string
+	Tag             string
+	SessionID       string
+	EventType       string
+	Status          string
+	Seq             int64
+	BadgeValue      any
+	Classic         bool
+	IncludeMetadata bool
 }
 
 type notificationPayload struct {
-	WebPush      int                     `json:"web_push"`
-	Notification declarativeNotification `json:"notification"`
+	WebPush      int                      `json:"web_push,omitempty"`
+	Notification *declarativeNotification `json:"notification,omitempty"`
+	Title        string                   `json:"title,omitempty"`
+	Body         string                   `json:"body,omitempty"`
+	URL          string                   `json:"url,omitempty"`
+	Tag          string                   `json:"tag,omitempty"`
+	SessionID    string                   `json:"session_id,omitempty"`
+	EventType    string                   `json:"event_type,omitempty"`
+	Status       string                   `json:"status,omitempty"`
+	Kind         string                   `json:"kind,omitempty"`
+	Seq          int64                    `json:"seq,omitempty"`
 }
 
 type declarativeNotification struct {
-	Title    string           `json:"title"`
-	Body     string           `json:"body,omitempty"`
-	Navigate string           `json:"navigate,omitempty"`
-	Tag      string           `json:"tag,omitempty"`
-	AppBadge string           `json:"app_badge,omitempty"`
-	Data     notificationData `json:"data,omitempty"`
+	Title    string            `json:"title"`
+	Body     string            `json:"body,omitempty"`
+	Navigate string            `json:"navigate,omitempty"`
+	Tag      string            `json:"tag,omitempty"`
+	AppBadge any               `json:"app_badge,omitempty"`
+	Data     *notificationData `json:"data,omitempty"`
 }
 
 type notificationData struct {
@@ -433,23 +512,43 @@ func newNotificationPayload(input notificationInput, subscription store.PushSubs
 		path = pathWithNotificationSeq(path, input.Seq)
 	}
 	navigate := absoluteSubscriptionURL(subscription, path)
+	if input.Classic {
+		return notificationPayload{
+			Title:     input.Title,
+			Body:      input.Body,
+			URL:       navigate,
+			Tag:       input.Tag,
+			SessionID: input.SessionID,
+			EventType: input.EventType,
+			Status:    input.Status,
+			Kind:      input.Kind,
+			Seq:       input.Seq,
+		}
+	}
+	badgeValue := input.BadgeValue
+	if badgeValue == nil {
+		badgeValue = "1"
+	}
+	notification := &declarativeNotification{
+		Title:    input.Title,
+		Body:     input.Body,
+		Navigate: navigate,
+		Tag:      input.Tag,
+		AppBadge: badgeValue,
+	}
+	if input.IncludeMetadata {
+		notification.Data = &notificationData{
+			URL:       path,
+			SessionID: input.SessionID,
+			EventType: input.EventType,
+			Status:    input.Status,
+			Kind:      input.Kind,
+			Seq:       input.Seq,
+		}
+	}
 	return notificationPayload{
-		WebPush: 8030,
-		Notification: declarativeNotification{
-			Title:    input.Title,
-			Body:     input.Body,
-			Navigate: navigate,
-			Tag:      input.Tag,
-			AppBadge: "1",
-			Data: notificationData{
-				URL:       path,
-				SessionID: input.SessionID,
-				EventType: input.EventType,
-				Status:    input.Status,
-				Kind:      input.Kind,
-				Seq:       input.Seq,
-			},
-		},
+		WebPush:      8030,
+		Notification: notification,
 	}
 }
 
@@ -505,6 +604,7 @@ type webPushSender struct {
 }
 
 func (s webPushSender) Send(ctx context.Context, keys store.NotificationKeys, subscription store.PushSubscription, payload []byte) (*http.Response, error) {
+	declarative := isDeclarativePayload(payload)
 	return webpush.SendNotificationWithContext(
 		ctx,
 		payload,
@@ -516,7 +616,7 @@ func (s webPushSender) Send(ctx context.Context, keys store.NotificationKeys, su
 			},
 		},
 		&webpush.Options{
-			HTTPClient:      declarativeWebPushHTTPClient{},
+			HTTPClient:      webPushHTTPClient{declarative: declarative},
 			Subscriber:      s.subscriber,
 			VAPIDPublicKey:  keys.PublicKey,
 			VAPIDPrivateKey: keys.PrivateKey,
@@ -526,12 +626,19 @@ func (s webPushSender) Send(ctx context.Context, keys store.NotificationKeys, su
 	)
 }
 
-type declarativeWebPushHTTPClient struct {
-	base webpush.HTTPClient
+func isDeclarativePayload(payload []byte) bool {
+	return bytes.Contains(payload, []byte(`"web_push":8030`))
 }
 
-func (c declarativeWebPushHTTPClient) Do(req *http.Request) (*http.Response, error) {
-	req.Header.Set("Content-Type", declarativeNotificationContentType)
+type webPushHTTPClient struct {
+	base        webpush.HTTPClient
+	declarative bool
+}
+
+func (c webPushHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	if c.declarative {
+		req.Header.Set("Content-Type", declarativeNotificationContentType)
+	}
 	if c.base != nil {
 		return c.base.Do(req)
 	}

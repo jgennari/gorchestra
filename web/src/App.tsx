@@ -1392,19 +1392,9 @@ function App() {
         supported={pushNotifications.supported}
         status={pushNotifications.status}
         error={pushNotifications.error}
-        testState={pushNotifications.testState}
-        localTestState={pushNotifications.localTestState}
-        badgeTestState={pushNotifications.badgeTestState}
-        badgeTestMessage={pushNotifications.badgeTestMessage}
-        debug={pushNotifications.debug}
         soundEnabled={pushNotifications.soundEnabled}
         onEnable={() => void pushNotifications.enable()}
         onDisable={() => void pushNotifications.disable()}
-        onSendTest={() => void pushNotifications.sendTest()}
-        onSendLocalTest={() => void pushNotifications.sendLocalTest()}
-        onSetBadge={() => void pushNotifications.setTestBadge()}
-        onClearBadge={() => void pushNotifications.clearTestBadge()}
-        onRefreshDebug={() => void pushNotifications.refreshDebug()}
         onSoundEnabledChange={pushNotifications.setSoundEnabled}
       />
       <Dialog open={mobileListOpen} onOpenChange={setMobileListOpen}>
