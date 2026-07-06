@@ -42,6 +42,7 @@ import {
 import { isTerminalEvent, knownEventTypes, lastSeq, shouldRefreshWorkspaceFilesForEvent, statusFromEvent } from '@/lib/events'
 import { nextSessionIDAfterArchive } from '@/lib/sessions'
 import { useSessionEvents } from '@/hooks/use-session-events'
+import { useAppBadge } from '@/hooks/use-app-badge'
 import { useFavicon } from '@/hooks/use-favicon'
 import { usePushNotifications } from '@/hooks/use-push-notifications'
 import { useTheme } from '@/hooks/use-theme'
@@ -56,7 +57,7 @@ import { SessionList } from '@/components/session-list'
 import { defaultSessionListFilters, type SessionListFilters } from '@/components/session-list-filters'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { WorkspaceFilesView } from '@/components/workspace-files'
-import { hasSessionAttention, latestSessionSeq } from '@/lib/session-attention'
+import { hasSessionAttention, latestSessionSeq, sessionAttention } from '@/lib/session-attention'
 import {
   sessionPath,
   sessionRouteFromPathname,
@@ -155,6 +156,14 @@ function App() {
     () => hasSessionAttention(sessions, lastSeenSeqBySession),
     [lastSeenSeqBySession, sessions],
   )
+  const appBadgeCount = useMemo(
+    () =>
+      sessions.reduce(
+        (count, session) => count + (sessionAttention(session, lastSeenSeqBySession) === null ? 0 : 1),
+        0,
+      ),
+    [lastSeenSeqBySession, sessions],
+  )
   const hasOpenTitleEdit = useMemo(
     () => Object.values(titleEditorStates).some((state) => state.editing),
     [titleEditorStates],
@@ -167,6 +176,7 @@ function App() {
   const pushNotifications = usePushNotifications()
   const playSessionStopSound = pushNotifications.playSessionStopSound
   useFavicon(hasFaviconAttention)
+  useAppBadge(appBadgeCount)
 
   const applySession = useCallback((session: Session) => {
     void writePersistentCachedSession(session)

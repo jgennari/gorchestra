@@ -21,7 +21,12 @@ self.addEventListener('push', (event) => {
     },
   }
 
-  event.waitUntil(self.registration.showNotification(title, options))
+  const tasks = [self.registration.showNotification(title, options)]
+  if (self.navigator && 'setAppBadge' in self.navigator) {
+    tasks.push(self.navigator.setAppBadge(1).catch(() => undefined))
+  }
+
+  event.waitUntil(Promise.all(tasks))
 })
 
 self.addEventListener('notificationclick', (event) => {
