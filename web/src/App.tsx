@@ -81,6 +81,8 @@ import {
   type SessionRouteView,
 } from '@/lib/routes'
 import {
+  readCachedSessionSnapshot,
+  readCachedSessionSnapshotBySlug,
   readCachedSession as readPersistentCachedSession,
   writeCachedSession as writePersistentCachedSession,
   writeCachedSessions as writePersistentCachedSessions,
@@ -115,6 +117,11 @@ type ViewportDebugSnapshot = {
   screen: string
   dpr: string
 }
+type InitialSessionState = {
+  sessions: Session[]
+  selectedSessionID: string | null
+  seededCachedSession: boolean
+}
 
 const debugStorageKeyPrefix = 'gorchestra.session-debug.'
 const paneWidthsStorageKey = 'gorchestra.pane-widths.v1'
@@ -130,14 +137,14 @@ const paneLimits = {
 
 function App() {
   const viewportDebug = useMemo(() => loadViewportDebugPreference(), [])
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [selectedSessionID, setSelectedSessionID] = useState<string | null>(() => selectedSessionIDFromLocation())
-  const [routeSelectedSessionID, setRouteSelectedSessionID] = useState<string | null>(() => selectedSessionIDFromLocation())
+  const initialSessionState = useMemo(() => loadInitialSessionStateFromLocation(), [])
+  const [sessions, setSessions] = useState<Session[]>(initialSessionState.sessions)
+  const [selectedSessionID, setSelectedSessionID] = useState<string | null>(initialSessionState.selectedSessionID)
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileListOpen, setMobileListOpen] = useState(false)
   const [mobileRailOpen, setMobileRailOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
-  const [loadingSessions, setLoadingSessions] = useState(true)
+  const [loadingSessions, setLoadingSessions] = useState(!initialSessionState.seededCachedSession)
   const [refreshingSessions, setRefreshingSessions] = useState(false)
   const [error, setError] = useState('')
   const [showDebugEvents, setShowDebugEvents] = useState(false)
@@ -153,6 +160,7 @@ function App() {
   const [followingLatest, setFollowingLatest] = useState(true)
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
+  const [notificationAttentionRestored, setNotificationAttentionRestored] = useState(false)
   const [titleEditorStates, setTitleEditorStates] = useState<Record<string, { editing: boolean; dirty: boolean }>>({})
   const [sessionSearchQuery, setSessionSearchQuery] = useState('')
   const [sessionListFilters, setSessionListFilters] = useState<SessionListFilters>(defaultSessionListFilters)
@@ -160,7 +168,7 @@ function App() {
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
   const appViewRef = useRef<AppView>(appView)
   const openWorkspaceFileRef = useRef<WorkspaceFileContent | null>(openWorkspaceFile)
-  const sessionsRef = useRef<Session[]>([])
+  const sessionsRef = useRef<Session[]>(initialSessionState.sessions)
   const selectedEventsRef = useRef<AgentEvent[]>([])
   const paneWidthsRef = useRef(paneWidths)
 
@@ -219,6 +227,7 @@ function App() {
       }
       if (!cancelled) {
         setNotificationAttentionSeqBySession(next)
+        setNotificationAttentionRestored(true)
       }
     }
 
@@ -291,15 +300,6 @@ function App() {
 
   const selectSession = useCallback((sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
     selectedSessionIDRef.current = sessionID
-    setRouteSelectedSessionID((current) => {
-      if (historyMode === 'none') {
-        return sessionID
-      }
-      if (historyMode === 'replace') {
-        return current === sessionID ? current : null
-      }
-      return null
-    })
     setSelectedSessionID(sessionID)
     if (historyMode !== 'none') {
       writeSelectedSessionRoute(sessionID, historyMode, appViewRef.current, sessionsRef.current)
@@ -585,7 +585,7 @@ function App() {
   }, [events])
 
   useEffect(() => {
-    if (!selectedSessionID) {
+    if (!selectedSessionID || !notificationAttentionRestored) {
       return
     }
     const latestSeq = Math.max(lastSeq(events), latestSessionSeq(selectedSession))
@@ -594,7 +594,14 @@ function App() {
       return
     }
     markSessionSeen(selectedSessionID, latestSeq)
-  }, [effectiveNotificationAttentionSeqBySession, events, markSessionSeen, selectedSession, selectedSessionID])
+  }, [
+    effectiveNotificationAttentionSeqBySession,
+    events,
+    markSessionSeen,
+    notificationAttentionRestored,
+    selectedSession,
+    selectedSessionID,
+  ])
 
   const loadSessions = useCallback(async (options: { showLoading?: boolean } = {}) => {
     const showLoading = options.showLoading ?? sessionsRef.current.length === 0
@@ -619,7 +626,7 @@ function App() {
       const nextSelectedID =
         routeSelectedID && mergedSessions.some((session) => session.id === routeSelectedID)
           ? routeSelectedID
-          : selectedID && mergedSessions.some((session) => session.id === selectedID)
+          : !route.sessionSlug && selectedID && mergedSessions.some((session) => session.id === selectedID)
           ? selectedID
           : (nextSessions[0]?.id ?? mergedSessions[0]?.id ?? null)
 
@@ -1096,17 +1103,12 @@ function App() {
     </Button>
   )
   const currentSessionRoute = selectedSessionRouteFromLocation()
-  const unresolvedRouteSessionKey =
-    loadingSessions && !selectedSessionID ? (currentSessionRoute.sessionSlug ?? currentSessionRoute.sessionID) : null
+  const resolvingInitialSessionSelection = loadingSessions && !selectedSessionID
+  const unresolvedRouteSessionKey = resolvingInitialSessionSelection
+    ? (currentSessionRoute.sessionSlug ?? currentSessionRoute.sessionID ?? 'initial-session-selection')
+    : null
   const resolvingSelectedSessionID = selectedSession ? null : (selectedSessionID ?? unresolvedRouteSessionKey)
-  const loadingRouteChatHistory =
-    routeSelectedSessionID === selectedSessionID && streamState === 'loading' && events.length === 0
-  const resolvingChatSessionID =
-    selectedSessionID && (!selectedSession || loadingRouteChatHistory)
-      ? selectedSessionID
-      : selectedSession
-        ? null
-        : unresolvedRouteSessionKey
+  const resolvingChatSessionID = selectedSession ? null : (selectedSessionID ?? unresolvedRouteSessionKey)
 
   return (
     <main className="app-shell">
@@ -2222,8 +2224,31 @@ function round2(value: number) {
   return Math.round(value * 100) / 100
 }
 
-function selectedSessionIDFromLocation() {
-  return selectedSessionRouteFromLocation().sessionID
+function loadInitialSessionStateFromLocation(): InitialSessionState {
+  const route = selectedSessionRouteFromLocation()
+  const cachedSession = cachedSessionForRoute(route)
+  if (cachedSession && !cachedSession.archived_at) {
+    return {
+      sessions: [cachedSession],
+      selectedSessionID: cachedSession.id,
+      seededCachedSession: true,
+    }
+  }
+  return {
+    sessions: [],
+    selectedSessionID: route.sessionID,
+    seededCachedSession: false,
+  }
+}
+
+function cachedSessionForRoute(route: SessionRoute) {
+  if (route.sessionID) {
+    return readCachedSessionSnapshot(route.sessionID)
+  }
+  if (route.sessionSlug) {
+    return readCachedSessionSnapshotBySlug(route.sessionSlug)
+  }
+  return null
 }
 
 function selectedSessionRouteFromLocation() {

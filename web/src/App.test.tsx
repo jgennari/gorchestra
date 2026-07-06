@@ -406,7 +406,169 @@ test('session route shows loading instead of no selection while sessions load', 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
 })
 
-test('session route keeps one loading state while initial chat history loads', async () => {
+test('cold start shows loading instead of no selection while default session is chosen', async () => {
+  let resolveSessions: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/health') {
+      return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions?limit=50') {
+      await new Promise<void>((resolve) => {
+        resolveSessions = resolve
+      })
+      return jsonResponse({ sessions: [firstSession, secondSession] })
+    }
+    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+      return jsonResponse({ events: [] })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  expect(screen.getByText('Loading session...')).toBeInTheDocument()
+  expect(screen.queryByText('No session selected')).not.toBeInTheDocument()
+
+  await act(async () => {
+    resolveSessions?.()
+    await Promise.resolve()
+  })
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+})
+
+test('cached session route renders the session shell while history loads', async () => {
+  window.history.replaceState({}, '', '/sessions/sess_1')
+  await writeCachedSession(firstSession)
+  let resolveSessions: (() => void) | undefined
+  let resolveEvents: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/health') {
+      return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions?limit=50') {
+      await new Promise<void>((resolve) => {
+        resolveSessions = resolve
+      })
+      return jsonResponse({ sessions: [firstSession, secondSession] })
+    }
+    if (path === '/api/sessions/sess_1') {
+      return jsonResponse(firstSession)
+    }
+    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+      await new Promise<void>((resolve) => {
+        resolveEvents = resolve
+      })
+      return jsonResponse({ events: [] })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  expect(screen.queryByText('Loading session...')).not.toBeInTheDocument()
+  expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0)
+  expect(await screen.findByText('Loading chat history...')).toBeInTheDocument()
+
+  await act(async () => {
+    resolveEvents?.()
+    resolveSessions?.()
+    await Promise.resolve()
+  })
+})
+
+test('cached slug route renders the session shell while sessions load', async () => {
+  window.history.replaceState({}, '', '/sessions/write-docs')
+  await writeCachedSession(secondSession)
+  let resolveSessions: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/health') {
+      return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions?limit=50') {
+      await new Promise<void>((resolve) => {
+        resolveSessions = resolve
+      })
+      return jsonResponse({ sessions: [firstSession, secondSession] })
+    }
+    if (path === '/api/sessions/sess_2') {
+      return jsonResponse(secondSession)
+    }
+    if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
+      return jsonResponse({ events: [] })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  expect(screen.queryByText('Loading session...')).not.toBeInTheDocument()
+  expect(screen.getAllByText('Write docs').length).toBeGreaterThan(0)
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
+
+  await act(async () => {
+    resolveSessions?.()
+    await Promise.resolve()
+  })
+})
+
+test('server session list wins over stale cached slug aliases', async () => {
+  window.history.replaceState({}, '', '/sessions/write-docs')
+  await writeCachedSession(secondSession)
+  const renamedSecondSession: Session = { ...secondSession, title: 'Renamed docs' }
+  let resolveSessions: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/health') {
+      return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions?limit=50') {
+      await new Promise<void>((resolve) => {
+        resolveSessions = resolve
+      })
+      return jsonResponse({ sessions: [firstSession, renamedSecondSession] })
+    }
+    if (path === '/api/sessions/sess_1') {
+      return jsonResponse(firstSession)
+    }
+    if (path === '/api/sessions/sess_2') {
+      return jsonResponse(renamedSecondSession)
+    }
+    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+      return jsonResponse({ events: [] })
+    }
+    if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
+      return jsonResponse({ events: [] })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  expect(screen.queryByText('Loading session...')).not.toBeInTheDocument()
+  expect(screen.getAllByText('Write docs').length).toBeGreaterThan(0)
+
+  await act(async () => {
+    resolveSessions?.()
+    await Promise.resolve()
+  })
+
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo'))
+  expect(
+    screen
+      .getAllByRole('button', { name: /Inspect repo/ })
+      .some((button) => button.getAttribute('aria-current') === 'true'),
+  ).toBe(true)
+})
+
+test('session route shows inline chat history loading once session details are available', async () => {
   window.history.replaceState({}, '', '/sessions/sess_1')
   let resolveEvents: (() => void) | undefined
   const fetch = vi.fn(async (url: RequestInfo | URL) => {
@@ -429,8 +591,8 @@ test('session route keeps one loading state while initial chat history loads', a
 
   render(<App />)
 
-  expect(await screen.findByText('Loading session...')).toBeInTheDocument()
-  expect(screen.queryByText('Loading chat history...')).not.toBeInTheDocument()
+  expect(await screen.findByText('Loading chat history...')).toBeInTheDocument()
+  expect(screen.queryByText('Loading session...')).not.toBeInTheDocument()
 
   await act(async () => {
     resolveEvents?.()

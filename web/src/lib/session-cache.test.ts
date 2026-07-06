@@ -1,12 +1,16 @@
 import type { AgentEvent, Session } from '@/lib/api'
 import {
   clearSessionCacheForTest,
+  deleteCachedSession,
   persistentCachedEventLimit,
   persistentCachedSingleEventBytesLimit,
   readCachedSession,
   readCachedSessionEvents,
+  readCachedSessionSnapshot,
+  readCachedSessionSnapshotBySlug,
   writeCachedSession,
   writeCachedSessionEvents,
+  writeCachedSessionSnapshot,
 } from '@/lib/session-cache'
 import { createFakeIndexedDB } from '@/test/fake-indexeddb'
 
@@ -26,6 +30,21 @@ test('session cache stores and reads session snapshots', async () => {
   await writeCachedSession(session('sess_1'))
 
   expect(await readCachedSession('sess_1')).toMatchObject({ id: 'sess_1', title: 'Session sess_1' })
+  expect(readCachedSessionSnapshot('sess_1')).toMatchObject({ id: 'sess_1', title: 'Session sess_1' })
+})
+
+test('session cache stores and reads sync session snapshots by slug', () => {
+  writeCachedSessionSnapshot(session('sess_1', 'Write docs'))
+
+  expect(readCachedSessionSnapshotBySlug('write-docs')).toMatchObject({ id: 'sess_1', title: 'Write docs' })
+})
+
+test('session cache updates stale sync slug aliases when titles change', () => {
+  writeCachedSessionSnapshot(session('sess_1', 'Write docs'))
+  writeCachedSessionSnapshot(session('sess_1', 'Review docs'))
+
+  expect(readCachedSessionSnapshotBySlug('write-docs')).toBeNull()
+  expect(readCachedSessionSnapshotBySlug('review-docs')).toMatchObject({ id: 'sess_1', title: 'Review docs' })
 })
 
 test('session cache evicts old sessions after the cache limit', async () => {
@@ -35,6 +54,25 @@ test('session cache evicts old sessions after the cache limit', async () => {
 
   expect(await readCachedSession('sess_1')).toBeNull()
   expect(await readCachedSession('sess_9')).toMatchObject({ id: 'sess_9' })
+  expect(readCachedSessionSnapshot('sess_1')).toBeNull()
+  expect(readCachedSessionSnapshotBySlug('session-sess-1')).toBeNull()
+  expect(readCachedSessionSnapshot('sess_9')).toMatchObject({ id: 'sess_9' })
+})
+
+test('session cache ignores malformed sync snapshot data', () => {
+  window.localStorage.setItem('gorchestra.session-snapshots.v1', '{"sessions":"bad"}')
+
+  expect(readCachedSessionSnapshot('sess_1')).toBeNull()
+  expect(readCachedSessionSnapshotBySlug('write-docs')).toBeNull()
+})
+
+test('session cache delete removes sync snapshots and aliases', async () => {
+  await writeCachedSession(session('sess_1', 'Write docs'))
+
+  await deleteCachedSession('sess_1')
+
+  expect(readCachedSessionSnapshot('sess_1')).toBeNull()
+  expect(readCachedSessionSnapshotBySlug('write-docs')).toBeNull()
 })
 
 test('session cache stores a trimmed recent event window', async () => {
@@ -116,7 +154,8 @@ test('session cache no-ops when IndexedDB is unavailable', async () => {
   clearSessionCacheForTest()
 
   await expect(writeCachedSession(session('sess_1'))).resolves.toBeUndefined()
-  await expect(readCachedSession('sess_1')).resolves.toBeNull()
+  await expect(readCachedSession('sess_1')).resolves.toMatchObject({ id: 'sess_1' })
+  expect(readCachedSessionSnapshot('sess_1')).toMatchObject({ id: 'sess_1' })
 })
 
 function openFakeDB(version: number, onUpgrade: (db: IDBDatabase) => void): Promise<IDBDatabase> {
@@ -138,10 +177,10 @@ function putFakeRecord(db: IDBDatabase, storeName: string, value: unknown): Prom
   })
 }
 
-function session(id: string): Session {
+function session(id: string, title = `Session ${id}`): Session {
   return {
     id,
-    title: `Session ${id}`,
+    title,
     agent_type: 'fake',
     status: 'idle',
     workspace_path: '/repo',

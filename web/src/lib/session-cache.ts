@@ -1,4 +1,5 @@
 import type { AgentEvent, Session } from '@/lib/api'
+import { sessionTitleSlug } from '@/lib/routes'
 
 export type CachedSessionEvents = {
   events: AgentEvent[]
@@ -18,29 +19,76 @@ type CachedSessionEventsRecord = CachedSessionEvents & {
   usedAt: number
 }
 
+type SyncCachedSessionRecord = CachedSessionRecord & {
+  slug: string
+}
+
+type SyncCachedSessions = {
+  sessions: SyncCachedSessionRecord[]
+  aliases: Record<string, string>
+}
+
 const dbName = 'gorchestra-session-cache'
 const dbVersion = 2
 const sessionsStore = 'sessions'
 const eventsStore = 'events'
 const cachedSessionLimit = 8
+const syncSessionCacheStorageKey = 'gorchestra.session-snapshots.v1'
 export const persistentCachedEventLimit = 500
 export const persistentCachedEventBytesLimit = 512 * 1024
 export const persistentCachedSingleEventBytesLimit = 96 * 1024
 
 let dbPromise: Promise<IDBDatabase | null> | null = null
 
+export function readCachedSessionSnapshot(sessionID: string): Session | null {
+  if (!sessionID) return null
+  return readSyncSessionCache().sessions.find((record) => record.id === sessionID)?.session ?? null
+}
+
+export function readCachedSessionSnapshotBySlug(slug: string): Session | null {
+  if (!slug) return null
+  const cache = readSyncSessionCache()
+  const sessionID = cache.aliases[slug]
+  if (!sessionID) return null
+  return cache.sessions.find((record) => record.id === sessionID)?.session ?? null
+}
+
+export function writeCachedSessionSnapshot(session: Session): void {
+  writeSyncSessionCache(upsertSyncSession(readSyncSessionCache(), session))
+}
+
+export function writeCachedSessionSnapshots(sessions: Session[]): void {
+  let cache = readSyncSessionCache()
+  const usedAtBase = Date.now()
+  for (const [index, session] of sessions.entries()) {
+    cache = upsertSyncSession(cache, session, usedAtBase + sessions.length - index)
+  }
+  writeSyncSessionCache(cache)
+}
+
+export function deleteCachedSessionSnapshot(sessionID: string): void {
+  if (!sessionID) return
+  const cache = readSyncSessionCache()
+  writeSyncSessionCache({
+    sessions: cache.sessions.filter((record) => record.id !== sessionID),
+    aliases: aliasesForSessions(cache.sessions.filter((record) => record.id !== sessionID)),
+  })
+}
+
 export async function readCachedSession(sessionID: string): Promise<Session | null> {
   const db = await openCacheDB()
-  if (!db) return null
+  if (!db) return readCachedSessionSnapshot(sessionID)
 
   const record = await getRecord<CachedSessionRecord>(db, sessionsStore, sessionID)
-  if (!record) return null
+  if (!record) return readCachedSessionSnapshot(sessionID)
 
   await putRecord(db, sessionsStore, { ...record, usedAt: Date.now() })
+  writeCachedSessionSnapshot(record.session)
   return record.session
 }
 
 export async function writeCachedSession(session: Session): Promise<void> {
+  writeCachedSessionSnapshot(session)
   const db = await openCacheDB()
   if (!db) return
 
@@ -49,10 +97,18 @@ export async function writeCachedSession(session: Session): Promise<void> {
 }
 
 export async function writeCachedSessions(sessions: Session[]): Promise<void> {
-  await Promise.all(sessions.map((session) => writeCachedSession(session)))
+  writeCachedSessionSnapshots(sessions)
+  const db = await openCacheDB()
+  if (!db) return
+
+  await Promise.all(
+    sessions.map((session) => putRecord(db, sessionsStore, { id: session.id, session, usedAt: Date.now() })),
+  )
+  await evictOldRecords(db, sessionsStore, cachedSessionLimit)
 }
 
 export async function deleteCachedSession(sessionID: string): Promise<void> {
+  deleteCachedSessionSnapshot(sessionID)
   const db = await openCacheDB()
   if (!db) return
 
@@ -116,6 +172,116 @@ export async function writeCachedSessionEvents(
 
 export function clearSessionCacheForTest() {
   dbPromise = null
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem(syncSessionCacheStorageKey)
+  }
+}
+
+function readSyncSessionCache(): SyncCachedSessions {
+  if (typeof window === 'undefined') {
+    return emptySyncSessionCache()
+  }
+  try {
+    const raw = window.localStorage.getItem(syncSessionCacheStorageKey)
+    if (!raw) {
+      return emptySyncSessionCache()
+    }
+    const parsed = JSON.parse(raw) as Partial<SyncCachedSessions>
+    if (!Array.isArray(parsed.sessions)) {
+      return emptySyncSessionCache()
+    }
+    const sessions = parsed.sessions
+      .map((record): SyncCachedSessionRecord | null => {
+        if (!record || typeof record !== 'object') return null
+        const syncRecord = record as Partial<SyncCachedSessionRecord>
+        const session = syncRecord.session
+        if (!isSession(session)) return null
+        const id = typeof syncRecord.id === 'string' ? syncRecord.id : session.id
+        if (id !== session.id) return null
+        const slug = typeof syncRecord.slug === 'string' ? syncRecord.slug : sessionTitleSlug(session.title)
+        const usedAt = Number(syncRecord.usedAt)
+        return {
+          id,
+          session,
+          slug,
+          usedAt: Number.isFinite(usedAt) && usedAt > 0 ? usedAt : 0,
+        }
+      })
+      .filter((record): record is SyncCachedSessionRecord => Boolean(record))
+
+    const evicted = evictSyncSessionRecords(sessions)
+    return {
+      sessions: evicted,
+      aliases: aliasesForSessions(evicted),
+    }
+  } catch {
+    return emptySyncSessionCache()
+  }
+}
+
+function writeSyncSessionCache(cache: SyncCachedSessions) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    const sessions = evictSyncSessionRecords(cache.sessions)
+    window.localStorage.setItem(
+      syncSessionCacheStorageKey,
+      JSON.stringify({
+        sessions,
+        aliases: aliasesForSessions(sessions),
+      }),
+    )
+  } catch {
+    // The persistent IndexedDB cache remains available when localStorage fails.
+  }
+}
+
+function emptySyncSessionCache(): SyncCachedSessions {
+  return { sessions: [], aliases: {} }
+}
+
+function upsertSyncSession(cache: SyncCachedSessions, session: Session, usedAt = Date.now()): SyncCachedSessions {
+  const slug = sessionTitleSlug(session.title)
+  const withoutSession = cache.sessions.filter((record) => record.id !== session.id)
+  const sessions = evictSyncSessionRecords([
+    {
+      id: session.id,
+      session,
+      slug,
+      usedAt,
+    },
+    ...withoutSession,
+  ])
+  return { sessions, aliases: aliasesForSessions(sessions) }
+}
+
+function evictSyncSessionRecords(records: SyncCachedSessionRecord[]) {
+  return [...records].sort((left, right) => right.usedAt - left.usedAt).slice(0, cachedSessionLimit)
+}
+
+function aliasesForSessions(records: SyncCachedSessionRecord[]) {
+  const aliases: Record<string, string> = {}
+  for (const record of [...records].sort((left, right) => left.usedAt - right.usedAt)) {
+    aliases[record.slug] = record.id
+  }
+  return aliases
+}
+
+function isSession(value: unknown): value is Session {
+  if (!value || typeof value !== 'object') return false
+  const session = value as Partial<Session>
+  return (
+    typeof session.id === 'string' &&
+    typeof session.title === 'string' &&
+    typeof session.agent_type === 'string' &&
+    typeof session.status === 'string' &&
+    typeof session.workspace_path === 'string' &&
+    typeof session.event_count === 'number' &&
+    typeof session.tool_count === 'number' &&
+    typeof session.created_at === 'string' &&
+    typeof session.updated_at === 'string'
+  )
 }
 
 async function openCacheDB(): Promise<IDBDatabase | null> {
