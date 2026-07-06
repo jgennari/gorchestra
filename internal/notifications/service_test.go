@@ -38,10 +38,10 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 	if len(sender.payloads) != 1 {
 		t.Fatalf("expected one push notification, got %d", len(sender.payloads))
 	}
-	if !bytes.Contains(sender.payloads[0], []byte(`"title":"Build release"`)) {
-		t.Fatalf("expected session title in payload, got %s", sender.payloads[0])
+	if !bytes.Contains(sender.payloads[0], []byte(`"title":"Completed"`)) {
+		t.Fatalf("expected completion title in payload, got %s", sender.payloads[0])
 	}
-	if !bytes.Contains(sender.payloads[0], []byte("Completed. The release build is complete")) {
+	if !bytes.Contains(sender.payloads[0], []byte("Build release: The release build is complete")) {
 		t.Fatalf("expected response excerpt in payload, got %s", sender.payloads[0])
 	}
 }

@@ -314,8 +314,8 @@ async function showLocalTestNotification(supported: boolean) {
 async function showLocalSessionStopNotification(event: AgentEvent, details: SessionStopNotificationDetails) {
   try {
     const registration = await navigator.serviceWorker.ready
-    await registration.showNotification(notificationTitle(details), {
-      body: sessionStopNotificationBody(event.type, details.excerpt ?? ''),
+    await registration.showNotification(sessionStopNotificationTitle(event.type), {
+      body: sessionStopNotificationBody(details),
       badge: '/favicon-notify.svg',
       icon: '/icon.svg',
       tag: `gorchestra-session-${event.session_id}`,
@@ -335,25 +335,28 @@ function isPushNotificationTerminalEvent(type: string) {
   return type === 'agent.run.completed' || type === 'agent.run.failed' || type === 'agent.run.cancelled'
 }
 
-function notificationTitle(details: SessionStopNotificationDetails) {
+function sessionNotificationName(details: SessionStopNotificationDetails) {
   const title = singleLineText(details.title ?? '')
-  return title || 'Gorchestra'
+  return title || 'Untitled session'
 }
 
-function sessionStopNotificationBody(type: string, excerpt: string) {
-  let status: string
+function sessionStopNotificationTitle(type: string) {
   if (type === 'agent.run.completed') {
-    status = 'Completed.'
-  } else if (type === 'agent.run.cancelled') {
-    status = 'Cancelled.'
-  } else {
-    status = 'Failed.'
+    return 'Completed'
   }
-  const cleanedExcerpt = singleLineText(excerpt)
+  if (type === 'agent.run.cancelled') {
+    return 'Cancelled'
+  }
+  return 'Failed'
+}
+
+function sessionStopNotificationBody(details: SessionStopNotificationDetails) {
+  const sessionName = sessionNotificationName(details)
+  const cleanedExcerpt = singleLineText(details.excerpt ?? '')
   if (!cleanedExcerpt) {
-    return status
+    return sessionName
   }
-  return `${status} ${cleanedExcerpt}`
+  return `${sessionName}: ${cleanedExcerpt}`
 }
 
 function singleLineText(text: string) {

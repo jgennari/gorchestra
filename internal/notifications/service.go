@@ -171,8 +171,8 @@ func (s *Service) notifyTerminalEvent(parent context.Context, event store.Event)
 	excerpt := latestAgentMessageExcerpt(recentEvents)
 
 	payload, err := json.Marshal(notificationPayload{
-		Title:     notificationTitle(session),
-		Body:      terminalNotificationBody(event.Type, excerpt),
+		Title:     terminalNotificationTitle(event.Type),
+		Body:      terminalNotificationBody(session, excerpt),
 		URL:       "/sessions/" + event.SessionID,
 		Tag:       "gorchestra-session-" + event.SessionID,
 		SessionID: event.SessionID,
@@ -300,28 +300,31 @@ func isTerminalRunEvent(eventType string) bool {
 	return eventType == "agent.run.completed" || eventType == "agent.run.failed" || eventType == "agent.run.cancelled"
 }
 
-func notificationTitle(session store.Session) string {
+func sessionNotificationName(session store.Session) string {
 	title := singleLineText(session.Title)
 	if title == "" {
-		return "Gorchestra"
+		return "Untitled session"
 	}
 	return title
 }
 
-func terminalNotificationBody(eventType string, excerpt string) string {
-	var status string
+func terminalNotificationTitle(eventType string) string {
 	switch eventType {
 	case "agent.run.completed":
-		status = "Completed."
+		return "Completed"
 	case "agent.run.cancelled":
-		status = "Cancelled."
+		return "Cancelled"
 	default:
-		status = "Failed."
+		return "Failed"
 	}
+}
+
+func terminalNotificationBody(session store.Session, excerpt string) string {
+	sessionName := sessionNotificationName(session)
 	if excerpt == "" {
-		return status
+		return sessionName
 	}
-	return status + " " + excerpt
+	return sessionName + ": " + excerpt
 }
 
 func latestAgentMessageExcerpt(events []store.Event) string {
