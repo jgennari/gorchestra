@@ -291,7 +291,7 @@ func (s webPushSender) Send(ctx context.Context, keys store.NotificationKeys, su
 			VAPIDPublicKey:  keys.PublicKey,
 			VAPIDPrivateKey: keys.PrivateKey,
 			TTL:             60 * 60 * 24,
-			Urgency:         webpush.UrgencyNormal,
+			Urgency:         webpush.UrgencyHigh,
 		},
 	)
 }
