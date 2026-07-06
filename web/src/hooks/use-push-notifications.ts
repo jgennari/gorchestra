@@ -61,6 +61,15 @@ export function usePushNotifications() {
       server,
       updated_at: new Date().toISOString(),
     })
+    if (
+      supported &&
+      browser.permission === 'granted' &&
+      browser.current_subscription_hash &&
+      server?.subscriptions.some((subscription) => subscription.endpoint_hash === browser.current_subscription_hash)
+    ) {
+      writeBooleanStorage(enabledStorageKey, true)
+      setStatus('enabled')
+    }
   }, [supported])
 
   useEffect(() => {
@@ -177,6 +186,8 @@ export function usePushNotifications() {
       }
       await sendTestNotification()
       await refreshDebug()
+      writeBooleanStorage(enabledStorageKey, true)
+      setStatus('enabled')
       setTestState('sent')
     } catch (testError) {
       setError(messageFromUnknown(testError))
