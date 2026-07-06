@@ -20,8 +20,6 @@ type WindowWithWebkitAudio = Window & {
 
 const enabledStorageKey = 'gorchestra.notifications.enabled'
 const soundStorageKey = 'gorchestra.notifications.sound'
-const foregroundNotificationMaxAgeMs = 30_000
-
 export function usePushNotifications() {
   const supported = useMemo(() => supportsPushNotifications(), [])
   const [status, setStatus] = useState<NotificationStatus>(() => initialStatus(supported))
@@ -30,6 +28,7 @@ export function usePushNotifications() {
   const [soundEnabled, setSoundEnabledState] = useState(() => readBooleanStorage(soundStorageKey, false))
   const playedEventsRef = useRef<Set<string>>(new Set())
   const shownTerminalNotificationsRef = useRef<Set<string>>(new Set())
+  const foregroundNotificationsStartedAtRef = useRef(Date.now())
   const audioContextRef = useRef<AudioContext | null>(null)
 
   useEffect(() => {
@@ -186,7 +185,7 @@ export function usePushNotifications() {
       if (
         !supported ||
         !isPushNotificationTerminalEvent(event.type) ||
-        !isFreshForegroundEvent(event) ||
+        !isForegroundEventFromThisPage(event, foregroundNotificationsStartedAtRef.current) ||
         Notification.permission !== 'granted' ||
         document.visibilityState !== 'visible'
       ) {
@@ -337,12 +336,12 @@ function isPushNotificationTerminalEvent(type: string) {
   return type === 'agent.run.completed' || type === 'agent.run.failed' || type === 'agent.run.cancelled'
 }
 
-function isFreshForegroundEvent(event: AgentEvent) {
+function isForegroundEventFromThisPage(event: AgentEvent, pageStartedAt: number) {
   const createdAt = Date.parse(event.created_at)
   if (!Number.isFinite(createdAt)) {
     return false
   }
-  return Math.abs(Date.now() - createdAt) <= foregroundNotificationMaxAgeMs
+  return createdAt >= pageStartedAt
 }
 
 function sessionNotificationName(details: SessionStopNotificationDetails) {
