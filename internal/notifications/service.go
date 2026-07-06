@@ -28,6 +28,7 @@ type Store interface {
 	DisablePushSubscription(ctx context.Context, params store.DisablePushSubscriptionParams) error
 	ListPushSubscriptions(ctx context.Context) ([]store.PushSubscription, error)
 	GetSession(ctx context.Context, id string) (store.Session, error)
+	ListRecentEvents(ctx context.Context, sessionID string, limit int) ([]store.Event, error)
 }
 
 type EventSource interface {
@@ -163,10 +164,15 @@ func (s *Service) notifyTerminalEvent(parent context.Context, event store.Event)
 		s.logf("notification session lookup failed: %v", err)
 		return
 	}
+	recentEvents, err := s.store.ListRecentEvents(ctx, event.SessionID, 50)
+	if err != nil {
+		s.logf("notification recent events lookup failed: %v", err)
+	}
+	excerpt := latestAgentMessageExcerpt(recentEvents)
 
 	payload, err := json.Marshal(notificationPayload{
-		Title:     "Gorchestra",
-		Body:      terminalNotificationBody(session, event.Type),
+		Title:     notificationTitle(session),
+		Body:      terminalNotificationBody(event.Type, excerpt),
 		URL:       "/sessions/" + event.SessionID,
 		Tag:       "gorchestra-session-" + event.SessionID,
 		SessionID: event.SessionID,
@@ -294,18 +300,62 @@ func isTerminalRunEvent(eventType string) bool {
 	return eventType == "agent.run.completed" || eventType == "agent.run.failed" || eventType == "agent.run.cancelled"
 }
 
-func terminalNotificationBody(session store.Session, eventType string) string {
+func notificationTitle(session store.Session) string {
 	title := strings.TrimSpace(session.Title)
 	if title == "" {
-		title = "Untitled session"
+		return "Gorchestra"
 	}
+	return title
+}
 
+func terminalNotificationBody(eventType string, excerpt string) string {
+	var status string
 	switch eventType {
 	case "agent.run.completed":
-		return title + " completed."
+		status = "Completed."
 	case "agent.run.cancelled":
-		return title + " was cancelled."
+		status = "Cancelled."
 	default:
-		return title + " failed."
+		status = "Failed."
 	}
+	if excerpt == "" {
+		return status
+	}
+	return status + " " + excerpt
+}
+
+func latestAgentMessageExcerpt(events []store.Event) string {
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != "agent.message.completed" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			continue
+		}
+		text, _ := payload["text"].(string)
+		if excerpt := notificationExcerpt(text); excerpt != "" {
+			return excerpt
+		}
+	}
+	return ""
+}
+
+func notificationExcerpt(text string) string {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return ""
+	}
+	if len(fields) > 18 {
+		fields = fields[:18]
+	}
+	excerpt := strings.Join(fields, " ")
+	if len(excerpt) > 160 {
+		excerpt = excerpt[:160]
+	}
+	if len(fields) == 18 {
+		excerpt += "..."
+	}
+	return excerpt
 }

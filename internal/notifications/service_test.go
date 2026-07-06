@@ -19,6 +19,9 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 			PrivateKey: "private",
 		},
 		session: store.Session{ID: "sess_1", Title: "Build release"},
+		recentEvents: []store.Event{
+			{Type: "agent.message.completed", Payload: []byte(`{"text":"The release build is complete and ready to verify."}`)},
+		},
 		subscriptions: []store.PushSubscription{
 			{Endpoint: "endpoint-1", P256DH: "p256dh", Auth: "auth"},
 		},
@@ -35,8 +38,11 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 	if len(sender.payloads) != 1 {
 		t.Fatalf("expected one push notification, got %d", len(sender.payloads))
 	}
-	if !bytes.Contains(sender.payloads[0], []byte("Build release completed.")) {
-		t.Fatalf("expected completion body in payload, got %s", sender.payloads[0])
+	if !bytes.Contains(sender.payloads[0], []byte(`"title":"Build release"`)) {
+		t.Fatalf("expected session title in payload, got %s", sender.payloads[0])
+	}
+	if !bytes.Contains(sender.payloads[0], []byte("Completed. The release build is complete")) {
+		t.Fatalf("expected response excerpt in payload, got %s", sender.payloads[0])
 	}
 }
 
@@ -83,6 +89,7 @@ func TestServiceIgnoresNonTerminalEvents(t *testing.T) {
 type memoryStore struct {
 	keys          store.NotificationKeys
 	session       store.Session
+	recentEvents  []store.Event
 	subscriptions []store.PushSubscription
 	disabled      []store.DisablePushSubscriptionParams
 }
@@ -125,6 +132,10 @@ func (s *memoryStore) ListPushSubscriptions(context.Context) ([]store.PushSubscr
 
 func (s *memoryStore) GetSession(context.Context, string) (store.Session, error) {
 	return s.session, nil
+}
+
+func (s *memoryStore) ListRecentEvents(context.Context, string, int) ([]store.Event, error) {
+	return s.recentEvents, nil
 }
 
 type recordingSender struct {

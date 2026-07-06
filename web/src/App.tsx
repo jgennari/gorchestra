@@ -39,7 +39,15 @@ import {
   updateSessionAgentOptions,
   updateSessionTitle,
 } from '@/lib/api'
-import { isTerminalEvent, knownEventTypes, lastSeq, shouldRefreshWorkspaceFilesForEvent, statusFromEvent } from '@/lib/events'
+import {
+  appendEvent,
+  isTerminalEvent,
+  knownEventTypes,
+  lastSeq,
+  payloadText,
+  shouldRefreshWorkspaceFilesForEvent,
+  statusFromEvent,
+} from '@/lib/events'
 import { nextSessionIDAfterArchive } from '@/lib/sessions'
 import { useSessionEvents } from '@/hooks/use-session-events'
 import { useAppBadge } from '@/hooks/use-app-badge'
@@ -146,6 +154,7 @@ function App() {
   const appViewRef = useRef<AppView>(appView)
   const openWorkspaceFileRef = useRef<WorkspaceFileContent | null>(openWorkspaceFile)
   const sessionsRef = useRef<Session[]>([])
+  const selectedEventsRef = useRef<AgentEvent[]>([])
   const paneWidthsRef = useRef(paneWidths)
 
   const selectedSession = useMemo(
@@ -421,8 +430,16 @@ function App() {
   const handleSessionEvent = useCallback(
     (event: AgentEvent) => {
       applySessionActivityEvent(event)
+      selectedEventsRef.current = appendEvent(selectedEventsRef.current, event)
       playSessionStopSound(event)
-      showSessionStopNotification(event)
+      showSessionStopNotification(
+        event,
+        notificationDetailsForEvent(
+          event,
+          event.session_id === selectedSessionIDRef.current ? selectedEventsRef.current : [],
+          sessionsRef.current,
+        ),
+      )
       if (shouldRefreshWorkspaceFilesForEvent(event) && event.session_id === selectedSessionIDRef.current) {
         setFileRefreshKey((value) => value + 1)
       }
@@ -439,7 +456,14 @@ function App() {
     (event: AgentEvent) => {
       applySessionActivityEvent(event)
       playSessionStopSound(event)
-      showSessionStopNotification(event)
+      showSessionStopNotification(
+        event,
+        notificationDetailsForEvent(
+          event,
+          event.session_id === selectedSessionIDRef.current ? selectedEventsRef.current : [],
+          sessionsRef.current,
+        ),
+      )
       const knownSession = sessionsRef.current.find((session) => session.id === event.session_id)
       const terminalUnselected = isTerminalEvent(event.type) && event.session_id !== selectedSessionIDRef.current
       if (terminalUnselected && event.seq >= latestSessionSeq(knownSession ?? null)) {
@@ -466,6 +490,10 @@ function App() {
     followLatest: followingLatest,
     refreshKey: eventRefreshKey,
   })
+
+  useEffect(() => {
+    selectedEventsRef.current = events
+  }, [events])
 
   useEffect(() => {
     if (!selectedSessionID) {
@@ -1782,6 +1810,37 @@ function sortSessions(sessions: Session[]) {
     const byUpdated = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
     return byUpdated !== 0 ? byUpdated : right.id.localeCompare(left.id)
   })
+}
+
+function notificationDetailsForEvent(event: AgentEvent, events: AgentEvent[], sessions: Session[]) {
+  const session = sessions.find((item) => item.id === event.session_id)
+  return {
+    title: session?.title,
+    excerpt: latestAgentMessageExcerpt(events),
+  }
+}
+
+function latestAgentMessageExcerpt(events: AgentEvent[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event.type !== 'agent.message.completed') {
+      continue
+    }
+    const excerpt = notificationExcerpt(payloadText(event.payload))
+    if (excerpt) {
+      return excerpt
+    }
+  }
+  return ''
+}
+
+function notificationExcerpt(text: string) {
+  const words = text.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) {
+    return ''
+  }
+  const clipped = words.slice(0, 18).join(' ')
+  return words.length > 18 ? `${clipped}...` : clipped
 }
 
 function paneWidthStyle(width: number): CSSProperties {

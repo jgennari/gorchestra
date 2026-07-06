@@ -9,6 +9,10 @@ import {
 
 type NotificationStatus = 'unsupported' | 'default' | 'denied' | 'enabling' | 'enabled' | 'error'
 type NotificationTestState = 'idle' | 'sending' | 'sent'
+type SessionStopNotificationDetails = {
+  title?: string
+  excerpt?: string
+}
 
 type WindowWithWebkitAudio = Window & {
   webkitAudioContext?: typeof AudioContext
@@ -177,7 +181,7 @@ export function usePushNotifications() {
   )
 
   const showSessionStopNotification = useCallback(
-    (event: AgentEvent) => {
+    (event: AgentEvent, details: SessionStopNotificationDetails = {}) => {
       if (
         !supported ||
         !isPushNotificationTerminalEvent(event.type) ||
@@ -199,7 +203,7 @@ export function usePushNotifications() {
         }
       }
 
-      void showLocalSessionStopNotification(event)
+      void showLocalSessionStopNotification(event, details)
     },
     [supported],
   )
@@ -307,11 +311,11 @@ async function showLocalTestNotification(supported: boolean) {
   })
 }
 
-async function showLocalSessionStopNotification(event: AgentEvent) {
+async function showLocalSessionStopNotification(event: AgentEvent, details: SessionStopNotificationDetails) {
   try {
     const registration = await navigator.serviceWorker.ready
-    await registration.showNotification('Gorchestra', {
-      body: sessionStopNotificationBody(event.type),
+    await registration.showNotification(notificationTitle(details), {
+      body: sessionStopNotificationBody(event.type, details.excerpt ?? ''),
       badge: '/favicon-notify.svg',
       icon: '/icon.svg',
       tag: `gorchestra-session-${event.session_id}`,
@@ -331,14 +335,24 @@ function isPushNotificationTerminalEvent(type: string) {
   return type === 'agent.run.completed' || type === 'agent.run.failed' || type === 'agent.run.cancelled'
 }
 
-function sessionStopNotificationBody(type: string) {
+function notificationTitle(details: SessionStopNotificationDetails) {
+  const title = details.title?.trim()
+  return title || 'Gorchestra'
+}
+
+function sessionStopNotificationBody(type: string, excerpt: string) {
+  let status: string
   if (type === 'agent.run.completed') {
-    return 'Session completed.'
+    status = 'Completed.'
+  } else if (type === 'agent.run.cancelled') {
+    status = 'Cancelled.'
+  } else {
+    status = 'Failed.'
   }
-  if (type === 'agent.run.cancelled') {
-    return 'Session was cancelled.'
+  if (!excerpt) {
+    return status
   }
-  return 'Session failed.'
+  return `${status} ${excerpt}`
 }
 
 function readBooleanStorage(key: string, fallback: boolean) {
