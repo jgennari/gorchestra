@@ -71,7 +71,9 @@ test('notification launch keeps the selected finished session unseen until delib
 
   render(<App />)
 
-  expect(await screen.findByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]')
+  await waitFor(() =>
+    expect(screen.getByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]'),
+  )
   await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(1))
   expect(window.location.search).not.toContain('notification_seq')
 
@@ -94,7 +96,9 @@ test('background notification attention survives app launch for the selected ses
 
   render(<App />)
 
-  expect(await screen.findByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]')
+  await waitFor(() =>
+    expect(screen.getByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]'),
+  )
   await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(1))
 })
 

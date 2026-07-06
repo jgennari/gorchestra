@@ -27,11 +27,14 @@ self.addEventListener('push', (event) => {
   }
 
   const attentionCount = recordNotificationAttention(sessionID, seq)
-  const tasks = [self.registration.showNotification(title, options)]
-  if (self.navigator && 'setAppBadge' in self.navigator) {
-    tasks.push(attentionCount.then((count) => self.navigator.setAppBadge(count > 0 ? count : 1).catch(() => undefined)))
+  const badgeTask = setBadgeFromAttentionCount(attentionCount)
+
+  if (shouldUseDeclarativeNotification(payload, notification)) {
+    event.waitUntil(Promise.all([attentionCount, badgeTask]))
+    return
   }
 
+  const tasks = [self.registration.showNotification(title, options), badgeTask]
   event.waitUntil(Promise.all(tasks))
 })
 
@@ -92,4 +95,27 @@ function recordNotificationAttention(sessionID, seq) {
       }
     }
   })
+}
+
+function setBadgeFromAttentionCount(attentionCount) {
+  if (!self.navigator || !('setAppBadge' in self.navigator)) {
+    return Promise.resolve()
+  }
+
+  return attentionCount.then((count) => self.navigator.setAppBadge(count > 0 ? count : 1).catch(() => undefined))
+}
+
+function shouldUseDeclarativeNotification(payload, notification) {
+  if (payload.web_push !== 8030 || !notification || !notification.title || !notification.navigate) {
+    return false
+  }
+
+  const userAgent = self.navigator?.userAgent || ''
+  if (!userAgent) {
+    return false
+  }
+
+  // WebKit ignores declarative fields like app_badge when the worker shows a
+  // replacement notification. Let Safari handle the declarative notification.
+  return /\bSafari\//.test(userAgent) && !/\b(?:Chrome|Chromium|CriOS|FxiOS|Edg|OPR)\//.test(userAgent)
 }
