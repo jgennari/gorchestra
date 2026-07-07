@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +32,7 @@ const (
 	defaultSessionLimit      = 50
 	maxSessionLimit          = 100
 	streamHeartbeat          = 15 * time.Second
-	immutableAssetCache     = "public, max-age=31536000, immutable"
+	immutableAssetCache      = "public, max-age=31536000, immutable"
 	revalidatingCache        = "no-cache"
 	staticShellCache         = "public, max-age=3600"
 )
@@ -54,8 +55,12 @@ type Store interface {
 	MarkQueuedMessageSent(ctx context.Context, params store.QueueMessageIDParams) (store.QueuedMessage, error)
 	ReleaseQueuedMessage(ctx context.Context, params store.QueueMessageIDParams) (store.QueuedMessage, error)
 	ListEvents(ctx context.Context, sessionID string, afterSeq int64, limit int) ([]store.Event, error)
+	ListEventsFiltered(ctx context.Context, sessionID string, afterSeq int64, limit int, filter store.EventListFilter) ([]store.Event, error)
+	GetEvent(ctx context.Context, sessionID string, seq int64) (store.Event, error)
 	ListRecentEvents(ctx context.Context, sessionID string, limit int) ([]store.Event, error)
+	ListRecentEventsFiltered(ctx context.Context, sessionID string, limit int, filter store.EventListFilter) ([]store.Event, error)
 	ListEventsBefore(ctx context.Context, sessionID string, beforeSeq int64, limit int) ([]store.Event, error)
+	ListEventsBeforeFiltered(ctx context.Context, sessionID string, beforeSeq int64, limit int, filter store.EventListFilter) ([]store.Event, error)
 	ClearNotificationAttention(ctx context.Context, sessionID string) error
 }
 
@@ -185,6 +190,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Get("/api/sessions/{sessionId}", api.getSessionHandler)
 		r.Post("/api/sessions/{sessionId}/notification-attention/clear", api.clearSessionNotificationAttentionHandler)
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
+		r.Get("/api/sessions/{sessionId}/events/{seq}/attachments/{attachmentIndex}", api.eventAttachmentHandler)
 	}
 	if api.store != nil && api.events != nil {
 		r.Get("/api/sessions/{sessionId}/events/stream", api.eventStreamHandler)
@@ -291,8 +297,12 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	filter, ok := parseEventListFilter(w, r)
+	if !ok {
+		return
+	}
 
-	events, err := api.listHistoryEvents(r, sessionID, limit)
+	events, err := api.listHistoryEvents(r, sessionID, limit, filter)
 	if errors.Is(err, errInvalidEventHistoryCursor) {
 		writeError(w, http.StatusBadRequest, eventHistoryCursorMessage(err))
 		return
@@ -305,6 +315,50 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, eventHistoryResponse{Events: eventResponses(events)})
 }
 
+func (api API) eventAttachmentHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	if !api.sessionExists(w, r, sessionID) {
+		return
+	}
+
+	seq, err := strconv.ParseInt(chi.URLParam(r, "seq"), 10, 64)
+	if err != nil || seq <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid event sequence")
+		return
+	}
+	attachmentIndex, err := strconv.Atoi(chi.URLParam(r, "attachmentIndex"))
+	if err != nil || attachmentIndex < 0 {
+		writeError(w, http.StatusBadRequest, "invalid attachment index")
+		return
+	}
+
+	event, err := api.store.GetEvent(r.Context(), sessionID, seq)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "event not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load event")
+		return
+	}
+
+	attachment, ok := eventImageAttachment(event, attachmentIndex)
+	if !ok {
+		writeError(w, http.StatusNotFound, "attachment not found")
+		return
+	}
+	data, err := decodeImageDataURL(attachment.DataURL, attachment.MediaType)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid attachment data")
+		return
+	}
+
+	w.Header().Set("Content-Type", attachment.MediaType)
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", sanitizeAttachmentFilename(attachment.Name)))
+	_, _ = w.Write(data)
+}
+
 var errInvalidEventHistoryCursor = errors.New("invalid event history cursor")
 
 func eventHistoryCursorMessage(err error) string {
@@ -312,7 +366,12 @@ func eventHistoryCursorMessage(err error) string {
 	return strings.TrimPrefix(message, errInvalidEventHistoryCursor.Error()+": ")
 }
 
-func (api API) listHistoryEvents(r *http.Request, sessionID string, limit int) ([]store.Event, error) {
+func (api API) listHistoryEvents(
+	r *http.Request,
+	sessionID string,
+	limit int,
+	filter store.EventListFilter,
+) ([]store.Event, error) {
 	query := r.URL.Query()
 	rawAfterSeq := query.Get("after_seq")
 	rawBeforeSeq := query.Get("before_seq")
@@ -342,14 +401,14 @@ func (api API) listHistoryEvents(r *http.Request, sessionID string, limit int) (
 	}
 
 	if tail {
-		return api.listBoundarySafeRecentEvents(r.Context(), sessionID, limit)
+		return api.listBoundarySafeRecentEvents(r.Context(), sessionID, limit, filter)
 	}
 	if rawBeforeSeq != "" {
 		beforeSeq, err := parseNonNegativeInt64(rawBeforeSeq, "before_seq")
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s", errInvalidEventHistoryCursor, err.Error())
 		}
-		return api.listBoundarySafeEventsBefore(r.Context(), sessionID, beforeSeq, limit)
+		return api.listBoundarySafeEventsBefore(r.Context(), sessionID, beforeSeq, limit, filter)
 	}
 
 	afterSeq := int64(0)
@@ -360,15 +419,20 @@ func (api API) listHistoryEvents(r *http.Request, sessionID string, limit int) (
 		}
 		afterSeq = parsedAfterSeq
 	}
-	return api.store.ListEvents(r.Context(), sessionID, afterSeq, limit)
+	return api.store.ListEventsFiltered(r.Context(), sessionID, afterSeq, limit, filter)
 }
 
-func (api API) listBoundarySafeRecentEvents(ctx context.Context, sessionID string, limit int) ([]store.Event, error) {
-	events, err := api.store.ListRecentEvents(ctx, sessionID, limit)
+func (api API) listBoundarySafeRecentEvents(
+	ctx context.Context,
+	sessionID string,
+	limit int,
+	filter store.EventListFilter,
+) ([]store.Event, error) {
+	events, err := api.store.ListRecentEventsFiltered(ctx, sessionID, limit, filter)
 	if err != nil {
 		return nil, err
 	}
-	return api.expandHistoryWindowToSafeBoundary(ctx, sessionID, events)
+	return api.expandHistoryWindowToSafeBoundary(ctx, sessionID, events, filter)
 }
 
 func (api API) listBoundarySafeEventsBefore(
@@ -376,18 +440,20 @@ func (api API) listBoundarySafeEventsBefore(
 	sessionID string,
 	beforeSeq int64,
 	limit int,
+	filter store.EventListFilter,
 ) ([]store.Event, error) {
-	events, err := api.store.ListEventsBefore(ctx, sessionID, beforeSeq, limit)
+	events, err := api.store.ListEventsBeforeFiltered(ctx, sessionID, beforeSeq, limit, filter)
 	if err != nil {
 		return nil, err
 	}
-	return api.expandHistoryWindowToSafeBoundary(ctx, sessionID, events)
+	return api.expandHistoryWindowToSafeBoundary(ctx, sessionID, events, filter)
 }
 
 func (api API) expandHistoryWindowToSafeBoundary(
 	ctx context.Context,
 	sessionID string,
 	events []store.Event,
+	filter store.EventListFilter,
 ) ([]store.Event, error) {
 	for len(events) > 0 && !safeHistoryWindowStart(events[0]) && len(events) < maxEventLimit {
 		beforeSeq := events[0].Seq
@@ -403,7 +469,7 @@ func (api API) expandHistoryWindowToSafeBoundary(
 			return events, nil
 		}
 
-		olderEvents, err := api.store.ListEventsBefore(ctx, sessionID, beforeSeq, backfillLimit)
+		olderEvents, err := api.store.ListEventsBeforeFiltered(ctx, sessionID, beforeSeq, backfillLimit, filter)
 		if err != nil {
 			return nil, err
 		}
@@ -447,6 +513,10 @@ func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	filter, ok := parseEventListFilter(w, r)
+	if !ok {
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -457,7 +527,7 @@ func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {
 	liveEvents, unsubscribe := api.events.Subscribe(sessionID)
 	defer unsubscribe()
 
-	replayedEvents, err := api.replayEvents(r.Context(), sessionID, afterSeq)
+	replayedEvents, err := api.replayEvents(r.Context(), sessionID, afterSeq, filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to replay events")
 		return
@@ -502,6 +572,9 @@ func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if event.Seq <= highestSeqSent {
+				continue
+			}
+			if !eventVisible(event, filter) {
 				continue
 			}
 			if err := writeSSE(w, event); err != nil {
@@ -550,6 +623,9 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 			if !ok {
 				return
 			}
+			if !eventVisible(event, store.EventListFilter{}) {
+				continue
+			}
 			if err := writeSSE(w, event); err != nil {
 				return
 			}
@@ -558,12 +634,17 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (api API) replayEvents(ctx context.Context, sessionID string, afterSeq int64) ([]store.Event, error) {
+func (api API) replayEvents(
+	ctx context.Context,
+	sessionID string,
+	afterSeq int64,
+	filter store.EventListFilter,
+) ([]store.Event, error) {
 	events := make([]store.Event, 0)
 	nextAfterSeq := afterSeq
 
 	for {
-		page, err := api.store.ListEvents(ctx, sessionID, nextAfterSeq, maxEventLimit)
+		page, err := api.store.ListEventsFiltered(ctx, sessionID, nextAfterSeq, maxEventLimit, filter)
 		if err != nil {
 			return nil, err
 		}
@@ -640,6 +721,78 @@ func parseLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 	}
 
 	return limit, true
+}
+
+func parseEventListFilter(w http.ResponseWriter, r *http.Request) (store.EventListFilter, bool) {
+	raw := r.URL.Query().Get("include_debug")
+	if raw == "" {
+		return store.EventListFilter{}, true
+	}
+
+	includeDebug, err := strconv.ParseBool(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "include_debug must be a boolean")
+		return store.EventListFilter{}, false
+	}
+	return store.EventListFilter{IncludeDebug: includeDebug}, true
+}
+
+func eventVisible(event store.Event, filter store.EventListFilter) bool {
+	return filter.IncludeDebug || !debugOnlyEvent(event)
+}
+
+func debugOnlyEvent(event store.Event) bool {
+	switch event.Type {
+	case "agent.log.delta",
+		"provider.codex.request",
+		"provider.codex.parse_error",
+		"provider.claude.parse_error",
+		"provider.opencode.request",
+		"provider.opencode.parse_error",
+		"provider.pi.parse_error",
+		"provider.pi.event":
+		return true
+	case "provider.codex.event":
+		providerEventType := payloadStringAt(event.Payload, "provider_event_type")
+		if providerEventType == "thread/tokenUsage/updated" || providerEventType == "item/plan/delta" {
+			return false
+		}
+		return providerEventType != "item/completed" || payloadStringAt(event.Payload, "raw", "item", "type") != "plan"
+	case "provider.claude.event":
+		return !payloadHas(event.Payload, "usage")
+	case "provider.opencode.event":
+		return payloadStringAt(event.Payload, "provider_event_type") != "usage_update"
+	default:
+		return false
+	}
+}
+
+func payloadStringAt(payload json.RawMessage, path ...string) string {
+	var value any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return ""
+	}
+	for _, key := range path {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return ""
+		}
+		value = object[key]
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+func payloadHas(payload json.RawMessage, key string) bool {
+	var object map[string]any
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return false
+	}
+	_, ok := object[key]
+	return ok
 }
 
 func eventResponses(events []store.Event) []eventResponse {
@@ -735,6 +888,55 @@ func truncatePayloadString(value string) (string, bool) {
 		limit--
 	}
 	return value[:limit] + suffix, true
+}
+
+func eventImageAttachment(event store.Event, attachmentIndex int) (submitAttachment, bool) {
+	if event.Type != "user.message.completed" || attachmentIndex < 0 {
+		return submitAttachment{}, false
+	}
+
+	var payload struct {
+		Attachments []submitAttachment `json:"attachments"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return submitAttachment{}, false
+	}
+	if attachmentIndex >= len(payload.Attachments) {
+		return submitAttachment{}, false
+	}
+
+	attachment := payload.Attachments[attachmentIndex]
+	if !strings.HasPrefix(attachment.MediaType, "image/") || strings.TrimSpace(attachment.DataURL) == "" {
+		return submitAttachment{}, false
+	}
+	return attachment, true
+}
+
+func decodeImageDataURL(dataURL string, mediaType string) ([]byte, error) {
+	header, payload, ok := strings.Cut(strings.TrimSpace(dataURL), ",")
+	if !ok || !strings.HasPrefix(header, "data:") || !strings.Contains(header, ";base64") {
+		return nil, fmt.Errorf("invalid data url")
+	}
+	encodedMediaType := strings.TrimPrefix(strings.TrimSuffix(header, ";base64"), "data:")
+	if encodedMediaType != mediaType || !strings.HasPrefix(encodedMediaType, "image/") {
+		return nil, fmt.Errorf("media type mismatch")
+	}
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func sanitizeAttachmentFilename(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "image"
+	}
+	name = strings.ReplaceAll(name, "\n", " ")
+	name = strings.ReplaceAll(name, "\r", " ")
+	name = strings.ReplaceAll(name, `"`, "'")
+	return name
 }
 
 func writeSSE(w http.ResponseWriter, event store.Event) error {

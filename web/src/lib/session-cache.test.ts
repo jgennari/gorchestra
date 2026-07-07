@@ -126,6 +126,14 @@ test('session event cache remains enabled on iOS browsers', async () => {
   Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: originalMaxTouchPoints })
 })
 
+test('session event cache keeps debug and non-debug windows separate', async () => {
+  await writeCachedSessionEvents('sess_1', [event(1, 'agent.message.completed', 'normal')], false)
+  await writeCachedSessionEvents('sess_1', [event(2, 'agent.message.completed', 'debug')], false, true)
+
+  expect((await readCachedSessionEvents('sess_1'))?.events.map((item) => item.seq)).toEqual([1])
+  expect((await readCachedSessionEvents('sess_1', true))?.events.map((item) => item.seq)).toEqual([2])
+})
+
 test('session cache v2 upgrade clears old event windows but keeps session snapshots', async () => {
   const oldDB = await openFakeDB(1, (db) => {
     db.createObjectStore('sessions')

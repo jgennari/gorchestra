@@ -15,6 +15,7 @@ type Options = {
   reconnectDelayMs?: number
   refreshKey?: number
   followLatest?: boolean
+  includeDebugEvents?: boolean
 }
 
 type SessionEventCacheEntry = {
@@ -52,11 +53,13 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const oldestSeqRef = useRef(0)
   const activeSessionIDRef = useRef<string | null>(null)
   const loadedSessionIDRef = useRef<string | null>(null)
+  const loadedIncludeDebugEventsRef = useRef(false)
   const loadingOlderEventsRef = useRef(false)
   const onEventRef = useRef(options.onEvent)
   const reconnectDelayMs = options.reconnectDelayMs ?? 1000
   const refreshKey = options.refreshKey ?? 0
   const followLatest = options.followLatest ?? true
+  const includeDebugEvents = options.includeDebugEvents ?? false
   const followLatestRef = useRef(followLatest)
   const [hasOlderEvents, setHasOlderEvents] = useState(false)
   const [loadingOlderEvents, setLoadingOlderEvents] = useState(false)
@@ -70,8 +73,9 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   }, [followLatest])
 
   useEffect(() => {
-    const sameSessionRefresh = loadedSessionIDRef.current === sessionID
-    const cachedSession = sessionID && !sameSessionRefresh ? readCachedSessionEvents(sessionID) : null
+    const sameSessionRefresh =
+      loadedSessionIDRef.current === sessionID && loadedIncludeDebugEventsRef.current === includeDebugEvents
+    const cachedSession = sessionID && !sameSessionRefresh ? readCachedSessionEvents(sessionID, includeDebugEvents) : null
     activeSessionIDRef.current = sessionID
     loadingOlderEventsRef.current = false
     setError('')
@@ -81,6 +85,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       lastSeqRef.current = 0
       oldestSeqRef.current = 0
       loadedSessionIDRef.current = null
+      loadedIncludeDebugEventsRef.current = false
       setEvents([])
       setHasOlderEvents(false)
       setStreamState('idle')
@@ -92,6 +97,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         lastSeqRef.current = cachedSession.lastSeq
         oldestSeqRef.current = cachedSession.oldestSeq
         loadedSessionIDRef.current = sessionID
+        loadedIncludeDebugEventsRef.current = includeDebugEvents
         setEvents(cachedSession.events)
         setHasOlderEvents(cachedSession.hasOlderEvents)
       } else {
@@ -103,6 +109,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     }
 
     const activeSessionID = sessionID
+    const activeIncludeDebugEvents = includeDebugEvents
     let closed = false
     let source: EventSource | null = null
     let reconnectTimer: number | undefined
@@ -133,7 +140,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           oldestSeqRef.current = firstSeq(next)
           const nextHasOlderEvents = oldestSeqRef.current > 1 || next.length < appended.length
           setHasOlderEvents(nextHasOlderEvents)
-          writeCachedSessionEvents(activeSessionID, next, nextHasOlderEvents)
+          writeCachedSessionEvents(activeSessionID, next, nextHasOlderEvents, activeIncludeDebugEvents)
           return next
         })
         onEventRef.current?.(event)
@@ -147,7 +154,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         return
       }
 
-      source = new EventSource(eventStreamURL(activeSessionID, afterSeq))
+      source = new EventSource(eventStreamURL(activeSessionID, afterSeq, { includeDebug: activeIncludeDebugEvents }))
       source.onopen = () => {
         if (!closed) {
           setStreamState('connected')
@@ -167,7 +174,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     async function loadRecentHistory() {
       setStreamState('loading')
       try {
-        const history = await listRecentEventsOnce(activeSessionID, refreshKey)
+        const history = await listRecentEventsOnce(activeSessionID, refreshKey, activeIncludeDebugEvents)
         if (closed) {
           return
         }
@@ -180,6 +187,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           oldestSeqRef.current = historyFirstSeq
         }
         loadedSessionIDRef.current = activeSessionID
+        loadedIncludeDebugEventsRef.current = activeIncludeDebugEvents
         const nextHasOlderEvents = oldestSeqRef.current > 1
         setHasOlderEvents(nextHasOlderEvents)
         setEvents((current) => {
@@ -188,7 +196,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           oldestSeqRef.current = firstSeq(next)
           const trimmedHasOlderEvents = nextHasOlderEvents || next.length < merged.length
           setHasOlderEvents(trimmedHasOlderEvents)
-          writeCachedSessionEvents(activeSessionID, next, trimmedHasOlderEvents)
+          writeCachedSessionEvents(activeSessionID, next, trimmedHasOlderEvents, activeIncludeDebugEvents)
           return next
         })
         connect(lastSeqRef.current)
@@ -203,7 +211,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
 
     async function hydratePersistentCacheOrLoad() {
       setStreamState('loading')
-      const persistentSession = await readPersistentCachedSessionEvents(activeSessionID)
+      const persistentSession = await readPersistentCachedSessionEvents(activeSessionID, activeIncludeDebugEvents)
       if (closed) {
         return
       }
@@ -215,9 +223,15 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       lastSeqRef.current = persistentSession.lastSeq
       oldestSeqRef.current = persistentSession.oldestSeq
       loadedSessionIDRef.current = activeSessionID
+      loadedIncludeDebugEventsRef.current = activeIncludeDebugEvents
       setEvents(persistentSession.events)
       setHasOlderEvents(persistentSession.hasOlderEvents)
-      writeCachedSessionEvents(activeSessionID, persistentSession.events, persistentSession.hasOlderEvents)
+      writeCachedSessionEvents(
+        activeSessionID,
+        persistentSession.events,
+        persistentSession.hasOlderEvents,
+        activeIncludeDebugEvents,
+      )
       setStreamState('reconnecting')
       connect(lastSeqRef.current)
     }
@@ -242,7 +256,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       }
       setStreamState('disconnected')
     }
-  }, [reconnectDelayMs, refreshKey, sessionID])
+  }, [includeDebugEvents, reconnectDelayMs, refreshKey, sessionID])
 
   const loadOlderEvents = useCallback(async () => {
     if (!sessionID || loadingOlderEventsRef.current) {
@@ -253,7 +267,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     if (beforeSeq <= 1) {
       setHasOlderEvents(false)
       setEvents((current) => {
-        writeCachedSessionEvents(sessionID, current, false)
+        writeCachedSessionEvents(sessionID, current, false, includeDebugEvents)
         return current
       })
       return
@@ -264,14 +278,14 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     setError('')
 
     try {
-      const history = await listEventsBefore(sessionID, beforeSeq)
+      const history = await listEventsBefore(sessionID, beforeSeq, undefined, { includeDebug: includeDebugEvents })
       if (activeSessionIDRef.current !== sessionID) {
         return
       }
       if (history.length === 0) {
         setHasOlderEvents(false)
         setEvents((current) => {
-          writeCachedSessionEvents(sessionID, current, false)
+          writeCachedSessionEvents(sessionID, current, false, includeDebugEvents)
           return current
         })
         return
@@ -281,7 +295,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       setHasOlderEvents(oldestSeqRef.current > 1)
       setEvents((current) => {
         const next = appendEvents(current, history)
-        writeCachedSessionEvents(sessionID, next, oldestSeqRef.current > 1)
+        writeCachedSessionEvents(sessionID, next, oldestSeqRef.current > 1, includeDebugEvents)
         return next
       })
     } catch (loadError) {
@@ -294,7 +308,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setLoadingOlderEvents(false)
       }
     }
-  }, [sessionID])
+  }, [includeDebugEvents, sessionID])
 
   return {
     events,
@@ -310,14 +324,14 @@ function firstSeq(events: AgentEvent[]) {
   return events.reduce((min, event) => (min === 0 ? event.seq : Math.min(min, event.seq)), 0)
 }
 
-function listRecentEventsOnce(sessionID: string, refreshKey: number) {
-  const key = `${sessionID}:${refreshKey}`
+function listRecentEventsOnce(sessionID: string, refreshKey: number, includeDebugEvents: boolean) {
+  const key = `${sessionID}:${refreshKey}:${includeDebugEvents ? 'debug' : 'normal'}`
   const existing = recentEventsRequests.get(key)
   if (existing) {
     return existing
   }
 
-  const request = listRecentEvents(sessionID).catch((error) => {
+  const request = listRecentEvents(sessionID, undefined, { includeDebug: includeDebugEvents }).catch((error) => {
     recentEventsRequests.delete(key)
     throw error
   })
@@ -335,20 +349,27 @@ function listRecentEventsOnce(sessionID: string, refreshKey: number) {
   return request
 }
 
-function readCachedSessionEvents(sessionID: string): SessionEventCacheEntry | null {
-  const entry = sessionEventCache.get(sessionID)
+function readCachedSessionEvents(sessionID: string, includeDebugEvents: boolean): SessionEventCacheEntry | null {
+  const cacheKey = sessionEventCacheKey(sessionID, includeDebugEvents)
+  const entry = sessionEventCache.get(cacheKey)
   if (!entry) {
     return null
   }
   const next = { ...entry, usedAt: Date.now() }
-  sessionEventCache.set(sessionID, next)
+  sessionEventCache.set(cacheKey, next)
   return next
 }
 
-function writeCachedSessionEvents(sessionID: string, events: AgentEvent[], hasOlderEvents: boolean) {
+function writeCachedSessionEvents(
+  sessionID: string,
+  events: AgentEvent[],
+  hasOlderEvents: boolean,
+  includeDebugEvents: boolean,
+) {
+  const cacheKey = sessionEventCacheKey(sessionID, includeDebugEvents)
   const trimmedEvents = trimEventsWindow(events, cachedEventLimit)
   const trimmedOlderEvents = trimmedEvents.length < events.length
-  sessionEventCache.set(sessionID, {
+  sessionEventCache.set(cacheKey, {
     events: trimmedEvents,
     lastSeq: lastSeq(trimmedEvents),
     oldestSeq: firstSeq(trimmedEvents),
@@ -356,19 +377,29 @@ function writeCachedSessionEvents(sessionID: string, events: AgentEvent[], hasOl
     usedAt: Date.now(),
   })
   evictOldSessionEventCaches()
-  schedulePersistentSessionEventsWrite(sessionID, trimmedEvents, hasOlderEvents || trimmedOlderEvents)
+  schedulePersistentSessionEventsWrite(sessionID, trimmedEvents, hasOlderEvents || trimmedOlderEvents, includeDebugEvents)
 }
 
-function schedulePersistentSessionEventsWrite(sessionID: string, events: AgentEvent[], hasOlderEvents: boolean) {
-  const existingTimer = persistentEventsWriteTimers.get(sessionID)
+function schedulePersistentSessionEventsWrite(
+  sessionID: string,
+  events: AgentEvent[],
+  hasOlderEvents: boolean,
+  includeDebugEvents: boolean,
+) {
+  const cacheKey = sessionEventCacheKey(sessionID, includeDebugEvents)
+  const existingTimer = persistentEventsWriteTimers.get(cacheKey)
   if (existingTimer !== undefined) {
     window.clearTimeout(existingTimer)
   }
   const timer = window.setTimeout(() => {
-    persistentEventsWriteTimers.delete(sessionID)
-    void writePersistentCachedSessionEvents(sessionID, events, hasOlderEvents)
+    persistentEventsWriteTimers.delete(cacheKey)
+    void writePersistentCachedSessionEvents(sessionID, events, hasOlderEvents, includeDebugEvents)
   }, persistentEventsWriteDelayMs)
-  persistentEventsWriteTimers.set(sessionID, timer)
+  persistentEventsWriteTimers.set(cacheKey, timer)
+}
+
+function sessionEventCacheKey(sessionID: string, includeDebugEvents: boolean) {
+  return `${sessionID}:${includeDebugEvents ? 'debug' : 'normal'}`
 }
 
 export function trimEventsWindow(events: AgentEvent[], limit: number) {

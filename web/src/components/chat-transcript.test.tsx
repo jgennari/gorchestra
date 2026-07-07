@@ -841,6 +841,40 @@ test('renders active thinking instead of the empty transcript state', () => {
   expect(screen.queryByText('No messages yet. Submit a prompt to start the chat.')).not.toBeInTheDocument()
 })
 
+test('previews image attachments in a dialog with download action', async () => {
+  const user = userEvent.setup()
+  render(
+    <ChatTranscript
+      events={[
+        event(4, 'user.message.completed', 'user', 'completed', {
+          text: 'see image',
+          attachments: [
+            {
+              name: 'image.png',
+              media_type: 'image/png',
+              data_url: 'data:image/png;base64,[gorchestra truncated 100 bytes from this field for browser display]',
+              size_bytes: 1234,
+            },
+          ],
+        }),
+      ]}
+    />,
+  )
+
+  const thumbnail = screen.getByRole('button', { name: 'Preview image.png' })
+  expect(screen.getByRole('img', { name: 'image.png' })).toHaveAttribute('src', '/api/sessions/sess_1/events/4/attachments/0')
+
+  await user.click(thumbnail)
+
+  expect(screen.getByRole('dialog')).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'image.png' })).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Download' })).toHaveAttribute(
+    'href',
+    '/api/sessions/sess_1/events/4/attachments/0',
+  )
+  expect(screen.getByRole('link', { name: 'Download' })).toHaveAttribute('download', 'image.png')
+})
+
 test('hides debug-only events unless enabled', () => {
   render(
     <ChatTranscript

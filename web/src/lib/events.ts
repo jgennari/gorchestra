@@ -28,6 +28,11 @@ export const knownEventTypes = [
   'provider.codex.parse_error',
   'provider.claude.event',
   'provider.claude.parse_error',
+  'provider.opencode.event',
+  'provider.opencode.request',
+  'provider.opencode.parse_error',
+  'provider.pi.event',
+  'provider.pi.parse_error',
   'agent.run.completed',
   'agent.run.failed',
   'agent.run.cancelled',
@@ -81,6 +86,7 @@ export type ChatTranscriptAttachment = {
   name: string
   mediaType: string
   dataURL: string
+  sourceURL: string
   sizeBytes: number
 }
 
@@ -1288,11 +1294,12 @@ function chatAttachmentsFromGroup(group: EventGroup): ChatTranscriptAttachment[]
   if (group.kind !== 'user-message') {
     return []
   }
-  const payload = group.events[0]?.payload
+  const event = group.events[0]
+  const payload = event?.payload
   if (!isRecord(payload) || !Array.isArray(payload.attachments)) {
     return []
   }
-  return payload.attachments.flatMap((attachment): ChatTranscriptAttachment[] => {
+  return payload.attachments.flatMap((attachment, index): ChatTranscriptAttachment[] => {
     if (!isRecord(attachment)) {
       return []
     }
@@ -1300,10 +1307,13 @@ function chatAttachmentsFromGroup(group: EventGroup): ChatTranscriptAttachment[]
     const mediaType = typeof attachment.media_type === 'string' ? attachment.media_type : ''
     const dataURL = typeof attachment.data_url === 'string' ? attachment.data_url : ''
     const sizeBytes = typeof attachment.size_bytes === 'number' ? attachment.size_bytes : 0
-    if (!mediaType.startsWith('image/') || !dataURL) {
+    const sourceURL = event
+      ? `/api/sessions/${encodeURIComponent(event.session_id)}/events/${event.seq}/attachments/${index}`
+      : dataURL
+    if (!mediaType.startsWith('image/') || (!dataURL && !sourceURL)) {
       return []
     }
-    return [{ name, mediaType, dataURL, sizeBytes }]
+    return [{ name, mediaType, dataURL, sourceURL, sizeBytes }]
   })
 }
 

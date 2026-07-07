@@ -807,12 +807,97 @@ func (s *Store) ListEvents(ctx context.Context, sessionID string, afterSeq int64
 	return events, nil
 }
 
+func (s *Store) ListEventsFiltered(
+	ctx context.Context,
+	sessionID string,
+	afterSeq int64,
+	limit int,
+	filter EventListFilter,
+) ([]Event, error) {
+	if filter.IncludeDebug {
+		return s.ListEvents(ctx, sessionID, afterSeq, limit)
+	}
+	if limit <= 0 {
+		limit = defaultEventLimit
+	}
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT id, session_id, seq, type, role, status, payload_json, created_at
+		 FROM events
+		 WHERE session_id = ? AND seq > ? `+nonDebugEventSQL()+`
+		 ORDER BY seq ASC
+		 LIMIT ?`,
+		sessionID,
+		afterSeq,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list filtered events: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]Event, 0)
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list filtered events rows: %w", err)
+	}
+
+	return events, nil
+}
+
+func (s *Store) GetEvent(ctx context.Context, sessionID string, seq int64) (Event, error) {
+	row := s.db.QueryRowContext(
+		ctx,
+		`SELECT id, session_id, seq, type, role, status, payload_json, created_at
+		 FROM events
+		 WHERE session_id = ? AND seq = ?`,
+		sessionID,
+		seq,
+	)
+	event, err := scanEvent(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
+			return Event{}, fmt.Errorf("%w: event %s/%d", ErrNotFound, sessionID, seq)
+		}
+		return Event{}, err
+	}
+	return event, nil
+}
+
 func (s *Store) ListRecentEvents(ctx context.Context, sessionID string, limit int) ([]Event, error) {
 	if limit <= 0 {
 		limit = defaultEventLimit
 	}
 
 	events, err := s.listEventsDescending(ctx, sessionID, ``, 0, limit)
+	if err != nil {
+		return nil, err
+	}
+	reverseEvents(events)
+	return events, nil
+}
+
+func (s *Store) ListRecentEventsFiltered(
+	ctx context.Context,
+	sessionID string,
+	limit int,
+	filter EventListFilter,
+) ([]Event, error) {
+	if filter.IncludeDebug {
+		return s.ListRecentEvents(ctx, sessionID, limit)
+	}
+	if limit <= 0 {
+		limit = defaultEventLimit
+	}
+
+	events, err := s.listEventsDescending(ctx, sessionID, nonDebugEventSQL(), 0, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -833,6 +918,28 @@ func (s *Store) ListEventsBefore(ctx context.Context, sessionID string, beforeSe
 	return events, nil
 }
 
+func (s *Store) ListEventsBeforeFiltered(
+	ctx context.Context,
+	sessionID string,
+	beforeSeq int64,
+	limit int,
+	filter EventListFilter,
+) ([]Event, error) {
+	if filter.IncludeDebug {
+		return s.ListEventsBefore(ctx, sessionID, beforeSeq, limit)
+	}
+	if limit <= 0 {
+		limit = defaultEventLimit
+	}
+
+	events, err := s.listEventsDescending(ctx, sessionID, `AND seq < ? `+nonDebugEventSQL(), beforeSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	reverseEvents(events)
+	return events, nil
+}
+
 func (s *Store) listEventsDescending(ctx context.Context, sessionID string, extraWhere string, seqBound int64, limit int) ([]Event, error) {
 	query := `SELECT id, session_id, seq, type, role, status, payload_json, created_at
 		 FROM events
@@ -840,7 +947,7 @@ func (s *Store) listEventsDescending(ctx context.Context, sessionID string, extr
 		 ORDER BY seq DESC
 		 LIMIT ?`
 	args := []any{sessionID}
-	if extraWhere != "" {
+	if strings.Contains(extraWhere, "?") {
 		args = append(args, seqBound)
 	}
 	args = append(args, limit)
@@ -864,6 +971,47 @@ func (s *Store) listEventsDescending(ctx context.Context, sessionID string, extr
 	}
 
 	return events, nil
+}
+
+func nonDebugEventSQL() string {
+	return `AND (
+		type NOT IN (
+			'agent.log.delta',
+			'provider.codex.request',
+			'provider.codex.parse_error',
+			'provider.claude.parse_error',
+			'provider.opencode.request',
+			'provider.opencode.parse_error',
+			'provider.pi.parse_error'
+		)
+		AND (
+			type NOT IN (
+				'provider.codex.event',
+				'provider.claude.event',
+				'provider.opencode.event',
+				'provider.pi.event'
+			)
+			OR (
+				type = 'provider.codex.event'
+				AND (
+					json_extract(payload_json, '$.provider_event_type') = 'thread/tokenUsage/updated'
+					OR json_extract(payload_json, '$.provider_event_type') = 'item/plan/delta'
+					OR (
+						json_extract(payload_json, '$.provider_event_type') = 'item/completed'
+						AND json_extract(payload_json, '$.raw.item.type') = 'plan'
+					)
+				)
+			)
+			OR (
+				type = 'provider.claude.event'
+				AND json_type(payload_json, '$.usage') IS NOT NULL
+			)
+			OR (
+				type = 'provider.opencode.event'
+				AND json_extract(payload_json, '$.provider_event_type') = 'usage_update'
+			)
+		)
+	)`
 }
 
 func reverseEvents(events []Event) {

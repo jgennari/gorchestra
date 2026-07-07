@@ -60,6 +60,10 @@ type Event struct {
 	CreatedAt time.Time
 }
 
+type EventListFilter struct {
+	IncludeDebug bool
+}
+
 type QueuedMessage struct {
 	ID           string
 	SessionID    string

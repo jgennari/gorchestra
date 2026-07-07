@@ -40,6 +40,15 @@ test('session API helpers build the expected URLs', async () => {
     if (String(url) === '/api/sessions/sess_1/events?before_seq=100&limit=25') {
       return jsonResponse({ events: [] })
     }
+    if (String(url) === '/api/sessions/sess_1/events?after_seq=6&limit=30&include_debug=true') {
+      return jsonResponse({ events: [] })
+    }
+    if (String(url) === '/api/sessions/sess_1/events?tail=true&limit=35&include_debug=true') {
+      return jsonResponse({ events: [] })
+    }
+    if (String(url) === '/api/sessions/sess_1/events?before_seq=90&limit=40&include_debug=true') {
+      return jsonResponse({ events: [] })
+    }
     throw new Error(`unexpected URL ${String(url)}`)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -48,8 +57,14 @@ test('session API helpers build the expected URLs', async () => {
   await listEvents('sess_1', 4, 20)
   await listRecentEvents('sess_1', 25)
   await listEventsBefore('sess_1', 100, 25)
+  await listEvents('sess_1', 6, 30, { includeDebug: true })
+  await listRecentEvents('sess_1', 35, { includeDebug: true })
+  await listEventsBefore('sess_1', 90, 40, { includeDebug: true })
 
   expect(eventStreamURL('sess_1', 4)).toBe('/api/sessions/sess_1/events/stream?after_seq=4')
+  expect(eventStreamURL('sess_1', 4, { includeDebug: true })).toBe(
+    '/api/sessions/sess_1/events/stream?after_seq=4&include_debug=true',
+  )
   expect(sessionActivityStreamURL()).toBe('/api/sessions/activity/stream')
 })
 

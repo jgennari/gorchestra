@@ -1229,6 +1229,46 @@ func TestListEventsHonorsLimit(t *testing.T) {
 	assertSeqs(t, events, []int64{1, 2})
 }
 
+func TestFilteredEventListsOmitDebugOnlyEvents(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	appendTestEventWithType(t, ctx, store, session.ID, "user.message.completed", `{"text":"prompt"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "agent.log.delta", `{"text":"debug log"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "provider.codex.event", `{"provider_event_type":"turn/completed"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "provider.codex.event", `{
+		"provider_event_type":"thread/tokenUsage/updated",
+		"raw":{"tokenUsage":{"total":{"inputTokens":1,"cachedInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":2},"last":{"inputTokens":1,"cachedInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":2},"modelContextWindow":1000}}
+	}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "agent.message.completed", `{"text":"done"}`)
+
+	filter := EventListFilter{}
+	events, err := store.ListEventsFiltered(ctx, session.ID, 0, 10, filter)
+	if err != nil {
+		t.Fatalf("list filtered events: %v", err)
+	}
+	assertSeqs(t, events, []int64{1, 4, 5})
+
+	recentEvents, err := store.ListRecentEventsFiltered(ctx, session.ID, 2, filter)
+	if err != nil {
+		t.Fatalf("list recent filtered events: %v", err)
+	}
+	assertSeqs(t, recentEvents, []int64{4, 5})
+
+	beforeEvents, err := store.ListEventsBeforeFiltered(ctx, session.ID, 5, 2, filter)
+	if err != nil {
+		t.Fatalf("list events before filtered: %v", err)
+	}
+	assertSeqs(t, beforeEvents, []int64{1, 4})
+
+	allEvents, err := store.ListEventsFiltered(ctx, session.ID, 0, 10, EventListFilter{IncludeDebug: true})
+	if err != nil {
+		t.Fatalf("list filtered events with debug: %v", err)
+	}
+	assertSeqs(t, allEvents, []int64{1, 2, 3, 4, 5})
+}
+
 func TestListRecentEventsReturnsTailInAscendingSequence(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)

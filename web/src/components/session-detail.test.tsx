@@ -319,11 +319,11 @@ test('floating chat header updates run dangerously for codex sessions', async ()
   })
 
   await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
-  const checkbox = within(desktopFloatingHeader()).getByRole('checkbox', { name: /run dangerously/i })
+  const switchControl = within(desktopFloatingHeader()).getByRole('switch', { name: /run dangerously/i })
 
-  expect(checkbox).not.toBeChecked()
+  expect(switchControl).toHaveAttribute('aria-checked', 'false')
 
-  await user.click(checkbox)
+  await user.click(switchControl)
 
   expect(onUpdateAgentOptions).toHaveBeenCalledWith({ codex: { run_dangerously: true } })
 })
@@ -342,11 +342,11 @@ test('floating chat header updates run dangerously for claude sessions', async (
   })
 
   await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
-  const checkbox = within(desktopFloatingHeader()).getByRole('checkbox', { name: /run dangerously/i })
+  const switchControl = within(desktopFloatingHeader()).getByRole('switch', { name: /run dangerously/i })
 
-  expect(checkbox).not.toBeChecked()
+  expect(switchControl).toHaveAttribute('aria-checked', 'false')
 
-  await user.click(checkbox)
+  await user.click(switchControl)
 
   expect(onUpdateAgentOptions).toHaveBeenCalledWith({ claude: { run_dangerously: true } })
 })
@@ -358,7 +358,7 @@ test('floating chat header hides run dangerously for fake sessions', async () =>
 
   await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
 
-  expect(screen.queryByRole('checkbox', { name: /run dangerously/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole('switch', { name: /run dangerously/i })).not.toBeInTheDocument()
 })
 
 test('floating chat header owns session errors', () => {
@@ -372,18 +372,23 @@ test('floating chat header owns session errors', () => {
   expect(screen.queryByText(/Failed to load chat history/)).not.toBeInTheDocument()
 })
 
-test('message section renders chat with a bottom debug toggle', async () => {
+test('session details menu toggles debug events', async () => {
   const user = userEvent.setup()
   const onShowDebugEventsChange = vi.fn()
 
-  renderDetail({ onShowDebugEventsChange })
+  renderDetail({ showDebugEvents: true, onShowDebugEventsChange })
 
   expect(screen.getByText('No messages yet. Submit a prompt to start the chat.')).toBeInTheDocument()
   expect(screen.queryByRole('tab', { name: 'Debug' })).not.toBeInTheDocument()
 
-  await user.click(screen.getByRole('button', { name: 'Debug' }))
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
+  const debug = within(desktopFloatingHeader()).getByRole('switch', { name: 'Debug' })
 
-  expect(onShowDebugEventsChange).toHaveBeenCalledWith(true)
+  expect(debug).toHaveAttribute('aria-checked', 'true')
+
+  await user.click(debug)
+
+  expect(onShowDebugEventsChange).toHaveBeenCalledWith(false)
 })
 
 type SessionDetailProps = ComponentProps<typeof SessionDetail>

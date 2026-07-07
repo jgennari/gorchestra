@@ -545,31 +545,54 @@ export async function answerUserInput(sessionID: string, requestID: string, answ
   )
 }
 
-export async function listEvents(sessionID: string, afterSeq = 0, limit = 1000) {
-  const data = await requestJSON<EventHistoryResponse>(
-    `/api/sessions/${encodeURIComponent(sessionID)}/events?after_seq=${afterSeq}&limit=${limit}`,
-  )
-  return data.events
+type EventListOptions = {
+  includeDebug?: boolean
 }
 
-export async function listRecentEvents(sessionID: string, limit = defaultEventWindowLimit) {
-  const params = new URLSearchParams({ tail: 'true', limit: String(limit) })
-  const data = await requestJSON<EventHistoryResponse>(
-    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
-  )
-  return data.events
+function eventListParams(params: Record<string, string>, options: EventListOptions) {
+  const search = new URLSearchParams(params)
+  if (options.includeDebug) {
+    search.set('include_debug', 'true')
+  }
+  return search
 }
 
-export async function listEventsBefore(sessionID: string, beforeSeq: number, limit = defaultEventWindowLimit) {
-  const params = new URLSearchParams({ before_seq: String(beforeSeq), limit: String(limit) })
+export async function listEvents(sessionID: string, afterSeq = 0, limit = 1000, options: EventListOptions = {}) {
+  const params = eventListParams({ after_seq: String(afterSeq), limit: String(limit) }, options)
   const data = await requestJSON<EventHistoryResponse>(
     withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
   )
   return data.events
 }
 
-export function eventStreamURL(sessionID: string, afterSeq: number) {
-  return `/api/sessions/${encodeURIComponent(sessionID)}/events/stream?after_seq=${afterSeq}`
+export async function listRecentEvents(
+  sessionID: string,
+  limit = defaultEventWindowLimit,
+  options: EventListOptions = {},
+) {
+  const params = eventListParams({ tail: 'true', limit: String(limit) }, options)
+  const data = await requestJSON<EventHistoryResponse>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
+  )
+  return data.events
+}
+
+export async function listEventsBefore(
+  sessionID: string,
+  beforeSeq: number,
+  limit = defaultEventWindowLimit,
+  options: EventListOptions = {},
+) {
+  const params = eventListParams({ before_seq: String(beforeSeq), limit: String(limit) }, options)
+  const data = await requestJSON<EventHistoryResponse>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
+  )
+  return data.events
+}
+
+export function eventStreamURL(sessionID: string, afterSeq: number, options: EventListOptions = {}) {
+  const params = eventListParams({ after_seq: String(afterSeq) }, options)
+  return withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events/stream`, params)
 }
 
 export function sessionActivityStreamURL() {

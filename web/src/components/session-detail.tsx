@@ -215,9 +215,11 @@ export function SessionDetail({
             agentOptions={session.agent_options}
             title={session.title}
             errorMessage={errorMessage}
+            showDebugEvents={showDebugEvents}
             onUpdateTitle={onUpdateTitle}
             onTitleEditStateChange={onTitleEditStateChange}
             onUpdateAgentOptions={onUpdateAgentOptions}
+            onShowDebugEventsChange={onShowDebugEventsChange}
             headerActions={headerActions}
             leadingAction={mobileLeadingAction}
             mobileSessionActions={{
@@ -240,9 +242,11 @@ export function SessionDetail({
             agentOptions={session.agent_options}
             title={session.title}
             errorMessage={errorMessage}
+            showDebugEvents={showDebugEvents}
             onUpdateTitle={onUpdateTitle}
             onTitleEditStateChange={onTitleEditStateChange}
             onUpdateAgentOptions={onUpdateAgentOptions}
+            onShowDebugEventsChange={onShowDebugEventsChange}
             headerActions={headerActions}
             mobileSessionActions={null}
           />
@@ -261,9 +265,7 @@ export function SessionDetail({
             latestQueueEvent={latestQueueEvent}
             disabled={composerDisabled}
             disabledReason={disabledReason}
-            showDebugEvents={showDebugEvents}
             onSubmit={onSubmitPrompt}
-            onShowDebugEventsChange={onShowDebugEventsChange}
             onCancel={session.status === 'running' ? onCancel : undefined}
             onError={onErrorMessageChange}
           />
@@ -284,9 +286,11 @@ export function ChatSessionHeader({
   agentOptions,
   title,
   errorMessage,
+  showDebugEvents,
   onUpdateTitle,
   onTitleEditStateChange,
   onUpdateAgentOptions,
+  onShowDebugEventsChange,
   headerActions,
   leadingAction,
   mobileSessionActions,
@@ -297,9 +301,11 @@ export function ChatSessionHeader({
   agentOptions?: SessionAgentOptions
   title: string
   errorMessage: string
+  showDebugEvents: boolean
   onUpdateTitle: (title: string) => Promise<void>
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
+  onShowDebugEventsChange: (showDebugEvents: boolean) => void
   headerActions?: ReactNode
   leadingAction?: ReactNode
   mobileSessionActions?: MobileSessionActions | null
@@ -327,7 +333,9 @@ export function ChatSessionHeader({
           agentType={agentType}
           workspacePath={workspacePath}
           agentOptions={agentOptions}
+          showDebugEvents={showDebugEvents}
           onUpdateAgentOptions={onUpdateAgentOptions}
+          onShowDebugEventsChange={onShowDebugEventsChange}
           mobileSessionActions={mobileSessionActions}
         />
       </div>
@@ -348,14 +356,18 @@ function SessionDetailsMenu({
   agentType,
   workspacePath,
   agentOptions,
+  showDebugEvents,
   onUpdateAgentOptions,
+  onShowDebugEventsChange,
   mobileSessionActions,
 }: {
   sessionID: string
   agentType: Session['agent_type']
   workspacePath: string
   agentOptions?: SessionAgentOptions
+  showDebugEvents: boolean
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
+  onShowDebugEventsChange: (showDebugEvents: boolean) => void
   mobileSessionActions?: MobileSessionActions | null
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
@@ -458,28 +470,26 @@ function SessionDetailsMenu({
               copied={copiedField === 'workspace'}
               onCopy={() => void handleCopy(workspacePath, 'workspace')}
             />
+            <MenuSwitchRow
+              label="Debug"
+              description="Stream and load provider debug events for this session."
+              active={showDebugEvents}
+              disabled={false}
+              onClick={() => onShowDebugEventsChange(!showDebugEvents)}
+            />
             {agentType === 'codex' || agentType === 'claude' ? (
-              <label
-                className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"
-                htmlFor="session-run-dangerously"
-              >
-                <input
-                  id="session-run-dangerously"
-                  type="checkbox"
-                  className="mt-0.5 size-4 shrink-0 accent-[hsl(var(--danger))]"
-                  checked={runDangerously}
-                  disabled={savingRunDangerously}
-                  onChange={(event) => void handleRunDangerouslyChange(event.target.checked)}
-                />
-                <span className="min-w-0">
-                  <span className="block font-medium text-destructive">Run dangerously</span>
-                  <span className="block text-xs text-muted-foreground">
-                    {agentType === 'claude'
-                      ? 'Save this session to run Claude with permission prompts skipped on the next run.'
-                      : 'Save this session to run Codex without approval prompts or sandbox restrictions on the next run.'}
-                  </span>
-                </span>
-              </label>
+              <MenuSwitchRow
+                label="Run dangerously"
+                description={
+                  agentType === 'claude'
+                    ? 'Save this session to run Claude with permission prompts skipped on the next run.'
+                    : 'Save this session to run Codex without approval prompts or sandbox restrictions on the next run.'
+                }
+                active={runDangerously}
+                disabled={savingRunDangerously}
+                destructive
+                onClick={() => void handleRunDangerouslyChange(!runDangerously)}
+              />
             ) : null}
             {mobileSessionActions ? (
               <div className="space-y-1 border-t border-border/70 pt-3 lg:hidden">
@@ -556,6 +566,63 @@ function SessionDetailsMenu({
         </div>
       ) : null}
     </div>
+  )
+}
+
+function MenuSwitchRow({
+  label,
+  description,
+  active,
+  disabled,
+  destructive = false,
+  onClick,
+}: {
+  label: string
+  description: string
+  active: boolean
+  disabled: boolean
+  destructive?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={active}
+      aria-pressed={active}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center justify-between gap-3 rounded-md border p-3 text-left text-sm transition-colors disabled:pointer-events-none disabled:opacity-50',
+        destructive
+          ? 'border-destructive/30 bg-destructive/5 hover:bg-destructive/10'
+          : 'border-border/80 bg-surface-muted/40 hover:bg-accent/60',
+      )}
+    >
+      <span className="min-w-0">
+        <span className={cn('block font-medium', destructive ? 'text-destructive' : 'text-foreground')}>{label}</span>
+        <span className="block text-xs text-muted-foreground">{description}</span>
+      </span>
+      <span
+        className={cn(
+          'relative inline-flex h-4 w-7 shrink-0 rounded-full border transition-colors',
+          active && destructive
+            ? 'border-destructive/60 bg-destructive'
+            : active
+              ? 'border-amber-500/50 bg-amber-400 dark:bg-amber-400/70'
+              : 'border-border/80 bg-surface-muted',
+        )}
+        aria-hidden="true"
+      >
+        <span
+          className={cn(
+            'absolute top-1/2 size-3 -translate-y-1/2 rounded-full bg-background shadow-sm transition-transform',
+            active ? 'translate-x-3.5' : 'translate-x-0.5',
+          )}
+        />
+      </span>
+    </button>
   )
 }
 

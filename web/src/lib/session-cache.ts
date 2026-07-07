@@ -112,19 +112,28 @@ export async function deleteCachedSession(sessionID: string): Promise<void> {
   const db = await openCacheDB()
   if (!db) return
 
-  await Promise.all([deleteRecord(db, sessionsStore, sessionID), deleteRecord(db, eventsStore, sessionID)])
+  await Promise.all([
+    deleteRecord(db, sessionsStore, sessionID),
+    deleteRecord(db, eventsStore, sessionID),
+    deleteRecord(db, eventsStore, sessionEventsCacheKey(sessionID, false)),
+    deleteRecord(db, eventsStore, sessionEventsCacheKey(sessionID, true)),
+  ])
 }
 
-export async function readCachedSessionEvents(sessionID: string): Promise<CachedSessionEvents | null> {
+export async function readCachedSessionEvents(
+  sessionID: string,
+  includeDebugEvents = false,
+): Promise<CachedSessionEvents | null> {
   const db = await openCacheDB()
   if (!db) return null
 
-  const record = await getRecord<CachedSessionEventsRecord>(db, eventsStore, sessionID)
+  const cacheKey = sessionEventsCacheKey(sessionID, includeDebugEvents)
+  const record = await getRecord<CachedSessionEventsRecord>(db, eventsStore, cacheKey)
   if (!record) return null
 
   const trimmedEvents = trimPersistentEvents(record.events)
   if (trimmedEvents.length === 0) {
-    await deleteRecord(db, eventsStore, sessionID)
+    await deleteRecord(db, eventsStore, cacheKey)
     return null
   }
   const trimmedOlderEvents = trimmedEvents.length < record.events.length
@@ -149,18 +158,20 @@ export async function writeCachedSessionEvents(
   sessionID: string,
   events: AgentEvent[],
   hasOlderEvents: boolean,
+  includeDebugEvents = false,
 ): Promise<void> {
   const db = await openCacheDB()
   if (!db) return
 
+  const cacheKey = sessionEventsCacheKey(sessionID, includeDebugEvents)
   const trimmedEvents = trimPersistentEvents(events)
   if (trimmedEvents.length === 0) {
-    await deleteRecord(db, eventsStore, sessionID)
+    await deleteRecord(db, eventsStore, cacheKey)
     return
   }
   const trimmedOlderEvents = trimmedEvents.length < events.length
   await putRecord(db, eventsStore, {
-    sessionID,
+    sessionID: cacheKey,
     events: trimmedEvents,
     lastSeq: lastSeq(trimmedEvents),
     oldestSeq: firstSeq(trimmedEvents),
@@ -168,6 +179,10 @@ export async function writeCachedSessionEvents(
     usedAt: Date.now(),
   })
   await evictOldRecords(db, eventsStore, cachedSessionLimit)
+}
+
+function sessionEventsCacheKey(sessionID: string, includeDebugEvents: boolean) {
+  return `${sessionID}:${includeDebugEvents ? 'debug' : 'normal'}`
 }
 
 export function clearSessionCacheForTest() {

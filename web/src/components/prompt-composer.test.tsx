@@ -232,30 +232,7 @@ test('queue shortcut reports an error when attachments are present', async () =>
   expect(screen.getByLabelText('Prompt')).toHaveValue('Queued prompt')
 })
 
-test('debug toggle uses orange active styling', async () => {
-  const user = userEvent.setup()
-  const onShowDebugEventsChange = vi.fn()
-
-  render(
-    <PromptComposer
-      disabled={false}
-      disabledReason=""
-      showDebugEvents
-      onShowDebugEventsChange={onShowDebugEventsChange}
-      onSubmit={async () => undefined}
-    />,
-  )
-
-  const debug = screen.getByRole('button', { name: 'Debug' })
-  expect(debug).toHaveClass('bg-orange-100')
-  expect(debug).not.toHaveTextContent('Debug')
-
-  await user.click(debug)
-
-  expect(onShowDebugEventsChange).toHaveBeenCalledWith(false)
-})
-
-test('codex composer exposes compact mobile options and hides debug on mobile', async () => {
+test('codex composer exposes compact mobile options', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => jsonResponse(codexOptionsResponse())),
@@ -266,17 +243,12 @@ test('codex composer exposes compact mobile options and hides debug on mobile', 
       agentType="codex"
       disabled={false}
       disabledReason=""
-      showDebugEvents
-      onShowDebugEventsChange={() => undefined}
       onSubmit={async () => undefined}
     />,
   )
 
   expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5.5')
-
-  const debug = screen.getByRole('button', { name: 'Debug' })
-  expect(debug.parentElement).toHaveClass('hidden')
-  expect(debug.parentElement).toHaveClass('sm:inline-flex')
+  expect(screen.queryByRole('button', { name: 'Debug' })).not.toBeInTheDocument()
 
   const optionsButton = screen.getByRole('button', { name: 'Composer options', hidden: true })
   expect(optionsButton.parentElement).toHaveClass('sm:hidden')

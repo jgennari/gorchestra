@@ -1,14 +1,4 @@
-import {
-  Bug,
-  ChevronDown,
-  ClipboardList,
-  Paperclip,
-  Send,
-  SlidersHorizontal,
-  Square,
-  X,
-  Zap,
-} from 'lucide-react'
+import { ChevronDown, ClipboardList, Paperclip, Send, SlidersHorizontal, Square, X, Zap } from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -65,14 +55,12 @@ type Props = {
   latestQueueEvent?: AgentEvent | null
   disabled: boolean
   disabledReason: string
-  showDebugEvents?: boolean
   onSubmit: (
     content: string,
     agentOptions?: SubmitAgentOptions,
     attachments?: MessageAttachment[],
     queue?: boolean,
   ) => Promise<void>
-  onShowDebugEventsChange?: (showDebugEvents: boolean) => void
   onCancel?: () => Promise<void>
   onError?: (message: string) => void
 }
@@ -120,9 +108,7 @@ export function PromptComposer({
   latestQueueEvent = null,
   disabled,
   disabledReason,
-  showDebugEvents = false,
   onSubmit,
-  onShowDebugEventsChange,
   onCancel,
   onError,
 }: Props) {
@@ -722,19 +708,6 @@ export function PromptComposer({
               aria-label="Image attachments"
               onChange={handleFileInputChange}
             />
-            {onShowDebugEventsChange ? (
-              <span className="hidden sm:inline-flex">
-                <ToggleControl
-                  label="Debug"
-                  icon={<Bug className="size-4" aria-hidden="true" />}
-                  active={showDebugEvents}
-                  disabled={false}
-                  iconOnly
-                  activeClassName="bg-orange-100 text-orange-800 dark:bg-orange-400/18 dark:text-orange-200"
-                  onClick={() => onShowDebugEventsChange(!showDebugEvents)}
-                />
-              </span>
-            ) : null}
             <Button
               type="button"
               variant="ghost"

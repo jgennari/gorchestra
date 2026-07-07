@@ -574,6 +574,33 @@ test('chat transcript merges streaming assistant deltas with completion text', (
   expect(transcript[1]).toMatchObject({ role: 'assistant', text: 'Hi there', streaming: false })
 })
 
+test('chat transcript uses event attachment URLs instead of inline image data', () => {
+  const transcript = buildChatTranscript([
+    event(7, 'user.message.completed', {
+      text: 'see image',
+      attachments: [
+        {
+          name: 'image.png',
+          media_type: 'image/png',
+          data_url: 'data:image/png;base64,[gorchestra truncated 100 bytes from this field for browser display]',
+          size_bytes: 1234,
+        },
+      ],
+    }),
+  ])
+
+  expect(transcript).toHaveLength(1)
+  expect(transcript[0].attachments).toEqual([
+    {
+      name: 'image.png',
+      mediaType: 'image/png',
+      dataURL: 'data:image/png;base64,[gorchestra truncated 100 bytes from this field for browser display]',
+      sourceURL: '/api/sessions/sess_test/events/7/attachments/0',
+      sizeBytes: 1234,
+    },
+  ])
+})
+
 test('chat transcript merges claude completion with prior deltas missing message id', () => {
   const transcript = buildChatTranscript([
     event(1, 'user.message.completed', { text: 'Hello' }),

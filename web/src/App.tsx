@@ -578,6 +578,7 @@ function App() {
     onEvent: handleSessionEvent,
     followLatest: followingLatest,
     refreshKey: eventRefreshKey,
+    includeDebugEvents: showDebugEvents,
   })
 
   useEffect(() => {
@@ -1176,6 +1177,8 @@ function App() {
                   onUpdateTitle={handleUpdateTitle}
                   onTitleEditStateChange={handleTitleEditStateChange}
                   onUpdateAgentOptions={handleUpdateAgentOptions}
+                  showDebugEvents={showDebugEvents}
+                  onShowDebugEventsChange={handleShowDebugEventsChange}
                   onClear={() => {
                     requestSessionAction('clear')
                     return Promise.resolve()
@@ -1211,6 +1214,8 @@ function App() {
                   onUpdateTitle={handleUpdateTitle}
                   onTitleEditStateChange={handleTitleEditStateChange}
                   onUpdateAgentOptions={handleUpdateAgentOptions}
+                  showDebugEvents={showDebugEvents}
+                  onShowDebugEventsChange={handleShowDebugEventsChange}
                   onClear={() => {
                     requestSessionAction('clear')
                     return Promise.resolve()
@@ -1517,6 +1522,8 @@ function FilesWorkspaceHeader({
   onUpdateTitle,
   onTitleEditStateChange,
   onUpdateAgentOptions,
+  showDebugEvents,
+  onShowDebugEventsChange,
   onClear,
   onCompact,
   onToggleArchive,
@@ -1533,6 +1540,8 @@ function FilesWorkspaceHeader({
   onUpdateTitle: (title: string) => Promise<void>
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
+  showDebugEvents: boolean
+  onShowDebugEventsChange: (showDebugEvents: boolean) => void
   onClear?: () => Promise<void>
   onCompact?: () => Promise<void>
   onToggleArchive?: () => Promise<void>
@@ -1550,9 +1559,11 @@ function FilesWorkspaceHeader({
         agentOptions={session.agent_options}
         title={session.title}
         errorMessage={errorMessage}
+        showDebugEvents={showDebugEvents}
         onUpdateTitle={onUpdateTitle}
         onTitleEditStateChange={onTitleEditStateChange}
         onUpdateAgentOptions={onUpdateAgentOptions}
+        onShowDebugEventsChange={onShowDebugEventsChange}
         headerActions={headerActions}
         leadingAction={leadingAction}
         mobileSessionActions={{

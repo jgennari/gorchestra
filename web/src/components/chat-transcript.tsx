@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Copy, FileText, Loader2 } from 'lucide-react'
+import { Brain, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Copy, Download, FileText, Loader2 } from 'lucide-react'
 import {
   isValidElement,
   useEffect,
@@ -24,6 +24,7 @@ import type {
   ChatTranscriptTool,
 } from '@/lib/events'
 import { buildChatTimeline } from '@/lib/events'
+import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 
@@ -74,7 +75,7 @@ export function ChatTranscript({
   const userScrollIntentRef = useRef(false)
   const [scrolling, setScrolling] = useState(false)
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
-  const firstTimelineSeq = timeline[0]?.startSeq ?? 0
+  const firstEventSeq = events[0]?.seq ?? 0
   const lastSeq = timeline.at(-1)?.endSeq ?? 0
   const bottomAnchorKey = `${lastSeq}:${activityStatus ? activityStatus.kind : 'idle'}:${bottomInsetHeight}`
 
@@ -89,12 +90,19 @@ export function ChatTranscript({
   }
 
   function scheduleScrollToBottom() {
+    if (prependAnchorRef.current) {
+      return
+    }
     const element = scrollRef.current
     if (!element) {
       return
     }
 
+    const hasMeasuredContent = element.scrollHeight > 0
     scrollToBottom(element)
+    if (!hasMeasuredContent) {
+      return
+    }
     if (scrollFrameRef.current !== null) {
       window.cancelAnimationFrame(scrollFrameRef.current)
     }
@@ -124,7 +132,7 @@ export function ChatTranscript({
     }
 
     const observer = new ResizeObserver(() => {
-      if (!autoScrollPausedRef.current) {
+      if (!autoScrollPausedRef.current && !prependAnchorRef.current) {
         scheduleScrollToBottom()
       }
     })
@@ -140,17 +148,30 @@ export function ChatTranscript({
       return
     }
 
-    if (firstTimelineSeq > 0 && firstTimelineSeq < anchor.firstSeq) {
-      element.scrollTop = anchor.scrollTop + (element.scrollHeight - anchor.scrollHeight)
+    if (firstEventSeq > 0 && firstEventSeq < anchor.firstSeq) {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current)
+        scrollFrameRef.current = null
+      }
+      const nextScrollTop = anchor.scrollTop + (element.scrollHeight - anchor.scrollHeight)
+      element.scrollTop = nextScrollTop
       lastScrollTopRef.current = element.scrollTop
       prependAnchorRef.current = null
+      setAutoScrollPaused(true)
+      scrollFrameRef.current = window.requestAnimationFrame(() => {
+        scrollFrameRef.current = null
+        if (autoScrollPausedRef.current && scrollRef.current) {
+          scrollRef.current.scrollTop = nextScrollTop
+          lastScrollTopRef.current = nextScrollTop
+        }
+      })
       return
     }
 
     if (!loadingOlderEvents) {
       prependAnchorRef.current = null
     }
-  }, [firstTimelineSeq, loadingOlderEvents])
+  }, [firstEventSeq, loadingOlderEvents])
 
   useEffect(() => {
     if (events.length === 0) {
@@ -243,8 +264,9 @@ export function ChatTranscript({
 
     const element = scrollRef.current
     if (element) {
+      autoScrollPausedRef.current = true
       prependAnchorRef.current = {
-        firstSeq: firstTimelineSeq,
+        firstSeq: firstEventSeq,
         scrollHeight: element.scrollHeight,
         scrollTop: element.scrollTop,
       }
@@ -681,19 +703,58 @@ function MessageAttachments({ attachments }: { attachments: ChatTranscriptAttach
   return (
     <div className="mb-2 flex flex-wrap gap-2">
       {attachments.map((attachment, index) => (
-        <a
-          key={`${attachment.name}-${index}`}
-          href={attachment.dataURL}
-          target="_blank"
-          rel="noreferrer"
-          className="block overflow-hidden rounded-md border border-border/70 bg-background/80"
-          aria-label={`Open ${attachment.name}`}
-        >
-          <img src={attachment.dataURL} alt={attachment.name} className="h-24 w-24 object-cover" />
-        </a>
+        <ImageAttachmentPreview key={`${attachment.name}-${index}`} attachment={attachment} />
       ))}
     </div>
   )
+}
+
+function ImageAttachmentPreview({ attachment }: { attachment: ChatTranscriptAttachment }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className="block overflow-hidden rounded-md border border-border/70 bg-background/80 transition-colors hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label={`Preview ${attachment.name}`}
+        >
+          <img src={attachment.sourceURL} alt={attachment.name} className="h-24 w-24 object-cover" />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] gap-4 overflow-hidden border-border/90 p-4 sm:max-w-5xl">
+        <div className="flex min-w-0 items-start justify-between gap-3 pr-8">
+          <div className="min-w-0">
+            <DialogTitle className="truncate text-base">{attachment.name}</DialogTitle>
+            <DialogDescription>{formatAttachmentSize(attachment.sizeBytes) || attachment.mediaType}</DialogDescription>
+          </div>
+          <a
+            href={attachment.sourceURL}
+            download={attachment.name}
+            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-border/80 bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Download className="size-4" aria-hidden="true" />
+            Download
+          </a>
+        </div>
+        <div className="flex min-h-0 max-h-[calc(100dvh-9rem)] items-center justify-center overflow-auto rounded-md border border-border/70 bg-black/90">
+          <img src={attachment.sourceURL} alt={attachment.name} className="max-h-[calc(100dvh-10rem)] max-w-full object-contain" />
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function formatAttachmentSize(sizeBytes: number) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+    return ''
+  }
+  if (sizeBytes < 1024) {
+    return `${sizeBytes} B`
+  }
+  if (sizeBytes < 1024 * 1024) {
+    return `${(sizeBytes / 1024).toFixed(1)} KB`
+  }
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function formatMessageTimestamp(value: string) {
