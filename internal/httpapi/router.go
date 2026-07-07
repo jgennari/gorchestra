@@ -31,6 +31,9 @@ const (
 	defaultSessionLimit      = 50
 	maxSessionLimit          = 100
 	streamHeartbeat          = 15 * time.Second
+	immutableAssetCache     = "public, max-age=31536000, immutable"
+	revalidatingCache        = "no-cache"
+	staticShellCache         = "public, max-age=3600"
 )
 
 type Store interface {
@@ -263,7 +266,19 @@ func serveStaticFile(assets fs.FS, name string, w http.ResponseWriter, r *http.R
 		http.NotFound(w, r)
 		return
 	}
+	setStaticCacheHeader(w.Header(), name)
 	http.ServeContent(w, r, name, info.ModTime(), bytes.NewReader(content))
+}
+
+func setStaticCacheHeader(headers http.Header, name string) {
+	switch {
+	case strings.HasPrefix(name, "assets/"):
+		headers.Set("Cache-Control", immutableAssetCache)
+	case name == "favicon.svg" || name == "favicon-notify.svg" || name == "icon.svg" || name == "manifest.webmanifest":
+		headers.Set("Cache-Control", staticShellCache)
+	default:
+		headers.Set("Cache-Control", revalidatingCache)
+	}
 }
 
 func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {

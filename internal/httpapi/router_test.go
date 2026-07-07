@@ -135,6 +135,39 @@ func TestStaticAssetsDoNotFallbackForMissingAssetFiles(t *testing.T) {
 	}
 }
 
+func TestStaticAssetsSetCacheHeaders(t *testing.T) {
+	handler := NewRouter(Dependencies{StaticAssets: testStaticAssets()})
+
+	tests := []struct {
+		name      string
+		path      string
+		wantCache string
+	}{
+		{name: "route fallback", path: "/sessions/sess_123", wantCache: revalidatingCache},
+		{name: "index", path: "/", wantCache: revalidatingCache},
+		{name: "service worker", path: "/service-worker.js", wantCache: revalidatingCache},
+		{name: "hashed asset", path: "/assets/app.js", wantCache: immutableAssetCache},
+		{name: "manifest", path: "/manifest.webmanifest", wantCache: staticShellCache},
+		{name: "icon", path: "/icon.svg", wantCache: staticShellCache},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, test.path, nil)
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Cache-Control"); got != test.wantCache {
+				t.Fatalf("expected Cache-Control %q, got %q", test.wantCache, got)
+			}
+		})
+	}
+}
+
 func TestAPIRoutePrecedenceAndMissingAPIRoute(t *testing.T) {
 	handler := NewRouter(Dependencies{StaticAssets: testStaticAssets()})
 
@@ -205,6 +238,15 @@ func testStaticAssets() fstest.MapFS {
 		},
 		"assets/app.js": {
 			Data: []byte(`console.log("gorchestra")`),
+		},
+		"icon.svg": {
+			Data: []byte(`<svg></svg>`),
+		},
+		"manifest.webmanifest": {
+			Data: []byte(`{"name":"Gorchestra"}`),
+		},
+		"service-worker.js": {
+			Data: []byte(`self.addEventListener("push", () => {})`),
 		},
 	}
 }
