@@ -20,6 +20,7 @@ test('renders user and assistant messages without duplicating completion text', 
   expect(screen.queryByText('Hi thereHi there')).not.toBeInTheDocument()
   expect(container.querySelectorAll('time[datetime="2026-06-12T16:00:00Z"]')).toHaveLength(2)
   expect(container.querySelector('time[datetime="2026-06-12T16:00:00Z"]')?.closest('.hidden')).toHaveClass('sm:block')
+  expect(container.querySelector('time[datetime="2026-06-12T16:00:00Z"]')?.parentElement).toHaveStyle({ opacity: '0' })
 })
 
 test('renders session actions as conversation breaks', () => {

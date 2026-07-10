@@ -133,6 +133,7 @@ export function PromptComposer({
   const [claudeSelection, setClaudeSelection] = useState<ClaudeSelection>(() => loadClaudeSelection(sessionID))
   const [opencodeSelection, setOpenCodeSelection] = useState<OpenCodeSelection>(() => loadOpenCodeSelection(sessionID))
   const [piSelection, setPiSelection] = useState<PiSelection>(() => loadPiSelection(sessionID))
+  const [closeSettingsSignal, setCloseSettingsSignal] = useState(0)
   const hasAttachments = attachments.length > 0
   const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments)
   const queueBlockedByAttachments = hasAttachments
@@ -388,6 +389,10 @@ export function PromptComposer({
     void submitPrompt(true)
   }
 
+  function handleTextareaFocus() {
+    setCloseSettingsSignal((value) => value + 1)
+  }
+
   async function handleCancel() {
     if (!onCancel || cancelling) {
       return
@@ -580,6 +585,7 @@ export function PromptComposer({
           placeholder={promptPlaceholder}
           value={content}
           onChange={(event) => setContent(event.target.value)}
+          onFocus={handleTextareaFocus}
           onKeyDown={handleKeyDown}
           disabled={inputDisabled}
           rows={1}
@@ -595,6 +601,7 @@ export function PromptComposer({
                 error={codexOptionsError}
                 disabled={codexControlsDisabled}
                 onChange={setCodexSelection}
+                closeSettingsSignal={closeSettingsSignal}
                 className="hidden sm:flex"
               />
               <MobileCodexOptions
@@ -604,6 +611,7 @@ export function PromptComposer({
                 error={codexOptionsError}
                 disabled={codexControlsDisabled}
                 onChange={setCodexSelection}
+                closeSettingsSignal={closeSettingsSignal}
               />
               <span className="sm:hidden">
                 <SwitchControl
@@ -626,12 +634,14 @@ export function PromptComposer({
                 selection={claudeSelection}
                 disabled={submitting}
                 onChange={setClaudeSelection}
+                closeSettingsSignal={closeSettingsSignal}
                 className="hidden sm:flex"
               />
               <MobileClaudeOptions
                 selection={claudeSelection}
                 disabled={submitting}
                 onChange={setClaudeSelection}
+                closeSettingsSignal={closeSettingsSignal}
               />
               <span className="sm:hidden">
                 <SwitchControl
@@ -652,6 +662,7 @@ export function PromptComposer({
                 error={opencodeOptionsError}
                 disabled={opencodeControlsDisabled}
                 onChange={setOpenCodeSelection}
+                closeSettingsSignal={closeSettingsSignal}
                 className="hidden sm:flex"
               />
               <MobileOpenCodeOptions
@@ -661,6 +672,7 @@ export function PromptComposer({
                 error={opencodeOptionsError}
                 disabled={opencodeControlsDisabled}
                 onChange={setOpenCodeSelection}
+                closeSettingsSignal={closeSettingsSignal}
               />
               <span className="sm:hidden">
                 <SwitchControl
@@ -686,6 +698,7 @@ export function PromptComposer({
                 error={piOptionsError}
                 disabled={piControlsDisabled}
                 onChange={setPiSelection}
+                closeSettingsSignal={closeSettingsSignal}
                 className="hidden sm:flex"
               />
               <MobilePiOptions
@@ -695,6 +708,7 @@ export function PromptComposer({
                 error={piOptionsError}
                 disabled={piControlsDisabled}
                 onChange={setPiSelection}
+                closeSettingsSignal={closeSettingsSignal}
               />
             </>
           ) : null}
@@ -876,6 +890,7 @@ function CodexToolbar({
   error,
   disabled,
   onChange,
+  closeSettingsSignal,
   className,
 }: {
   options: CodexAgentOptions | null
@@ -884,6 +899,7 @@ function CodexToolbar({
   error: string
   disabled: boolean
   onChange: (selection: CodexSelection) => void
+  closeSettingsSignal: number
   className?: string
 }) {
   const [openMenu, setOpenMenu] = useState<'model' | 'reasoning' | null>(null)
@@ -891,6 +907,10 @@ function CodexToolbar({
   const reasoningOptions = model?.supported_reasoning_efforts ?? []
   const fastTier = fastTierForModel(model)
   const planAvailable = Boolean(options?.collaboration_modes.some((mode) => mode.mode === 'plan'))
+
+  useEffect(() => {
+    setOpenMenu(null)
+  }, [closeSettingsSignal])
 
   if (loading && !options) {
     return <span className={cn('text-xs font-medium text-muted-foreground', className)}>Loading Codex options...</span>
@@ -962,6 +982,7 @@ function MobileCodexOptions({
   error,
   disabled,
   onChange,
+  closeSettingsSignal,
 }: {
   options: CodexAgentOptions | null
   selection: CodexSelection
@@ -969,6 +990,7 @@ function MobileCodexOptions({
   error: string
   disabled: boolean
   onChange: (selection: CodexSelection) => void
+  closeSettingsSignal: number
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -984,6 +1006,11 @@ function MobileCodexOptions({
     modelName: model?.display_name || selection.model,
     reasoningEffort: selection.reasoning_effort || model?.default_reasoning_effort,
   })
+
+  useEffect(() => {
+    setOpen(false)
+    setOpenMenu(null)
+  }, [closeSettingsSignal])
 
   useEffect(() => {
     if (!open) {
@@ -1120,6 +1147,7 @@ function OpenCodeToolbar({
   error,
   disabled,
   onChange,
+  closeSettingsSignal,
   className,
 }: {
   options: OpenCodeAgentOptions | null
@@ -1128,11 +1156,16 @@ function OpenCodeToolbar({
   error: string
   disabled: boolean
   onChange: (selection: OpenCodeSelection) => void
+  closeSettingsSignal: number
   className?: string
 }) {
   const [openMenu, setOpenMenu] = useState<'model' | null>(null)
   const model = selectedOpenCodeModel(options, selection.model)
   const planAvailable = options?.collaboration_modes.some((mode) => mode.mode === 'plan') ?? false
+
+  useEffect(() => {
+    setOpenMenu(null)
+  }, [closeSettingsSignal])
 
   return (
     <div
@@ -1171,6 +1204,7 @@ function MobileOpenCodeOptions({
   error,
   disabled,
   onChange,
+  closeSettingsSignal,
 }: {
   options: OpenCodeAgentOptions | null
   selection: OpenCodeSelection
@@ -1178,6 +1212,7 @@ function MobileOpenCodeOptions({
   error: string
   disabled: boolean
   onChange: (selection: OpenCodeSelection) => void
+  closeSettingsSignal: number
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -1190,6 +1225,11 @@ function MobileOpenCodeOptions({
       : error && !options
         ? 'Unavailable'
         : [model?.display_name || 'Model', selection.planning_mode ? 'Plan' : 'Build'].filter(Boolean).join(' / ')
+
+  useEffect(() => {
+    setOpen(false)
+    setOpenMenu(null)
+  }, [closeSettingsSignal])
 
   useEffect(() => {
     if (!open) {
@@ -1271,6 +1311,7 @@ function PiToolbar({
   error,
   disabled,
   onChange,
+  closeSettingsSignal,
   className,
 }: {
   options: PiAgentOptions | null
@@ -1279,11 +1320,16 @@ function PiToolbar({
   error: string
   disabled: boolean
   onChange: (selection: PiSelection) => void
+  closeSettingsSignal: number
   className?: string
 }) {
   const [openMenu, setOpenMenu] = useState<'model' | 'thinking' | null>(null)
   const model = selectedPiModel(options, selection.model)
   const thinkingOptions = thinkingOptionsForModel(model)
+
+  useEffect(() => {
+    setOpenMenu(null)
+  }, [closeSettingsSignal])
 
   return (
     <div
@@ -1325,6 +1371,7 @@ function MobilePiOptions({
   error,
   disabled,
   onChange,
+  closeSettingsSignal,
 }: {
   options: PiAgentOptions | null
   selection: PiSelection
@@ -1332,6 +1379,7 @@ function MobilePiOptions({
   error: string
   disabled: boolean
   onChange: (selection: PiSelection) => void
+  closeSettingsSignal: number
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -1345,6 +1393,11 @@ function MobilePiOptions({
       : error && !options
         ? 'Unavailable'
         : [model?.display_name || 'Model', selection.thinking_level || 'Default'].filter(Boolean).join(' / ')
+
+  useEffect(() => {
+    setOpen(false)
+    setOpenMenu(null)
+  }, [closeSettingsSignal])
 
   useEffect(() => {
     if (!open) {
@@ -1435,14 +1488,20 @@ function ClaudeToolbar({
   selection,
   disabled,
   onChange,
+  closeSettingsSignal,
   className,
 }: {
   selection: ClaudeSelection
   disabled: boolean
   onChange: (selection: ClaudeSelection) => void
+  closeSettingsSignal: number
   className?: string
 }) {
   const [openMenu, setOpenMenu] = useState<'model' | 'effort' | null>(null)
+
+  useEffect(() => {
+    setOpenMenu(null)
+  }, [closeSettingsSignal])
 
   return (
     <div
@@ -1487,16 +1546,23 @@ function MobileClaudeOptions({
   selection,
   disabled,
   onChange,
+  closeSettingsSignal,
 }: {
   selection: ClaudeSelection
   disabled: boolean
   onChange: (selection: ClaudeSelection) => void
+  closeSettingsSignal: number
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [openMenu, setOpenMenu] = useState<'model' | 'effort' | null>(null)
   const hasActiveMode = false
   const summary = [claudeModelLabel(selection.model), selection.effort].filter(Boolean).join(' / ')
+
+  useEffect(() => {
+    setOpen(false)
+    setOpenMenu(null)
+  }, [closeSettingsSignal])
 
   useEffect(() => {
     if (!open) {

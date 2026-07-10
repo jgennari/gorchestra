@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,6 +22,8 @@ import (
 
 const (
 	maxFilePreviewBytes       = 256 * 1024
+	maxWorkspaceUploadBytes   = 100 * 1024 * 1024
+	maxWorkspaceUploadMemory  = 8 * 1024 * 1024
 	maxSearchResults          = 50
 	maxSearchWalkItems        = 5000
 	maxSearchLineSnippetRunes = 180
@@ -58,9 +61,10 @@ type workspaceBrowseResponse struct {
 }
 
 type workspaceGitSummaryResponse struct {
-	Added    int `json:"added"`
-	Modified int `json:"modified"`
-	Deleted  int `json:"deleted"`
+	Branch   string `json:"branch,omitempty"`
+	Added    int    `json:"added"`
+	Modified int    `json:"modified"`
+	Deleted  int    `json:"deleted"`
 }
 
 type workspaceEntryResponse struct {
@@ -85,6 +89,10 @@ type workspaceFileContentResponse struct {
 
 type updateWorkspaceFileContentRequest struct {
 	Content *string `json:"content"`
+}
+
+type workspaceFileUploadResponse struct {
+	Files []workspaceEntryResponse `json:"files"`
 }
 
 type workspaceSearchResponse struct {
@@ -224,7 +232,7 @@ func (api API) sessionFilesHandler(w http.ResponseWriter, r *http.Request) {
 		RootPath:   session.WorkspacePath,
 		Path:       relativePath,
 		Entries:    entries,
-		GitSummary: gitSummaryForStatuses(gitStatuses),
+		GitSummary: gitSummaryForWorkspace(workspacePath, gitStatuses),
 	})
 }
 
@@ -254,6 +262,49 @@ func (api API) sessionFileContentHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, content)
+}
+
+func (api API) uploadSessionFilesHandler(w http.ResponseWriter, r *http.Request) {
+	_, workspacePath, ok := api.sessionWorkspace(w, r)
+	if !ok {
+		return
+	}
+	relativePath, err := cleanRelativePath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	directory, err := api.workspaces.childPath(workspacePath, relativePath)
+	if err != nil {
+		writeWorkspacePathError(w, err)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxWorkspaceUploadBytes)
+	if err := r.ParseMultipartForm(maxWorkspaceUploadMemory); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "upload exceeds 100 MB limit")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid multipart upload")
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	files := r.MultipartForm.File["files"]
+	if len(files) == 0 {
+		writeError(w, http.StatusBadRequest, "at least one file is required")
+		return
+	}
+
+	uploaded, err := uploadWorkspaceFiles(workspacePath, directory, files)
+	if err != nil {
+		writeWorkspacePathError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, workspaceFileUploadResponse{Files: uploaded})
 }
 
 func (api API) updateSessionFileContentHandler(w http.ResponseWriter, r *http.Request) {
@@ -612,6 +663,84 @@ func writeWorkspaceFile(rootPath string, filePath string, content string) (works
 	return readWorkspaceFile(rootPath, filePath)
 }
 
+type stagedWorkspaceUpload struct {
+	temporaryPath string
+	targetPath    string
+}
+
+func uploadWorkspaceFiles(rootPath string, directory string, headers []*multipart.FileHeader) ([]workspaceEntryResponse, error) {
+	seen := make(map[string]bool, len(headers))
+	staged := make([]stagedWorkspaceUpload, 0, len(headers))
+	cleanup := func() {
+		for _, upload := range staged {
+			_ = os.Remove(upload.temporaryPath)
+		}
+	}
+	defer cleanup()
+
+	for _, header := range headers {
+		name := strings.TrimSpace(header.Filename)
+		if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsAny(name, `/\\`) {
+			return nil, errors.New("upload filename must not contain a path")
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate upload filename %q", name)
+		}
+		seen[name] = true
+
+		targetPath := filepath.Join(directory, name)
+		if !isPathWithin(rootPath, targetPath) {
+			return nil, errors.New("upload path is outside workspace")
+		}
+		mode := fs.FileMode(0o644)
+		if info, err := os.Lstat(targetPath); err == nil {
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("upload target %q must be a regular file", name)
+			}
+			mode = info.Mode().Perm()
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("inspect upload target %q: %w", name, err)
+		}
+
+		source, err := header.Open()
+		if err != nil {
+			return nil, fmt.Errorf("open upload %q: %w", name, err)
+		}
+		temporary, err := os.CreateTemp(directory, ".gorchestra-upload-*")
+		if err != nil {
+			source.Close()
+			return nil, fmt.Errorf("stage upload %q: %w", name, err)
+		}
+		temporaryPath := temporary.Name()
+		staged = append(staged, stagedWorkspaceUpload{temporaryPath: temporaryPath, targetPath: targetPath})
+		_, copyErr := io.Copy(temporary, source)
+		closeErr := temporary.Close()
+		source.Close()
+		if copyErr != nil {
+			return nil, fmt.Errorf("write upload %q: %w", name, copyErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close upload %q: %w", name, closeErr)
+		}
+		if err := os.Chmod(temporaryPath, mode); err != nil {
+			return nil, fmt.Errorf("set upload permissions %q: %w", name, err)
+		}
+	}
+
+	responses := make([]workspaceEntryResponse, 0, len(staged))
+	for _, upload := range staged {
+		if err := os.Rename(upload.temporaryPath, upload.targetPath); err != nil {
+			return nil, fmt.Errorf("save upload %q: %w", filepath.Base(upload.targetPath), err)
+		}
+		info, err := os.Stat(upload.targetPath)
+		if err != nil {
+			return nil, fmt.Errorf("inspect uploaded file %q: %w", filepath.Base(upload.targetPath), err)
+		}
+		responses = append(responses, workspaceEntry(rootPath, upload.targetPath, info))
+	}
+	return responses, nil
+}
+
 func isBinaryPreview(data []byte) bool {
 	if len(data) == 0 {
 		return false
@@ -734,11 +863,13 @@ func applyGitStatusesFromMap(statuses map[string]string, entries []workspaceEntr
 	}
 }
 
-func gitSummaryForStatuses(statuses map[string]string) *workspaceGitSummaryResponse {
-	if len(statuses) == 0 {
+func gitSummaryForWorkspace(rootPath string, statuses map[string]string) *workspaceGitSummaryResponse {
+	summary := workspaceGitSummaryResponse{
+		Branch: gitBranchForWorkspace(rootPath),
+	}
+	if len(statuses) == 0 && summary.Branch == "" {
 		return nil
 	}
-	summary := workspaceGitSummaryResponse{}
 	for _, status := range statuses {
 		switch status {
 		case "added", "untracked":
@@ -754,6 +885,15 @@ func gitSummaryForStatuses(statuses map[string]string) *workspaceGitSummaryRespo
 		}
 	}
 	return &summary
+}
+
+func gitBranchForWorkspace(rootPath string) string {
+	cmd := exec.Command("git", "-C", rootPath, "branch", "--show-current")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func applyGitStatusesToSearchResults(rootPath string, entries []workspaceSearchResultResponse) {

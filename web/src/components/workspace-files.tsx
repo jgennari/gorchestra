@@ -1,5 +1,5 @@
 import Editor from '@monaco-editor/react'
-import { Code2, Eye, FileText, Folder, Loader2, RefreshCw, Save, Search, X } from 'lucide-react'
+import { Code2, Eye, FileText, Folder, Loader2, RefreshCw, Save, Search, Upload, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -10,7 +10,13 @@ import type {
   WorkspaceGitSummary,
   WorkspaceSearchResult,
 } from '@/lib/api'
-import { getSessionFileContent, listSessionFiles, searchSessionFiles, updateSessionFileContent } from '@/lib/api'
+import {
+  getSessionFileContent,
+  listSessionFiles,
+  searchSessionFiles,
+  updateSessionFileContent,
+  uploadSessionFiles,
+} from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
@@ -101,9 +107,11 @@ export function WorkspaceFileBrowser({
   const [results, setResults] = useState<WorkspaceSearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [searching, setSearching] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const [error, setError] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
   const sessionID = session?.id ?? ''
   const displayEntries = query.trim() ? results : entries
   const refreshing = loading || searching
@@ -219,6 +227,29 @@ export function WorkspaceFileBrowser({
     }
   }
 
+  async function handleUpload(files: FileList | null) {
+    const selectedFiles = files ? Array.from(files) : []
+    if (!sessionID || selectedFiles.length === 0) {
+      return
+    }
+
+    setUploading(true)
+    setError('')
+    try {
+      await uploadSessionFiles(sessionID, selectedFiles, currentPath)
+      setQuery('')
+      setResults([])
+      setReloadKey((value) => value + 1)
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : 'Failed to upload files')
+    } finally {
+      setUploading(false)
+      if (uploadInputRef.current) {
+        uploadInputRef.current.value = ''
+      }
+    }
+  }
+
   return (
     <section
       className={cn(
@@ -231,18 +262,41 @@ export function WorkspaceFileBrowser({
           <SectionTitle icon={Folder} label="Files" />
           <GitSummary summary={gitSummary} />
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-7 border-transparent text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
-          disabled={!sessionID || refreshing}
-          onClick={() => setReloadKey((value) => value + 1)}
-          aria-label="Refresh files"
-          title="Refresh files"
-        >
-          {refreshing ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
-        </Button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <input
+            ref={uploadInputRef}
+            type="file"
+            multiple
+            className="sr-only"
+            aria-label="Select files to upload"
+            disabled={!sessionID || uploading}
+            onChange={(event) => void handleUpload(event.target.files)}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-7 border-transparent text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
+            disabled={!sessionID || loading || uploading}
+            onClick={() => uploadInputRef.current?.click()}
+            aria-label="Upload files"
+            title={`Upload files to ${currentPath || 'workspace root'}`}
+          >
+            {uploading ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Upload aria-hidden="true" />}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-7 border-transparent text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
+            disabled={!sessionID || refreshing || uploading}
+            onClick={() => setReloadKey((value) => value + 1)}
+            aria-label="Refresh files"
+            title="Refresh files"
+          >
+            {refreshing ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+          </Button>
+        </div>
       </div>
 
       <div className="mt-2 flex h-8 items-center gap-1.5 rounded border border-border/70 bg-background/55 px-2">
@@ -534,12 +588,13 @@ function SearchMatchDetail({ entry }: { entry: WorkspaceEntry | WorkspaceSearchR
 }
 
 function GitSummary({ summary }: { summary: WorkspaceGitSummary | null }) {
-  if (!summary || summary.added + summary.modified + summary.deleted === 0) {
+  if (!summary || (!summary.branch && summary.added + summary.modified + summary.deleted === 0)) {
     return null
   }
 
   return (
     <div className="flex shrink-0 items-center gap-1" aria-label="Git file summary">
+      {summary.branch ? <GitBranchBadge branch={summary.branch} /> : null}
       <GitSummaryBadge label="+" value={summary.added} tone="added" />
       <GitSummaryBadge label="~" value={summary.modified} tone="modified" />
       <GitSummaryBadge label="-" value={summary.deleted} tone="deleted" />
@@ -548,6 +603,14 @@ function GitSummary({ summary }: { summary: WorkspaceGitSummary | null }) {
 }
 
 type GitFileTone = 'added' | 'modified' | 'deleted' | 'neutral'
+
+function GitBranchBadge({ branch }: { branch: string }) {
+  return (
+    <span className="git-file-tag git-file-tag--neutral git-file-tag--branch" title={`Git branch: ${branch}`}>
+      {branch}
+    </span>
+  )
+}
 
 function GitSummaryBadge({ label, value, tone }: { label: string; value: number; tone: GitFileTone }) {
   if (value === 0) {

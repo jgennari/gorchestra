@@ -172,6 +172,7 @@ export type WorkspaceSearchResult = WorkspaceEntry & {
 }
 
 export type WorkspaceGitSummary = {
+  branch?: string
   added: number
   modified: number
   deleted: number
@@ -200,6 +201,10 @@ export type WorkspaceSearchResponse = {
   query: string
   path: string
   results: WorkspaceSearchResult[]
+}
+
+export type WorkspaceFileUploadResponse = {
+  files: WorkspaceEntry[]
 }
 
 export type ConsoleStatus = {
@@ -461,6 +466,17 @@ export async function listSessionFiles(sessionID: string, path = '') {
   return requestJSON<WorkspaceBrowseResponse>(withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files`, params))
 }
 
+export async function uploadSessionFiles(sessionID: string, files: File[], path = '') {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  const body = new FormData()
+  files.forEach((file) => body.append('files', file, file.name))
+  return requestJSON<WorkspaceFileUploadResponse>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files/upload`, params),
+    { method: 'POST', body },
+  )
+}
+
 export async function searchSessionFiles(sessionID: string, query: string, path = '') {
   const params = new URLSearchParams({ q: query })
   if (path) params.set('path', path)
@@ -655,11 +671,12 @@ function withQuery(path: string, params: URLSearchParams) {
 }
 
 async function requestJSON<T>(url: string, init: RequestInit = {}) {
+  const multipart = typeof FormData !== 'undefined' && init.body instanceof FormData
   const response = await fetch(url, {
     ...init,
     headers: {
       Accept: 'application/json',
-      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(init.body && !multipart ? { 'Content-Type': 'application/json' } : {}),
       ...init.headers,
     },
   })

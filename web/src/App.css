@@ -247,6 +247,16 @@
   color: hsl(var(--muted-foreground));
 }
 
+.git-file-tag--branch {
+  max-width: 8rem;
+  justify-content: flex-start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  text-transform: none;
+}
+
 :root[data-theme='dark'] .git-file-tag--added {
   background: hsl(var(--success) / 0.22);
   color: hsl(156 78% 74%);

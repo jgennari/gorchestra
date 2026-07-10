@@ -614,8 +614,11 @@ function ChatMessageRow({
         {timestamp ? (
           <div className="pointer-events-none absolute inset-x-0 top-0 hidden h-8 overflow-hidden sm:block">
             <div
-              className="absolute right-1 bottom-0 flex items-center gap-1 transform-gpu transition-transform duration-250 ease-out will-change-transform"
-              style={{ transform: showMessageRail ? 'translateY(0)' : 'translateY(1.25rem)' }}
+              className="absolute right-1 bottom-0 flex items-center gap-1 transform-gpu transition-[opacity,transform] duration-250 ease-out will-change-[opacity,transform]"
+              style={{
+                opacity: showMessageRail ? 1 : 0,
+                transform: showMessageRail ? 'translateY(0)' : 'translateY(1.25rem)',
+              }}
             >
               <time className="text-[11px] font-normal tabular-nums text-muted-foreground/80" dateTime={message.createdAt}>
                 {timestamp}

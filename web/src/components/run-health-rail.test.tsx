@@ -405,13 +405,78 @@ test('run health rail file explorer external refresh preserves the current folde
   )
 })
 
+test('run health rail file explorer uploads files to the current folder', async () => {
+  const user = userEvent.setup()
+  let uploaded = false
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    switch (String(url)) {
+      case '/api/sessions/sess_1/files':
+        return jsonResponse({
+          root_path: '/repo',
+          path: '',
+          entries: [
+            {
+              name: 'src',
+              path: 'src',
+              type: 'directory',
+              size_bytes: 0,
+              modified_at: '2026-06-12T16:00:00Z',
+            },
+          ],
+        })
+      case '/api/sessions/sess_1/files?path=src':
+        return jsonResponse({
+          root_path: '/repo',
+          path: 'src',
+          entries: uploaded
+            ? [
+                {
+                  name: 'notes.txt',
+                  path: 'src/notes.txt',
+                  type: 'file',
+                  size_bytes: 5,
+                  modified_at: '2026-06-12T16:00:00Z',
+                },
+              ]
+            : [],
+        })
+      case '/api/sessions/sess_1/files/upload?path=src': {
+        expect(init?.method).toBe('POST')
+        expect(init?.body).toBeInstanceOf(FormData)
+        expect((init?.body as FormData).get('files')).toEqual(expect.objectContaining({ name: 'notes.txt' }))
+        expect(init?.headers).not.toHaveProperty('Content-Type')
+        uploaded = true
+        return jsonResponse({ files: [] }, 201)
+      }
+      default:
+        throw new Error(`unexpected URL ${String(url)}`)
+    }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  await user.click(await screen.findByRole('button', { name: 'src' }))
+  await user.upload(screen.getByLabelText('Select files to upload'), new File(['notes'], 'notes.txt'))
+
+  expect(await screen.findByRole('button', { name: 'notes.txt' })).toBeInTheDocument()
+})
+
 test('run health rail file explorer shows git file summary counts', async () => {
   const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
     if (String(url) === '/api/sessions/sess_1/files') {
       return jsonResponse({
         root_path: '/repo',
         path: '',
-        git_summary: { added: 2, modified: 3, deleted: 1 },
+        git_summary: { branch: 'feature/files-pill', added: 2, modified: 3, deleted: 1 },
         entries: [],
       })
     }
@@ -430,6 +495,7 @@ test('run health rail file explorer shows git file summary counts', async () => 
   )
 
   const summary = await screen.findByLabelText('Git file summary')
+  expect(within(summary).getByText('feature/files-pill')).toBeInTheDocument()
   expect(within(summary).getByText('+2')).toBeInTheDocument()
   expect(within(summary).getByText('~3')).toBeInTheDocument()
   expect(within(summary).getByText('-1')).toBeInTheDocument()
@@ -722,9 +788,9 @@ function tokenUsageRaw() {
   }
 }
 
-function jsonResponse(body: unknown) {
+function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { 'Content-Type': 'application/json' },
   })
 }

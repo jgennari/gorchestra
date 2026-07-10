@@ -641,6 +641,57 @@ test('codex model and reasoning menus are mutually exclusive', async () => {
   expect(screen.queryByRole('listbox', { name: 'Reasoning' })).not.toBeInTheDocument()
 })
 
+test('composer settings menus close when the prompt regains focus', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => jsonResponse(codexOptionsResponse())),
+  )
+
+  render(
+    <PromptComposer
+      sessionID="sess_codex"
+      agentType="codex"
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+    />,
+  )
+
+  await user.click(await screen.findByRole('button', { name: 'Model' }))
+  expect(screen.getByRole('listbox', { name: 'Model' })).toBeInTheDocument()
+
+  await user.click(screen.getByRole('textbox', { name: 'Prompt' }))
+
+  expect(screen.queryByRole('listbox', { name: 'Model' })).not.toBeInTheDocument()
+})
+
+test('pi thinking menu closes when the prompt regains focus', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => jsonResponse(piOptionsResponse())),
+  )
+
+  render(
+    <PromptComposer
+      sessionID="sess_pi"
+      agentType="pi"
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+    />,
+  )
+
+  await screen.findByRole('button', { name: 'Thinking' })
+  await user.click(screen.getByRole('button', { name: 'Thinking' }))
+  expect(screen.getByRole('listbox', { name: 'Thinking' })).toBeInTheDocument()
+
+  await user.click(screen.getByRole('textbox', { name: 'Prompt' }))
+
+  expect(screen.queryByRole('listbox', { name: 'Thinking' })).not.toBeInTheDocument()
+})
+
 function codexOptionsResponse() {
   return {
     default_model: 'gpt-5.5',

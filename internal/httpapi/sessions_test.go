@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -219,6 +221,70 @@ func TestSessionFileAPIsListSearchAndReadWorkspaceFiles(t *testing.T) {
 	assertErrorResponse(t, binaryUpdateRec, "file must be UTF-8 text")
 }
 
+func TestSessionFileUploadWritesFilesToSelectedDirectory(t *testing.T) {
+	ctx := context.Background()
+	workspace := canonicalPath(t, t.TempDir())
+	if err := os.Mkdir(filepath.Join(workspace, "src"), 0o755); err != nil {
+		t.Fatalf("create src directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "src", "existing.txt"), []byte("old"), 0o600); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Uploads",
+		AgentType:     "fake",
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for name, content := range map[string]string{"new.txt": "new file", "existing.txt": "replacement"} {
+		part, err := writer.CreateFormFile("files", name)
+		if err != nil {
+			t.Fatalf("create multipart file %q: %v", name, err)
+		}
+		if _, err := part.Write([]byte(content)); err != nil {
+			t.Fatalf("write multipart file %q: %v", name, err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/files/upload?path=src", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected upload status %d, got %d with body %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+	var response workspaceFileUploadResponse
+	decodeJSON(t, rec, &response)
+	if len(response.Files) != 2 {
+		t.Fatalf("expected two uploaded files, got %#v", response.Files)
+	}
+	for name, expected := range map[string]string{"new.txt": "new file", "existing.txt": "replacement"} {
+		content, err := os.ReadFile(filepath.Join(workspace, "src", name))
+		if err != nil {
+			t.Fatalf("read uploaded file %q: %v", name, err)
+		}
+		if string(content) != expected {
+			t.Fatalf("expected uploaded file %q content %q, got %q", name, expected, string(content))
+		}
+	}
+	info, err := os.Stat(filepath.Join(workspace, "src", "existing.txt"))
+	if err != nil {
+		t.Fatalf("stat replaced file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected replaced file permissions 0600, got %o", info.Mode().Perm())
+	}
+}
+
 func TestSessionConsoleStatusStartAndKill(t *testing.T) {
 	ctx := context.Background()
 	workspace := canonicalPath(t, t.TempDir())
@@ -288,6 +354,7 @@ func TestSessionFilesIncludesGitSummary(t *testing.T) {
 	ctx := context.Background()
 	workspace := canonicalPath(t, t.TempDir())
 	runGit(t, workspace, "init")
+	runGit(t, workspace, "checkout", "-b", "feature/files-pill")
 	if err := os.WriteFile(filepath.Join(workspace, "modified.txt"), []byte("original\n"), 0o644); err != nil {
 		t.Fatalf("write modified seed: %v", err)
 	}
@@ -326,8 +393,49 @@ func TestSessionFilesIncludesGitSummary(t *testing.T) {
 	if response.GitSummary == nil {
 		t.Fatal("expected git summary")
 	}
+	if response.GitSummary.Branch != "feature/files-pill" {
+		t.Fatalf("expected branch feature/files-pill, got %q", response.GitSummary.Branch)
+	}
 	if response.GitSummary.Added != 1 || response.GitSummary.Modified != 1 || response.GitSummary.Deleted != 1 {
 		t.Fatalf("expected added/modified/deleted counts of 1, got %#v", response.GitSummary)
+	}
+}
+
+func TestSessionFilesIncludesCleanGitBranch(t *testing.T) {
+	ctx := context.Background()
+	workspace := canonicalPath(t, t.TempDir())
+	runGit(t, workspace, "init")
+	runGit(t, workspace, "checkout", "-b", "clean-branch")
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("# Clean\n"), 0o644); err != nil {
+		t.Fatalf("write readme: %v", err)
+	}
+	runGit(t, workspace, "add", ".")
+	runGit(t, workspace, "-c", "user.name=Gorchestra Test", "-c", "user.email=test@example.com", "commit", "-m", "seed")
+
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Clean git files",
+		AgentType:     "fake",
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	listRec := get(handler, "/api/sessions/"+session.ID+"/files")
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d with body %s", http.StatusOK, listRec.Code, listRec.Body.String())
+	}
+	var response workspaceBrowseResponse
+	decodeJSON(t, listRec, &response)
+	if response.GitSummary == nil {
+		t.Fatal("expected git summary")
+	}
+	if response.GitSummary.Branch != "clean-branch" {
+		t.Fatalf("expected branch clean-branch, got %q", response.GitSummary.Branch)
+	}
+	if response.GitSummary.Added != 0 || response.GitSummary.Modified != 0 || response.GitSummary.Deleted != 0 {
+		t.Fatalf("expected zero file counts, got %#v", response.GitSummary)
 	}
 }
 

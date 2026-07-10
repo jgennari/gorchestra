@@ -170,6 +170,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Post("/api/sessions/{sessionId}/archive", api.archiveSessionHandler)
 		r.Post("/api/sessions/{sessionId}/restore", api.restoreSessionHandler)
 		r.Get("/api/sessions/{sessionId}/files", api.sessionFilesHandler)
+		r.Post("/api/sessions/{sessionId}/files/upload", api.uploadSessionFilesHandler)
 		r.Get("/api/sessions/{sessionId}/files/content", api.sessionFileContentHandler)
 		r.Put("/api/sessions/{sessionId}/files/content", api.updateSessionFileContentHandler)
 		r.Get("/api/sessions/{sessionId}/files/search", api.sessionFileSearchHandler)
