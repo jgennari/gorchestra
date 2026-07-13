@@ -210,7 +210,7 @@ export function appendEvent(events: AgentEvent[], event: AgentEvent) {
   if (events.some((existing) => existing.seq === event.seq)) {
     return events
   }
-  return [...events, event].sort((left, right) => left.seq - right.seq)
+  return [...eventsWithoutCompletedTransient(events, event), event].sort((left, right) => left.seq - right.seq)
 }
 
 export function appendEvents(events: AgentEvent[], nextEvents: AgentEvent[]) {
@@ -219,6 +219,73 @@ export function appendEvents(events: AgentEvent[], nextEvents: AgentEvent[]) {
 
 export function lastSeq(events: AgentEvent[]) {
   return events.reduce((max, event) => Math.max(max, event.seq), 0)
+}
+
+export function isTransientEvent(event: AgentEvent) {
+  return event.transient === true || event.type.endsWith('.delta')
+}
+
+function eventsWithoutCompletedTransient(events: AgentEvent[], event: AgentEvent) {
+  if (isTransientEvent(event)) {
+    return events
+  }
+
+  const deltaType = deltaTypeCompletedBy(event.type)
+  if (!deltaType) {
+    return events
+  }
+
+  const identity = transientCompletionIdentity(event)
+  let changed = false
+  const next = events.filter((existing) => {
+    if (!isTransientEvent(existing) || existing.type !== deltaType || existing.seq >= event.seq) {
+      return true
+    }
+    if (identity && transientCompletionIdentity(existing) !== identity) {
+      return true
+    }
+    changed = true
+    return false
+  })
+  return changed ? next : events
+}
+
+function deltaTypeCompletedBy(eventType: string) {
+  if (eventType === 'agent.message.completed') return 'agent.message.delta'
+  if (eventType === 'agent.plan.completed') return 'agent.plan.delta'
+  if (eventType === 'agent.thinking.completed') return 'agent.thinking.delta'
+  if (eventType === 'tool.call.completed') return 'tool.call.delta'
+  if (eventType === 'file.change.completed') return 'file.change.delta'
+  return ''
+}
+
+function transientCompletionIdentity(event: AgentEvent) {
+  if (event.type.startsWith('tool.call.')) {
+    return transientIdentityString(event.payload, ['tool_call_id', 'item_id', 'id'])
+  }
+  if (event.type.startsWith('file.change.')) {
+    return transientIdentityString(event.payload, ['item_id', 'file_change_id', 'path', 'file_path', 'id'])
+  }
+  if (event.type.startsWith('agent.message.')) {
+    return transientIdentityString(event.payload, ['item_id', 'message_id', 'id'])
+  }
+  if (event.type.startsWith('agent.thinking.')) {
+    return transientIdentityString(event.payload, ['item_id', 'message_id', 'id'])
+  }
+  if (event.type.startsWith('agent.plan.')) {
+    return transientIdentityString(event.payload, ['item_id', 'plan_id', 'id'])
+  }
+  return ''
+}
+
+function transientIdentityString(payload: unknown, keys: string[]) {
+  for (const key of keys) {
+    const value = payloadString(payload, [key])
+    if (value) {
+      return value.startsWith('message:') ? value.slice('message:'.length) : value
+    }
+  }
+  return ''
 }
 
 export function coalesceDisplayEvents(events: AgentEvent[]) {

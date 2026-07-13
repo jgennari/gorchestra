@@ -26,10 +26,13 @@ type normalizer struct {
 	terminal      bool
 	terminalKind  terminalKind
 	terminalError string
+	thinkingText  map[string]string
 }
 
 func newNormalizer() *normalizer {
-	return &normalizer{}
+	return &normalizer{
+		thinkingText: make(map[string]string),
+	}
 }
 
 func (n *normalizer) normalize(message *rpcMessage) []normalizedEvent {
@@ -78,6 +81,9 @@ func (n *normalizer) normalizeMessageUpdate(raw json.RawMessage, payload map[str
 	payload["provider_event_type"] = "message_update/" + updateType
 	copyMessageID(payload, raw)
 	copyContentIndex(payload, raw)
+	if strings.HasPrefix(updateType, "thinking_") {
+		copyThinkingItemID(payload, raw)
+	}
 
 	switch updateType {
 	case "text_delta":
@@ -86,13 +92,35 @@ func (n *normalizer) normalizeMessageUpdate(raw json.RawMessage, payload map[str
 	case "thinking_start":
 		return normalizedEvent{Event: event("agent.thinking.started", "assistant", "started", payload)}
 	case "thinking_delta":
-		payload["text"] = stringAt(raw, "assistantMessageEvent", "delta")
+		text := stringAt(raw, "assistantMessageEvent", "delta")
+		payload["text"] = text
+		if itemID := stringFromPayload(payload, "item_id"); itemID != "" {
+			n.thinkingText[itemID] += text
+		}
 		return normalizedEvent{Event: event("agent.thinking.delta", "assistant", "delta", payload)}
 	case "thinking_end":
+		if itemID := stringFromPayload(payload, "item_id"); itemID != "" {
+			if text := n.thinkingText[itemID]; text != "" {
+				payload["text"] = text
+			}
+			delete(n.thinkingText, itemID)
+		}
 		return normalizedEvent{Event: event("agent.thinking.completed", "assistant", "completed", payload)}
 	default:
 		return normalizedEvent{Event: event("provider.pi.event", "system", "completed", payload)}
 	}
+}
+
+func copyThinkingItemID(payload map[string]any, raw json.RawMessage) {
+	messageID := stringFromPayload(payload, "message_id")
+	if messageID == "" {
+		messageID = "message"
+	}
+	index, ok := numberAt(raw, "assistantMessageEvent", "contentIndex")
+	if !ok {
+		return
+	}
+	payload["item_id"] = fmt.Sprintf("%s:thinking:%d", messageID, index)
 }
 
 func (n *normalizer) normalizeMessageEnd(raw json.RawMessage, payload map[string]any) normalizedEvent {

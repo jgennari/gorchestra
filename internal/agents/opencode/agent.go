@@ -503,7 +503,12 @@ func (r *acpRun) prompt(ctx context.Context, message string) error {
 	if stopReason == "" {
 		stopReason = "end_turn"
 	}
-	return r.emitEvent(ctx, r.normalizer.completed(stopReason, response.Result))
+	for _, event := range r.normalizer.completed(stopReason, response.Result) {
+		if err := r.emitEvent(ctx, event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func promptContent(message string, attachments []agents.Attachment) ([]map[string]any, error) {

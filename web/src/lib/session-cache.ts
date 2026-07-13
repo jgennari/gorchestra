@@ -136,11 +136,13 @@ export async function readCachedSessionEvents(
     await deleteRecord(db, eventsStore, cacheKey)
     return null
   }
-  const trimmedOlderEvents = trimmedEvents.length < record.events.length
+  const durableRecordEventCount = record.events.filter((event) => !isTransientEvent(event)).length
+  const trimmedOlderEvents = trimmedEvents.length < durableRecordEventCount
+  const cursorSeq = Math.max(Number(record.lastSeq) || 0, lastSeq(trimmedEvents))
   const next = {
     ...record,
     events: trimmedEvents,
-    lastSeq: lastSeq(trimmedEvents),
+    lastSeq: cursorSeq,
     oldestSeq: firstSeq(trimmedEvents),
     hasOlderEvents: record.hasOlderEvents || trimmedOlderEvents,
     usedAt: Date.now(),
@@ -159,6 +161,7 @@ export async function writeCachedSessionEvents(
   events: AgentEvent[],
   hasOlderEvents: boolean,
   includeDebugEvents = false,
+  cursorSeq = lastSeq(events),
 ): Promise<void> {
   const db = await openCacheDB()
   if (!db) return
@@ -169,11 +172,12 @@ export async function writeCachedSessionEvents(
     await deleteRecord(db, eventsStore, cacheKey)
     return
   }
-  const trimmedOlderEvents = trimmedEvents.length < events.length
+  const durableEventCount = events.filter((event) => !isTransientEvent(event)).length
+  const trimmedOlderEvents = trimmedEvents.length < durableEventCount
   await putRecord(db, eventsStore, {
     sessionID: cacheKey,
     events: trimmedEvents,
-    lastSeq: lastSeq(trimmedEvents),
+    lastSeq: Math.max(cursorSeq, lastSeq(trimmedEvents)),
     oldestSeq: firstSeq(trimmedEvents),
     hasOlderEvents: hasOlderEvents || trimmedOlderEvents,
     usedAt: Date.now(),
@@ -383,8 +387,11 @@ function lastSeq(events: AgentEvent[]) {
 }
 
 function trimPersistentEvents(events: AgentEvent[]) {
+  const durableEvents = events.filter((event) => !isTransientEvent(event))
   const countTrimmedEvents =
-    events.length <= persistentCachedEventLimit ? events : events.slice(events.length - persistentCachedEventLimit)
+    durableEvents.length <= persistentCachedEventLimit
+      ? durableEvents
+      : durableEvents.slice(durableEvents.length - persistentCachedEventLimit)
   const byteTrimmedEvents: AgentEvent[] = []
   let totalBytes = 2
 
@@ -442,4 +449,8 @@ function safeLeadingWindowEvent(event: AgentEvent | undefined) {
     default:
       return true
   }
+}
+
+function isTransientEvent(event: AgentEvent) {
+  return event.transient === true || event.type.endsWith('.delta')
 }

@@ -26,3 +26,7 @@ func newPrefixedUUID(prefix string) (string, error) {
 		encoded[20:32],
 	), nil
 }
+
+func NewEventID() (string, error) {
+	return newPrefixedUUID("evt_")
+}

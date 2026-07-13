@@ -1,43 +1,44 @@
 import type { AgentEvent } from '@/lib/api'
-import { safeLeadingWindowEvent, trimEventsWindow } from '@/hooks/use-session-events'
+import { trimEventsToRecentTurns } from '@/hooks/use-session-events'
 
-test('safe leading boundary rejects streaming deltas and completion-only tool boundaries', () => {
-  expect(safeLeadingWindowEvent(event(1, 'agent.message.delta'))).toBe(false)
-  expect(safeLeadingWindowEvent(event(2, 'tool.call.completed'))).toBe(false)
-  expect(safeLeadingWindowEvent(event(3, 'agent.message.completed'))).toBe(true)
-  expect(safeLeadingWindowEvent(event(4, 'tool.call.started'))).toBe(true)
-})
-
-test('window trimming keeps the requested suffix when the boundary is already safe', () => {
-  const trimmed = trimEventsWindow(
-    [event(1, 'user.message.completed'), event(2, 'agent.message.completed'), event(3, 'agent.run.completed')],
-    2,
-  )
-
-  expect(trimmed.map((item) => item.seq)).toEqual([2, 3])
-})
-
-test('window trimming skips forward to the next safe boundary instead of keeping a partial message', () => {
-  const trimmed = trimEventsWindow(
+test('turn trimming keeps the latest requested turns', () => {
+  const trimmed = trimEventsToRecentTurns(
     [
       event(1, 'user.message.completed'),
-      event(2, 'agent.message.delta'),
-      event(3, 'agent.message.completed'),
-      event(4, 'agent.run.completed'),
+      event(2, 'agent.message.completed'),
+      event(3, 'user.message.completed'),
+      event(4, 'tool.call.started'),
+      event(5, 'tool.call.completed'),
+      event(6, 'user.message.completed'),
+      event(7, 'agent.message.completed'),
     ],
-    3,
-  )
-
-  expect(trimmed.map((item) => item.seq)).toEqual([3, 4])
-})
-
-test('window trimming drops incomplete tool rows when the limit would start on completion only', () => {
-  const trimmed = trimEventsWindow(
-    [event(1, 'tool.call.started'), event(2, 'tool.call.completed'), event(3, 'agent.message.completed')],
     2,
   )
 
-  expect(trimmed.map((item) => item.seq)).toEqual([3])
+  expect(trimmed.map((item) => item.seq)).toEqual([3, 4, 5, 6, 7])
+})
+
+test('turn trimming preserves preamble events when fewer turns exist', () => {
+  const trimmed = trimEventsToRecentTurns(
+    [
+      event(1, 'session.status.updated'),
+      event(2, 'user.message.completed'),
+      event(3, 'agent.message.completed'),
+    ],
+    2,
+  )
+
+  expect(trimmed.map((item) => item.seq)).toEqual([1, 2, 3])
+})
+
+test('turn trimming keeps every event in a large turn', () => {
+  const largeTurn = Array.from({ length: 1200 }, (_, index) => event(index + 2, 'agent.log.delta'))
+  const trimmed = trimEventsToRecentTurns(
+    [event(1, 'user.message.completed'), ...largeTurn, event(1202, 'agent.message.completed')],
+    2,
+  )
+
+  expect(trimmed).toHaveLength(1202)
 })
 
 function event(seq: number, type: string): AgentEvent {

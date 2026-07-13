@@ -1740,15 +1740,14 @@ func TestSuccessfulFakeAgentRunCompletesSessionAndIsVisibleThroughHistory(t *tes
 		"user.message.completed",
 		"session.status.updated",
 		"agent.run.started",
-		"agent.message.delta",
 		"agent.message.completed",
 		"agent.run.completed",
 		"session.status.updated",
 	})
 	assertTerminalRunEventCount(t, events, 1)
 	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
-	assertPayloadText(t, events[3], "Received task: Inspect this repo")
-	assertPayloadStatus(t, events[6], store.SessionStatusIdle)
+	assertPayloadText(t, events[3], "Fake agent completed the task.")
+	assertPayloadStatus(t, events[5], store.SessionStatusIdle)
 
 	historyReq := httptest.NewRequest(http.MethodGet, "/api/sessions/"+createResponse.SessionID+"/events?after_seq=0", nil)
 	historyRec := httptest.NewRecorder()
@@ -1763,8 +1762,8 @@ func TestSuccessfulFakeAgentRunCompletesSessionAndIsVisibleThroughHistory(t *tes
 	if len(historyResponse.Events) != len(events) {
 		t.Fatalf("expected %d history events, got %d", len(events), len(historyResponse.Events))
 	}
-	if historyResponse.Events[6].Type != "session.status.updated" {
-		t.Fatalf("expected final history event session.status.updated, got %q", historyResponse.Events[6].Type)
+	if historyResponse.Events[5].Type != "session.status.updated" {
+		t.Fatalf("expected final history event session.status.updated, got %q", historyResponse.Events[5].Type)
 	}
 }
 

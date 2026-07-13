@@ -27,6 +27,7 @@ import (
 const (
 	defaultEventLimit        = 500
 	maxEventLimit            = 1000
+	maxEventTurnLimit        = 50
 	eventHistoryBackfillStep = 250
 	maxEventPayloadStringLen = 64 * 1024
 	defaultSessionLimit      = 50
@@ -61,6 +62,8 @@ type Store interface {
 	ListRecentEventsFiltered(ctx context.Context, sessionID string, limit int, filter store.EventListFilter) ([]store.Event, error)
 	ListEventsBefore(ctx context.Context, sessionID string, beforeSeq int64, limit int) ([]store.Event, error)
 	ListEventsBeforeFiltered(ctx context.Context, sessionID string, beforeSeq int64, limit int, filter store.EventListFilter) ([]store.Event, error)
+	ListRecentEventTurnsFiltered(ctx context.Context, sessionID string, turns int, filter store.EventListFilter) ([]store.Event, error)
+	ListEventTurnsBeforeFiltered(ctx context.Context, sessionID string, beforeSeq int64, turns int, filter store.EventListFilter) ([]store.Event, error)
 	ClearNotificationAttention(ctx context.Context, sessionID string) error
 }
 
@@ -135,6 +138,7 @@ type eventResponse struct {
 	Status    string          `json:"status"`
 	Payload   json.RawMessage `json:"payload"`
 	CreatedAt string          `json:"created_at"`
+	Transient bool            `json:"transient,omitempty"`
 }
 
 type eventHistoryResponse struct {
@@ -294,8 +298,18 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, ok := parseLimit(w, r)
+	turns, ok := parseEventTurnLimit(w, r)
 	if !ok {
+		return
+	}
+	limit := 0
+	if turns == 0 {
+		limit, ok = parseLimit(w, r)
+		if !ok {
+			return
+		}
+	} else if r.URL.Query().Has("limit") {
+		writeError(w, http.StatusBadRequest, "use only one event history page size")
 		return
 	}
 	filter, ok := parseEventListFilter(w, r)
@@ -303,7 +317,7 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := api.listHistoryEvents(r, sessionID, limit, filter)
+	events, err := api.listHistoryEvents(r, sessionID, limit, turns, filter)
 	if errors.Is(err, errInvalidEventHistoryCursor) {
 		writeError(w, http.StatusBadRequest, eventHistoryCursorMessage(err))
 		return
@@ -371,6 +385,7 @@ func (api API) listHistoryEvents(
 	r *http.Request,
 	sessionID string,
 	limit int,
+	turns int,
 	filter store.EventListFilter,
 ) ([]store.Event, error) {
 	query := r.URL.Query()
@@ -400,14 +415,23 @@ func (api API) listHistoryEvents(
 	if cursorCount > 1 {
 		return nil, fmt.Errorf("%w: use only one event history cursor", errInvalidEventHistoryCursor)
 	}
+	if turns > 0 && !tail && rawBeforeSeq == "" {
+		return nil, fmt.Errorf("%w: turns requires tail=true or before_seq", errInvalidEventHistoryCursor)
+	}
 
 	if tail {
+		if turns > 0 {
+			return api.store.ListRecentEventTurnsFiltered(r.Context(), sessionID, turns, filter)
+		}
 		return api.listBoundarySafeRecentEvents(r.Context(), sessionID, limit, filter)
 	}
 	if rawBeforeSeq != "" {
 		beforeSeq, err := parseNonNegativeInt64(rawBeforeSeq, "before_seq")
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s", errInvalidEventHistoryCursor, err.Error())
+		}
+		if turns > 0 {
+			return api.store.ListEventTurnsBeforeFiltered(r.Context(), sessionID, beforeSeq, turns, filter)
 		}
 		return api.listBoundarySafeEventsBefore(r.Context(), sessionID, beforeSeq, limit, filter)
 	}
@@ -724,6 +748,23 @@ func parseLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 	return limit, true
 }
 
+func parseEventTurnLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
+	raw := r.URL.Query().Get("turns")
+	if raw == "" {
+		return 0, true
+	}
+
+	turns, err := strconv.Atoi(raw)
+	if err != nil || turns <= 0 {
+		writeError(w, http.StatusBadRequest, "turns must be a positive integer")
+		return 0, false
+	}
+	if turns > maxEventTurnLimit {
+		return maxEventTurnLimit, true
+	}
+	return turns, true
+}
+
 func parseEventListFilter(w http.ResponseWriter, r *http.Request) (store.EventListFilter, bool) {
 	raw := r.URL.Query().Get("include_debug")
 	if raw == "" {
@@ -819,6 +860,7 @@ func newEventResponse(event store.Event) eventResponse {
 		Status:    string(event.Status),
 		Payload:   responseEventPayload(event.Payload),
 		CreatedAt: event.CreatedAt.UTC().Format(time.RFC3339Nano),
+		Transient: event.Transient,
 	}
 }
 

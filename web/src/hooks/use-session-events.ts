@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentEvent } from '@/lib/api'
-import { eventStreamURL, listEventsBefore, listRecentEvents } from '@/lib/api'
-import { appendEvent, appendEvents, knownEventTypes, lastSeq } from '@/lib/events'
+import {
+  defaultEventTurnPageSize,
+  eventStreamURL,
+  listEventTurnsBefore,
+  listRecentEventTurns,
+} from '@/lib/api'
+import { appendEvent, appendEvents, isTransientEvent, knownEventTypes, lastSeq } from '@/lib/events'
 import {
   clearSessionCacheForTest,
   readCachedSessionEvents as readPersistentCachedSessionEvents,
@@ -27,8 +32,6 @@ type SessionEventCacheEntry = {
 }
 
 const cachedSessionLimit = 8
-const cachedEventLimit = 1000
-const activeEventWindowLimit = 1000
 const recentEventsRequestRetentionMs = 2000
 const persistentEventsWriteDelayMs = 1200
 const sessionEventCache = new Map<string, SessionEventCacheEntry>()
@@ -136,11 +139,13 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         lastSeqRef.current = Math.max(lastSeqRef.current, event.seq)
         setEvents((current) => {
           const appended = appendEvent(current, event)
-          const next = followLatestRef.current ? trimEventsWindow(appended, activeEventWindowLimit) : appended
+          const next = followLatestRef.current
+            ? trimEventsToRecentTurns(appended, defaultEventTurnPageSize)
+            : appended
           oldestSeqRef.current = firstSeq(next)
           const nextHasOlderEvents = oldestSeqRef.current > 1 || next.length < appended.length
           setHasOlderEvents(nextHasOlderEvents)
-          writeCachedSessionEvents(activeSessionID, next, nextHasOlderEvents, activeIncludeDebugEvents)
+          writeCachedSessionEvents(activeSessionID, next, nextHasOlderEvents, activeIncludeDebugEvents, lastSeqRef.current)
           return next
         })
         onEventRef.current?.(event)
@@ -192,11 +197,19 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setHasOlderEvents(nextHasOlderEvents)
         setEvents((current) => {
           const merged = appendEvents(sameSessionRefresh ? current : [], history)
-          const next = followLatestRef.current ? trimEventsWindow(merged, activeEventWindowLimit) : merged
+          const next = followLatestRef.current
+            ? trimEventsToRecentTurns(merged, defaultEventTurnPageSize)
+            : merged
           oldestSeqRef.current = firstSeq(next)
           const trimmedHasOlderEvents = nextHasOlderEvents || next.length < merged.length
           setHasOlderEvents(trimmedHasOlderEvents)
-          writeCachedSessionEvents(activeSessionID, next, trimmedHasOlderEvents, activeIncludeDebugEvents)
+          writeCachedSessionEvents(
+            activeSessionID,
+            next,
+            trimmedHasOlderEvents,
+            activeIncludeDebugEvents,
+            lastSeqRef.current,
+          )
           return next
         })
         connect(lastSeqRef.current)
@@ -231,9 +244,9 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         persistentSession.events,
         persistentSession.hasOlderEvents,
         activeIncludeDebugEvents,
+        persistentSession.lastSeq,
       )
-      setStreamState('reconnecting')
-      connect(lastSeqRef.current)
+      await loadRecentHistory()
     }
 
     if (cachedSession && !sameSessionRefresh) {
@@ -267,7 +280,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     if (beforeSeq <= 1) {
       setHasOlderEvents(false)
       setEvents((current) => {
-        writeCachedSessionEvents(sessionID, current, false, includeDebugEvents)
+        writeCachedSessionEvents(sessionID, current, false, includeDebugEvents, lastSeqRef.current)
         return current
       })
       return
@@ -278,14 +291,16 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     setError('')
 
     try {
-      const history = await listEventsBefore(sessionID, beforeSeq, undefined, { includeDebug: includeDebugEvents })
+      const history = await listEventTurnsBefore(sessionID, beforeSeq, defaultEventTurnPageSize, {
+        includeDebug: includeDebugEvents,
+      })
       if (activeSessionIDRef.current !== sessionID) {
         return
       }
       if (history.length === 0) {
         setHasOlderEvents(false)
         setEvents((current) => {
-          writeCachedSessionEvents(sessionID, current, false, includeDebugEvents)
+          writeCachedSessionEvents(sessionID, current, false, includeDebugEvents, lastSeqRef.current)
           return current
         })
         return
@@ -295,7 +310,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       setHasOlderEvents(oldestSeqRef.current > 1)
       setEvents((current) => {
         const next = appendEvents(current, history)
-        writeCachedSessionEvents(sessionID, next, oldestSeqRef.current > 1, includeDebugEvents)
+        writeCachedSessionEvents(sessionID, next, oldestSeqRef.current > 1, includeDebugEvents, lastSeqRef.current)
         return next
       })
     } catch (loadError) {
@@ -331,7 +346,9 @@ function listRecentEventsOnce(sessionID: string, refreshKey: number, includeDebu
     return existing
   }
 
-  const request = listRecentEvents(sessionID, undefined, { includeDebug: includeDebugEvents }).catch((error) => {
+  const request = listRecentEventTurns(sessionID, defaultEventTurnPageSize, {
+    includeDebug: includeDebugEvents,
+  }).catch((error) => {
     recentEventsRequests.delete(key)
     throw error
   })
@@ -365,19 +382,27 @@ function writeCachedSessionEvents(
   events: AgentEvent[],
   hasOlderEvents: boolean,
   includeDebugEvents: boolean,
+  cursorSeq = lastSeq(events),
 ) {
   const cacheKey = sessionEventCacheKey(sessionID, includeDebugEvents)
-  const trimmedEvents = trimEventsWindow(events, cachedEventLimit)
-  const trimmedOlderEvents = trimmedEvents.length < events.length
+  const cacheableEvents = events.filter((event) => !isTransientEvent(event))
+  const trimmedEvents = trimEventsToRecentTurns(cacheableEvents, defaultEventTurnPageSize)
+  const trimmedOlderEvents = trimmedEvents.length < cacheableEvents.length
   sessionEventCache.set(cacheKey, {
     events: trimmedEvents,
-    lastSeq: lastSeq(trimmedEvents),
+    lastSeq: Math.max(cursorSeq, lastSeq(trimmedEvents)),
     oldestSeq: firstSeq(trimmedEvents),
     hasOlderEvents: hasOlderEvents || trimmedOlderEvents,
     usedAt: Date.now(),
   })
   evictOldSessionEventCaches()
-  schedulePersistentSessionEventsWrite(sessionID, trimmedEvents, hasOlderEvents || trimmedOlderEvents, includeDebugEvents)
+  schedulePersistentSessionEventsWrite(
+    sessionID,
+    trimmedEvents,
+    hasOlderEvents || trimmedOlderEvents,
+    includeDebugEvents,
+    Math.max(cursorSeq, lastSeq(trimmedEvents)),
+  )
 }
 
 function schedulePersistentSessionEventsWrite(
@@ -385,6 +410,7 @@ function schedulePersistentSessionEventsWrite(
   events: AgentEvent[],
   hasOlderEvents: boolean,
   includeDebugEvents: boolean,
+  cursorSeq: number,
 ) {
   const cacheKey = sessionEventCacheKey(sessionID, includeDebugEvents)
   const existingTimer = persistentEventsWriteTimers.get(cacheKey)
@@ -393,7 +419,7 @@ function schedulePersistentSessionEventsWrite(
   }
   const timer = window.setTimeout(() => {
     persistentEventsWriteTimers.delete(cacheKey)
-    void writePersistentCachedSessionEvents(sessionID, events, hasOlderEvents, includeDebugEvents)
+    void writePersistentCachedSessionEvents(sessionID, events, hasOlderEvents, includeDebugEvents, cursorSeq)
   }, persistentEventsWriteDelayMs)
   persistentEventsWriteTimers.set(cacheKey, timer)
 }
@@ -402,39 +428,21 @@ function sessionEventCacheKey(sessionID: string, includeDebugEvents: boolean) {
   return `${sessionID}:${includeDebugEvents ? 'debug' : 'normal'}`
 }
 
-export function trimEventsWindow(events: AgentEvent[], limit: number) {
-  if (events.length <= limit) {
-    return events
+export function trimEventsToRecentTurns(events: AgentEvent[], turns: number) {
+  if (turns <= 0) {
+    return []
   }
-  let start = events.length - limit
-  for (let index = start; index < events.length; index += 1) {
-    if (safeLeadingWindowEvent(events[index])) {
-      start = index
-      break
+  let foundTurns = 0
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index].type !== 'user.message.completed') {
+      continue
+    }
+    foundTurns += 1
+    if (foundTurns === turns) {
+      return events.slice(index)
     }
   }
-  return events.slice(start)
-}
-
-export function safeLeadingWindowEvent(event: AgentEvent | undefined) {
-  if (!event) {
-    return true
-  }
-
-  switch (event.type) {
-    case 'agent.message.delta':
-    case 'agent.plan.delta':
-    case 'agent.thinking.delta':
-    case 'agent.log.delta':
-    case 'tool.call.delta':
-    case 'file.change.delta':
-    case 'tool.call.completed':
-    case 'file.change.completed':
-    case 'agent.thinking.completed':
-      return false
-    default:
-      return true
-  }
+  return events
 }
 
 function evictOldSessionEventCaches() {

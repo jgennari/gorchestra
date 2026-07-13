@@ -26,10 +26,18 @@ type normalizer struct {
 	terminal      bool
 	terminalKind  terminalKind
 	terminalError string
+	messageText   map[string]string
+	messageOrder  []string
+	thinkingText  map[string]string
+	thinkingOrder []string
+	planPayload   map[string]any
 }
 
 func newNormalizer() *normalizer {
-	return &normalizer{}
+	return &normalizer{
+		messageText:  make(map[string]string),
+		thinkingText: make(map[string]string),
+	}
 }
 
 func (n *normalizer) normalize(method string, params json.RawMessage) []normalizedEvent {
@@ -51,12 +59,16 @@ func (n *normalizer) normalize(method string, params json.RawMessage) []normaliz
 
 	switch updateType {
 	case "agent_message_chunk":
-		payload["text"] = contentText(update["content"])
+		text := contentText(update["content"])
+		payload["text"] = text
 		copyMessageID(payload, update)
+		n.appendMessageText(payload, text)
 		return []normalizedEvent{{Event: event("agent.message.delta", "assistant", "delta", payload)}}
 	case "agent_thought_chunk", "thought_message_chunk":
-		payload["text"] = contentText(update["content"])
+		text := contentText(update["content"])
+		payload["text"] = text
 		copyMessageID(payload, update)
+		n.appendThinkingText(payload, text)
 		return []normalizedEvent{{Event: event("agent.thinking.delta", "assistant", "delta", payload)}}
 	case "user_message_chunk":
 		payload["text"] = contentText(update["content"])
@@ -65,6 +77,7 @@ func (n *normalizer) normalize(method string, params json.RawMessage) []normaliz
 	case "plan":
 		payload["entries"] = update["entries"]
 		payload["text"] = planText(update["entries"])
+		n.planPayload = cloneMap(payload)
 		return []normalizedEvent{{Event: event("agent.plan.delta", "assistant", "delta", payload)}}
 	case "tool_call":
 		copyToolFields(payload, update)
@@ -83,7 +96,7 @@ func (n *normalizer) normalize(method string, params json.RawMessage) []normaliz
 	}
 }
 
-func (n *normalizer) completed(stopReason string, result json.RawMessage) normalizedEvent {
+func (n *normalizer) completed(stopReason string, result json.RawMessage) []normalizedEvent {
 	payload := map[string]any{
 		"provider":            "opencode",
 		"provider_event_type": "session/prompt",
@@ -95,11 +108,92 @@ func (n *normalizer) completed(stopReason string, result json.RawMessage) normal
 	switch stopReason {
 	case "cancelled":
 		n.markTerminal(terminalCancelled, "opencode run cancelled")
-		return normalizedEvent{Event: event("agent.run.cancelled", "assistant", "cancelled", payload), Terminal: terminalCancelled}
+		return []normalizedEvent{{Event: event("agent.run.cancelled", "assistant", "cancelled", payload), Terminal: terminalCancelled}}
 	default:
 		n.markTerminal(terminalCompleted, "")
-		return normalizedEvent{Event: event("agent.run.completed", "assistant", "completed", payload), Terminal: terminalCompleted}
+		events := n.completedSnapshots()
+		events = append(events, normalizedEvent{Event: event("agent.run.completed", "assistant", "completed", payload), Terminal: terminalCompleted})
+		return events
 	}
+}
+
+func (n *normalizer) appendMessageText(payload map[string]any, text string) {
+	if text == "" {
+		return
+	}
+	key := payloadTextKey(payload, "message")
+	if _, ok := n.messageText[key]; !ok {
+		n.messageOrder = append(n.messageOrder, key)
+	}
+	n.messageText[key] += text
+}
+
+func (n *normalizer) appendThinkingText(payload map[string]any, text string) {
+	if text == "" {
+		return
+	}
+	key := payloadTextKey(payload, "thinking")
+	if _, ok := n.thinkingText[key]; !ok {
+		n.thinkingOrder = append(n.thinkingOrder, key)
+	}
+	n.thinkingText[key] += text
+}
+
+func (n *normalizer) completedSnapshots() []normalizedEvent {
+	events := make([]normalizedEvent, 0, len(n.thinkingOrder)+len(n.messageOrder)+1)
+	for _, key := range n.thinkingOrder {
+		text := n.thinkingText[key]
+		if text == "" {
+			continue
+		}
+		payload := map[string]any{
+			"provider":            "opencode",
+			"provider_event_type": "thinking/completed",
+			"text":                text,
+			"item_id":             key,
+		}
+		if strings.HasPrefix(key, "message:") {
+			payload["message_id"] = strings.TrimPrefix(key, "message:")
+		}
+		events = append(events, normalizedEvent{Event: event("agent.thinking.completed", "assistant", "completed", payload)})
+	}
+	if n.planPayload != nil {
+		payload := cloneMap(n.planPayload)
+		payload["provider_event_type"] = "plan/completed"
+		events = append(events, normalizedEvent{Event: event("agent.plan.completed", "assistant", "completed", payload)})
+	}
+	for _, key := range n.messageOrder {
+		text := n.messageText[key]
+		if text == "" {
+			continue
+		}
+		payload := map[string]any{
+			"provider":            "opencode",
+			"provider_event_type": "agent_message/completed",
+			"text":                text,
+			"item_id":             key,
+		}
+		if strings.HasPrefix(key, "message:") {
+			payload["message_id"] = strings.TrimPrefix(key, "message:")
+		}
+		events = append(events, normalizedEvent{Event: event("agent.message.completed", "assistant", "completed", payload)})
+	}
+	return events
+}
+
+func payloadTextKey(payload map[string]any, fallback string) string {
+	if messageID, ok := payload["message_id"].(string); ok && messageID != "" {
+		return "message:" + messageID
+	}
+	return fallback
+}
+
+func cloneMap(values map[string]any) map[string]any {
+	next := make(map[string]any, len(values))
+	for key, value := range values {
+		next[key] = value
+	}
+	return next
 }
 
 func (n *normalizer) failed(message string, raw json.RawMessage) normalizedEvent {

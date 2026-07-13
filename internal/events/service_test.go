@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestAppendPersistsBuffersAndBroadcastsInOrder(t *testing.T) {
 		assertNoEvent(t, ch)
 	}
 
-	event, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	event, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestAppendFailurePreventsBufferingAndBroadcast(t *testing.T) {
 	ch, unsubscribe := service.Subscribe("sess_one")
 	defer unsubscribe()
 
-	_, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	_, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
 	if !errors.Is(err, fake.err) {
 		t.Fatalf("expected store error, got %v", err)
 	}
@@ -84,12 +85,12 @@ func TestSubscribersReceiveOnlyTheirSessionEvents(t *testing.T) {
 	ch, unsubscribe := service.Subscribe("sess_one")
 	defer unsubscribe()
 
-	if _, err := service.Append(ctx, appendParams("sess_two", "agent.message.delta")); err != nil {
+	if _, err := service.Append(ctx, appendParams("sess_two", "agent.message.completed")); err != nil {
 		t.Fatalf("append other session: %v", err)
 	}
 	assertNoEvent(t, ch)
 
-	event, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	event, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
 	if err != nil {
 		t.Fatalf("append subscribed session: %v", err)
 	}
@@ -107,11 +108,11 @@ func TestAllSubscribersReceiveEverySessionEvent(t *testing.T) {
 	ch, unsubscribe := service.SubscribeAll()
 	defer unsubscribe()
 
-	first, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	first, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
 	if err != nil {
 		t.Fatalf("append first: %v", err)
 	}
-	second, err := service.Append(ctx, appendParams("sess_two", "agent.message.delta"))
+	second, err := service.Append(ctx, appendParams("sess_two", "agent.message.completed"))
 	if err != nil {
 		t.Fatalf("append second: %v", err)
 	}
@@ -124,6 +125,68 @@ func TestAllSubscribersReceiveEverySessionEvent(t *testing.T) {
 	}
 }
 
+func TestTransientDeltasBroadcastOnlyToSessionSubscribers(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeStore()
+	service := newTestService(t, fake)
+	sessionCh, unsubscribeSession := service.Subscribe("sess_one")
+	defer unsubscribeSession()
+	allCh, unsubscribeAll := service.SubscribeAll()
+	defer unsubscribeAll()
+
+	event, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	if err != nil {
+		t.Fatalf("append delta: %v", err)
+	}
+
+	if !event.Transient {
+		t.Fatal("expected delta event to be transient")
+	}
+	if event.Seq != 1 {
+		t.Fatalf("expected reserved seq 1, got %d", event.Seq)
+	}
+	if delivered := receiveEvent(t, sessionCh); delivered.ID != event.ID || !delivered.Transient {
+		t.Fatalf("expected transient session delivery %#v, got %#v", event, delivered)
+	}
+	assertNoEvent(t, allCh)
+
+	fake.mu.Lock()
+	persisted := len(fake.persisted)
+	fake.mu.Unlock()
+	if persisted != 0 {
+		t.Fatalf("expected no persisted delta events, got %d", persisted)
+	}
+}
+
+func TestDurableEventAfterTransientUsesNextSequence(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeStore()
+	service := newTestService(t, fake)
+
+	delta, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	if err != nil {
+		t.Fatalf("append delta: %v", err)
+	}
+	completed, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
+	if err != nil {
+		t.Fatalf("append completed: %v", err)
+	}
+
+	if delta.Seq != 1 || completed.Seq != 2 {
+		t.Fatalf("expected transient/durable seqs 1 and 2, got %d and %d", delta.Seq, completed.Seq)
+	}
+	if completed.Transient {
+		t.Fatal("expected completed event to be durable")
+	}
+
+	fake.mu.Lock()
+	persisted := append([]store.Event(nil), fake.persisted...)
+	fake.mu.Unlock()
+	if len(persisted) != 1 || persisted[0].Seq != completed.Seq {
+		t.Fatalf("expected only completed event persisted, got %#v", persisted)
+	}
+}
+
 func TestEventsAreDeliveredInAppendOrder(t *testing.T) {
 	ctx := context.Background()
 	fake := newFakeStore()
@@ -132,7 +195,7 @@ func TestEventsAreDeliveredInAppendOrder(t *testing.T) {
 	defer unsubscribe()
 
 	for i := 0; i < 3; i++ {
-		if _, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta")); err != nil {
+		if _, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed")); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
 	}
@@ -156,7 +219,7 @@ func TestUnsubscribeClosesChannelAndStopsDelivery(t *testing.T) {
 	unsubscribe()
 	assertClosed(t, ch)
 
-	if _, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta")); err != nil {
+	if _, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed")); err != nil {
 		t.Fatalf("append after unsubscribe: %v", err)
 	}
 
@@ -184,12 +247,12 @@ func TestFullSubscriberChannelIsRemovedAndClosed(t *testing.T) {
 	ch, unsubscribe := service.Subscribe("sess_one")
 	defer unsubscribe()
 
-	first, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	first, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
 	if err != nil {
 		t.Fatalf("append first: %v", err)
 	}
 
-	if _, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta")); err != nil {
+	if _, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed")); err != nil {
 		t.Fatalf("append second: %v", err)
 	}
 
@@ -216,11 +279,11 @@ func TestFullAllSubscriberChannelIsRemovedAndClosed(t *testing.T) {
 	ch, unsubscribe := service.SubscribeAll()
 	defer unsubscribe()
 
-	first, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	first, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
 	if err != nil {
 		t.Fatalf("append first: %v", err)
 	}
-	if _, err := service.Append(ctx, appendParams("sess_two", "agent.message.delta")); err != nil {
+	if _, err := service.Append(ctx, appendParams("sess_two", "agent.message.completed")); err != nil {
 		t.Fatalf("append second: %v", err)
 	}
 
@@ -246,7 +309,7 @@ func TestRecentBufferTrimsToDefaultSizeAndRemainsOrdered(t *testing.T) {
 	service := newTestService(t, fake)
 
 	for i := 0; i < DefaultBufferSize+5; i++ {
-		if _, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta")); err != nil {
+		if _, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed")); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
 	}
@@ -269,7 +332,7 @@ func TestRecentReturnsACopy(t *testing.T) {
 	fake := newFakeStore()
 	service := newTestService(t, fake)
 
-	event, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	event, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -295,7 +358,7 @@ func TestConcurrentAppendsAreRaceSafe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+			_, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
 			errc <- err
 		}()
 	}
@@ -329,7 +392,7 @@ func TestConcurrentAppendsDeliverLiveEventsInSequenceOrder(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+			_, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
 			errc <- err
 		}()
 	}
@@ -353,6 +416,7 @@ type fakeStore struct {
 	mu           sync.Mutex
 	nextID       int
 	nextSeq      map[string]int64
+	persisted    []store.Event
 	err          error
 	afterPersist func(store.Event)
 }
@@ -361,6 +425,21 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{
 		nextSeq: make(map[string]int64),
 	}
+}
+
+func (f *fakeStore) ReserveEventSequences(ctx context.Context, sessionID string, count int64) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return 0, f.err
+	}
+	first := f.nextSeq[sessionID] + 1
+	f.nextSeq[sessionID] += count
+	return first, nil
 }
 
 func (f *fakeStore) AppendEvent(ctx context.Context, params store.AppendEventParams) (store.Event, error) {
@@ -375,17 +454,21 @@ func (f *fakeStore) AppendEvent(ctx context.Context, params store.AppendEventPar
 	}
 
 	f.nextID++
-	f.nextSeq[params.SessionID]++
+	if params.Seq <= 0 {
+		f.nextSeq[params.SessionID]++
+		params.Seq = f.nextSeq[params.SessionID]
+	}
 	event := store.Event{
 		ID:        fmt.Sprintf("evt_%06d", f.nextID),
 		SessionID: params.SessionID,
-		Seq:       f.nextSeq[params.SessionID],
+		Seq:       params.Seq,
 		Type:      params.Type,
 		Role:      params.Role,
 		Status:    params.Status,
 		Payload:   append(json.RawMessage(nil), params.Payload...),
 		CreatedAt: time.Now().UTC(),
 	}
+	f.persisted = append(f.persisted, event)
 	afterPersist := f.afterPersist
 	f.mu.Unlock()
 
@@ -412,8 +495,23 @@ func appendParams(sessionID string, eventType string) AppendParams {
 		SessionID: sessionID,
 		Type:      eventType,
 		Role:      "assistant",
-		Status:    store.EventStatusDelta,
+		Status:    eventStatusForType(eventType),
 		Payload:   json.RawMessage(`{"text":"hello"}`),
+	}
+}
+
+func eventStatusForType(eventType string) store.EventStatus {
+	switch {
+	case strings.HasSuffix(eventType, ".started"):
+		return store.EventStatusStarted
+	case strings.HasSuffix(eventType, ".completed"):
+		return store.EventStatusCompleted
+	case strings.HasSuffix(eventType, ".failed"):
+		return store.EventStatusFailed
+	case strings.HasSuffix(eventType, ".cancelled"):
+		return store.EventStatusCancelled
+	default:
+		return store.EventStatusDelta
 	}
 }
 

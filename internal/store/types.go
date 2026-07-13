@@ -41,6 +41,7 @@ type Session struct {
 	WorkspacePath            string
 	AgentOptions             json.RawMessage
 	EventCount               int64
+	LastEventSeq             int64
 	ToolCount                int64
 	NotificationAttentionSeq int64
 	CreatedAt                time.Time
@@ -58,6 +59,7 @@ type Event struct {
 	Status    EventStatus
 	Payload   json.RawMessage
 	CreatedAt time.Time
+	Transient bool
 }
 
 type EventListFilter struct {
@@ -155,6 +157,7 @@ type ListSessionsParams struct {
 
 type AppendEventParams struct {
 	SessionID string
+	Seq       int64
 	Type      string
 	Role      string
 	Status    EventStatus

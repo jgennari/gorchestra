@@ -484,7 +484,7 @@ func sessionResponseFromStore(session store.Session, pendingInput bool) sessionR
 		WorkspacePath:            session.WorkspacePath,
 		AgentOptions:             agentOptions,
 		EventCount:               session.EventCount,
-		LastEventSeq:             session.EventCount,
+		LastEventSeq:             session.LastEventSeq,
 		ToolCount:                session.ToolCount,
 		NotificationAttentionSeq: session.NotificationAttentionSeq,
 		PendingInput:             pendingInput,

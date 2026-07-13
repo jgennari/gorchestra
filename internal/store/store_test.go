@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,6 +25,7 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "notification_attention")
 	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
 	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
+	assertColumnExists(t, ctx, store, "sessions", "next_event_seq")
 	assertColumnExists(t, ctx, store, "push_subscriptions", "origin")
 }
 
@@ -39,8 +41,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 11 {
-		t.Fatalf("expected eleven recorded migrations, got %d", count)
+	if count != 12 {
+		t.Fatalf("expected twelve recorded migrations, got %d", count)
 	}
 }
 
@@ -322,6 +324,30 @@ CREATE TABLE push_subscriptions (
   last_error TEXT,
   disabled_at DATETIME,
   origin TEXT
+);
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  title TEXT,
+  agent_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  provider_session_id TEXT,
+  workspace_path TEXT,
+  agent_options_json TEXT NOT NULL DEFAULT '{}',
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  completed_at DATETIME,
+  archived_at DATETIME
+);
+CREATE TABLE events (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  role TEXT,
+  status TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at DATETIME NOT NULL,
+  UNIQUE(session_id, seq)
 );
 INSERT INTO schema_migrations (version, name, applied_at)
   VALUES
@@ -1266,7 +1292,84 @@ func TestFilteredEventListsOmitDebugOnlyEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list filtered events with debug: %v", err)
 	}
-	assertSeqs(t, allEvents, []int64{1, 2, 3, 4, 5})
+	assertSeqs(t, allEvents, []int64{1, 3, 4, 5})
+}
+
+func TestEventTurnListsUseUnfilteredUserMessageBoundaries(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	appendTestEventWithType(t, ctx, store, session.ID, "session.status.updated", `{"status":"idle"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "user.message.completed", `{"text":"one"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "agent.log.delta", `{"text":"debug one"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "agent.message.completed", `{"text":"answer one"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "user.message.completed", `{"text":"two"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "agent.log.delta", `{"text":"debug two"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "agent.message.completed", `{"text":"answer two"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "user.message.completed", `{"text":"three"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "agent.message.completed", `{"text":"answer three"}`)
+
+	recent, err := store.ListRecentEventTurnsFiltered(ctx, session.ID, 2, EventListFilter{})
+	if err != nil {
+		t.Fatalf("list recent event turns: %v", err)
+	}
+	assertSeqs(t, recent, []int64{5, 7, 8, 9})
+
+	recentWithDebug, err := store.ListRecentEventTurnsFiltered(ctx, session.ID, 2, EventListFilter{IncludeDebug: true})
+	if err != nil {
+		t.Fatalf("list recent event turns with debug: %v", err)
+	}
+	assertSeqs(t, recentWithDebug, []int64{5, 7, 8, 9})
+
+	older, err := store.ListEventTurnsBeforeFiltered(ctx, session.ID, 8, 2, EventListFilter{})
+	if err != nil {
+		t.Fatalf("list older event turns: %v", err)
+	}
+	assertSeqs(t, older, []int64{2, 4, 5, 7})
+
+	oldest, err := store.ListEventTurnsBeforeFiltered(ctx, session.ID, 5, 2, EventListFilter{})
+	if err != nil {
+		t.Fatalf("list oldest event turns: %v", err)
+	}
+	assertSeqs(t, oldest, []int64{1, 2, 4})
+}
+
+func TestRecentEventTurnsDoNotSplitLargeTurns(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	appendTestEventWithType(t, ctx, store, session.ID, "user.message.completed", `{"text":"one"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "agent.message.completed", `{"text":"answer one"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "user.message.completed", `{"text":"two"}`)
+	for index := 0; index < 550; index++ {
+		appendTestEventWithType(t, ctx, store, session.ID, "provider.codex.event", `{"provider_event_type":"thread/tokenUsage/updated"}`)
+	}
+	appendTestEventWithType(t, ctx, store, session.ID, "agent.message.completed", `{"text":"answer two"}`)
+
+	events, err := store.ListRecentEventTurnsFiltered(ctx, session.ID, 2, EventListFilter{IncludeDebug: true})
+	if err != nil {
+		t.Fatalf("list large event turns: %v", err)
+	}
+	if got, want := len(events), 554; got != want {
+		t.Fatalf("expected %d events across two complete turns, got %d", want, got)
+	}
+	assertSeqs(t, []Event{events[0], events[len(events)-1]}, []int64{1, 554})
+}
+
+func TestRecentEventTurnsReturnSessionsWithoutUserMessages(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+	appendTestEventWithType(t, ctx, store, session.ID, "session.status.updated", `{"status":"running"}`)
+	appendTestEventWithType(t, ctx, store, session.ID, "agent.run.started", `{"provider":"fake"}`)
+
+	events, err := store.ListRecentEventTurnsFiltered(ctx, session.ID, 2, EventListFilter{})
+	if err != nil {
+		t.Fatalf("list event turns without user messages: %v", err)
+	}
+	assertSeqs(t, events, []int64{1, 2})
 }
 
 func TestListRecentEventsReturnsTailInAscendingSequence(t *testing.T) {
@@ -1449,7 +1552,7 @@ func hasSessionID(sessions []Session, id string) bool {
 
 func appendTestEvent(t *testing.T, ctx context.Context, store *Store, sessionID string, payload string) Event {
 	t.Helper()
-	return appendTestEventWithType(t, ctx, store, sessionID, "agent.message.delta", payload)
+	return appendTestEventWithType(t, ctx, store, sessionID, "agent.message.completed", payload)
 }
 
 func appendTestEventWithType(t *testing.T, ctx context.Context, store *Store, sessionID string, eventType string, payload string) Event {
@@ -1459,7 +1562,7 @@ func appendTestEventWithType(t *testing.T, ctx context.Context, store *Store, se
 		SessionID: sessionID,
 		Type:      eventType,
 		Role:      "assistant",
-		Status:    EventStatusDelta,
+		Status:    eventStatusForType(eventType),
 		Payload:   json.RawMessage(payload),
 	})
 	if err != nil {
@@ -1467,6 +1570,21 @@ func appendTestEventWithType(t *testing.T, ctx context.Context, store *Store, se
 	}
 
 	return event
+}
+
+func eventStatusForType(eventType string) EventStatus {
+	switch {
+	case strings.HasSuffix(eventType, ".started"):
+		return EventStatusStarted
+	case strings.HasSuffix(eventType, ".completed"):
+		return EventStatusCompleted
+	case strings.HasSuffix(eventType, ".failed"):
+		return EventStatusFailed
+	case strings.HasSuffix(eventType, ".cancelled"):
+		return EventStatusCancelled
+	default:
+		return EventStatusDelta
+	}
 }
 
 func assertTableExists(t *testing.T, ctx context.Context, store *Store, name string) {

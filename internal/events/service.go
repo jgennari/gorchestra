@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/jgennari/gorchestra/internal/store"
 )
@@ -13,9 +15,11 @@ import (
 const (
 	DefaultBufferSize           = 1000
 	DefaultSubscriberBufferSize = 64
+	DefaultSequenceBlockSize    = 1024
 )
 
 type Store interface {
+	ReserveEventSequences(ctx context.Context, sessionID string, count int64) (int64, error)
 	AppendEvent(ctx context.Context, params store.AppendEventParams) (store.Event, error)
 }
 
@@ -39,7 +43,13 @@ type Service struct {
 	subscribers      map[string]map[uint64]chan store.Event
 	allSubscribers   map[uint64]chan store.Event
 	appendLocks      map[string]*sync.Mutex
+	sequenceBlocks   map[string]sequenceBlock
 	nextSubscriberID uint64
+}
+
+type sequenceBlock struct {
+	next int64
+	end  int64
 }
 
 func NewService(eventStore Store, options ...Option) (*Service, error) {
@@ -55,6 +65,7 @@ func NewService(eventStore Store, options ...Option) (*Service, error) {
 		subscribers:          make(map[string]map[uint64]chan store.Event),
 		allSubscribers:       make(map[uint64]chan store.Event),
 		appendLocks:          make(map[string]*sync.Mutex),
+		sequenceBlocks:       make(map[string]sequenceBlock),
 	}
 
 	for _, option := range options {
@@ -88,24 +99,95 @@ func (s *Service) Append(ctx context.Context, params AppendParams) (store.Event,
 	appendLock.Lock()
 	defer appendLock.Unlock()
 
-	event, err := s.store.AppendEvent(ctx, store.AppendEventParams{
-		SessionID: params.SessionID,
-		Type:      params.Type,
-		Role:      params.Role,
-		Status:    params.Status,
-		Payload:   params.Payload,
-	})
-	if err != nil {
-		return store.Event{}, err
+	transient := isTransientEventType(params.Type)
+	var event store.Event
+	var err error
+
+	if transient {
+		event, err = s.newTransientEvent(ctx, params)
+		if err != nil {
+			return store.Event{}, err
+		}
+	} else {
+		seq, err := s.nextSequence(ctx, params.SessionID)
+		if err != nil {
+			return store.Event{}, err
+		}
+		event, err = s.store.AppendEvent(ctx, store.AppendEventParams{
+			SessionID: params.SessionID,
+			Seq:       seq,
+			Type:      params.Type,
+			Role:      params.Role,
+			Status:    params.Status,
+			Payload:   params.Payload,
+		})
+		if err != nil {
+			return store.Event{}, err
+		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.appendToBufferLocked(event)
-	s.broadcastLocked(event)
+	s.broadcastLocked(event, !event.Transient)
 
 	return event, nil
+}
+
+func (s *Service) newTransientEvent(ctx context.Context, params AppendParams) (store.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Event{}, err
+	}
+	seq, err := s.nextSequence(ctx, params.SessionID)
+	if err != nil {
+		return store.Event{}, err
+	}
+	id, err := store.NewEventID()
+	if err != nil {
+		return store.Event{}, err
+	}
+	return store.Event{
+		ID:        id,
+		SessionID: params.SessionID,
+		Seq:       seq,
+		Type:      params.Type,
+		Role:      params.Role,
+		Status:    params.Status,
+		Payload:   append(json.RawMessage(nil), params.Payload...),
+		CreatedAt: time.Now().UTC(),
+		Transient: true,
+	}, nil
+}
+
+func (s *Service) nextSequence(ctx context.Context, sessionID string) (int64, error) {
+	s.mu.Lock()
+	block := s.sequenceBlocks[sessionID]
+	if block.next > 0 && block.next <= block.end {
+		seq := block.next
+		block.next++
+		s.sequenceBlocks[sessionID] = block
+		s.mu.Unlock()
+		return seq, nil
+	}
+	s.mu.Unlock()
+
+	firstSeq, err := s.store.ReserveEventSequences(ctx, sessionID, DefaultSequenceBlockSize)
+	if err != nil {
+		return 0, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sequenceBlocks[sessionID] = sequenceBlock{
+		next: firstSeq + 1,
+		end:  firstSeq + DefaultSequenceBlockSize - 1,
+	}
+	return firstSeq, nil
+}
+
+func isTransientEventType(eventType string) bool {
+	return strings.HasSuffix(eventType, ".delta")
 }
 
 func (s *Service) appendLock(sessionID string) *sync.Mutex {
@@ -191,7 +273,7 @@ func (s *Service) appendToBufferLocked(event store.Event) {
 	s.buffers[event.SessionID] = buffer
 }
 
-func (s *Service) broadcastLocked(event store.Event) {
+func (s *Service) broadcastLocked(event store.Event, includeAllSubscribers bool) {
 	sessionSubscribers := s.subscribers[event.SessionID]
 	if len(sessionSubscribers) > 0 {
 		for id, ch := range sessionSubscribers {
@@ -206,6 +288,10 @@ func (s *Service) broadcastLocked(event store.Event) {
 		if len(sessionSubscribers) == 0 {
 			delete(s.subscribers, event.SessionID)
 		}
+	}
+
+	if !includeAllSubscribers {
+		return
 	}
 
 	for id, ch := range s.allSubscribers {

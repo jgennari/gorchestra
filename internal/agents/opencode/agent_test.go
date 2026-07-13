@@ -148,11 +148,16 @@ func TestAgentRunsFakeOpenCodeACP(t *testing.T) {
 	assertAgentEventTypes(t, events, []string{
 		"agent.run.started",
 		"agent.message.delta",
+		"agent.message.completed",
 		"agent.run.completed",
 	})
 	startPayload := events[0].Event.Payload.(map[string]any)
 	if startPayload["provider_session_id"] != "ses_fake" {
 		t.Fatalf("expected provider session id ses_fake, got %#v", startPayload)
+	}
+	completedPayload := events[2].Event.Payload.(map[string]any)
+	if completedPayload["text"] != "Hello" {
+		t.Fatalf("expected completed message snapshot, got %#v", completedPayload)
 	}
 }
 

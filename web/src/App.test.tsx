@@ -317,7 +317,7 @@ test('loading with a session slug route selects that session without replacing t
     if (path === '/api/sessions/sess_2') {
       return jsonResponse(secondSession)
     }
-    if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
       return jsonResponse({ events: [] })
     }
     throw new Error(`unexpected URL ${path}`)
@@ -386,7 +386,7 @@ test('session route shows loading instead of no selection while sessions load', 
       })
       return jsonResponse({ sessions: [firstSession, secondSession] })
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
       return jsonResponse({ events: [] })
     }
     throw new Error(`unexpected URL ${path}`)
@@ -419,7 +419,7 @@ test('cold start shows loading instead of no selection while default session is 
       })
       return jsonResponse({ sessions: [firstSession, secondSession] })
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
       return jsonResponse({ events: [] })
     }
     throw new Error(`unexpected URL ${path}`)
@@ -458,7 +458,7 @@ test('cached session route renders the session shell while history loads', async
     if (path === '/api/sessions/sess_1') {
       return jsonResponse(firstSession)
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
       await new Promise<void>((resolve) => {
         resolveEvents = resolve
       })
@@ -499,7 +499,7 @@ test('cached slug route renders the session shell while sessions load', async ()
     if (path === '/api/sessions/sess_2') {
       return jsonResponse(secondSession)
     }
-    if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
       return jsonResponse({ events: [] })
     }
     throw new Error(`unexpected URL ${path}`)
@@ -540,10 +540,10 @@ test('server session list wins over stale cached slug aliases', async () => {
     if (path === '/api/sessions/sess_2') {
       return jsonResponse(renamedSecondSession)
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
       return jsonResponse({ events: [] })
     }
-    if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
       return jsonResponse({ events: [] })
     }
     throw new Error(`unexpected URL ${path}`)
@@ -579,7 +579,7 @@ test('session route shows inline chat history loading once session details are a
     if (path === '/api/sessions?limit=50') {
       return jsonResponse({ sessions: [firstSession, secondSession] })
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
       await new Promise<void>((resolve) => {
         resolveEvents = resolve
       })
@@ -632,6 +632,14 @@ test('session route restores cached transcript before network session loading fi
     if (path === '/api/sessions/sess_1') {
       return jsonResponse(firstSession)
     }
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
+      return jsonResponse({
+        events: [
+          event(10, 'user.message.completed', { text: 'Cached prompt' }),
+          event(11, 'agent.message.completed', { text: 'Cached answer' }),
+        ],
+      })
+    }
     throw new Error(`unexpected URL ${path}`)
   })
   vi.stubGlobal('fetch', fetch)
@@ -640,9 +648,13 @@ test('session route restores cached transcript before network session loading fi
 
   await waitFor(() => expect(screen.getByText('Cached answer')).toBeInTheDocument(), { timeout: 3000 })
   expect(screen.queryByText('Loading session...')).not.toBeInTheDocument()
-  expect(FakeEventSource.instances.some((source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=11')).toBe(
-    true,
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_1/events?tail=true&turns=2',
+      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
   )
+  await findEventSource('/api/sessions/sess_1/events/stream?after_seq=11')
 
   await act(async () => {
     resolveSessions?.()
@@ -741,10 +753,10 @@ test('filter refreshes sessions in the background without showing a workspace lo
     if (path === '/api/sessions/sess_1') {
       return jsonResponse(firstSession)
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
       return jsonResponse({ events: [] })
     }
-    if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
       return jsonResponse({ events: [] })
     }
     throw new Error(`unexpected URL ${path}`)
@@ -783,7 +795,7 @@ test('initial session load fetches the recent event window and streams after the
 
   await waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/sess_1/events?tail=true&limit=500',
+      '/api/sessions/sess_1/events?tail=true&turns=2',
       expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
@@ -808,7 +820,7 @@ test('successful prompt submit reloads persisted events when the live stream is 
 
   await waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/sess_1/events?tail=true&limit=500',
+      '/api/sessions/sess_1/events?tail=true&turns=2',
       expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
@@ -823,7 +835,7 @@ test('successful prompt submit reloads persisted events when the live stream is 
     ),
   )
   await waitFor(() =>
-    expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&limit=500')).toHaveLength(
+    expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2')).toHaveLength(
       2,
     ),
   )
@@ -850,7 +862,7 @@ test('successful prompt submit keeps the current transcript visible while histor
     if (path === '/api/sessions/sess_1/messages' && init?.method === 'POST') {
       return jsonResponse({ session_id: 'sess_1', status: 'running' })
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
       tailRequests += 1
       if (tailRequests === 1) {
         return jsonResponse({ events: [event(40, 'user.message.completed', { text: 'Previous prompt' })] })
@@ -908,7 +920,7 @@ test('switching back to a cached session restores transcript before replaying st
   expect(screen.getByText('Cached prompt')).toBeInTheDocument()
   expect(screen.queryByText('Loading chat history...')).not.toBeInTheDocument()
   expect(
-    fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&limit=500'),
+    fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2'),
   ).toHaveLength(1)
 
   await waitFor(() =>
@@ -989,7 +1001,7 @@ test('global terminal events mark unselected sessions unseen even when seen stat
   await waitFor(() => expect(faviconPath()).toBe('/favicon-notify.svg'))
 })
 
-test('load older events fetches the previous event page', async () => {
+test('load older events fetches the previous turn page', async () => {
   const user = userEvent.setup()
   const fetch = fetchMock({
     events: [event(251, 'agent.message.delta', { text: 'Tail' }), event(252, 'agent.message.completed', { text: 'Tail' })],
@@ -1003,11 +1015,67 @@ test('load older events fetches the previous event page', async () => {
 
   await waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/sess_1/events?before_seq=251&limit=500',
+      '/api/sessions/sess_1/events?before_seq=252&turns=2',
       expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
   expect(await screen.findByText('Older prompt')).toBeInTheDocument()
+})
+
+test('load older grows transcript by two turns without refetching loaded turns', async () => {
+  const user = userEvent.setup()
+  const baseFetch = fetchMock({
+    events: [
+      event(9, 'user.message.completed', { text: 'Prompt five' }),
+      event(10, 'agent.message.completed', { text: 'Answer five' }),
+      event(11, 'user.message.completed', { text: 'Prompt six' }),
+      event(12, 'agent.message.completed', { text: 'Answer six' }),
+    ],
+  })
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(url)
+    if (path === '/api/sessions/sess_1/events?before_seq=9&turns=2') {
+      return jsonResponse({
+        events: [
+          event(5, 'user.message.completed', { text: 'Prompt three' }),
+          event(6, 'agent.message.completed', { text: 'Answer three' }),
+          event(7, 'user.message.completed', { text: 'Prompt four' }),
+          event(8, 'agent.message.completed', { text: 'Answer four' }),
+        ],
+      })
+    }
+    if (path === '/api/sessions/sess_1/events?before_seq=5&turns=2') {
+      return jsonResponse({
+        events: [
+          event(1, 'user.message.completed', { text: 'Prompt one' }),
+          event(2, 'agent.message.completed', { text: 'Answer one' }),
+          event(3, 'user.message.completed', { text: 'Prompt two' }),
+          event(4, 'agent.message.completed', { text: 'Answer two' }),
+        ],
+      })
+    }
+    return baseFetch(url, init)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getByText('Prompt five')).toBeInTheDocument())
+  expect(screen.getByText('Prompt six')).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Load older events' }))
+  await waitFor(() => expect(screen.getByText('Prompt three')).toBeInTheDocument())
+  expect(screen.getByText('Prompt four')).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Load older events' }))
+  await waitFor(() => expect(screen.getByText('Prompt one')).toBeInTheDocument())
+  expect(screen.getByText('Prompt two')).toBeInTheDocument()
+  expect(screen.getByText('Prompt six')).toBeInTheDocument()
+  expect(fetch.mock.calls.filter(([url]) => String(url).includes('events?tail=true&turns=2'))).toHaveLength(1)
+  expect(fetch.mock.calls.filter(([url]) => String(url).includes('events?before_seq=')).map(([url]) => String(url))).toEqual([
+    '/api/sessions/sess_1/events?before_seq=9&turns=2',
+    '/api/sessions/sess_1/events?before_seq=5&turns=2',
+  ])
 })
 
 test('desktop pane resize handles update persisted widths', async () => {
@@ -1324,10 +1392,10 @@ function fetchMock({
         })
       }
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
       return jsonResponse({ events: recentEvents })
     }
-    if (path === '/api/sessions/sess_2/events?tail=true&limit=500') {
+    if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
       return jsonResponse({ events: [] })
     }
     const consoleMatch = path.match(/^\/api\/sessions\/([^/?]+)\/console$/)
@@ -1337,7 +1405,7 @@ function fetchMock({
         return jsonResponse({ session_id: matchedSession.id, workspace_path: matchedSession.workspace_path, running: false })
       }
     }
-    if (path === '/api/sessions/sess_1/events?before_seq=251&limit=500') {
+    if (path === '/api/sessions/sess_1/events?before_seq=252&turns=2') {
       return jsonResponse({ events: olderEvents })
     }
     if (path === '/api/sessions/sess_1/files') {

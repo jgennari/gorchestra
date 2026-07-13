@@ -12,7 +12,9 @@ import {
   isAgentType,
   listEvents,
   listEventsBefore,
+  listEventTurnsBefore,
   listRecentEvents,
+  listRecentEventTurns,
   listSessions,
   listSessionFiles,
   listWorkspaceRoots,
@@ -49,6 +51,12 @@ test('session API helpers build the expected URLs', async () => {
     if (String(url) === '/api/sessions/sess_1/events?before_seq=90&limit=40&include_debug=true') {
       return jsonResponse({ events: [] })
     }
+    if (String(url) === '/api/sessions/sess_1/events?tail=true&turns=2') {
+      return jsonResponse({ events: [] })
+    }
+    if (String(url) === '/api/sessions/sess_1/events?before_seq=80&turns=3&include_debug=true') {
+      return jsonResponse({ events: [] })
+    }
     throw new Error(`unexpected URL ${String(url)}`)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -60,6 +68,8 @@ test('session API helpers build the expected URLs', async () => {
   await listEvents('sess_1', 6, 30, { includeDebug: true })
   await listRecentEvents('sess_1', 35, { includeDebug: true })
   await listEventsBefore('sess_1', 90, 40, { includeDebug: true })
+  await listRecentEventTurns('sess_1')
+  await listEventTurnsBefore('sess_1', 80, 3, { includeDebug: true })
 
   expect(eventStreamURL('sess_1', 4)).toBe('/api/sessions/sess_1/events/stream?after_seq=4')
   expect(eventStreamURL('sess_1', 4, { includeDebug: true })).toBe(

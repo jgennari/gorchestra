@@ -261,7 +261,7 @@ func TestClaudeThinkingBlocksNormalizeThinkingEvents(t *testing.T) {
 		t.Fatalf("expected thinking delta text, got %#v", deltaPayload)
 	}
 	completedPayload := events[7].Event.Payload.(map[string]any)
-	if completedPayload["item_id"] != "msg_01:thinking:0" {
+	if completedPayload["item_id"] != "msg_01:thinking:0" || completedPayload["text"] != "Checking the workspace" {
 		t.Fatalf("unexpected thinking completed payload %#v", completedPayload)
 	}
 }

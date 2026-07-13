@@ -32,6 +32,7 @@ type normalizer struct {
 	toolBlockIDs     map[int]string
 	toolInputDeltas  map[int]string
 	thinkingBlockIDs map[int]string
+	thinkingText     map[string]string
 }
 
 func newNormalizer() *normalizer {
@@ -40,6 +41,7 @@ func newNormalizer() *normalizer {
 		toolBlockIDs:     make(map[int]string),
 		toolInputDeltas:  make(map[int]string),
 		thinkingBlockIDs: make(map[int]string),
+		thinkingText:     make(map[string]string),
 	}
 }
 
@@ -302,6 +304,7 @@ func (n *normalizer) normalizeThinkingStart(input *streamEvent) normalizedEvent 
 	payload := n.thinkingPayload(input, itemID)
 	if text := stringFromMap(block, "thinking"); text != "" {
 		payload["text"] = text
+		n.thinkingText[itemID] += text
 	}
 	return normalizedEvent{Event: agentEvent("agent.thinking.started", "assistant", "started", payload)}
 }
@@ -318,6 +321,7 @@ func (n *normalizer) normalizeThinkingDelta(input *streamEvent) normalizedEvent 
 	payload := n.thinkingPayload(input, itemID)
 	if text := stringAt(input.Event, "delta", "thinking"); text != "" {
 		payload["text"] = text
+		n.thinkingText[itemID] += text
 	}
 	return normalizedEvent{Event: agentEvent("agent.thinking.delta", "assistant", "delta", payload)}
 }
@@ -332,7 +336,12 @@ func (n *normalizer) normalizeThinkingStop(input *streamEvent) normalizedEvent {
 		return normalizedEvent{}
 	}
 	delete(n.thinkingBlockIDs, index)
-	return normalizedEvent{Event: agentEvent("agent.thinking.completed", "assistant", "completed", n.thinkingPayload(input, itemID))}
+	payload := n.thinkingPayload(input, itemID)
+	if text := n.thinkingText[itemID]; text != "" {
+		payload["text"] = text
+	}
+	delete(n.thinkingText, itemID)
+	return normalizedEvent{Event: agentEvent("agent.thinking.completed", "assistant", "completed", payload)}
 }
 
 func (n *normalizer) thinkingPayload(input *streamEvent, itemID string) map[string]any {

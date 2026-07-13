@@ -89,6 +89,25 @@ test('session cache stores a trimmed recent event window', async () => {
   expect(cached?.hasOlderEvents).toBe(true)
 })
 
+test('session cache excludes transient deltas while retaining the stream cursor', async () => {
+  await writeCachedSessionEvents(
+    'sess_1',
+    [
+      event(1, 'agent.message.completed', 'Durable'),
+      { ...event(2, 'agent.message.delta', 'Live'), status: 'delta', transient: true },
+    ],
+    false,
+    false,
+    2,
+  )
+
+  const cached = await readCachedSessionEvents('sess_1')
+  expect(cached?.events.map((item) => item.seq)).toEqual([1])
+  expect(cached?.lastSeq).toBe(2)
+  expect(cached?.oldestSeq).toBe(1)
+  expect(cached?.hasOlderEvents).toBe(false)
+})
+
 test('session cache drops oversized individual events from persisted event windows', async () => {
   await writeCachedSessionEvents(
     'sess_1',

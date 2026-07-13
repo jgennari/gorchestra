@@ -813,6 +813,105 @@ func TestEventHistoryTailReturnsRecentEvents(t *testing.T) {
 	}
 }
 
+func TestEventHistoryTailReturnsCompleteRecentTurns(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEvent(1, "user.message.completed"),
+		testEvent(2, "agent.message.completed"),
+		testEvent(3, "user.message.completed"),
+		testEvent(4, "agent.log.delta"),
+		testEvent(5, "agent.message.completed"),
+		testEvent(6, "user.message.completed"),
+		testEvent(7, "agent.message.completed"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?tail=true&turns=2", nil)
+	rec := httptest.NewRecorder()
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+	if got := eventSeqs(response.Events); !reflect.DeepEqual(got, []int64{3, 5, 6, 7}) {
+		t.Fatalf("expected two complete visible turns, got %v", got)
+	}
+	call := store.lastListCall(t)
+	if call.mode != "tail_turns" || call.turns != 2 || call.filter.IncludeDebug {
+		t.Fatalf("expected filtered two-turn tail call, got %#v", call)
+	}
+}
+
+func TestEventHistoryBeforeSeqReturnsPreviousCompleteTurns(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEvent(1, "user.message.completed"),
+		testEvent(2, "agent.message.completed"),
+		testEvent(3, "user.message.completed"),
+		testEvent(4, "agent.log.delta"),
+		testEvent(5, "agent.message.completed"),
+		testEvent(6, "user.message.completed"),
+		testEvent(7, "agent.message.completed"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?before_seq=6&turns=2&include_debug=true", nil)
+	rec := httptest.NewRecorder()
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+	if got := eventSeqs(response.Events); !reflect.DeepEqual(got, []int64{1, 2, 3, 4, 5}) {
+		t.Fatalf("expected previous two complete turns, got %v", got)
+	}
+	call := store.lastListCall(t)
+	if call.mode != "before_turns" || call.beforeSeq != 6 || call.turns != 2 || !call.filter.IncludeDebug {
+		t.Fatalf("expected unfiltered two-turn before call, got %#v", call)
+	}
+}
+
+func TestEventHistoryRejectsInvalidTurnPagination(t *testing.T) {
+	for _, query := range []string{
+		"?tail=true&turns=0",
+		"?tail=true&turns=nope",
+		"?turns=2",
+		"?after_seq=1&turns=2",
+		"?tail=true&turns=2&limit=10",
+	} {
+		t.Run(query, func(t *testing.T) {
+			store := newFakeHTTPStore()
+			store.addSession(testSessionID)
+			req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events"+query, nil)
+			rec := httptest.NewRecorder()
+			NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestEventHistoryCapsLargeTurnLimit(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?tail=true&turns=500", nil)
+	rec := httptest.NewRecorder()
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if call := store.lastListCall(t); call.turns != maxEventTurnLimit {
+		t.Fatalf("expected capped turn limit %d, got %#v", maxEventTurnLimit, call)
+	}
+}
+
 func TestEventHistoryBeforeSeqReturnsPreviousEvents(t *testing.T) {
 	store := newFakeHTTPStore()
 	store.addSession(testSessionID)
@@ -1378,6 +1477,7 @@ type listCall struct {
 	afterSeq  int64
 	beforeSeq int64
 	limit     int
+	turns     int
 	mode      string
 	filter    store.EventListFilter
 }
@@ -1880,6 +1980,79 @@ func (s *fakeHTTPStore) ListEventsBeforeFiltered(
 	}
 	if limit > 0 && len(filtered) > limit {
 		filtered = filtered[len(filtered)-limit:]
+	}
+	return append([]store.Event(nil), filtered...), nil
+}
+
+func (s *fakeHTTPStore) ListRecentEventTurnsFiltered(
+	_ context.Context,
+	sessionID string,
+	turns int,
+	filter store.EventListFilter,
+) ([]store.Event, error) {
+	return s.listEventTurns(sessionID, 0, false, turns, filter)
+}
+
+func (s *fakeHTTPStore) ListEventTurnsBeforeFiltered(
+	_ context.Context,
+	sessionID string,
+	beforeSeq int64,
+	turns int,
+	filter store.EventListFilter,
+) ([]store.Event, error) {
+	return s.listEventTurns(sessionID, beforeSeq, true, turns, filter)
+}
+
+func (s *fakeHTTPStore) listEventTurns(
+	sessionID string,
+	beforeSeq int64,
+	hasBeforeSeq bool,
+	turns int,
+	filter store.EventListFilter,
+) ([]store.Event, error) {
+	s.mu.Lock()
+	mode := "tail_turns"
+	if hasBeforeSeq {
+		mode = "before_turns"
+	}
+	s.listCalls = append(s.listCalls, listCall{
+		sessionID: sessionID,
+		beforeSeq: beforeSeq,
+		turns:     turns,
+		mode:      mode,
+		filter:    filter,
+	})
+	defer s.mu.Unlock()
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+
+	events := s.events[sessionID]
+	turnStarts := make([]int64, 0)
+	for _, event := range events {
+		if hasBeforeSeq && event.Seq >= beforeSeq {
+			continue
+		}
+		if event.Type == "user.message.completed" {
+			turnStarts = append(turnStarts, event.Seq)
+		}
+	}
+	startSeq := int64(0)
+	if len(turnStarts) >= turns {
+		startSeq = turnStarts[len(turnStarts)-turns]
+	}
+
+	filtered := make([]store.Event, 0, len(events))
+	for _, event := range events {
+		if startSeq > 0 && event.Seq < startSeq {
+			continue
+		}
+		if hasBeforeSeq && event.Seq >= beforeSeq {
+			continue
+		}
+		if eventVisible(event, filter) {
+			filtered = append(filtered, event)
+		}
 	}
 	return append([]store.Event(nil), filtered...), nil
 }

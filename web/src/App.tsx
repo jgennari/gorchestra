@@ -42,6 +42,7 @@ import {
 } from '@/lib/api'
 import {
   appendEvent,
+  isTransientEvent,
   isTerminalEvent,
   knownEventTypes,
   lastSeq,
@@ -1857,7 +1858,7 @@ function applySessionEvent(session: Session, event: AgentEvent, status: SessionS
     return session
   }
   const nextLastSeq = Math.max(currentLastSeq, event.seq)
-  const eventCount = Math.max(session.event_count ?? 0, event.seq)
+  const eventCount = (session.event_count ?? 0) + (isTransientEvent(event) ? 0 : 1)
   const toolCount = (session.tool_count ?? 0) + (isToolActivityEvent(event) ? 1 : 0)
   const pendingInput = pendingInputFromEvent(session.pending_input ?? false, event)
   if (!status) {

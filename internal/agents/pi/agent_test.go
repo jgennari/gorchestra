@@ -133,6 +133,10 @@ func TestSampleRPCEventsNormalizeExpectedEvents(t *testing.T) {
 	if thinkingPayload["text"] != "Checking" {
 		t.Fatalf("unexpected thinking payload %#v", thinkingPayload)
 	}
+	completedThinkingPayload := events[2].Event.Payload.(map[string]any)
+	if completedThinkingPayload["text"] != "Checking" {
+		t.Fatalf("expected completed thinking snapshot, got %#v", completedThinkingPayload)
+	}
 	toolPayload := events[5].Event.Payload.(map[string]any)
 	if toolPayload["command"] != "pwd" || toolPayload["output"] != "/repo" {
 		t.Fatalf("unexpected tool payload %#v", toolPayload)

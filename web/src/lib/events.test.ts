@@ -65,6 +65,27 @@ test('event reducer dedupes by sequence', () => {
   expect(events[0].payload).toEqual({ text: 'first' })
 })
 
+test('completed snapshots replace matching transient deltas', () => {
+  const events = appendEvents([], [
+    { ...event(1, 'agent.message.delta', { message_id: 'msg_1', text: 'Hel' }), transient: true },
+    { ...event(2, 'agent.message.delta', { message_id: 'msg_1', text: 'lo' }), transient: true },
+    event(3, 'agent.message.completed', { message_id: 'msg_1', text: 'Hello' }),
+  ])
+
+  expect(events.map((item) => item.seq)).toEqual([3])
+  expect(events[0].payload).toEqual({ message_id: 'msg_1', text: 'Hello' })
+})
+
+test('completed snapshots preserve transient deltas for other identities', () => {
+  const events = appendEvents([], [
+    { ...event(1, 'agent.message.delta', { message_id: 'msg_1', text: 'First' }), transient: true },
+    { ...event(2, 'agent.message.delta', { message_id: 'msg_2', text: 'Second' }), transient: true },
+    event(3, 'agent.message.completed', { message_id: 'msg_2', text: 'Second' }),
+  ])
+
+  expect(events.map((item) => item.seq)).toEqual([1, 3])
+})
+
 test('event groups coalesce consecutive agent deltas and keep completion boundaries', () => {
   const groups = groupEvents([
     event(1, 'agent.message.delta', { text: 'Hello' }),

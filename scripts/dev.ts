@@ -205,24 +205,27 @@ async function restartBackend() {
     return
   }
 
-  if (await hasRunningSessions()) {
-    if (!restartDeferredLogged) {
-      console.log('[backend] source changed; deferring restart until active runs finish')
-      restartDeferredLogged = true
-    }
-    restartTimer = setTimeout(() => {
-      void restartBackend()
-    }, restartDeferMs)
-    return
-  }
-
   backendRestarting = true
-  console.log(restartDeferredLogged ? '[backend] active runs finished; restarting after source change' : '[backend] restarting after source change')
-  restartDeferredLogged = false
+  try {
+    if (await hasRunningSessions()) {
+      if (!restartDeferredLogged) {
+        console.log('[backend] source changed; deferring restart until active runs finish')
+        restartDeferredLogged = true
+      }
+      restartTimer = setTimeout(() => {
+        void restartBackend()
+      }, restartDeferMs)
+      return
+    }
 
-  await stopProcess(backend)
-  await startBackend()
-  backendRestarting = false
+    console.log(restartDeferredLogged ? '[backend] active runs finished; restarting after source change' : '[backend] restarting after source change')
+    restartDeferredLogged = false
+
+    await stopProcess(backend)
+    await startBackend()
+  } finally {
+    backendRestarting = false
+  }
 }
 
 async function hasRunningSessions() {

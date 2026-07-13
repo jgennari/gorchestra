@@ -38,6 +38,7 @@ export type AgentEvent = {
   status: string
   payload: unknown
   created_at: string
+  transient?: boolean
 }
 
 export type CodexReasoningEffortOption = {
@@ -343,6 +344,7 @@ type ListSessionsOptions = {
 }
 
 export const defaultEventWindowLimit = 500
+export const defaultEventTurnPageSize = 2
 
 export class APIError extends Error {
   status: number
@@ -600,6 +602,31 @@ export async function listEventsBefore(
   options: EventListOptions = {},
 ) {
   const params = eventListParams({ before_seq: String(beforeSeq), limit: String(limit) }, options)
+  const data = await requestJSON<EventHistoryResponse>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
+  )
+  return data.events
+}
+
+export async function listRecentEventTurns(
+  sessionID: string,
+  turns = defaultEventTurnPageSize,
+  options: EventListOptions = {},
+) {
+  const params = eventListParams({ tail: 'true', turns: String(turns) }, options)
+  const data = await requestJSON<EventHistoryResponse>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
+  )
+  return data.events
+}
+
+export async function listEventTurnsBefore(
+  sessionID: string,
+  beforeSeq: number,
+  turns = defaultEventTurnPageSize,
+  options: EventListOptions = {},
+) {
+  const params = eventListParams({ before_seq: String(beforeSeq), turns: String(turns) }, options)
   const data = await requestJSON<EventHistoryResponse>(
     withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
   )

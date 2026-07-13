@@ -14,6 +14,7 @@ import (
 
 const defaultEventLimit = 500
 const defaultSessionLimit = 50
+const durableEventSQL = `type NOT LIKE '%.delta'`
 
 type Store struct {
 	db  *sql.DB
@@ -119,7 +120,8 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 	row := s.db.QueryRowContext(
 		ctx,
 		`SELECT id, title, agent_type, status, provider_session_id, workspace_path, agent_options_json,
-		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id) AS event_count,
+		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND `+durableEventSQL+`) AS event_count,
+		        COALESCE((SELECT MAX(seq) FROM events WHERE events.session_id = sessions.id AND `+durableEventSQL+`), 0) AS last_event_seq,
 		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND type IN ('tool.call.started', 'file.change.started')) AS tool_count,
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
 		        created_at, updated_at, completed_at, archived_at
@@ -143,7 +145,8 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 	}
 
 	query := `SELECT id, title, agent_type, status, provider_session_id, workspace_path, agent_options_json,
-		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id) AS event_count,
+		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND ` + durableEventSQL + `) AS event_count,
+		        COALESCE((SELECT MAX(seq) FROM events WHERE events.session_id = sessions.id AND ` + durableEventSQL + `), 0) AS last_event_seq,
 		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND type IN ('tool.call.started', 'file.change.started')) AS tool_count,
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
 		        created_at, updated_at, completed_at, archived_at
@@ -438,6 +441,49 @@ func (s *Store) UpdateSessionStatus(ctx context.Context, params UpdateSessionSta
 	return s.GetSession(ctx, params.ID)
 }
 
+func (s *Store) ReserveEventSequences(ctx context.Context, sessionID string, count int64) (int64, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return 0, fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
+	}
+	if count <= 0 {
+		return 0, fmt.Errorf("%w: sequence reservation count must be positive", ErrInvalidArgument)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin reserve event sequences: %w", err)
+	}
+	defer rollback(tx)
+
+	var firstSeq int64
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT next_event_seq FROM sessions WHERE id = ?`,
+		sessionID,
+	).Scan(&firstSeq); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("%w: session %s", ErrNotFound, sessionID)
+		}
+		return 0, fmt.Errorf("read next event sequence: %w", err)
+	}
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE sessions SET next_event_seq = next_event_seq + ? WHERE id = ?`,
+		count,
+		sessionID,
+	); err != nil {
+		return 0, fmt.Errorf("reserve event sequences: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit reserve event sequences: %w", err)
+	}
+
+	return firstSeq, nil
+}
+
 func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Event, error) {
 	if strings.TrimSpace(params.SessionID) == "" {
 		return Event{}, fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
@@ -450,6 +496,14 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 	}
 	if !json.Valid(params.Payload) {
 		return Event{}, fmt.Errorf("%w: payload must be valid JSON", ErrInvalidArgument)
+	}
+
+	if params.Seq <= 0 {
+		seq, err := s.ReserveEventSequences(ctx, params.SessionID, 1)
+		if err != nil {
+			return Event{}, err
+		}
+		params.Seq = seq
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -470,16 +524,7 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 		return Event{}, fmt.Errorf("%w: session %s", ErrNotFound, params.SessionID)
 	}
 
-	var seq int64
-	if err := tx.QueryRowContext(
-		ctx,
-		`SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?`,
-		params.SessionID,
-	).Scan(&seq); err != nil {
-		return Event{}, fmt.Errorf("assign event sequence: %w", err)
-	}
-
-	id, err := newPrefixedUUID("evt_")
+	id, err := NewEventID()
 	if err != nil {
 		return Event{}, err
 	}
@@ -487,7 +532,7 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 	event := Event{
 		ID:        id,
 		SessionID: params.SessionID,
-		Seq:       seq,
+		Seq:       params.Seq,
 		Type:      params.Type,
 		Role:      params.Role,
 		Status:    params.Status,
@@ -780,7 +825,7 @@ func (s *Store) ListEvents(ctx context.Context, sessionID string, afterSeq int64
 		ctx,
 		`SELECT id, session_id, seq, type, role, status, payload_json, created_at
 		 FROM events
-		 WHERE session_id = ? AND seq > ?
+		 WHERE session_id = ? AND seq > ? AND `+durableEventSQL+`
 		 ORDER BY seq ASC
 		 LIMIT ?`,
 		sessionID,
@@ -825,7 +870,7 @@ func (s *Store) ListEventsFiltered(
 		ctx,
 		`SELECT id, session_id, seq, type, role, status, payload_json, created_at
 		 FROM events
-		 WHERE session_id = ? AND seq > ? `+nonDebugEventSQL()+`
+		 WHERE session_id = ? AND seq > ? AND `+durableEventSQL+` `+nonDebugEventSQL()+`
 		 ORDER BY seq ASC
 		 LIMIT ?`,
 		sessionID,
@@ -857,7 +902,7 @@ func (s *Store) GetEvent(ctx context.Context, sessionID string, seq int64) (Even
 		ctx,
 		`SELECT id, session_id, seq, type, role, status, payload_json, created_at
 		 FROM events
-		 WHERE session_id = ? AND seq = ?`,
+		 WHERE session_id = ? AND seq = ? AND `+durableEventSQL,
 		sessionID,
 		seq,
 	)
@@ -940,10 +985,107 @@ func (s *Store) ListEventsBeforeFiltered(
 	return events, nil
 }
 
+func (s *Store) ListRecentEventTurnsFiltered(
+	ctx context.Context,
+	sessionID string,
+	turns int,
+	filter EventListFilter,
+) ([]Event, error) {
+	startSeq, found, err := s.eventTurnStartSeq(ctx, sessionID, nil, turns)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		startSeq = 0
+	}
+	return s.listEventTurnRange(ctx, sessionID, startSeq, nil, filter)
+}
+
+func (s *Store) ListEventTurnsBeforeFiltered(
+	ctx context.Context,
+	sessionID string,
+	beforeSeq int64,
+	turns int,
+	filter EventListFilter,
+) ([]Event, error) {
+	startSeq, found, err := s.eventTurnStartSeq(ctx, sessionID, &beforeSeq, turns)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		startSeq = 0
+	}
+	return s.listEventTurnRange(ctx, sessionID, startSeq, &beforeSeq, filter)
+}
+
+func (s *Store) eventTurnStartSeq(ctx context.Context, sessionID string, beforeSeq *int64, turns int) (int64, bool, error) {
+	query := `SELECT seq FROM events WHERE session_id = ? AND type = 'user.message.completed'`
+	args := []any{sessionID}
+	if beforeSeq != nil {
+		query += ` AND seq < ?`
+		args = append(args, *beforeSeq)
+	}
+	query += ` ORDER BY seq DESC LIMIT 1 OFFSET ?`
+	args = append(args, turns-1)
+
+	var seq int64
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&seq); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("find event turn boundary: %w", err)
+	}
+	return seq, true, nil
+}
+
+func (s *Store) listEventTurnRange(
+	ctx context.Context,
+	sessionID string,
+	startSeq int64,
+	beforeSeq *int64,
+	filter EventListFilter,
+) ([]Event, error) {
+	query := `SELECT id, session_id, seq, type, role, status, payload_json, created_at
+		 FROM events
+		 WHERE session_id = ? AND ` + durableEventSQL
+	args := []any{sessionID}
+	if startSeq > 0 {
+		query += ` AND seq >= ?`
+		args = append(args, startSeq)
+	}
+	if beforeSeq != nil {
+		query += ` AND seq < ?`
+		args = append(args, *beforeSeq)
+	}
+	if !filter.IncludeDebug {
+		query += ` ` + nonDebugEventSQL()
+	}
+	query += ` ORDER BY seq ASC`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list event turns: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]Event, 0)
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list event turns rows: %w", err)
+	}
+	return events, nil
+}
+
 func (s *Store) listEventsDescending(ctx context.Context, sessionID string, extraWhere string, seqBound int64, limit int) ([]Event, error) {
 	query := `SELECT id, session_id, seq, type, role, status, payload_json, created_at
 		 FROM events
-		 WHERE session_id = ? ` + extraWhere + `
+		 WHERE session_id = ? AND ` + durableEventSQL + ` ` + extraWhere + `
 		 ORDER BY seq DESC
 		 LIMIT ?`
 	args := []any{sessionID}
@@ -1031,6 +1173,7 @@ func scanSession(row rowScanner) (Session, error) {
 	var workspacePath sql.NullString
 	var agentOptions string
 	var eventCount int64
+	var lastEventSeq int64
 	var toolCount int64
 	var notificationAttentionSeq int64
 	var createdAt string
@@ -1047,6 +1190,7 @@ func scanSession(row rowScanner) (Session, error) {
 		&workspacePath,
 		&agentOptions,
 		&eventCount,
+		&lastEventSeq,
 		&toolCount,
 		&notificationAttentionSeq,
 		&createdAt,
@@ -1084,6 +1228,7 @@ func scanSession(row rowScanner) (Session, error) {
 	}
 	session.AgentOptions = json.RawMessage(agentOptions)
 	session.EventCount = eventCount
+	session.LastEventSeq = lastEventSeq
 	session.ToolCount = toolCount
 	session.NotificationAttentionSeq = notificationAttentionSeq
 	session.CreatedAt = parsedCreatedAt
