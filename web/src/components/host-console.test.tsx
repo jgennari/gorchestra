@@ -98,6 +98,7 @@ test('mobile console body reserves room for the floating header', () => {
       resolvedTheme="dark"
       mobileLeadingAction={<button type="button">Open sessions</button>}
       onUpdateTitle={async () => undefined}
+      onUpdateWorkspace={async () => undefined}
     />,
   )
 
@@ -112,6 +113,7 @@ test('console shows loading while a routed session resolves', () => {
       resolvingSessionID="sess_1"
       resolvedTheme="dark"
       onUpdateTitle={async () => undefined}
+      onUpdateWorkspace={async () => undefined}
     />,
   )
 
@@ -132,6 +134,7 @@ test('mobile console actions include session actions', async () => {
       resolvedTheme="dark"
       mobileLeadingAction={<button type="button">Open sessions</button>}
       onUpdateTitle={async () => undefined}
+      onUpdateWorkspace={async () => undefined}
       onClear={onClear}
       onCompact={onCompact}
       onToggleArchive={onToggleArchive}

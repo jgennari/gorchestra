@@ -39,6 +39,7 @@ import {
   submitMessage,
   updateSessionAgentOptions,
   updateSessionTitle,
+  updateSessionWorkspace,
 } from '@/lib/api'
 import {
   appendEvent,
@@ -156,6 +157,7 @@ function App() {
   const [pendingSessionAction, setPendingSessionAction] = useState<PendingSessionAction | null>(null)
   const [paneWidths, setPaneWidths] = useState<PaneWidths>(() => loadPaneWidths())
   const [openWorkspaceFile, setOpenWorkspaceFile] = useState<WorkspaceFileContent | null>(null)
+  const [workspaceFileDirty, setWorkspaceFileDirty] = useState(false)
   const [fileRefreshKey, setFileRefreshKey] = useState(0)
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
   const [followingLatest, setFollowingLatest] = useState(true)
@@ -812,6 +814,20 @@ function App() {
     applySession(updated)
   }
 
+  async function handleUpdateWorkspace(workspacePath: string) {
+    if (!selectedSessionID) {
+      return
+    }
+    const updated = await updateSessionWorkspace(selectedSessionID, workspacePath)
+    applySession(updated)
+    setOpenWorkspaceFile(null)
+    setWorkspaceFileDirty(false)
+    setFileRefreshKey((value) => value + 1)
+    if (appViewRef.current === 'files') {
+      writeSelectedSessionRoute(selectedSessionID, 'replace', 'files', sessionsRef.current)
+    }
+  }
+
   async function handleUpdateAgentOptions(agentOptions: SessionAgentOptions) {
     if (!selectedSessionID) {
       return
@@ -933,6 +949,7 @@ function App() {
     (file: WorkspaceFileContent) => {
       setMobileRailOpen(false)
       setOpenWorkspaceFile(file)
+      setWorkspaceFileDirty(false)
       selectAppView('files', 'push', file.path)
     },
     [selectAppView],
@@ -940,6 +957,7 @@ function App() {
 
   const handleCloseWorkspaceFile = useCallback(() => {
     setOpenWorkspaceFile(null)
+    setWorkspaceFileDirty(false)
     writeSelectedSessionRoute(selectedSessionIDRef.current, 'push', 'files', sessionsRef.current)
   }, [])
 
@@ -1161,6 +1179,7 @@ function App() {
               }
               archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
               onUpdateTitle={handleUpdateTitle}
+              onUpdateWorkspace={handleUpdateWorkspace}
               onTitleEditStateChange={handleTitleEditStateChange}
             />
           ) : appView === 'files' ? (
@@ -1176,6 +1195,8 @@ function App() {
                   leadingAction={openSessionsButton}
                   headerActions={viewToggle}
                   onUpdateTitle={handleUpdateTitle}
+                  onUpdateWorkspace={handleUpdateWorkspace}
+                  hasUnsavedWorkspaceFile={workspaceFileDirty}
                   onTitleEditStateChange={handleTitleEditStateChange}
                   onUpdateAgentOptions={handleUpdateAgentOptions}
                   showDebugEvents={showDebugEvents}
@@ -1213,6 +1234,8 @@ function App() {
                   errorMessage={error || streamError}
                   headerActions={viewToggle}
                   onUpdateTitle={handleUpdateTitle}
+                  onUpdateWorkspace={handleUpdateWorkspace}
+                  hasUnsavedWorkspaceFile={workspaceFileDirty}
                   onTitleEditStateChange={handleTitleEditStateChange}
                   onUpdateAgentOptions={handleUpdateAgentOptions}
                   showDebugEvents={showDebugEvents}
@@ -1252,6 +1275,7 @@ function App() {
                 onOpenFile={handleOpenWorkspaceFile}
                 onFileSaved={setOpenWorkspaceFile}
                 onCloseFile={handleCloseWorkspaceFile}
+                onDirtyChange={setWorkspaceFileDirty}
               />
             </>
           ) : (
@@ -1271,6 +1295,8 @@ function App() {
               onAnswerUserInput={handleAnswerUserInput}
               onCancel={handleCancel}
               onUpdateTitle={handleUpdateTitle}
+              onUpdateWorkspace={handleUpdateWorkspace}
+              hasUnsavedWorkspaceFile={workspaceFileDirty}
               onTitleEditStateChange={handleTitleEditStateChange}
               onUpdateAgentOptions={handleUpdateAgentOptions}
               onOpenFilePath={handleOpenWorkspacePath}
@@ -1521,6 +1547,8 @@ function FilesWorkspaceHeader({
   leadingAction,
   headerActions,
   onUpdateTitle,
+  onUpdateWorkspace,
+  hasUnsavedWorkspaceFile,
   onTitleEditStateChange,
   onUpdateAgentOptions,
   showDebugEvents,
@@ -1539,6 +1567,8 @@ function FilesWorkspaceHeader({
   leadingAction?: ReactNode
   headerActions?: ReactNode
   onUpdateTitle: (title: string) => Promise<void>
+  onUpdateWorkspace: (workspacePath: string) => Promise<void>
+  hasUnsavedWorkspaceFile: boolean
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   showDebugEvents: boolean
@@ -1554,14 +1584,12 @@ function FilesWorkspaceHeader({
   if (session) {
     return (
       <ChatSessionHeader
-        sessionID={session.id}
-        agentType={session.agent_type}
-        workspacePath={session.workspace_path}
-        agentOptions={session.agent_options}
-        title={session.title}
+        session={session}
         errorMessage={errorMessage}
         showDebugEvents={showDebugEvents}
         onUpdateTitle={onUpdateTitle}
+        onUpdateWorkspace={onUpdateWorkspace}
+        hasUnsavedWorkspaceFile={hasUnsavedWorkspaceFile}
         onTitleEditStateChange={onTitleEditStateChange}
         onUpdateAgentOptions={onUpdateAgentOptions}
         onShowDebugEventsChange={onShowDebugEventsChange}

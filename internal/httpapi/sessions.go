@@ -28,8 +28,9 @@ type createSessionRequest struct {
 }
 
 type updateSessionRequest struct {
-	Title        *string             `json:"title,omitempty"`
-	AgentOptions *createAgentOptions `json:"agent_options,omitempty"`
+	Title         *string             `json:"title,omitempty"`
+	WorkspacePath *string             `json:"workspace_path,omitempty"`
+	AgentOptions  *createAgentOptions `json:"agent_options,omitempty"`
 }
 
 type createAgentOptions struct {
@@ -299,13 +300,53 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if request.Title == nil && request.AgentOptions == nil {
-		writeError(w, http.StatusBadRequest, "session update requires title or agent_options")
+	if request.Title == nil && request.WorkspacePath == nil && request.AgentOptions == nil {
+		writeError(w, http.StatusBadRequest, "session update requires title, workspace_path, or agent_options")
 		return
 	}
 
-	var session store.Session
-	var err error
+	session, err := api.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load session")
+		return
+	}
+
+	var workspacePath string
+	workspaceChanged := false
+	if request.WorkspacePath != nil {
+		if strings.TrimSpace(*request.WorkspacePath) == "" {
+			writeError(w, http.StatusBadRequest, "workspace_path is required")
+			return
+		}
+		if session.Status == store.SessionStatusRunning || api.runs.Active(sessionID) {
+			writeError(w, http.StatusConflict, "stop the active agent run before changing workspace")
+			return
+		}
+		if status, ok := api.console.Status(sessionID); ok && status.Running {
+			writeError(w, http.StatusConflict, "stop the active console before changing workspace")
+			return
+		}
+		workspacePath, err = api.workspaces.resolveWorkspacePath(*request.WorkspacePath)
+		if err != nil {
+			writeWorkspacePathError(w, err)
+			return
+		}
+		workspaceChanged = workspacePath != session.WorkspacePath
+	}
+
+	var agentOptions json.RawMessage
+	if request.AgentOptions != nil {
+		agentOptions, err = createSessionAgentOptions(session.AgentType, request.AgentOptions)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	if request.Title != nil {
 		session, err = api.store.UpdateSessionTitle(r.Context(), store.UpdateSessionTitleParams{
 			ID:    sessionID,
@@ -323,24 +364,33 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to update session")
 			return
 		}
-	} else {
-		session, err = api.store.GetSession(r.Context(), sessionID)
+	}
+
+	if workspaceChanged {
+		previousWorkspacePath := session.WorkspacePath
+		session, err = api.store.UpdateSessionWorkspace(r.Context(), store.UpdateSessionWorkspaceParams{
+			ID:            sessionID,
+			WorkspacePath: workspacePath,
+		})
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "session not found")
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "failed to load session")
+			if errors.Is(err, store.ErrInvalidArgument) {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to update session workspace")
+			return
+		}
+		if err := api.appendWorkspaceChanged(r.Context(), sessionID, previousWorkspacePath, workspacePath); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to persist workspace change")
 			return
 		}
 	}
 
 	if request.AgentOptions != nil {
-		agentOptions, err := createSessionAgentOptions(session.AgentType, request.AgentOptions)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
 		session, err = api.store.UpdateSessionAgentOptions(r.Context(), store.UpdateSessionAgentOptionsParams{
 			ID:           sessionID,
 			AgentOptions: agentOptions,
@@ -355,6 +405,13 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "failed to update session")
+			return
+		}
+	}
+	if workspaceChanged {
+		session, err = api.store.GetSession(r.Context(), sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to reload session")
 			return
 		}
 	}
@@ -1504,6 +1561,27 @@ func (api API) appendSessionAction(ctx context.Context, sessionID string, action
 	payload, err := json.Marshal(payloadValue)
 	if err != nil {
 		return fmt.Errorf("marshal user action payload: %w", err)
+	}
+
+	_, err = api.events.Append(ctx, eventservice.AppendParams{
+		SessionID: sessionID,
+		Type:      "session.action.completed",
+		Role:      "system",
+		Status:    store.EventStatusCompleted,
+		Payload:   payload,
+	})
+	return err
+}
+
+func (api API) appendWorkspaceChanged(ctx context.Context, sessionID string, previousPath string, workspacePath string) error {
+	payload, err := json.Marshal(map[string]any{
+		"action":                  "workspace_changed",
+		"label":                   "WORKSPACE CHANGED",
+		"previous_workspace_path": previousPath,
+		"workspace_path":          workspacePath,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal workspace change payload: %w", err)
 	}
 
 	_, err = api.events.Append(ctx, eventservice.AppendParams{

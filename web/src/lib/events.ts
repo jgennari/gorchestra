@@ -128,6 +128,7 @@ export type ChatActionBreak = {
   id: string
   action: string
   label: string
+  detail: string
   createdAt: string
   startSeq: number
   endSeq: number
@@ -1321,10 +1322,20 @@ function chatActionFromGroup(group: EventGroup): ChatActionBreak {
     id: `action-${group.startSeq}`,
     action,
     label: event ? actionBreakLabel(event) : group.label,
+    detail: event ? actionBreakDetail(event) : '',
     createdAt: event?.created_at ?? '',
     startSeq: group.startSeq,
     endSeq: group.endSeq,
   }
+}
+
+function actionBreakDetail(event: AgentEvent) {
+  if (payloadString(event.payload, ['action']).trim().toLowerCase() !== 'workspace_changed') {
+    return ''
+  }
+  const previousPath = payloadString(event.payload, ['previous_workspace_path'])
+  const workspacePath = payloadString(event.payload, ['workspace_path'])
+  return previousPath && workspacePath ? `${previousPath} -> ${workspacePath}` : workspacePath
 }
 
 function isActionBreakEvent(event: AgentEvent) {

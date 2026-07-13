@@ -683,6 +683,31 @@ test('chat timeline renders session action markers as separators', () => {
   })
 })
 
+test('chat timeline includes old and new paths for workspace changes', () => {
+  const timeline = buildChatTimeline(
+    [
+      event(1, 'session.action.completed', {
+        action: 'workspace_changed',
+        label: 'WORKSPACE CHANGED',
+        previous_workspace_path: '/repo/old',
+        workspace_path: '/repo/new',
+      }),
+    ],
+    false,
+  )
+
+  const actionItem = timeline[0]
+  expect(actionItem?.kind).toBe('action')
+  if (actionItem?.kind !== 'action') {
+    throw new Error('expected action timeline item')
+  }
+  expect(actionItem.action).toMatchObject({
+    action: 'workspace_changed',
+    label: 'WORKSPACE CHANGED',
+    detail: '/repo/old -> /repo/new',
+  })
+})
+
 test('chat timeline renders legacy user action markers as separators', () => {
   const timeline = buildChatTimeline(
     [event(1, 'user.action.completed', { action: 'compact', text: 'Compact context' })],

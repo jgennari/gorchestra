@@ -1,4 +1,4 @@
-import { Archive, Check, Copy, Ellipsis, Eraser, Loader2, Minimize2, PanelRightOpen } from 'lucide-react'
+import { Archive, Check, Copy, Ellipsis, Eraser, FolderCog, Loader2, Minimize2, PanelRightOpen } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
@@ -10,6 +10,7 @@ import type {
 } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
 import { Button } from '@/components/ui/button'
+import { ChangeWorkspaceDialog } from '@/components/change-workspace-dialog'
 import { ChatTranscript } from '@/components/chat-transcript'
 import { PromptComposer } from '@/components/prompt-composer'
 import { SessionTitleEditor } from '@/components/session-title-editor'
@@ -45,6 +46,8 @@ type Props = {
   onAnswerUserInput: (requestID: string, answers: UserInputAnswers) => Promise<void>
   onCancel: () => Promise<void>
   onUpdateTitle: (title: string) => Promise<void>
+  onUpdateWorkspace: (workspacePath: string) => Promise<void>
+  hasUnsavedWorkspaceFile?: boolean
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onOpenFilePath?: (path: string) => Promise<void> | void
@@ -76,6 +79,8 @@ export function SessionDetail({
   onAnswerUserInput,
   onCancel,
   onUpdateTitle,
+  onUpdateWorkspace,
+  hasUnsavedWorkspaceFile = false,
   onTitleEditStateChange,
   onUpdateAgentOptions,
   onOpenFilePath,
@@ -209,14 +214,12 @@ export function SessionDetail({
           className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden"
         >
           <ChatSessionHeader
-            sessionID={session.id}
-            agentType={session.agent_type}
-            workspacePath={session.workspace_path}
-            agentOptions={session.agent_options}
-            title={session.title}
+            session={session}
             errorMessage={errorMessage}
             showDebugEvents={showDebugEvents}
             onUpdateTitle={onUpdateTitle}
+            onUpdateWorkspace={onUpdateWorkspace}
+            hasUnsavedWorkspaceFile={hasUnsavedWorkspaceFile}
             onTitleEditStateChange={onTitleEditStateChange}
             onUpdateAgentOptions={onUpdateAgentOptions}
             onShowDebugEventsChange={onShowDebugEventsChange}
@@ -236,14 +239,12 @@ export function SessionDetail({
         </div>
         <div data-testid="floating-session-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
           <ChatSessionHeader
-            sessionID={session.id}
-            agentType={session.agent_type}
-            workspacePath={session.workspace_path}
-            agentOptions={session.agent_options}
-            title={session.title}
+            session={session}
             errorMessage={errorMessage}
             showDebugEvents={showDebugEvents}
             onUpdateTitle={onUpdateTitle}
+            onUpdateWorkspace={onUpdateWorkspace}
+            hasUnsavedWorkspaceFile={hasUnsavedWorkspaceFile}
             onTitleEditStateChange={onTitleEditStateChange}
             onUpdateAgentOptions={onUpdateAgentOptions}
             onShowDebugEventsChange={onShowDebugEventsChange}
@@ -280,14 +281,12 @@ function measureBottomStackHeight(element: HTMLElement) {
 }
 
 export function ChatSessionHeader({
-  sessionID,
-  agentType,
-  workspacePath,
-  agentOptions,
-  title,
+  session,
   errorMessage,
   showDebugEvents,
   onUpdateTitle,
+  onUpdateWorkspace,
+  hasUnsavedWorkspaceFile,
   onTitleEditStateChange,
   onUpdateAgentOptions,
   onShowDebugEventsChange,
@@ -295,14 +294,12 @@ export function ChatSessionHeader({
   leadingAction,
   mobileSessionActions,
 }: {
-  sessionID: string
-  agentType: Session['agent_type']
-  workspacePath: string
-  agentOptions?: SessionAgentOptions
-  title: string
+  session: Session
   errorMessage: string
   showDebugEvents: boolean
   onUpdateTitle: (title: string) => Promise<void>
+  onUpdateWorkspace: (workspacePath: string) => Promise<void>
+  hasUnsavedWorkspaceFile?: boolean
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onShowDebugEventsChange: (showDebugEvents: boolean) => void
@@ -321,20 +318,19 @@ export function ChatSessionHeader({
         {leadingAction ? <div className="shrink-0">{leadingAction}</div> : null}
         <div className="min-w-0 flex-1">
           <SessionTitleEditor
-            key={`desktop-${sessionID}`}
-            title={title}
+            key={`desktop-${session.id}`}
+            title={session.title}
             onSave={onUpdateTitle}
             onEditStateChange={onTitleEditStateChange}
           />
         </div>
         {headerActions}
         <SessionDetailsMenu
-          sessionID={sessionID}
-          agentType={agentType}
-          workspacePath={workspacePath}
-          agentOptions={agentOptions}
+          session={session}
           showDebugEvents={showDebugEvents}
           onUpdateAgentOptions={onUpdateAgentOptions}
+          onUpdateWorkspace={onUpdateWorkspace}
+          hasUnsavedWorkspaceFile={hasUnsavedWorkspaceFile}
           onShowDebugEventsChange={onShowDebugEventsChange}
           mobileSessionActions={mobileSessionActions}
         />
@@ -352,30 +348,30 @@ export function ChatSessionHeader({
 }
 
 function SessionDetailsMenu({
-  sessionID,
-  agentType,
-  workspacePath,
-  agentOptions,
+  session,
   showDebugEvents,
   onUpdateAgentOptions,
+  onUpdateWorkspace,
+  hasUnsavedWorkspaceFile,
   onShowDebugEventsChange,
   mobileSessionActions,
 }: {
-  sessionID: string
-  agentType: Session['agent_type']
-  workspacePath: string
-  agentOptions?: SessionAgentOptions
+  session: Session
   showDebugEvents: boolean
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
+  onUpdateWorkspace: (workspacePath: string) => Promise<void>
+  hasUnsavedWorkspaceFile?: boolean
   onShowDebugEventsChange: (showDebugEvents: boolean) => void
   mobileSessionActions?: MobileSessionActions | null
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
+  const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [copiedField, setCopiedField] = useState<'session' | 'workspace' | null>(null)
   const [savingRunDangerously, setSavingRunDangerously] = useState(false)
-  const runDangerously =
-    agentType === 'claude' ? agentOptions?.claude?.run_dangerously === true : agentOptions?.codex?.run_dangerously === true
+  const runDangerously = session.agent_type === 'claude'
+    ? session.agent_options?.claude?.run_dangerously === true
+    : session.agent_options?.codex?.run_dangerously === true
   const mobileActionPending =
     mobileSessionActions?.clearPending || mobileSessionActions?.compactPending || mobileSessionActions?.archivePending
   const mobileCodexActionDisabled =
@@ -427,7 +423,7 @@ function SessionDetailsMenu({
     setSavingRunDangerously(true)
     try {
       await onUpdateAgentOptions(
-        agentType === 'claude' ? { claude: { run_dangerously: checked } } : { codex: { run_dangerously: checked } },
+        session.agent_type === 'claude' ? { claude: { run_dangerously: checked } } : { codex: { run_dangerously: checked } },
       )
     } finally {
       setSavingRunDangerously(false)
@@ -457,19 +453,31 @@ function SessionDetailsMenu({
           <div className="space-y-3">
             <CopyableDetailBox
               label="Session key"
-              value={sessionID}
+              value={session.id}
               copyLabel="Copy session key"
               copied={copiedField === 'session'}
-              onCopy={() => void handleCopy(sessionID, 'session')}
+              onCopy={() => void handleCopy(session.id, 'session')}
               scrollX
             />
             <CopyableDetailBox
               label="Workspace path"
-              value={workspacePath}
+              value={session.workspace_path}
               copyLabel="Copy workspace path"
               copied={copiedField === 'workspace'}
-              onCopy={() => void handleCopy(workspacePath, 'workspace')}
+              onCopy={() => void handleCopy(session.workspace_path, 'workspace')}
             />
+            <button
+              type="button"
+              disabled={session.status === 'running'}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45"
+              onClick={() => {
+                setOpen(false)
+                setWorkspaceDialogOpen(true)
+              }}
+            >
+              <FolderCog className="size-4" aria-hidden="true" />
+              <span>Change workspace</span>
+            </button>
             <MenuSwitchRow
               label="Debug"
               description="Stream and load provider debug events for this session."
@@ -477,11 +485,11 @@ function SessionDetailsMenu({
               disabled={false}
               onClick={() => onShowDebugEventsChange(!showDebugEvents)}
             />
-            {agentType === 'codex' || agentType === 'claude' ? (
+            {session.agent_type === 'codex' || session.agent_type === 'claude' ? (
               <MenuSwitchRow
                 label="Run dangerously"
                 description={
-                  agentType === 'claude'
+                  session.agent_type === 'claude'
                     ? 'Save this session to run Claude with permission prompts skipped on the next run.'
                     : 'Save this session to run Codex without approval prompts or sandbox restrictions on the next run.'
                 }
@@ -565,6 +573,13 @@ function SessionDetailsMenu({
           </div>
         </div>
       ) : null}
+      <ChangeWorkspaceDialog
+        session={session}
+        open={workspaceDialogOpen}
+        hasUnsavedFile={hasUnsavedWorkspaceFile === true}
+        onOpenChange={setWorkspaceDialogOpen}
+        onChangeWorkspace={onUpdateWorkspace}
+      />
     </div>
   )
 }

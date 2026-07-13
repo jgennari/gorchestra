@@ -908,6 +908,132 @@ func TestUpdateSessionTitleTrimsAndReturnsSession(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionWorkspacePreservesProviderContextAndAppendsMarker(t *testing.T) {
+	ctx := context.Background()
+	root := canonicalPath(t, t.TempDir())
+	oldWorkspace := filepath.Join(root, "old")
+	newWorkspace := filepath.Join(root, "new")
+	for _, path := range []string{oldWorkspace, newWorkspace} {
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatalf("create workspace %s: %v", path, err)
+		}
+	}
+	dbStore, _, _, handler := newIntegrationAPIWithWorkspaceRoots(t, ctx, root, nil, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Workspace",
+		AgentType:     "fake",
+		WorkspacePath: oldWorkspace,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	session, err = dbStore.SetSessionProviderSessionID(ctx, store.SetSessionProviderSessionIDParams{
+		ID:                session.ID,
+		ProviderSessionID: "provider_existing",
+	})
+	if err != nil {
+		t.Fatalf("set provider session id: %v", err)
+	}
+
+	rec := patchJSON(handler, "/api/sessions/"+session.ID, `{"workspace_path":`+quoteJSON(newWorkspace)+`}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response sessionResponse
+	decodeJSON(t, rec, &response)
+	if response.WorkspacePath != newWorkspace || response.ProviderSessionID != "provider_existing" {
+		t.Fatalf("unexpected updated session %#v", response)
+	}
+	if response.EventCount != 1 || response.LastEventSeq != 1 {
+		t.Fatalf("expected marker in session counts, got %#v", response)
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"session.action.completed"})
+	var payload map[string]any
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("decode workspace marker payload: %v", err)
+	}
+	if payload["action"] != "workspace_changed" || payload["previous_workspace_path"] != oldWorkspace || payload["workspace_path"] != newWorkspace {
+		t.Fatalf("unexpected workspace marker payload %#v", payload)
+	}
+}
+
+func TestUpdateSessionWorkspaceRejectsInvalidAndActiveChanges(t *testing.T) {
+	ctx := context.Background()
+	root := canonicalPath(t, t.TempDir())
+	newWorkspace := filepath.Join(root, "new")
+	if err := os.Mkdir(newWorkspace, 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	dbStore, _, _, handler := newIntegrationAPIWithWorkspaceRoots(t, ctx, root, nil, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Workspace",
+		AgentType:     "fake",
+		WorkspacePath: root,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	blankRec := patchJSON(handler, "/api/sessions/"+session.ID, `{"workspace_path":"  "}`)
+	if blankRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected blank status %d, got %d with body %s", http.StatusBadRequest, blankRec.Code, blankRec.Body.String())
+	}
+
+	outside := canonicalPath(t, t.TempDir())
+	outsideRec := patchJSON(handler, "/api/sessions/"+session.ID, `{"workspace_path":`+quoteJSON(outside)+`}`)
+	if outsideRec.Code != http.StatusForbidden {
+		t.Fatalf("expected outside status %d, got %d with body %s", http.StatusForbidden, outsideRec.Code, outsideRec.Body.String())
+	}
+
+	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{ID: session.ID, Status: store.SessionStatusRunning}); err != nil {
+		t.Fatalf("mark session running: %v", err)
+	}
+	runningRec := patchJSON(handler, "/api/sessions/"+session.ID, `{"workspace_path":`+quoteJSON(newWorkspace)+`}`)
+	if runningRec.Code != http.StatusConflict {
+		t.Fatalf("expected running status %d, got %d with body %s", http.StatusConflict, runningRec.Code, runningRec.Body.String())
+	}
+	assertErrorResponse(t, runningRec, "stop the active agent run before changing workspace")
+}
+
+func TestUpdateSessionWorkspaceRejectsActiveConsoleAndNoOpsCurrentPath(t *testing.T) {
+	ctx := context.Background()
+	root := canonicalPath(t, t.TempDir())
+	newWorkspace := filepath.Join(root, "new")
+	if err := os.Mkdir(newWorkspace, 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	dbStore, _, _, handler := newIntegrationAPIWithWorkspaceRoots(t, ctx, root, nil, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Workspace",
+		AgentType:     "fake",
+		WorkspacePath: root,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	noOpRec := patchJSON(handler, "/api/sessions/"+session.ID, `{"workspace_path":`+quoteJSON(root)+`}`)
+	if noOpRec.Code != http.StatusOK {
+		t.Fatalf("expected no-op status %d, got %d with body %s", http.StatusOK, noOpRec.Code, noOpRec.Body.String())
+	}
+	if events := listIntegrationEvents(t, ctx, dbStore, session.ID); len(events) != 0 {
+		t.Fatalf("expected no marker for unchanged workspace, got %#v", events)
+	}
+
+	startRec := postJSON(handler, "/api/sessions/"+session.ID+"/console", `{}`)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("start console: status %d body %s", startRec.Code, startRec.Body.String())
+	}
+	t.Cleanup(func() { _ = deleteRequest(handler, "/api/sessions/"+session.ID+"/console") })
+	consoleRec := patchJSON(handler, "/api/sessions/"+session.ID, `{"workspace_path":`+quoteJSON(newWorkspace)+`}`)
+	if consoleRec.Code != http.StatusConflict {
+		t.Fatalf("expected console status %d, got %d with body %s", http.StatusConflict, consoleRec.Code, consoleRec.Body.String())
+	}
+	assertErrorResponse(t, consoleRec, "stop the active console before changing workspace")
+}
+
 func TestUpdateCodexSessionAgentOptions(t *testing.T) {
 	ctx := context.Background()
 	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
@@ -1164,24 +1290,32 @@ func TestMessageSubmissionPassesConfiguredWorkdirToAgent(t *testing.T) {
 	}
 }
 
-func TestMessageSubmissionPassesSessionWorkspaceToAgent(t *testing.T) {
+func TestMessageSubmissionUsesUpdatedSessionWorkspace(t *testing.T) {
 	ctx := context.Background()
 	agent := newBlockingAgent()
 	defaultWorkdir := canonicalPath(t, t.TempDir())
-	sessionWorkdir := filepath.Join(defaultWorkdir, "project")
-	if err := os.Mkdir(sessionWorkdir, 0o755); err != nil {
-		t.Fatalf("create session workspace: %v", err)
+	initialWorkdir := filepath.Join(defaultWorkdir, "initial")
+	updatedWorkdir := filepath.Join(defaultWorkdir, "updated")
+	for _, path := range []string{initialWorkdir, updatedWorkdir} {
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatalf("create session workspace: %v", err)
+		}
 	}
 	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, defaultWorkdir, agent)
 	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
 		Title:         "Workspace run",
 		AgentType:     "fake",
-		WorkspacePath: sessionWorkdir,
+		WorkspacePath: initialWorkdir,
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	t.Cleanup(agent.release)
+
+	updateRec := patchJSON(handler, "/api/sessions/"+session.ID, `{"workspace_path":`+quoteJSON(updatedWorkdir)+`}`)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected workspace update status %d, got %d with body %s", http.StatusOK, updateRec.Code, updateRec.Body.String())
+	}
 
 	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Inspect this repo"}`)
 
@@ -1191,8 +1325,8 @@ func TestMessageSubmissionPassesSessionWorkspaceToAgent(t *testing.T) {
 
 	select {
 	case input := <-agent.started:
-		if input.Workdir != sessionWorkdir {
-			t.Fatalf("expected workdir %q, got %q", sessionWorkdir, input.Workdir)
+		if input.Workdir != updatedWorkdir {
+			t.Fatalf("expected workdir %q, got %q", updatedWorkdir, input.Workdir)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("context ended before agent started")

@@ -529,15 +529,22 @@ function ChatTimelineRow({
 function ActionBreakRow({ action }: { action: ChatActionBreak }) {
   return (
     <div
-      className="flex items-center gap-3 py-1"
+      className="py-1"
       role="separator"
       aria-label={action.label}
     >
-      <div className="h-px flex-1 bg-border/70" aria-hidden="true" />
-      <span className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground shadow-sm">
-        {action.label}
-      </span>
-      <div className="h-px flex-1 bg-border/70" aria-hidden="true" />
+      <div className="flex items-center gap-3">
+        <div className="h-px flex-1 bg-border/70" aria-hidden="true" />
+        <span className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground shadow-sm">
+          {action.label}
+        </span>
+        <div className="h-px flex-1 bg-border/70" aria-hidden="true" />
+      </div>
+      {action.detail ? (
+        <p className="mx-auto mt-1 max-w-[min(42rem,calc(100%-2rem))] truncate text-center font-mono text-[10px] text-muted-foreground" title={action.detail}>
+          {action.detail}
+        </p>
+      ) : null}
     </div>
   )
 }

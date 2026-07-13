@@ -410,6 +410,13 @@ export async function updateSessionTitle(sessionID: string, title: string) {
   })
 }
 
+export async function updateSessionWorkspace(sessionID: string, workspacePath: string) {
+  return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ workspace_path: workspacePath }),
+  })
+}
+
 export async function updateSessionAgentOptions(sessionID: string, agentOptions: SessionAgentOptions) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`, {
     method: 'PATCH',

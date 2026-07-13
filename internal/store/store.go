@@ -219,6 +219,41 @@ func (s *Store) UpdateSessionTitle(ctx context.Context, params UpdateSessionTitl
 	return s.GetSession(ctx, params.ID)
 }
 
+func (s *Store) UpdateSessionWorkspace(ctx context.Context, params UpdateSessionWorkspaceParams) (Session, error) {
+	sessionID := strings.TrimSpace(params.ID)
+	if sessionID == "" {
+		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	workspacePath := strings.TrimSpace(params.WorkspacePath)
+	if workspacePath == "" {
+		return Session{}, fmt.Errorf("%w: workspace_path is required", ErrInvalidArgument)
+	}
+
+	now := s.now()
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE sessions
+		 SET workspace_path = ?, updated_at = ?
+		 WHERE id = ?`,
+		workspacePath,
+		formatTime(now),
+		sessionID,
+	)
+	if err != nil {
+		return Session{}, fmt.Errorf("update session workspace: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, fmt.Errorf("check updated session workspace rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, sessionID)
+	}
+
+	return s.GetSession(ctx, sessionID)
+}
+
 func (s *Store) UpdateSessionAgentOptions(ctx context.Context, params UpdateSessionAgentOptionsParams) (Session, error) {
 	sessionID := strings.TrimSpace(params.ID)
 	if sessionID == "" {

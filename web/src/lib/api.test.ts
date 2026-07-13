@@ -26,6 +26,7 @@ import {
   updateSessionAgentOptions,
   updateSessionFileContent,
   updateSessionTitle,
+  updateSessionWorkspace,
 } from '@/lib/api'
 
 test('session API helpers build the expected URLs', async () => {
@@ -122,6 +123,32 @@ test('title update helper patches the session title', async () => {
   const session = await updateSessionTitle('sess_1', 'New title')
 
   expect(session.title).toBe('New title')
+})
+
+test('workspace update helper patches the session workspace', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1')
+    expect(init?.method).toBe('PATCH')
+    expect(init?.body).toBe(JSON.stringify({ workspace_path: '/repo/next' }))
+    return jsonResponse({
+      id: 'sess_1',
+      title: 'Inspect repo',
+      agent_type: 'fake',
+      status: 'idle',
+      workspace_path: '/repo/next',
+      event_count: 1,
+      tool_count: 0,
+      created_at: '2026-06-12T16:00:00Z',
+      updated_at: '2026-06-12T16:01:00Z',
+      completed_at: null,
+      archived_at: null,
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const session = await updateSessionWorkspace('sess_1', '/repo/next')
+
+  expect(session.workspace_path).toBe('/repo/next')
 })
 
 test('agent options update helper patches the session options', async () => {

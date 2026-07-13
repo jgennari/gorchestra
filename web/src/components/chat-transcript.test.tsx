@@ -42,6 +42,24 @@ test('renders session actions as conversation breaks', () => {
   expect(screen.queryByText('Clear context')).not.toBeInTheDocument()
 })
 
+test('renders workspace changes with their old and new paths', () => {
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'session.action.completed', 'system', 'completed', {
+          action: 'workspace_changed',
+          label: 'WORKSPACE CHANGED',
+          previous_workspace_path: '/repo/old',
+          workspace_path: '/repo/new',
+        }),
+      ]}
+    />,
+  )
+
+  expect(screen.getByRole('separator', { name: 'WORKSPACE CHANGED' })).toBeInTheDocument()
+  expect(screen.getByText('/repo/old -> /repo/new')).toBeInTheDocument()
+})
+
 test('renders run failures as system error rows instead of assistant text', () => {
   const errorText = 'read codex app-server stdout: bufio.Scanner: token too long'
 

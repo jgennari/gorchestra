@@ -126,6 +126,11 @@ type UpdateSessionTitleParams struct {
 	Title string
 }
 
+type UpdateSessionWorkspaceParams struct {
+	ID            string
+	WorkspacePath string
+}
+
 type UpdateSessionAgentOptionsParams struct {
 	ID           string
 	AgentOptions json.RawMessage

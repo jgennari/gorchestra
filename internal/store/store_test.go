@@ -955,6 +955,52 @@ func TestUpdateSessionTitleAllowsEmptyTitle(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionWorkspaceTrimsPathAndUpdatesTimestamp(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	createdAt := time.Date(2026, 6, 12, 16, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(10 * time.Minute)
+	store.now = func() time.Time { return createdAt }
+	session := createTestSession(t, ctx, store)
+
+	store.now = func() time.Time { return updatedAt }
+	updated, err := store.UpdateSessionWorkspace(ctx, UpdateSessionWorkspaceParams{
+		ID:            session.ID,
+		WorkspacePath: "  /tmp/new-workspace  ",
+	})
+	if err != nil {
+		t.Fatalf("update workspace: %v", err)
+	}
+	if updated.WorkspacePath != "/tmp/new-workspace" {
+		t.Fatalf("expected trimmed workspace path, got %q", updated.WorkspacePath)
+	}
+	if !updated.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("expected updated_at %s, got %s", updatedAt, updated.UpdatedAt)
+	}
+}
+
+func TestUpdateSessionWorkspaceRejectsInvalidArguments(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	for _, params := range []UpdateSessionWorkspaceParams{
+		{WorkspacePath: "/tmp/workspace"},
+		{ID: session.ID, WorkspacePath: "  "},
+	} {
+		if _, err := store.UpdateSessionWorkspace(ctx, params); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("expected ErrInvalidArgument for %#v, got %v", params, err)
+		}
+	}
+
+	if _, err := store.UpdateSessionWorkspace(ctx, UpdateSessionWorkspaceParams{
+		ID:            "sess_missing",
+		WorkspacePath: "/tmp/workspace",
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestUpdateSessionAgentOptions(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)

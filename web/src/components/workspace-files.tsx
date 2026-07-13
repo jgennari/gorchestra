@@ -32,6 +32,7 @@ export function WorkspaceFilesView({
   onOpenFile,
   onFileSaved,
   onCloseFile,
+  onDirtyChange,
 }: {
   session: Session | null
   resolvingSessionID?: string | null
@@ -41,6 +42,7 @@ export function WorkspaceFilesView({
   onOpenFile: (file: WorkspaceFileContent) => void
   onFileSaved: (file: WorkspaceFileContent) => void
   onCloseFile: () => void
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   return (
     <section className="relative flex h-full min-h-0 w-full flex-col bg-transparent">
@@ -67,6 +69,7 @@ export function WorkspaceFilesView({
               file={selectedFile}
               resolvedTheme={resolvedTheme}
               onFileSaved={onFileSaved}
+              onDirtyChange={onDirtyChange}
               onClose={onCloseFile}
               closeButtonClassName="lg:hidden"
             />
@@ -387,6 +390,7 @@ export function WorkspaceFileContentView({
   file,
   resolvedTheme,
   onFileSaved,
+  onDirtyChange,
   onClose,
   closeButtonClassName,
 }: {
@@ -394,6 +398,7 @@ export function WorkspaceFileContentView({
   file: WorkspaceFileContent
   resolvedTheme: 'light' | 'dark'
   onFileSaved: (file: WorkspaceFileContent) => void
+  onDirtyChange?: (dirty: boolean) => void
   onClose?: () => void
   closeButtonClassName?: string
 }) {
@@ -406,6 +411,11 @@ export function WorkspaceFileContentView({
   const [saveError, setSaveError] = useState('')
   const saveResetTimerRef = useRef<number | null>(null)
   const dirty = draft !== file.content
+
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+    return () => onDirtyChange?.(false)
+  }, [dirty, onDirtyChange])
 
   const clearSaveResetTimer = useCallback(() => {
     if (saveResetTimerRef.current === null) {

@@ -416,6 +416,7 @@ function props(overrides: Partial<SessionDetailProps>): SessionDetailProps {
     onAnswerUserInput: async () => undefined,
     onCancel: async () => undefined,
     onUpdateTitle: async () => undefined,
+    onUpdateWorkspace: async () => undefined,
     onUpdateAgentOptions: async () => undefined,
     ...overrides,
   }

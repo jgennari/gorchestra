@@ -1640,6 +1640,22 @@ func (s *fakeHTTPStore) UpdateSessionTitle(_ context.Context, params store.Updat
 	return session, nil
 }
 
+func (s *fakeHTTPStore) UpdateSessionWorkspace(_ context.Context, params store.UpdateSessionWorkspaceParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[params.ID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+
+	session.WorkspacePath = strings.TrimSpace(params.WorkspacePath)
+	session.UpdatedAt = testCreatedAt
+	s.sessions[params.ID] = session
+
+	return session, nil
+}
+
 func (s *fakeHTTPStore) UpdateSessionAgentOptions(_ context.Context, params store.UpdateSessionAgentOptionsParams) (store.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

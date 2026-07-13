@@ -1,11 +1,12 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { Archive, Ellipsis, Eraser, Loader2, Minimize2, PanelRightOpen, RefreshCw, Square, Terminal } from 'lucide-react'
+import { Archive, Ellipsis, Eraser, FolderCog, Loader2, Minimize2, PanelRightOpen, RefreshCw, Square, Terminal } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { consoleWebSocketURL, getConsoleStatus, killConsole, type ConsoleStatus } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { ChangeWorkspaceDialog } from '@/components/change-workspace-dialog'
 import { SessionTitleEditor } from '@/components/session-title-editor'
 import { cn } from '@/lib/utils'
 
@@ -23,6 +24,7 @@ export function HostConsole({
   headerActions,
   mobileLeadingAction,
   onUpdateTitle,
+  onUpdateWorkspace,
   onTitleEditStateChange,
   onClear,
   onCompact,
@@ -38,6 +40,7 @@ export function HostConsole({
   headerActions?: ReactNode
   mobileLeadingAction?: ReactNode
   onUpdateTitle: (title: string) => Promise<void>
+  onUpdateWorkspace: (workspacePath: string) => Promise<void>
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onClear?: () => Promise<void>
   onCompact?: () => Promise<void>
@@ -263,6 +266,7 @@ export function HostConsole({
           onRestart={() => void handleRestart()}
           onStop={() => void killConsole(sessionID)}
           onUpdateTitle={onUpdateTitle}
+          onUpdateWorkspace={onUpdateWorkspace}
           onTitleEditStateChange={onTitleEditStateChange}
           mobileSessionActions={{
             session,
@@ -286,6 +290,7 @@ export function HostConsole({
           onRestart={() => void handleRestart()}
           onStop={() => void killConsole(sessionID)}
           onUpdateTitle={onUpdateTitle}
+          onUpdateWorkspace={onUpdateWorkspace}
           onTitleEditStateChange={onTitleEditStateChange}
           mobileSessionActions={null}
           className="command-chat-header pointer-events-auto rounded-xl border border-border/90 px-3 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
@@ -315,6 +320,7 @@ function ConsoleHeader({
   onRestart,
   onStop,
   onUpdateTitle,
+  onUpdateWorkspace,
   onTitleEditStateChange,
   mobileSessionActions,
   className,
@@ -327,6 +333,7 @@ function ConsoleHeader({
   onRestart: () => void
   onStop: () => void
   onUpdateTitle: (title: string) => Promise<void>
+  onUpdateWorkspace: (workspacePath: string) => Promise<void>
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   mobileSessionActions?: MobileSessionActions | null
   className?: string
@@ -345,10 +352,12 @@ function ConsoleHeader({
       <div className="flex shrink-0 items-center gap-3">
         {headerActions}
         <ConsoleMenu
+          session={session}
           workspacePath={workspacePath}
           restarting={restarting}
           onRestart={onRestart}
           onStop={onStop}
+          onUpdateWorkspace={onUpdateWorkspace}
           mobileSessionActions={mobileSessionActions}
         />
       </div>
@@ -357,20 +366,25 @@ function ConsoleHeader({
 }
 
 function ConsoleMenu({
+  session,
   workspacePath,
   restarting,
   onRestart,
   onStop,
+  onUpdateWorkspace,
   mobileSessionActions,
 }: {
+  session: Session
   workspacePath: string
   restarting: boolean
   onRestart: () => void
   onStop: () => void
+  onUpdateWorkspace: (workspacePath: string) => Promise<void>
   mobileSessionActions?: MobileSessionActions | null
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
+  const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const mobileActionPending =
     mobileSessionActions?.clearPending || mobileSessionActions?.compactPending || mobileSessionActions?.archivePending
   const mobileCodexActionDisabled =
@@ -432,6 +446,17 @@ function ConsoleMenu({
           <button
             type="button"
             className="mt-2 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground"
+            onClick={() => {
+              setOpen(false)
+              setWorkspaceDialogOpen(true)
+            }}
+          >
+            <FolderCog className="size-4" aria-hidden="true" />
+            Change workspace
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground"
             disabled={restarting}
             onClick={() => {
               onRestart()
@@ -523,6 +548,13 @@ function ConsoleMenu({
           ) : null}
         </div>
       ) : null}
+      <ChangeWorkspaceDialog
+        session={session}
+        open={workspaceDialogOpen}
+        hasUnsavedFile={false}
+        onOpenChange={setWorkspaceDialogOpen}
+        onChangeWorkspace={onUpdateWorkspace}
+      />
     </div>
   )
 }
