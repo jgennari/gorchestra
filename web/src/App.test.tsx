@@ -132,6 +132,35 @@ test('server notification attention survives app launch for the selected session
   await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(0))
 })
 
+test('focusing the composer clears finished-turn notification attention', async () => {
+  const user = userEvent.setup()
+  const setAppBadge = vi.fn(() => Promise.resolve())
+  Object.defineProperty(navigator, 'setAppBadge', { configurable: true, value: setAppBadge })
+  window.history.replaceState({}, '', '/sessions/sess_1')
+  const fetch = fetchMock({
+    sessions: [{ ...firstSession, event_count: 5, last_event_seq: 5, notification_attention_seq: 5 }],
+    events: [event(5, 'agent.run.completed', {})],
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() =>
+    expect(screen.getByRole('img', { name: 'Session has unseen results' })).toHaveClass('bg-[hsl(var(--warning))]'),
+  )
+
+  await user.click(screen.getByRole('textbox', { name: 'Prompt' }))
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_1/notification-attention/clear',
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+  await waitFor(() => expect(screen.queryByRole('img', { name: 'Session has unseen results' })).not.toBeInTheDocument())
+  await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(0))
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })

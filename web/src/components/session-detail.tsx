@@ -61,6 +61,7 @@ type Props = {
   onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onOpenFilePath?: (path: string) => Promise<void> | void
+  onComposerFocus?: () => void
   onErrorMessageChange?: (message: string) => void
   onClear?: () => Promise<void>
   onCompact?: () => Promise<void>
@@ -100,6 +101,7 @@ export function SessionDetail({
   onTitleEditStateChange,
   onUpdateAgentOptions,
   onOpenFilePath,
+  onComposerFocus,
   onErrorMessageChange,
   onClear,
   onCompact,
@@ -296,6 +298,7 @@ export function SessionDetail({
             onSubmit={onSubmitPrompt}
             onCancel={session.status === 'running' ? onCancel : undefined}
             onError={onErrorMessageChange}
+            onFocus={onComposerFocus}
           />
         </div>
       </div>

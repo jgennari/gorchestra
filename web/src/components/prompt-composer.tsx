@@ -63,6 +63,7 @@ type Props = {
   ) => Promise<void>
   onCancel?: () => Promise<void>
   onError?: (message: string) => void
+  onFocus?: () => void
 }
 
 type CodexSelection = {
@@ -111,6 +112,7 @@ export function PromptComposer({
   onSubmit,
   onCancel,
   onError,
+  onFocus,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -252,6 +254,15 @@ export function PromptComposer({
   }, [content, sessionID])
 
   useEffect(() => {
+    function handleWindowFocus() {
+      if (document.activeElement === textareaRef.current) onFocus?.()
+    }
+
+    window.addEventListener('focus', handleWindowFocus)
+    return () => window.removeEventListener('focus', handleWindowFocus)
+  }, [onFocus])
+
+  useEffect(() => {
     if (!sessionID) {
       setQueuedMessages([])
       return
@@ -391,6 +402,7 @@ export function PromptComposer({
 
   function handleTextareaFocus() {
     setCloseSettingsSignal((value) => value + 1)
+    onFocus?.()
   }
 
   async function handleCancel() {

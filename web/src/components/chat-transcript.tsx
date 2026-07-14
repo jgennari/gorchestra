@@ -1,8 +1,10 @@
 import { Brain, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Copy, Download, FileText, Loader2 } from 'lucide-react'
 import {
   isValidElement,
+  useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -12,7 +14,7 @@ import {
   type WheelEvent,
 } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { Virtuoso } from 'react-virtuoso'
 import remarkGfm from 'remark-gfm'
 import type { AgentEvent } from '@/lib/api'
 import type {
@@ -85,14 +87,46 @@ export function ChatTranscript({
   onOpenFilePath,
 }: Props) {
   const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
-  const virtuosoRef = useRef<VirtuosoHandle>(null)
   const scrollerElementRef = useRef<HTMLElement | null>(null)
+  const tailAlignmentFrameRef = useRef<number | null>(null)
+  const forceTailAlignmentRef = useRef(false)
   const autoLoadOlderRef = useRef(false)
   const autoLoadNewerRef = useRef(false)
   const userScrollIntentRef = useRef(false)
   const atBottomRef = useRef(true)
   const lastTouchYRef = useRef<number | null>(null)
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
+  const followingTailRef = useRef(true)
+
+  useLayoutEffect(() => {
+    followingTailRef.current = !autoScrollPaused && !hasNewerEvents
+  }, [autoScrollPaused, hasNewerEvents])
+
+  const scheduleTailAlignment = useCallback((force = false) => {
+    if (!force && (!followingTailRef.current || userScrollIntentRef.current)) return
+    forceTailAlignmentRef.current ||= force
+    if (tailAlignmentFrameRef.current !== null) return
+
+    tailAlignmentFrameRef.current = window.requestAnimationFrame(() => {
+      tailAlignmentFrameRef.current = null
+      const forced = forceTailAlignmentRef.current
+      forceTailAlignmentRef.current = false
+      if (!forced && (!followingTailRef.current || userScrollIntentRef.current)) return
+
+      const scroller = scrollerElementRef.current
+      if (scroller) scroller.scrollTop = scroller.scrollHeight
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (tailAlignmentFrameRef.current !== null) {
+        window.cancelAnimationFrame(tailAlignmentFrameRef.current)
+        tailAlignmentFrameRef.current = null
+      }
+      forceTailAlignmentRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     if (events.length === 0) {
@@ -230,40 +264,19 @@ export function ChatTranscript({
   }
 
   useEffect(() => {
-    if (autoScrollPaused || hasNewerEvents) return
-    const frame = window.requestAnimationFrame(() => {
-      virtuosoRef.current?.autoscrollToBottom()
-      const scroller = scrollerElementRef.current
-      if (scroller) scroller.scrollTop = scroller.scrollHeight
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [autoScrollPaused, events, hasNewerEvents, tailSpacerHeight])
+    scheduleTailAlignment()
+  }, [autoScrollPaused, events, hasNewerEvents, scheduleTailAlignment, tailSpacerHeight])
 
   useEffect(() => {
     const scroller = scrollerElementRef.current
     const itemList = scroller?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
     if (!scroller || !itemList || typeof ResizeObserver === 'undefined') return
 
-    let frame: number | null = null
-    const alignToBottom = () => {
-      if (autoScrollPaused || hasNewerEvents || userScrollIntentRef.current) return
-      if (frame !== null) window.cancelAnimationFrame(frame)
-      frame = window.requestAnimationFrame(() => {
-        frame = null
-        if (userScrollIntentRef.current) return
-        virtuosoRef.current?.autoscrollToBottom()
-        scroller.scrollTop = scroller.scrollHeight
-      })
-    }
-
-    const observer = new ResizeObserver(alignToBottom)
+    const observer = new ResizeObserver(() => scheduleTailAlignment())
     observer.observe(itemList)
-    alignToBottom()
-    return () => {
-      observer.disconnect()
-      if (frame !== null) window.cancelAnimationFrame(frame)
-    }
-  }, [autoScrollPaused, hasNewerEvents, tailSpacerHeight, timeline.length])
+    scheduleTailAlignment()
+    return () => observer.disconnect()
+  }, [scheduleTailAlignment, timeline.length])
 
   if (error && timeline.length === 0) {
     return (
@@ -297,17 +310,12 @@ export function ChatTranscript({
     userScrollIntentRef.current = false
     setAutoScrollPaused(false)
     onFollowingTailChange?.(true)
-    window.requestAnimationFrame(() => {
-      virtuosoRef.current?.autoscrollToBottom()
-      const scroller = scrollerElementRef.current
-      if (scroller) scroller.scrollTop = scroller.scrollHeight
-    })
+    scheduleTailAlignment(true)
   }
 
   return (
     <div className="chat-canvas relative h-full min-h-0 overflow-hidden">
       <Virtuoso
-          ref={virtuosoRef}
           scrollerRef={(element) => {
             scrollerElementRef.current = element instanceof HTMLElement ? element : null
           }}
@@ -316,7 +324,6 @@ export function ChatTranscript({
           computeItemKey={(_, item) => item.id}
           firstItemIndex={firstItemIndex}
           initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-          followOutput={(atBottom) => (!hasNewerEvents && (!autoScrollPaused || atBottom) ? 'auto' : false)}
           atBottomThreshold={AUTO_SCROLL_BOTTOM_THRESHOLD_PX}
           atBottomStateChange={handleAtBottomChange}
           increaseViewportBy={{ top: 600, bottom: 800 }}

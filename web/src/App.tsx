@@ -371,6 +371,21 @@ function App() {
     })
   }, [])
 
+  const handleComposerFocus = useCallback(() => {
+    const sessionID = selectedSessionIDRef.current
+    if (!sessionID) return
+
+    const session = sessionsRef.current.find((item) => item.id === sessionID) ?? null
+    const latestSeq = Math.max(lastSeq(selectedEventsRef.current), latestSessionSeq(session))
+    markSessionSeen(sessionID, latestSeq)
+
+    const heldAttentionSeq = Math.max(
+      effectiveNotificationAttentionSeqBySession[sessionID] ?? 0,
+      session?.notification_attention_seq ?? 0,
+    )
+    if (heldAttentionSeq > 0) clearNotificationAttentionForSession(sessionID)
+  }, [clearNotificationAttentionForSession, effectiveNotificationAttentionSeqBySession, markSessionSeen])
+
   const markSessionUnseenAfter = useCallback((sessionID: string, seq: number) => {
     if (!sessionID || seq <= 0) {
       return
@@ -1321,6 +1336,7 @@ function App() {
               onTitleEditStateChange={handleTitleEditStateChange}
               onUpdateAgentOptions={handleUpdateAgentOptions}
               onOpenFilePath={handleOpenWorkspacePath}
+              onComposerFocus={handleComposerFocus}
               onErrorMessageChange={setError}
               onClear={() => {
                 requestSessionAction('clear')

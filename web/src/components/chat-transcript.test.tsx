@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { StrictMode } from 'react'
 import type { AgentEvent } from '@/lib/api'
 import { ChatTranscript } from '@/components/chat-transcript'
 
@@ -420,6 +421,61 @@ test('keeps following the tail after a downward wheel gesture at the bottom', as
 
   await waitFor(() => expect(log.scrollTop).toBe(1160))
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
+test('coalesces live event and row resize tail alignment into one scroll write in strict mode', async () => {
+  const originalResizeObserver = globalThis.ResizeObserver
+  const resizeCallbacks: ResizeObserverCallback[] = []
+  class TestResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      resizeCallbacks.push(callback)
+    }
+
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver
+
+  try {
+    const { rerender } = render(
+      <StrictMode>
+        <ChatTranscript events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]} />
+      </StrictMode>,
+    )
+    const log = screen.getByRole('log', { name: 'Chat messages' })
+    await act(async () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())))
+
+    let scrollTop = 600
+    let scrollWrites = 0
+    Object.defineProperty(log, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+        scrollWrites += 1
+      },
+    })
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 1160 })
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 400 })
+
+    rerender(
+      <StrictMode>
+        <ChatTranscript
+          events={[
+            event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' }),
+            event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Two' }),
+          ]}
+        />
+      </StrictMode>,
+    )
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)))
+    await act(async () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())))
+
+    expect(scrollWrites).toBe(1)
+    expect(scrollTop).toBe(1160)
+  } finally {
+    globalThis.ResizeObserver = originalResizeObserver
+  }
 })
 
 test('scrolls to bottom when content grows while following latest', async () => {

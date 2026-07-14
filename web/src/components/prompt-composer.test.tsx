@@ -1,5 +1,5 @@
 import { afterEach } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { PromptComposer } from '@/components/prompt-composer'
 
@@ -643,6 +643,7 @@ test('codex model and reasoning menus are mutually exclusive', async () => {
 
 test('composer settings menus close when the prompt regains focus', async () => {
   const user = userEvent.setup()
+  const onFocus = vi.fn()
   vi.stubGlobal(
     'fetch',
     vi.fn(async () => jsonResponse(codexOptionsResponse())),
@@ -655,6 +656,7 @@ test('composer settings menus close when the prompt regains focus', async () => 
       disabled={false}
       disabledReason=""
       onSubmit={async () => undefined}
+      onFocus={onFocus}
     />,
   )
 
@@ -664,6 +666,26 @@ test('composer settings menus close when the prompt regains focus', async () => 
   await user.click(screen.getByRole('textbox', { name: 'Prompt' }))
 
   expect(screen.queryByRole('listbox', { name: 'Model' })).not.toBeInTheDocument()
+  expect(onFocus).toHaveBeenCalled()
+})
+
+test('composer acknowledges focus when the browser regains focus', () => {
+  const onFocus = vi.fn()
+  render(
+    <PromptComposer
+      sessionID="sess_focus"
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+      onFocus={onFocus}
+    />,
+  )
+
+  act(() => screen.getByRole('textbox', { name: 'Prompt' }).focus())
+  onFocus.mockClear()
+  fireEvent.focus(window)
+
+  expect(onFocus).toHaveBeenCalledTimes(1)
 })
 
 test('pi thinking menu closes when the prompt regains focus', async () => {
