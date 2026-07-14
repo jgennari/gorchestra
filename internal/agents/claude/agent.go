@@ -150,6 +150,13 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 
 	options := runOptionsFromMetadata(input.Metadata)
 	cmd := a.commandWithOptions(input.Message, strings.TrimSpace(input.ProviderSessionID), workdir, options)
+	var stdin io.WriteCloser
+	if options.interactivePermissions() {
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return fmt.Errorf("create claude stdin pipe: %w", err)
+		}
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("create claude stdout pipe: %w", err)
@@ -163,11 +170,21 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 	}
 
 	run := &streamRun{
-		agent:      a,
-		incoming:   readStream(stdout, stderr),
-		process:    waitProcess(cmd),
-		emit:       emit,
-		normalizer: newNormalizer(),
+		agent:       a,
+		incoming:    readStream(stdout, stderr),
+		process:     waitProcess(cmd),
+		emit:        emit,
+		normalizer:  newNormalizer(),
+		stdin:       stdin,
+		sessionID:   input.SessionID,
+		message:     input.Message,
+		permissions: input.Permissions,
+		options:     options,
+	}
+	if options.interactivePermissions() {
+		if err := run.startInteractive(); err != nil {
+			return err
+		}
 	}
 	return run.execute(ctx)
 }
@@ -200,6 +217,9 @@ func (a *Agent) command(message string, providerSessionID string, workdir string
 
 func (a *Agent) commandWithOptions(message string, providerSessionID string, workdir string, options claudeRunOptions) *exec.Cmd {
 	args := []string{"--output-format", "stream-json", "--verbose", "--include-partial-messages"}
+	if options.interactivePermissions() {
+		args = append(args, "--input-format", "stream-json", "--permission-prompt-tool", "stdio")
+	}
 	model := a.model
 	if options.Model != "" {
 		model = options.Model
@@ -212,24 +232,31 @@ func (a *Agent) commandWithOptions(message string, providerSessionID string, wor
 	}
 	if options.PermissionMode != "" {
 		args = append(args, "--permission-mode", options.PermissionMode)
+	} else if options.PermissionPolicy == "deny" {
+		args = append(args, "--permission-mode", "dontAsk")
+	} else if options.permissionPolicy() == "bypass" {
+		args = append(args, "--permission-mode", "bypassPermissions")
 	}
-	if options.RunDangerously {
+	if options.permissionPolicy() == "bypass" {
 		args = append(args, "--allow-dangerously-skip-permissions")
 	}
 	if providerSessionID != "" {
 		args = append(args, "--resume", providerSessionID)
 	}
-	args = append(args, "-p", message)
+	if !options.interactivePermissions() {
+		args = append(args, "-p", message)
+	}
 	cmd := exec.Command(a.binary, args...)
 	cmd.Dir = workdir
 	return cmd
 }
 
 type claudeRunOptions struct {
-	RunDangerously bool
-	Model          string
-	Effort         string
-	PermissionMode string
+	RunDangerously   bool
+	Model            string
+	Effort           string
+	PermissionMode   string
+	PermissionPolicy string
 }
 
 func runOptionsFromMetadata(metadata map[string]any) claudeRunOptions {
@@ -238,11 +265,26 @@ func runOptionsFromMetadata(metadata map[string]any) claudeRunOptions {
 		return claudeRunOptions{}
 	}
 	return claudeRunOptions{
-		RunDangerously: boolMetadataValue(rawOptions, "run_dangerously"),
-		Model:          stringMetadataValue(rawOptions, "model"),
-		Effort:         stringMetadataValue(rawOptions, "effort"),
-		PermissionMode: stringMetadataValue(rawOptions, "permission_mode"),
+		RunDangerously:   boolMetadataValue(rawOptions, "run_dangerously"),
+		Model:            stringMetadataValue(rawOptions, "model"),
+		Effort:           stringMetadataValue(rawOptions, "effort"),
+		PermissionMode:   stringMetadataValue(rawOptions, "permission_mode"),
+		PermissionPolicy: stringMetadataValue(rawOptions, "permission_policy"),
 	}
+}
+
+func (o claudeRunOptions) permissionPolicy() string {
+	if o.PermissionPolicy != "" {
+		return o.PermissionPolicy
+	}
+	if o.RunDangerously {
+		return "bypass"
+	}
+	return "deny"
+}
+
+func (o claudeRunOptions) interactivePermissions() bool {
+	return o.PermissionMode != "plan" && o.permissionPolicy() == "ask"
 }
 
 func stringMetadataValue(values map[string]any, key string) string {
@@ -256,11 +298,41 @@ func boolMetadataValue(values map[string]any, key string) bool {
 }
 
 type streamRun struct {
-	agent      *Agent
-	incoming   <-chan incomingMessage
-	process    *processState
-	emit       agents.EmitFunc
-	normalizer *normalizer
+	agent       *Agent
+	incoming    <-chan incomingMessage
+	process     *processState
+	emit        agents.EmitFunc
+	normalizer  *normalizer
+	stdin       io.WriteCloser
+	writeMu     sync.Mutex
+	sessionID   string
+	message     string
+	permissions agents.PermissionBroker
+	options     claudeRunOptions
+}
+
+func (r *streamRun) startInteractive() error {
+	requestID := fmt.Sprintf("gorchestra-init-%d", time.Now().UnixNano())
+	if err := r.writeJSON(map[string]any{"type": "control_request", "request_id": requestID, "request": map[string]any{"subtype": "initialize", "hooks": nil}}); err != nil {
+		return err
+	}
+	return r.writeJSON(map[string]any{"type": "user", "session_id": "", "message": map[string]any{"role": "user", "content": r.message}, "parent_tool_use_id": nil})
+}
+
+func (r *streamRun) writeJSON(value any) error {
+	if r.stdin == nil {
+		return errors.New("claude stdin is unavailable")
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+	if _, err := r.stdin.Write(append(payload, '\n')); err != nil {
+		return fmt.Errorf("write claude control response: %w", err)
+	}
+	return nil
 }
 
 func (r *streamRun) execute(ctx context.Context) error {
@@ -348,12 +420,89 @@ func (r *streamRun) handleIncoming(ctx context.Context, incoming incomingMessage
 	if incoming.Event == nil {
 		return nil
 	}
+	if incoming.Event.Type == "control_request" {
+		return r.handleControlRequest(ctx, incoming.Event)
+	}
 	for _, normalized := range r.normalizer.normalize(incoming.Event) {
 		if err := r.emit(ctx, normalized.Event); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (r *streamRun) handleControlRequest(ctx context.Context, event *streamEvent) error {
+	var envelope struct {
+		RequestID string         `json:"request_id"`
+		Request   map[string]any `json:"request"`
+	}
+	if err := json.Unmarshal(event.Raw, &envelope); err != nil {
+		return err
+	}
+	if mapString(envelope.Request, "subtype") != "can_use_tool" {
+		return nil
+	}
+	input := envelope.Request["input"]
+	suggestions, _ := envelope.Request["permission_suggestions"].([]any)
+	options := []agents.PermissionOption{{ID: "allow-once", Label: "Allow once", Decision: "allow", Scope: "once"}}
+	if len(suggestions) > 0 {
+		options = append(options, agents.PermissionOption{ID: "allow-session", Label: "Allow for session", Decision: "allow", Scope: "session"})
+	}
+	options = append(options, agents.PermissionOption{ID: "deny", Label: "Deny", Decision: "deny", Scope: "once"}, agents.PermissionOption{ID: "cancel", Label: "Stop run", Decision: "cancel"})
+	request := agents.PermissionRequest{SessionID: r.sessionID, RequestID: envelope.RequestID, Provider: "claude", ProviderEventType: "can_use_tool", ProviderRequestID: envelope.RequestID,
+		ItemID: mapString(envelope.Request, "tool_use_id"), Kind: "tool", Title: firstNonEmpty(mapString(envelope.Request, "title"), mapString(envelope.Request, "display_name"), "Approve tool use"),
+		Description: mapString(envelope.Request, "description"), Reason: mapString(envelope.Request, "decision_reason"), ToolName: mapString(envelope.Request, "tool_name"), ToolInput: input, Options: options}
+	if r.permissions == nil {
+		return r.sendClaudePermissionResponse(envelope.RequestID, "deny", input, suggestions)
+	}
+	waiter, err := r.permissions.OpenPermission(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer waiter.Close()
+	if err := r.emit(ctx, agents.AgentEvent{Type: "agent.permission.requested", Role: "assistant", Status: "started", Payload: request}); err != nil {
+		return err
+	}
+	response, err := waiter.Wait(ctx)
+	if err != nil {
+		return r.sendClaudePermissionResponse(envelope.RequestID, "cancel", input, suggestions)
+	}
+	return r.sendClaudePermissionResponse(envelope.RequestID, response.OptionID, input, suggestions)
+}
+
+func (r *streamRun) sendClaudePermissionResponse(requestID string, optionID string, input any, suggestions []any) error {
+	result := map[string]any{}
+	switch optionID {
+	case "allow-once":
+		result = map[string]any{"behavior": "allow", "updatedInput": input}
+	case "allow-session":
+		result = map[string]any{"behavior": "allow", "updatedInput": input, "updatedPermissions": sessionPermissionSuggestions(suggestions)}
+	case "cancel":
+		result = map[string]any{"behavior": "deny", "message": "Stopped by user", "interrupt": true}
+	default:
+		result = map[string]any{"behavior": "deny", "message": "Denied by user", "interrupt": false}
+	}
+	return r.writeJSON(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": requestID, "response": result}})
+}
+
+func sessionPermissionSuggestions(suggestions []any) []any {
+	result := make([]any, 0, len(suggestions))
+	for _, raw := range suggestions {
+		if suggestion, ok := raw.(map[string]any); ok {
+			copy := make(map[string]any, len(suggestion)+1)
+			for key, value := range suggestion {
+				copy[key] = value
+			}
+			copy["destination"] = "session"
+			result = append(result, copy)
+		}
+	}
+	return result
+}
+
+func mapString(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func (r *streamRun) terminalReturn() error {

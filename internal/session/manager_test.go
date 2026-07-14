@@ -149,3 +149,31 @@ func TestManagerUserInputWaitReturnsContextError(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+func TestManagerResolvesPermissionRequestByStableOptionID(t *testing.T) {
+	manager := NewManager()
+	ctx, cleanup, err := manager.Register(context.Background(), "sess_test")
+	if err != nil {
+		t.Fatalf("register run: %v", err)
+	}
+	defer cleanup()
+	waiter, err := manager.OpenPermission(ctx, agents.PermissionRequest{SessionID: "sess_test", RequestID: "perm_test", Options: []agents.PermissionOption{{ID: "allow-session", Decision: "allow", Scope: "session"}}})
+	if err != nil {
+		t.Fatalf("open permission: %v", err)
+	}
+	defer waiter.Close()
+	pending, err := manager.PendingPermission("sess_test", "perm_test")
+	if err != nil || pending.Options[0].ID != "allow-session" {
+		t.Fatalf("unexpected pending permission: %#v, %v", pending, err)
+	}
+	if err := manager.ResolvePermission("sess_test", "perm_test", agents.PermissionResponse{OptionID: "allow-session"}); err != nil {
+		t.Fatalf("resolve permission: %v", err)
+	}
+	response, err := waiter.Wait(ctx)
+	if err != nil || response.OptionID != "allow-session" {
+		t.Fatalf("unexpected permission response: %#v, %v", response, err)
+	}
+	if _, err := manager.PendingPermission("sess_test", "perm_test"); !errors.Is(err, ErrPermissionNotActive) {
+		t.Fatalf("expected inactive permission, got %v", err)
+	}
+}

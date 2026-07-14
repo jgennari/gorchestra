@@ -76,6 +76,22 @@ func TestServiceSendsTerminalRunNotifications(t *testing.T) {
 	}
 }
 
+func TestServiceSendsGenericPermissionNotification(t *testing.T) {
+	ctx := context.Background()
+	fakeStore := &memoryStore{keys: store.NotificationKeys{PublicKey: "public", PrivateKey: "private"}, session: store.Session{ID: "sess_1", Title: "Deploy release"}, subscriptions: []store.PushSubscription{{Endpoint: "endpoint-1", P256DH: "p256dh", Auth: "auth", Origin: "https://example.test"}}}
+	sender := &recordingSender{responses: []*http.Response{testResponse(http.StatusCreated)}}
+	NewService(fakeStore, WithSender(sender)).notifyPermissionEvent(ctx, store.Event{SessionID: "sess_1", Seq: 9, Type: "agent.permission.requested", Status: store.EventStatusStarted, Payload: []byte(`{"command":"secret command"}`)})
+	if len(sender.payloads) != 1 || !bytes.Contains(sender.payloads[0], []byte(`"title":"Approval needed"`)) {
+		t.Fatalf("unexpected permission notification %s", sender.payloads)
+	}
+	if bytes.Contains(sender.payloads[0], []byte("secret command")) {
+		t.Fatalf("permission notification leaked request detail: %s", sender.payloads[0])
+	}
+	if len(fakeStore.attention) != 1 || fakeStore.attention[0].Seq != 9 {
+		t.Fatalf("expected permission attention, got %#v", fakeStore.attention)
+	}
+}
+
 func TestServiceDisablesGoneSubscriptions(t *testing.T) {
 	ctx := context.Background()
 	fakeStore := &memoryStore{

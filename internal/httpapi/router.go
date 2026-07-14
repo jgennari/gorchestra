@@ -85,6 +85,9 @@ type RunManager interface {
 	OpenUserInput(ctx context.Context, request agents.UserInputRequest) (agents.UserInputWaiter, error)
 	PendingUserInput(sessionID string, requestID string) (agents.UserInputRequest, error)
 	AnswerUserInput(sessionID string, requestID string, response agents.UserInputResponse) error
+	OpenPermission(ctx context.Context, request agents.PermissionRequest) (agents.PermissionWaiter, error)
+	PendingPermission(sessionID string, requestID string) (agents.PermissionRequest, error)
+	ResolvePermission(sessionID string, requestID string, response agents.PermissionResponse) error
 }
 
 type NotificationService interface {
@@ -186,6 +189,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Post("/api/sessions/{sessionId}/compact", api.compactSessionHandler)
 		r.Post("/api/sessions/{sessionId}/cancel", api.cancelSessionHandler)
 		r.Post("/api/sessions/{sessionId}/requests/{requestId}/answer", api.answerUserInputHandler)
+		r.Post("/api/sessions/{sessionId}/permissions/{requestId}/resolve", api.resolvePermissionHandler)
 		r.Get("/api/sessions/{sessionId}/console", api.consoleStatusHandler)
 		r.Post("/api/sessions/{sessionId}/console", api.startConsoleHandler)
 		r.Delete("/api/sessions/{sessionId}/console", api.killConsoleHandler)

@@ -74,6 +74,7 @@ type AgentInput struct {
 	Metadata          map[string]any
 	Attachments       []Attachment
 	UserInput         UserInputBroker
+	Permissions       PermissionBroker
 }
 
 type Attachment struct {
@@ -133,4 +134,48 @@ type UserInputResponse struct {
 
 type UserInputQuestionAnswer struct {
 	Answers []string `json:"answers"`
+}
+
+type PermissionBroker interface {
+	OpenPermission(ctx context.Context, request PermissionRequest) (PermissionWaiter, error)
+}
+
+type PermissionWaiter interface {
+	Wait(ctx context.Context) (PermissionResponse, error)
+	Close()
+}
+
+type PermissionRequest struct {
+	SessionID         string             `json:"-"`
+	RequestID         string             `json:"request_id"`
+	Provider          string             `json:"provider"`
+	ProviderEventType string             `json:"provider_event_type"`
+	ProviderRequestID string             `json:"provider_request_id,omitempty"`
+	ThreadID          string             `json:"thread_id,omitempty"`
+	TurnID            string             `json:"turn_id,omitempty"`
+	ItemID            string             `json:"item_id,omitempty"`
+	Kind              string             `json:"kind"`
+	Title             string             `json:"title"`
+	Description       string             `json:"description,omitempty"`
+	Reason            string             `json:"reason,omitempty"`
+	Command           string             `json:"command,omitempty"`
+	CWD               string             `json:"cwd,omitempty"`
+	ToolName          string             `json:"tool_name,omitempty"`
+	ToolInput         any                `json:"tool_input,omitempty"`
+	Paths             []string           `json:"paths,omitempty"`
+	Diff              string             `json:"diff,omitempty"`
+	RequestedGrants   any                `json:"requested_grants,omitempty"`
+	Options           []PermissionOption `json:"options"`
+}
+
+type PermissionOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	Decision    string `json:"decision"`
+	Scope       string `json:"scope,omitempty"`
+}
+
+type PermissionResponse struct {
+	OptionID string `json:"option_id"`
 }

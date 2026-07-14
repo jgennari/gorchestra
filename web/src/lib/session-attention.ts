@@ -1,11 +1,14 @@
 import type { Session } from '@/lib/api'
 
-export type SessionAttention = 'pending-input' | 'unseen-idle'
+export type SessionAttention = 'pending-permission' | 'pending-input' | 'unseen-idle'
 
 export function sessionAttention(
   session: Session,
   lastSeenSeqBySession: Record<string, number>,
 ): SessionAttention | null {
+  if ((session.pending_permission_count ?? 0) > 0) {
+    return 'pending-permission'
+  }
   if (session.pending_input) {
     return 'pending-input'
   }

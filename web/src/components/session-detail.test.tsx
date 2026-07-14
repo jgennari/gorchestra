@@ -305,7 +305,7 @@ test('floating chat header shows session details and copies the session key', as
   expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
 })
 
-test('floating chat header updates run dangerously for codex sessions', async () => {
+test('floating chat header updates the codex permission policy', async () => {
   const user = userEvent.setup()
   const onUpdateAgentOptions = vi.fn(async () => undefined)
 
@@ -319,16 +319,16 @@ test('floating chat header updates run dangerously for codex sessions', async ()
   })
 
   await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
-  const switchControl = within(desktopFloatingHeader()).getByRole('switch', { name: /run dangerously/i })
+  const askControl = within(desktopFloatingHeader()).getByRole('radio', { name: 'Ask' })
 
-  expect(switchControl).toHaveAttribute('aria-checked', 'false')
+  expect(askControl).toHaveAttribute('aria-checked', 'false')
 
-  await user.click(switchControl)
+  await user.click(askControl)
 
-  expect(onUpdateAgentOptions).toHaveBeenCalledWith({ codex: { run_dangerously: true } })
+  expect(onUpdateAgentOptions).toHaveBeenCalledWith({ codex: { permission_policy: 'ask' } })
 })
 
-test('floating chat header updates run dangerously for claude sessions', async () => {
+test('floating chat header updates the claude permission policy', async () => {
   const user = userEvent.setup()
   const onUpdateAgentOptions = vi.fn(async () => undefined)
 
@@ -342,23 +342,23 @@ test('floating chat header updates run dangerously for claude sessions', async (
   })
 
   await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
-  const switchControl = within(desktopFloatingHeader()).getByRole('switch', { name: /run dangerously/i })
+  const askControl = within(desktopFloatingHeader()).getByRole('radio', { name: 'Ask' })
 
-  expect(switchControl).toHaveAttribute('aria-checked', 'false')
+  expect(askControl).toHaveAttribute('aria-checked', 'false')
 
-  await user.click(switchControl)
+  await user.click(askControl)
 
-  expect(onUpdateAgentOptions).toHaveBeenCalledWith({ claude: { run_dangerously: true } })
+  expect(onUpdateAgentOptions).toHaveBeenCalledWith({ claude: { permission_policy: 'ask' } })
 })
 
-test('floating chat header hides run dangerously for fake sessions', async () => {
+test('floating chat header hides permission policy for fake sessions', async () => {
   const user = userEvent.setup()
 
   renderDetail()
 
   await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
 
-  expect(screen.queryByRole('switch', { name: /run dangerously/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole('radiogroup', { name: /permission policy/i })).not.toBeInTheDocument()
 })
 
 test('floating chat header owns session errors', () => {

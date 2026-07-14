@@ -19,7 +19,6 @@ type Options = {
   onEvent?: (event: AgentEvent) => void
   reconnectDelayMs?: number
   refreshKey?: number
-  followLatest?: boolean
   includeDebugEvents?: boolean
 }
 
@@ -61,19 +60,13 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const onEventRef = useRef(options.onEvent)
   const reconnectDelayMs = options.reconnectDelayMs ?? 1000
   const refreshKey = options.refreshKey ?? 0
-  const followLatest = options.followLatest ?? true
   const includeDebugEvents = options.includeDebugEvents ?? false
-  const followLatestRef = useRef(followLatest)
   const [hasOlderEvents, setHasOlderEvents] = useState(false)
   const [loadingOlderEvents, setLoadingOlderEvents] = useState(false)
 
   useEffect(() => {
     onEventRef.current = options.onEvent
   }, [options.onEvent])
-
-  useEffect(() => {
-    followLatestRef.current = followLatest
-  }, [followLatest])
 
   useEffect(() => {
     const sameSessionRefresh =
@@ -138,12 +131,9 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         const event = JSON.parse(message.data) as AgentEvent
         lastSeqRef.current = Math.max(lastSeqRef.current, event.seq)
         setEvents((current) => {
-          const appended = appendEvent(current, event)
-          const next = followLatestRef.current
-            ? trimEventsToRecentTurns(appended, defaultEventTurnPageSize)
-            : appended
+          const next = appendEvent(current, event)
           oldestSeqRef.current = firstSeq(next)
-          const nextHasOlderEvents = oldestSeqRef.current > 1 || next.length < appended.length
+          const nextHasOlderEvents = oldestSeqRef.current > 1
           setHasOlderEvents(nextHasOlderEvents)
           writeCachedSessionEvents(activeSessionID, next, nextHasOlderEvents, activeIncludeDebugEvents, lastSeqRef.current)
           return next
@@ -196,17 +186,13 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         const nextHasOlderEvents = oldestSeqRef.current > 1
         setHasOlderEvents(nextHasOlderEvents)
         setEvents((current) => {
-          const merged = appendEvents(sameSessionRefresh ? current : [], history)
-          const next = followLatestRef.current
-            ? trimEventsToRecentTurns(merged, defaultEventTurnPageSize)
-            : merged
+          const next = appendEvents(sameSessionRefresh ? current : [], history)
           oldestSeqRef.current = firstSeq(next)
-          const trimmedHasOlderEvents = nextHasOlderEvents || next.length < merged.length
-          setHasOlderEvents(trimmedHasOlderEvents)
+          setHasOlderEvents(nextHasOlderEvents)
           writeCachedSessionEvents(
             activeSessionID,
             next,
-            trimmedHasOlderEvents,
+            nextHasOlderEvents,
             activeIncludeDebugEvents,
             lastSeqRef.current,
           )

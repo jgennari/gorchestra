@@ -1,15 +1,23 @@
-import { mkdir, rm } from 'node:fs/promises'
+import { access, mkdir, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const tmpDir = join(repoRoot, '.tmp', 'human')
-const sessionName = process.env.GORCHESTRA_HUMAN_TMUX ?? 'gorchestra-human'
+const launchAgentLabel = process.env.GORCHESTRA_HUMAN_LAUNCH_AGENT ?? 'com.joey.gorchestra-human'
+const launchAgentPath =
+  process.env.GORCHESTRA_HUMAN_LAUNCH_AGENT_PATH ??
+  join(homedir(), 'Library', 'LaunchAgents', `${launchAgentLabel}.plist`)
+const launchDomain = `gui/${typeof process.getuid === 'function' ? process.getuid() : 501}`
+const launchTarget = `${launchDomain}/${launchAgentLabel}`
 const backendPort = process.env.GORCHESTRA_HUMAN_PORT ?? '18080'
 const webPort = process.env.GORCHESTRA_HUMAN_WEB_PORT ?? '15173'
 const dbPath = process.env.GORCHESTRA_HUMAN_DB ?? join(tmpDir, 'sessions.db')
 const workspacePath = process.env.GORCHESTRA_HUMAN_WORKSPACE ?? homedir()
+const stdoutPath = process.env.GORCHESTRA_HUMAN_STDOUT ?? join(tmpDir, 'launchd.out.log')
+const stderrPath = process.env.GORCHESTRA_HUMAN_STDERR ?? join(tmpDir, 'launchd.err.log')
+const tailnetURL = process.env.GORCHESTRA_HUMAN_TAILNET_URL ?? 'http://gorchestra.dev.gennari.industries'
 const command = Bun.argv[2] ?? 'start'
 
 type RunOptions = {
@@ -27,8 +35,7 @@ async function main() {
       await stop()
       break
     case 'restart':
-      await stop()
-      await start()
+      await restart()
       break
     case 'reset':
       await reset()
@@ -37,10 +44,10 @@ async function main() {
       await status()
       break
     case 'logs':
-      logs()
+      await logs(false)
       break
     case 'attach':
-      attach()
+      await logs(true)
       break
     default:
       usage()
@@ -49,136 +56,114 @@ async function main() {
 }
 
 async function start() {
-  requireTmux()
-  await mkdir(dirname(dbPath), { recursive: true })
+  await requireLaunchAgent()
+  await mkdir(tmpDir, { recursive: true })
 
-  if (sessionExists()) {
-    console.log(`[human-dev] tmux session ${sessionName} is already running`)
+  if (launchAgentState().loaded) {
+    console.log(`[human-dev] LaunchAgent ${launchAgentLabel} is already loaded`)
     await status()
     return
   }
 
-  const env = [
-    `PORT=${shellQuote(backendPort)}`,
-    `WEB_PORT=${shellQuote(webPort)}`,
-    `GORCHESTRA_DB=${shellQuote(dbPath)}`,
-    `GORCHESTRA_WORKSPACE=${shellQuote(workspacePath)}`,
-  ]
-
-  if (process.env.VITE_ALLOWED_HOSTS) {
-    env.push(`VITE_ALLOWED_HOSTS=${shellQuote(process.env.VITE_ALLOWED_HOSTS)}`)
-  }
-
-  const shellCommand = `${env.join(' ')} bun run dev:tailnet`
-  const result = run([
-    'tmux',
-    'new-session',
-    '-d',
-    '-s',
-    sessionName,
-    '-c',
-    repoRoot,
-    shellCommand,
-  ])
+  const result = run(['launchctl', 'bootstrap', launchDomain, launchAgentPath])
   if (result.exitCode !== 0) {
-    fail(`failed to start tmux session: ${result.stderr}`)
+    fail(`failed to load LaunchAgent: ${result.stderr}`)
   }
 
-  console.log(`[human-dev] started tmux session ${sessionName}`)
+  console.log(`[human-dev] loaded LaunchAgent ${launchAgentLabel}`)
   await waitForServer()
   await status()
 }
 
 async function stop() {
-  requireTmux()
-
-  if (!sessionExists()) {
-    console.log(`[human-dev] tmux session ${sessionName} is not running`)
+  if (!launchAgentState().loaded) {
+    console.log(`[human-dev] LaunchAgent ${launchAgentLabel} is not loaded`)
     return
   }
 
-  run(['tmux', 'send-keys', '-t', sessionName, 'C-c'])
+  const result = run(['launchctl', 'bootout', launchTarget])
+  if (result.exitCode !== 0) {
+    fail(`failed to unload LaunchAgent: ${result.stderr}`)
+  }
 
   for (let i = 0; i < 20; i++) {
-    if (!sessionExists()) {
-      console.log(`[human-dev] stopped tmux session ${sessionName}`)
+    if (!launchAgentState().loaded) {
+      console.log(`[human-dev] unloaded LaunchAgent ${launchAgentLabel}`)
       return
     }
     await sleep(250)
   }
 
-  run(['tmux', 'kill-session', '-t', sessionName])
-  console.log(`[human-dev] killed tmux session ${sessionName}`)
+  fail(`LaunchAgent ${launchAgentLabel} did not stop`)
+}
+
+async function restart() {
+  await requireLaunchAgent()
+  if (!launchAgentState().loaded) {
+    await start()
+    return
+  }
+
+  const result = run(['launchctl', 'kickstart', '-k', launchTarget])
+  if (result.exitCode !== 0) {
+    fail(`failed to restart LaunchAgent: ${result.stderr}`)
+  }
+
+  console.log(`[human-dev] restarted LaunchAgent ${launchAgentLabel}`)
+  await waitForServer()
+  await status()
 }
 
 async function reset() {
   await stop()
-
   await Promise.all([
     rm(dbPath, { force: true }),
     rm(`${dbPath}-shm`, { force: true }),
     rm(`${dbPath}-wal`, { force: true }),
   ])
   console.log(`[human-dev] reset database ${dbPath}`)
-
   await start()
 }
 
 async function status() {
-  const ip = await tailscaleIP()
-  const running = sessionExists()
-  const backendURL = `http://localhost:${backendPort}`
+  const service = launchAgentState()
+  const backendURL = `http://127.0.0.1:${backendPort}`
   const frontendURL = `http://127.0.0.1:${webPort}`
-  const tailnetURL = ip ? `http://${ip}:${webPort}` : ''
-  const backendHealth = await probe(`${backendURL}/api/health`)
-  const frontendHealth = await probe(frontendURL)
+  const [backendHealth, frontendHealth, tailnetHealth] = await Promise.all([
+    probe(`${backendURL}/api/health`),
+    probe(frontendURL),
+    probe(`${tailnetURL}/api/health`),
+  ])
 
-  console.log(`[human-dev] session: ${sessionName}`)
-  console.log(`[human-dev] state: ${running ? 'running' : 'stopped'}`)
+  console.log(`[human-dev] service: ${launchAgentLabel}`)
+  console.log(`[human-dev] state: ${service.loaded ? service.state || 'loaded' : 'stopped'}${service.pid ? ` (pid ${service.pid})` : ''}`)
   console.log(`[human-dev] backend: ${backendURL} (${backendHealth})`)
   console.log(`[human-dev] frontend: ${frontendURL} (${frontendHealth})`)
-  if (tailnetURL) {
-    console.log(`[human-dev] tailnet: ${tailnetURL}`)
-  } else {
-    console.log('[human-dev] tailnet: unavailable')
-  }
+  console.log(`[human-dev] tailnet: ${tailnetURL} (${tailnetHealth})`)
   console.log(`[human-dev] database: ${dbPath}`)
   console.log(`[human-dev] workspace: ${workspacePath}`)
+  console.log(`[human-dev] LaunchAgent: ${launchAgentPath}`)
 }
 
-function logs() {
-  requireTmux()
-  if (!sessionExists()) {
-    fail(`tmux session ${sessionName} is not running`)
-  }
-
+async function logs(follow: boolean) {
+  await mkdir(tmpDir, { recursive: true })
   const lines = Bun.argv[3] ?? '200'
-  const result = run(['tmux', 'capture-pane', '-p', '-t', sessionName, '-S', `-${lines}`])
+  const args = ['tail', ...(follow ? ['-f'] : []), '-n', lines, stdoutPath, stderrPath]
+  const result = run(args, follow ? { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' } : {})
   if (result.exitCode !== 0) {
-    fail(result.stderr)
+    fail(result.stderr || 'failed to read LaunchAgent logs')
   }
-
-  process.stdout.write(result.stdout)
-}
-
-function attach() {
-  requireTmux()
-  if (!sessionExists()) {
-    fail(`tmux session ${sessionName} is not running`)
+  if (!follow) {
+    process.stdout.write(result.stdout)
   }
-
-  const result = run(['tmux', 'attach-session', '-t', sessionName], {
-    stdin: 'inherit',
-    stdout: 'inherit',
-    stderr: 'inherit',
-  })
-  process.exit(result.exitCode)
 }
 
 async function waitForServer() {
   for (let i = 0; i < 40; i++) {
-    const backend = await probe(`http://localhost:${backendPort}/api/health`)
-    const frontend = await probe(`http://127.0.0.1:${webPort}`)
+    const [backend, frontend] = await Promise.all([
+      probe(`http://127.0.0.1:${backendPort}/api/health`),
+      probe(`http://127.0.0.1:${webPort}`),
+    ])
     if (backend === 'ok' && frontend === 'ok') {
       return
     }
@@ -186,15 +171,6 @@ async function waitForServer() {
   }
 
   console.log('[human-dev] server did not become fully healthy before timeout; check logs')
-}
-
-async function tailscaleIP() {
-  const result = run(['tailscale', 'ip', '-4'])
-  if (result.exitCode !== 0) {
-    return ''
-  }
-
-  return result.stdout.trim().split('\n')[0] ?? ''
 }
 
 async function probe(url: string) {
@@ -206,13 +182,24 @@ async function probe(url: string) {
   }
 }
 
-function sessionExists() {
-  return run(['tmux', 'has-session', '-t', sessionName]).exitCode === 0
+function launchAgentState() {
+  const result = run(['launchctl', 'print', launchTarget])
+  if (result.exitCode !== 0) {
+    return { loaded: false, state: '', pid: '' }
+  }
+
+  return {
+    loaded: true,
+    state: result.stdout.match(/^\s*state = (.+)$/m)?.[1]?.trim() ?? '',
+    pid: result.stdout.match(/^\s*pid = (\d+)$/m)?.[1] ?? '',
+  }
 }
 
-function requireTmux() {
-  if (run(['tmux', '-V']).exitCode !== 0) {
-    fail('tmux is required for the persistent human dev server')
+async function requireLaunchAgent() {
+  try {
+    await access(launchAgentPath)
+  } catch {
+    fail(`LaunchAgent plist not found at ${launchAgentPath}`)
   }
 }
 
@@ -239,10 +226,6 @@ function run(args: string[], options: RunOptions = {}) {
   }
 }
 
-function shellQuote(value: string) {
-  return `'${value.replaceAll("'", "'\\''")}'`
-}
-
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -256,13 +239,13 @@ function usage() {
   console.log(`Usage: bun run scripts/human-dev.ts <command>
 
 Commands:
-  start     Start the persistent tailnet dev server
-  stop      Stop the tmux session
-  restart   Stop and start the tmux session
-  reset     Stop, delete the human dev database, and start
-  status    Print server URLs and health
-  logs      Print recent tmux pane output
-  attach    Attach to the tmux session
+  start     Load the persistent human-test LaunchAgent
+  stop      Unload the LaunchAgent
+  restart   Restart the LaunchAgent
+  reset     Stop, delete the human-test database, and start
+  status    Print LaunchAgent state, URLs, and health
+  logs      Print recent LaunchAgent logs
+  attach    Follow LaunchAgent logs
 `)
 }
 

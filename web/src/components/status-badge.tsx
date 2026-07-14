@@ -18,7 +18,7 @@ export function StatusBadge({ status, className, attention = null }: Props) {
       title={label}
       className={cn(
         'inline-block size-2.5 shrink-0 rounded-full',
-        attention === 'pending-input' && 'animate-pulse bg-[hsl(var(--warning))]',
+        (attention === 'pending-input' || attention === 'pending-permission') && 'animate-pulse bg-[hsl(var(--warning))]',
         attention === 'unseen-idle' && 'bg-[hsl(var(--warning))]',
         !attention && status === 'running' && 'animate-pulse bg-[hsl(var(--success))]',
         !attention && status === 'failed' && 'bg-destructive',
@@ -30,6 +30,7 @@ export function StatusBadge({ status, className, attention = null }: Props) {
 }
 
 function statusBadgeLabel(status: SessionStatus, attention: SessionAttention | null) {
+  if (attention === 'pending-permission') return 'Session pending approval'
   if (attention === 'pending-input') return 'Session pending user input'
   if (attention === 'unseen-idle') return 'Session has unseen results'
   return `Session status: ${status}`

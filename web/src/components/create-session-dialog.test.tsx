@@ -55,10 +55,11 @@ test('create session form submits default codex agent and optional title', async
     agent_type: 'codex',
     title: 'Inspect repo',
     workspace_path: '/repo',
+    agent_options: { codex: { permission_policy: 'ask' } },
   })
 })
 
-test('create session form can enable codex dangerous mode', async () => {
+test('create session form can bypass codex permissions', async () => {
   const user = userEvent.setup()
   stubWorkspaceFetch()
   const onCreate = vi.fn(async () => ({
@@ -78,18 +79,18 @@ test('create session form can enable codex dangerous mode', async () => {
   render(<CreateSessionDialog open onOpenChange={() => undefined} onCreate={onCreate} />)
 
   expect(await screen.findByText('/repo')).toBeInTheDocument()
-  await user.click(screen.getByLabelText(/run dangerously/i))
+  await user.click(screen.getByRole('radio', { name: 'Bypass' }))
   await user.click(screen.getByRole('button', { name: /^create$/i }))
 
   expect(onCreate).toHaveBeenCalledWith({
     agent_type: 'codex',
     title: undefined,
     workspace_path: '/repo',
-    agent_options: { codex: { run_dangerously: true } },
+    agent_options: { codex: { permission_policy: 'bypass' } },
   })
 })
 
-test('create session form can enable claude dangerous mode', async () => {
+test('create session form can bypass claude permissions', async () => {
   const user = userEvent.setup()
   stubWorkspaceFetch()
   const onCreate = vi.fn(async () => ({
@@ -112,14 +113,14 @@ test('create session form can enable claude dangerous mode', async () => {
   const nativeSelect = document.querySelector('select')
   if (!nativeSelect) throw new Error('expected native select')
   fireEvent.change(nativeSelect, { target: { value: 'claude' } })
-  await user.click(screen.getByLabelText(/run dangerously/i))
+  await user.click(screen.getByRole('radio', { name: 'Bypass' }))
   await user.click(screen.getByRole('button', { name: /^create$/i }))
 
   expect(onCreate).toHaveBeenCalledWith({
     agent_type: 'claude',
     title: undefined,
     workspace_path: '/repo',
-    agent_options: { claude: { run_dangerously: true } },
+    agent_options: { claude: { permission_policy: 'bypass' } },
   })
 })
 

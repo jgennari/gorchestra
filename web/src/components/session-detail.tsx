@@ -5,6 +5,7 @@ import type {
   MessageAttachment,
   Session,
   SessionAgentOptions,
+  PermissionPolicy,
   SubmitAgentOptions,
   UserInputAnswers,
 } from '@/lib/api'
@@ -13,6 +14,8 @@ import { Button } from '@/components/ui/button'
 import { ChangeWorkspaceDialog } from '@/components/change-workspace-dialog'
 import { ChatTranscript } from '@/components/chat-transcript'
 import { PromptComposer } from '@/components/prompt-composer'
+import { PermissionQueue } from '@/components/permission-queue'
+import { PermissionPolicyControl } from '@/components/permission-policy-control'
 import { SessionTitleEditor } from '@/components/session-title-editor'
 import { UserInputCard } from '@/components/user-input-card'
 import {
@@ -22,6 +25,7 @@ import {
   activeToolActivity,
   latestTerminalEvent,
   pendingUserInputRequest,
+  pendingPermissionRequests,
 } from '@/lib/events'
 import { cn } from '@/lib/utils'
 
@@ -36,7 +40,6 @@ type Props = {
   showDebugEvents: boolean
   onShowDebugEventsChange: (showDebugEvents: boolean) => void
   onLoadOlderEvents?: () => Promise<void> | void
-  onFollowLatestChange?: (followingLatest: boolean) => void
   onSubmitPrompt: (
     content: string,
     agentOptions?: SubmitAgentOptions,
@@ -44,6 +47,7 @@ type Props = {
     queue?: boolean,
   ) => Promise<void>
   onAnswerUserInput: (requestID: string, answers: UserInputAnswers) => Promise<void>
+  onResolvePermission?: (requestID: string, optionID: string) => Promise<void>
   onCancel: () => Promise<void>
   onUpdateTitle: (title: string) => Promise<void>
   onUpdateWorkspace: (workspacePath: string) => Promise<void>
@@ -74,9 +78,9 @@ export function SessionDetail({
   showDebugEvents,
   onShowDebugEventsChange,
   onLoadOlderEvents,
-  onFollowLatestChange,
   onSubmitPrompt,
   onAnswerUserInput,
+  onResolvePermission = async () => undefined,
   onCancel,
   onUpdateTitle,
   onUpdateWorkspace,
@@ -99,6 +103,10 @@ export function SessionDetail({
   const [bottomInsetHeight, setBottomInsetHeight] = useState(176)
   const userInputRequest = useMemo(
     () => (session?.status === 'running' ? pendingUserInputRequest(events) : null),
+    [events, session?.status],
+  )
+  const permissionRequests = useMemo(
+    () => (session?.status === 'running' ? pendingPermissionRequests(events) : []),
     [events, session?.status],
   )
   const thinking = useMemo(
@@ -150,7 +158,7 @@ export function SessionDetail({
     const observer = new ResizeObserver(() => updateHeight())
     observer.observe(target)
     return () => observer.disconnect()
-  }, [session?.id, userInputRequest])
+  }, [session?.id, userInputRequest, permissionRequests.length])
 
   if (!session) {
     if (resolvingSessionID) {
@@ -206,7 +214,6 @@ export function SessionDetail({
           hasOlderEvents={hasOlderEvents}
           loadingOlderEvents={loadingOlderEvents}
           onLoadOlderEvents={onLoadOlderEvents}
-          onFollowLatestChange={onFollowLatestChange}
           onOpenFilePath={onOpenFilePath}
         />
         <div
@@ -255,6 +262,7 @@ export function SessionDetail({
       </div>
       <div ref={bottomInsetRef} className="session-bottom-safe-area pointer-events-none absolute inset-x-0 bottom-0 z-20">
         <div data-testid="session-bottom-stack" className="pointer-events-auto relative">
+          <PermissionQueue requests={permissionRequests} onResolve={onResolvePermission} />
           <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
           <PromptComposer
             key={session.id}
@@ -368,10 +376,8 @@ function SessionDetailsMenu({
   const [open, setOpen] = useState(false)
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [copiedField, setCopiedField] = useState<'session' | 'workspace' | null>(null)
-  const [savingRunDangerously, setSavingRunDangerously] = useState(false)
-  const runDangerously = session.agent_type === 'claude'
-    ? session.agent_options?.claude?.run_dangerously === true
-    : session.agent_options?.codex?.run_dangerously === true
+  const [savingPermissionPolicy, setSavingPermissionPolicy] = useState(false)
+  const permissionPolicy = effectivePermissionPolicy(session)
   const mobileActionPending =
     mobileSessionActions?.clearPending || mobileSessionActions?.compactPending || mobileSessionActions?.archivePending
   const mobileCodexActionDisabled =
@@ -419,15 +425,17 @@ function SessionDetailsMenu({
     }
   }
 
-  async function handleRunDangerouslyChange(checked: boolean) {
-    setSavingRunDangerously(true)
-    try {
-      await onUpdateAgentOptions(
-        session.agent_type === 'claude' ? { claude: { run_dangerously: checked } } : { codex: { run_dangerously: checked } },
-      )
-    } finally {
-      setSavingRunDangerously(false)
-    }
+  async function handlePermissionPolicyChange(policy: PermissionPolicy) {
+    if (policy === permissionPolicy) return
+    if (policy === 'bypass' && !window.confirm('Bypass sandbox and permission checks for future runs in this session?')) return
+	setSavingPermissionPolicy(true)
+	try {
+	  if (session.agent_type === 'claude') await onUpdateAgentOptions({ claude: { permission_policy: policy } })
+	  if (session.agent_type === 'codex') await onUpdateAgentOptions({ codex: { permission_policy: policy } })
+	  if (session.agent_type === 'opencode') await onUpdateAgentOptions({ opencode: { permission_policy: policy } })
+	} finally {
+	  setSavingPermissionPolicy(false)
+	}
   }
 
   return (
@@ -465,42 +473,29 @@ function SessionDetailsMenu({
               copyLabel="Copy workspace path"
               copied={copiedField === 'workspace'}
               onCopy={() => void handleCopy(session.workspace_path, 'workspace')}
+              labelAction={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 text-muted-foreground hover:bg-accent hover:text-foreground [&_svg]:size-3.5"
+                  aria-label="Change workspace"
+                  title="Change workspace"
+                  disabled={session.status === 'running'}
+                  onClick={() => {
+                    setOpen(false)
+                    setWorkspaceDialogOpen(true)
+                  }}
+                >
+                  <FolderCog aria-hidden="true" />
+                </Button>
+              }
             />
-            <button
-              type="button"
-              disabled={session.status === 'running'}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45"
-              onClick={() => {
-                setOpen(false)
-                setWorkspaceDialogOpen(true)
-              }}
-            >
-              <FolderCog className="size-4" aria-hidden="true" />
-              <span>Change workspace</span>
-            </button>
-            <MenuSwitchRow
-              label="Debug"
-              description="Stream and load provider debug events for this session."
-              active={showDebugEvents}
-              disabled={false}
-              onClick={() => onShowDebugEventsChange(!showDebugEvents)}
-            />
-            {session.agent_type === 'codex' || session.agent_type === 'claude' ? (
-              <MenuSwitchRow
-                label="Run dangerously"
-                description={
-                  session.agent_type === 'claude'
-                    ? 'Save this session to run Claude with permission prompts skipped on the next run.'
-                    : 'Save this session to run Codex without approval prompts or sandbox restrictions on the next run.'
-                }
-                active={runDangerously}
-                disabled={savingRunDangerously}
-                destructive
-                onClick={() => void handleRunDangerouslyChange(!runDangerously)}
-              />
+            {session.agent_type === 'codex' || session.agent_type === 'claude' || session.agent_type === 'opencode' ? (
+              <div className="space-y-2"><p className="text-xs font-medium text-muted-foreground">Permissions</p><PermissionPolicyControl value={permissionPolicy} disabled={savingPermissionPolicy || session.status === 'running'} onChange={(value) => void handlePermissionPolicyChange(value)} /></div>
             ) : null}
             {mobileSessionActions ? (
-              <div className="space-y-1 border-t border-border/70 pt-3 lg:hidden">
+              <div className="space-y-1 lg:hidden">
                 <button
                   type="button"
                   className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
@@ -570,6 +565,13 @@ function SessionDetailsMenu({
                 </button>
               </div>
             ) : null}
+            <MenuSwitchRow
+              label="Debug"
+              description="Stream and load provider debug events for this session."
+              active={showDebugEvents}
+              disabled={false}
+              onClick={() => onShowDebugEventsChange(!showDebugEvents)}
+            />
           </div>
         </div>
       ) : null}
@@ -584,19 +586,24 @@ function SessionDetailsMenu({
   )
 }
 
+function effectivePermissionPolicy(session: Session): PermissionPolicy {
+  const options = session.agent_type === 'codex' ? session.agent_options?.codex : session.agent_type === 'claude' ? session.agent_options?.claude : session.agent_type === 'opencode' ? session.agent_options?.opencode : undefined
+  if (options?.permission_policy) return options.permission_policy
+  if ('run_dangerously' in (options ?? {}) && (options as { run_dangerously?: boolean }).run_dangerously) return 'bypass'
+  return 'deny'
+}
+
 function MenuSwitchRow({
   label,
   description,
   active,
   disabled,
-  destructive = false,
   onClick,
 }: {
   label: string
   description: string
   active: boolean
   disabled: boolean
-  destructive?: boolean
   onClick: () => void
 }) {
   return (
@@ -608,25 +615,16 @@ function MenuSwitchRow({
       aria-pressed={active}
       disabled={disabled}
       onClick={onClick}
-      className={cn(
-        'flex w-full items-center justify-between gap-3 rounded-md border p-3 text-left text-sm transition-colors disabled:pointer-events-none disabled:opacity-50',
-        destructive
-          ? 'border-destructive/30 bg-destructive/5 hover:bg-destructive/10'
-          : 'border-border/80 bg-surface-muted/40 hover:bg-accent/60',
-      )}
+      className="flex w-full items-center justify-between gap-3 rounded-md px-1 py-1.5 text-left text-sm transition-colors hover:bg-accent/60 disabled:pointer-events-none disabled:opacity-50"
     >
       <span className="min-w-0">
-        <span className={cn('block font-medium', destructive ? 'text-destructive' : 'text-foreground')}>{label}</span>
+        <span className="block font-medium text-foreground">{label}</span>
         <span className="block text-xs text-muted-foreground">{description}</span>
       </span>
       <span
         className={cn(
           'relative inline-flex h-4 w-7 shrink-0 rounded-full border transition-colors',
-          active && destructive
-            ? 'border-destructive/60 bg-destructive'
-            : active
-              ? 'border-amber-500/50 bg-amber-400 dark:bg-amber-400/70'
-              : 'border-border/80 bg-surface-muted',
+          active ? 'border-amber-500/50 bg-amber-400 dark:bg-amber-400/70' : 'border-border/80 bg-surface-muted',
         )}
         aria-hidden="true"
       >
@@ -658,6 +656,7 @@ function CopyableDetailBox({
   copyLabel,
   copied,
   onCopy,
+  labelAction,
   scrollX = false,
 }: {
   label: string
@@ -665,13 +664,17 @@ function CopyableDetailBox({
   copyLabel: string
   copied: boolean
   onCopy: () => void
+  labelAction?: ReactNode
   scrollX?: boolean
 }) {
   const displayValue = value || 'Unavailable'
 
   return (
     <div>
-      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{label}</p>
+      <div className="flex min-h-6 items-center justify-between gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{label}</p>
+        {labelAction}
+      </div>
       <div className="relative mt-1 rounded-md bg-surface-muted/75">
         <code
           className={cn(

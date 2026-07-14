@@ -67,6 +67,16 @@ func (noopRunManager) PendingUserInput(string, string) (agents.UserInputRequest,
 
 func (noopRunManager) AnswerUserInput(string, string, agents.UserInputResponse) error { return nil }
 
+func (noopRunManager) OpenPermission(context.Context, agents.PermissionRequest) (agents.PermissionWaiter, error) {
+	return nil, nil
+}
+
+func (noopRunManager) PendingPermission(string, string) (agents.PermissionRequest, error) {
+	return agents.PermissionRequest{}, nil
+}
+
+func (noopRunManager) ResolvePermission(string, string, agents.PermissionResponse) error { return nil }
+
 func TestHealthRoute(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	rec := httptest.NewRecorder()

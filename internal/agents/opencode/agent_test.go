@@ -381,3 +381,13 @@ func runFakeOpenCode() {
 		}
 	}
 }
+
+func TestPermissionOptionsPreserveACPIDsAndScopes(t *testing.T) {
+	options := permissionOptions(json.RawMessage(`{"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"allow-always","name":"Always allow","kind":"allow_always"},{"optionId":"reject-once","name":"Reject","kind":"reject_once"}]}`))
+	if got := []string{options[0].ID, options[1].ID, options[2].ID}; !reflect.DeepEqual(got, []string{"allow-once", "allow-always", "reject-once"}) {
+		t.Fatalf("unexpected ids %#v", got)
+	}
+	if options[1].Scope != "session" || options[2].Decision != "deny" {
+		t.Fatalf("unexpected options %#v", options)
+	}
+}

@@ -270,6 +270,7 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 		providerSessionID: strings.TrimSpace(input.ProviderSessionID),
 		attachments:       input.Attachments,
 		userInput:         input.UserInput,
+		permissions:       input.Permissions,
 		options:           runOptionsFromMetadata(input.Metadata),
 	}
 	return run.execute(ctx, input.Message, workdir)
@@ -314,6 +315,7 @@ type acpRun struct {
 	providerSessionID string
 	attachments       []agents.Attachment
 	userInput         agents.UserInputBroker
+	permissions       agents.PermissionBroker
 	options           openCodeRunOptions
 
 	stateMu    sync.Mutex
@@ -321,8 +323,9 @@ type acpRun struct {
 }
 
 type openCodeRunOptions struct {
-	Model        string
-	PlanningMode bool
+	Model            string
+	PlanningMode     bool
+	PermissionPolicy string
 }
 
 func runOptionsFromMetadata(metadata map[string]any) openCodeRunOptions {
@@ -331,9 +334,18 @@ func runOptionsFromMetadata(metadata map[string]any) openCodeRunOptions {
 		return openCodeRunOptions{}
 	}
 	return openCodeRunOptions{
-		Model:        stringMetadataValue(rawOptions, "model"),
-		PlanningMode: boolMetadataValue(rawOptions, "planning_mode"),
+		Model:            stringMetadataValue(rawOptions, "model"),
+		PlanningMode:     boolMetadataValue(rawOptions, "planning_mode"),
+		PermissionPolicy: effectivePermissionPolicy(rawOptions),
 	}
+}
+
+func effectivePermissionPolicy(options map[string]any) string {
+	policy := stringMetadataValue(options, "permission_policy")
+	if policy == "" {
+		return "deny"
+	}
+	return policy
 }
 
 func (r *acpRun) execute(ctx context.Context, message string, workdir string) error {
@@ -647,71 +659,98 @@ func (r *acpRun) handleServerRequest(ctx context.Context, message *rpcMessage) e
 }
 
 func (r *acpRun) handlePermissionRequest(ctx context.Context, message *rpcMessage) error {
-	if r.userInput == nil {
+	options := permissionOptions(message.Params)
+	if r.options.PermissionPolicy == "deny" {
+		return r.sendAutomaticPermissionResponse(message, options, "deny")
+	}
+	if r.options.PermissionPolicy == "bypass" {
+		return r.sendAutomaticPermissionResponse(message, options, "allow")
+	}
+	if r.permissions == nil {
 		return r.rpc.sendResponse(message.ID, map[string]any{
 			"outcome": map[string]any{"outcome": "cancelled"},
 		})
 	}
 
-	options := permissionOptions(message.Params)
 	requestID := message.idKey()
-	waiter, err := r.userInput.OpenUserInput(ctx, agents.UserInputRequest{
-		SessionID:         r.sessionID,
-		RequestID:         requestID,
-		Provider:          "opencode",
-		ProviderEventType: "session/request_permission",
-		ProviderRequestID: requestID,
-		ThreadID:          r.getACPSession(),
-		Questions: []agents.UserInputQuestion{{
-			ID:       "permission",
-			Header:   "Permission",
-			Question: permissionQuestion(message.Params),
-			Options:  options,
-		}},
-	})
+	request := permissionRequest(message.Params, r.sessionID, requestID, r.getACPSession(), options)
+	waiter, err := r.permissions.OpenPermission(ctx, request)
 	if err != nil {
 		return err
 	}
 	defer waiter.Close()
-
+	if err := r.emit(ctx, agents.AgentEvent{Type: "agent.permission.requested", Role: "assistant", Status: "started", Payload: request}); err != nil {
+		return err
+	}
 	response, err := waiter.Wait(ctx)
 	if err != nil {
-		return r.rpc.sendResponse(message.ID, map[string]any{
-			"outcome": map[string]any{"outcome": "cancelled"},
-		})
+		return r.rpc.sendResponse(message.ID, map[string]any{"outcome": map[string]any{"outcome": "cancelled"}})
 	}
+	return r.sendSelectedPermission(message, response.OptionID)
+}
 
-	optionID := selectedPermissionOption(message.Params, response)
-	if optionID == "" {
-		return r.rpc.sendResponse(message.ID, map[string]any{
-			"outcome": map[string]any{"outcome": "cancelled"},
-		})
+func permissionRequest(raw json.RawMessage, sessionID string, requestID string, threadID string, options []agents.PermissionOption) agents.PermissionRequest {
+	var params map[string]any
+	_ = json.Unmarshal(raw, &params)
+	toolCall, _ := params["toolCall"].(map[string]any)
+	title := stringFromMap(toolCall, "title")
+	if title == "" {
+		title = "OpenCode permission"
+	}
+	return agents.PermissionRequest{
+		SessionID: sessionID,
+		RequestID: requestID, Provider: "opencode", ProviderEventType: "session/request_permission",
+		ProviderRequestID: requestID, ThreadID: threadID, Kind: firstNonEmpty(stringFromMap(toolCall, "kind"), "tool"),
+		Title: title, Description: permissionQuestion(raw), ToolName: title, ToolInput: toolCall["rawInput"], Options: options,
+	}
+}
+
+func (r *acpRun) sendSelectedPermission(message *rpcMessage, optionID string) error {
+	if strings.TrimSpace(optionID) == "" {
+		return r.rpc.sendResponse(message.ID, map[string]any{"outcome": map[string]any{"outcome": "cancelled"}})
 	}
 	return r.rpc.sendResponse(message.ID, map[string]any{
-		"outcome": map[string]any{
-			"outcome":  "selected",
-			"optionId": optionID,
-		},
+		"outcome": map[string]any{"outcome": "selected", "optionId": optionID},
 	})
 }
 
-func permissionOptions(raw json.RawMessage) []agents.UserInputOption {
+func (r *acpRun) sendAutomaticPermissionResponse(message *rpcMessage, options []agents.PermissionOption, decision string) error {
+	for _, preferredScope := range []string{"session", "once", ""} {
+		for _, option := range options {
+			if option.Decision == decision && (preferredScope == "" || option.Scope == preferredScope) {
+				return r.sendSelectedPermission(message, option.ID)
+			}
+		}
+	}
+	return r.sendSelectedPermission(message, "")
+}
+
+func permissionOptions(raw json.RawMessage) []agents.PermissionOption {
 	var params map[string]any
 	_ = json.Unmarshal(raw, &params)
 	rawOptions, _ := params["options"].([]any)
-	options := make([]agents.UserInputOption, 0, len(rawOptions))
+	options := make([]agents.PermissionOption, 0, len(rawOptions))
 	for _, rawOption := range rawOptions {
 		option, ok := rawOption.(map[string]any)
 		if !ok {
 			continue
 		}
 		label := firstNonEmpty(stringFromMap(option, "name"), stringFromMap(option, "optionId"))
-		description := stringFromMap(option, "kind")
+		kind := stringFromMap(option, "kind")
+		description := kind
 		if optionID := stringFromMap(option, "optionId"); optionID != "" && optionID != label {
 			description = firstNonEmpty(description, optionID)
 		}
 		if label != "" {
-			options = append(options, agents.UserInputOption{Label: label, Description: description})
+			decision := "allow"
+			if strings.Contains(strings.ToLower(kind), "reject") || strings.Contains(strings.ToLower(kind), "deny") {
+				decision = "deny"
+			}
+			scope := "once"
+			if strings.Contains(strings.ToLower(kind), "always") {
+				scope = "session"
+			}
+			options = append(options, agents.PermissionOption{ID: stringFromMap(option, "optionId"), Label: label, Description: description, Decision: decision, Scope: scope})
 		}
 	}
 	return options
@@ -723,29 +762,6 @@ func permissionQuestion(raw json.RawMessage) string {
 		return "Allow OpenCode to continue?"
 	}
 	return "Allow OpenCode to run: " + title
-}
-
-func selectedPermissionOption(raw json.RawMessage, response agents.UserInputResponse) string {
-	answers := response.Answers["permission"].Answers
-	if len(answers) == 0 {
-		return ""
-	}
-	answer := strings.TrimSpace(answers[0])
-	var params map[string]any
-	_ = json.Unmarshal(raw, &params)
-	rawOptions, _ := params["options"].([]any)
-	for _, rawOption := range rawOptions {
-		option, ok := rawOption.(map[string]any)
-		if !ok {
-			continue
-		}
-		optionID := stringFromMap(option, "optionId")
-		name := stringFromMap(option, "name")
-		if answer == optionID || answer == name {
-			return optionID
-		}
-	}
-	return answer
 }
 
 func firstNonEmpty(values ...string) string {

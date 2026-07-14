@@ -125,6 +125,23 @@ func TestRunOptionsFromMetadataReadsDangerousMode(t *testing.T) {
 	}
 }
 
+func TestCommandConstructionEnablesStdioPermissionPrompts(t *testing.T) {
+	agent := New(WithBinary("/opt/bin/claude"))
+	cmd := agent.commandWithOptions("hello", "", "/tmp/workspace", claudeRunOptions{PermissionPolicy: "ask"})
+	want := []string{"/opt/bin/claude", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--input-format", "stream-json", "--permission-prompt-tool", "stdio"}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Fatalf("expected args %#v, got %#v", want, cmd.Args)
+	}
+}
+
+func TestSessionPermissionSuggestionsNeverPersistProviderSettings(t *testing.T) {
+	result := sessionPermissionSuggestions([]any{map[string]any{"type": "addRules", "destination": "userSettings", "rules": []any{}}})
+	permission := result[0].(map[string]any)
+	if permission["destination"] != "session" {
+		t.Fatalf("expected session destination, got %#v", permission)
+	}
+}
+
 func TestSampleStreamNormalizesExpectedEvents(t *testing.T) {
 	events := normalizeLines(t, []string{
 		`{"type":"system","subtype":"init","cwd":"/Users/joey/Source/life","session_id":"2fe74369-4b15-49f9-8025-517ed6e52fed","tools":["Task","Bash"],"model":"claude-opus-4-7[1m]"}`,

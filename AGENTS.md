@@ -38,6 +38,20 @@ Its guiding principle is: agents perform work; Gorchestra conducts the performan
 - Keep the UI responsive on mobile.
 - Design operational screens for scanning and monitoring long-running work.
 
+## Local Human Testing
+
+- The canonical persistent human-test stack is the macOS LaunchAgent `com.joey.gorchestra-human`.
+- The LaunchAgent runs one `dev:tailnet` stack: Vite listens on `0.0.0.0:15173` and is reachable locally at `127.0.0.1:15173`, the Go API listens on `127.0.0.1:18080`, and SQLite lives at `.tmp/human/sessions.db`.
+- Local URL: `http://127.0.0.1:15173`.
+- Tailnet URL: `http://gorchestra.dev.gennari.industries`. The `devproxy` Caddy route forwards the frontend to `127.0.0.1:15173` and `/api/*` to `127.0.0.1:18080`; it is a proxy, not a second Gorchestra server.
+- Development normally happens against this already-running LaunchAgent stack. Assume backend source changes will rebuild automatically and frontend changes will arrive through Vite HMR; do not start or restart a server merely to pick up edits.
+- Before starting a server, run `bun run dev:human:status`. If it is healthy, use the existing stack.
+- Manage the persistent stack with `bun run dev:human`, `bun run dev:human:status`, `bun run dev:human:logs`, `bun run dev:human:follow`, `bun run dev:human:restart`, and `bun run dev:human:stop`.
+- Before any restart, run `bun run dev:human:status` and check `http://127.0.0.1:18080/api/sessions?status=running&limit=1` for active sessions. `dev:human:restart` interrupts those runs, so defer the restart unless the user explicitly asks or the server cannot recover.
+- Never point a second backend at `.tmp/human/sessions.db`. The dev runner rejects that database outside the human LaunchAgent because startup recovery from a second process can corrupt live run status.
+- For isolated agent testing, use different ports and a different database, for example `PORT=18180 WEB_PORT=15273 GORCHESTRA_DB=.tmp/agent-test/sessions.db bun run dev`. Keep isolated servers bound to localhost unless tailnet access is explicitly required.
+- Validate the persistent stack with `bun run dev:human:status`; when proxy behavior matters, also use `devproxy check gorchestra` or request `http://gorchestra.dev.gennari.industries/api/health` with GET.
+
 ## Repository Notes
 
 - This repository is in initial setup. Do not assume implementation directories exist until they are created.

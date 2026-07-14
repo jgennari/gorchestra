@@ -322,7 +322,7 @@ function filterSessions(
     if (!filters.includeArchived && session.archived_at) {
       return false
     }
-    if (filters.status === 'pending-input' && !session.pending_input) {
+    if (filters.status === 'pending-input' && !session.pending_input && (session.pending_permission_count ?? 0) === 0) {
       return false
     }
     if (

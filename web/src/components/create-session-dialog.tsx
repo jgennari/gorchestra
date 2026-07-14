@@ -1,11 +1,12 @@
 import { useState, type FormEvent } from 'react'
-import type { AgentType, Session, SessionAgentOptions } from '@/lib/api'
+import type { AgentType, PermissionPolicy, Session, SessionAgentOptions } from '@/lib/api'
 import { isAgentType } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { WorkspacePicker } from '@/components/workspace-picker'
+import { PermissionPolicyControl } from '@/components/permission-policy-control'
 
 type Props = {
   open: boolean
@@ -22,7 +23,7 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
   const [agentType, setAgentType] = useState<AgentType>('codex')
   const [title, setTitle] = useState('')
   const [workspacePath, setWorkspacePath] = useState('')
-  const [runDangerously, setRunDangerously] = useState(false)
+  const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>('ask')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -40,11 +41,11 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
         agent_type: agentType,
         title: title.trim() || undefined,
         workspace_path: workspacePath || undefined,
-        agent_options: agentOptionsForCreate(agentType, runDangerously),
+        agent_options: agentOptionsForCreate(agentType, permissionPolicy),
       })
       setTitle('')
       setAgentType('codex')
-      setRunDangerously(false)
+      setPermissionPolicy('ask')
       onOpenChange(false)
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : 'Failed to create session')
@@ -89,27 +90,8 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
               </SelectContent>
             </Select>
           </div>
-          {agentType === 'codex' || agentType === 'claude' ? (
-            <label
-              className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"
-              htmlFor="run-dangerously"
-            >
-              <Input
-                id="run-dangerously"
-                type="checkbox"
-                className="mt-0.5 size-4 shrink-0 accent-[hsl(var(--danger))]"
-                checked={runDangerously}
-                onChange={(event) => setRunDangerously(event.target.checked)}
-              />
-              <span className="min-w-0">
-                <span className="block font-medium text-destructive">Run dangerously</span>
-                <span className="block text-xs text-muted-foreground">
-                  {agentType === 'claude'
-                    ? 'Start Claude with permission prompts skipped.'
-                    : 'Start Codex without approval prompts or sandbox restrictions.'}
-                </span>
-              </span>
-            </label>
+          {agentType === 'codex' || agentType === 'claude' || agentType === 'opencode' ? (
+            <div className="space-y-2"><label className="text-sm font-medium">Permissions</label><PermissionPolicyControl value={permissionPolicy} onChange={setPermissionPolicy} /></div>
           ) : null}
           <WorkspacePicker onPathChange={setWorkspacePath} disabled={submitting} />
           {error ? (
@@ -131,15 +113,13 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
   )
 }
 
-function agentOptionsForCreate(agentType: AgentType, runDangerously: boolean): SessionAgentOptions | undefined {
-  if (!runDangerously) {
-    return undefined
-  }
+function agentOptionsForCreate(agentType: AgentType, permissionPolicy: PermissionPolicy): SessionAgentOptions | undefined {
   if (agentType === 'codex') {
-    return { codex: { run_dangerously: true } }
+    return { codex: { permission_policy: permissionPolicy } }
   }
   if (agentType === 'claude') {
-    return { claude: { run_dangerously: true } }
+    return { claude: { permission_policy: permissionPolicy } }
   }
+  if (agentType === 'opencode') return { opencode: { permission_policy: permissionPolicy } }
   return undefined
 }

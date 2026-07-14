@@ -54,8 +54,12 @@ export function usePushNotifications() {
   const [soundEnabled, setSoundEnabledState] = useState(() => readBooleanStorage(soundStorageKey, false))
   const playedEventsRef = useRef<Set<string>>(new Set())
   const shownTerminalNotificationsRef = useRef<Set<string>>(new Set())
-  const foregroundNotificationsStartedAtRef = useRef(Date.now())
+  const foregroundNotificationsStartedAtRef = useRef(0)
   const audioContextRef = useRef<AudioContext | null>(null)
+
+  useEffect(() => {
+    foregroundNotificationsStartedAtRef.current = Date.now()
+  }, [])
 
   const refreshDebug = useCallback(async () => {
     const [browser, worker, server] = await Promise.all([
@@ -299,7 +303,7 @@ export function usePushNotifications() {
     (event: AgentEvent, details: SessionStopNotificationDetails = {}) => {
       if (
         !supported ||
-        !isPushNotificationTerminalEvent(event.type) ||
+        !isAttentionNotificationEvent(event.type) ||
         !isForegroundEventFromThisPage(event, foregroundNotificationsStartedAtRef.current) ||
         Notification.permission !== 'granted' ||
         document.visibilityState !== 'visible'
@@ -545,8 +549,9 @@ async function showLocalTestNotification(supported: boolean) {
 async function showLocalSessionStopNotification(event: AgentEvent, details: SessionStopNotificationDetails) {
   try {
     const registration = await navigator.serviceWorker.ready
-    await registration.showNotification(sessionStopNotificationTitle(event.type), {
-      body: sessionStopNotificationBody(details),
+    const permission = event.type === 'agent.permission.requested'
+    await registration.showNotification(permission ? 'Approval needed' : sessionStopNotificationTitle(event.type), {
+      body: permission ? `${sessionNotificationName(details)} is waiting for approval.` : sessionStopNotificationBody(details),
       badge: '/favicon-notify.svg',
       icon: '/icon.svg',
       tag: `gorchestra-session-${event.session_id}`,
@@ -560,6 +565,10 @@ async function showLocalSessionStopNotification(event: AgentEvent, details: Sess
   } catch {
     // Local foreground notifications are best-effort; background push remains the primary path.
   }
+}
+
+function isAttentionNotificationEvent(type: string) {
+  return type === 'agent.permission.requested' || isPushNotificationTerminalEvent(type)
 }
 
 function isPushNotificationTerminalEvent(type: string) {

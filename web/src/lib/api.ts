@@ -14,6 +14,7 @@ export type Session = {
   tool_count: number
   notification_attention_seq?: number
   pending_input?: boolean
+  pending_permission_count?: number
   created_at: string
   updated_at: string
   completed_at: string | null
@@ -23,10 +24,41 @@ export type Session = {
 export type SessionAgentOptions = {
   codex?: {
     run_dangerously?: boolean
+    permission_policy?: PermissionPolicy
   }
   claude?: {
     run_dangerously?: boolean
+    permission_policy?: PermissionPolicy
   }
+  opencode?: { permission_policy?: PermissionPolicy }
+}
+
+export type PermissionPolicy = 'ask' | 'deny' | 'bypass'
+
+export type PermissionOption = {
+  id: string
+  label: string
+  description?: string
+  decision: 'allow' | 'deny' | 'cancel'
+  scope?: 'once' | 'session'
+}
+
+export type PermissionRequest = {
+  request_id: string
+  provider: string
+  provider_event_type: string
+  kind: string
+  title: string
+  description?: string
+  reason?: string
+  command?: string
+  cwd?: string
+  tool_name?: string
+  tool_input?: unknown
+  paths?: string[]
+  diff?: string
+  requested_grants?: unknown
+  options: PermissionOption[]
 }
 
 export type AgentEvent = {
@@ -568,6 +600,24 @@ export async function answerUserInput(sessionID: string, requestID: string, answ
       body: JSON.stringify({ answers }),
     },
   )
+}
+
+export async function resolvePermission(sessionID: string, requestID: string, optionID: string) {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 15_000)
+  try {
+    return await requestJSON<{ session_id: string; request_id: string; status: string }>(
+      `/api/sessions/${encodeURIComponent(sessionID)}/permissions/${encodeURIComponent(requestID)}/resolve`,
+      { method: 'POST', body: JSON.stringify({ option_id: optionID }), signal: controller.signal },
+    )
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error('The permission response timed out. Try again or stop the run.', { cause: error })
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+  }
 }
 
 type EventListOptions = {

@@ -11,11 +11,12 @@ import (
 )
 
 var (
-	ErrInvalidSessionID   = errors.New("session: invalid session id")
-	ErrRunAlreadyActive   = errors.New("session: run already active")
-	ErrRunNotActive       = errors.New("session: run not active")
-	ErrRunAlreadyCanceled = errors.New("session: run already canceled")
-	ErrUserInputNotActive = errors.New("session: user input request not active")
+	ErrInvalidSessionID    = errors.New("session: invalid session id")
+	ErrRunAlreadyActive    = errors.New("session: run already active")
+	ErrRunNotActive        = errors.New("session: run not active")
+	ErrRunAlreadyCanceled  = errors.New("session: run already canceled")
+	ErrUserInputNotActive  = errors.New("session: user input request not active")
+	ErrPermissionNotActive = errors.New("session: permission request not active")
 )
 
 type Manager struct {
@@ -24,9 +25,10 @@ type Manager struct {
 }
 
 type run struct {
-	cancel        context.CancelFunc
-	cancelled     bool
-	inputRequests map[string]*userInputRequest
+	cancel             context.CancelFunc
+	cancelled          bool
+	inputRequests      map[string]*userInputRequest
+	permissionRequests map[string]*permissionRequest
 }
 
 type userInputRequest struct {
@@ -39,6 +41,18 @@ type userInputWaiter struct {
 	sessionID string
 	requestID string
 	pending   *userInputRequest
+}
+
+type permissionRequest struct {
+	request  agents.PermissionRequest
+	response chan agents.PermissionResponse
+}
+
+type permissionWaiter struct {
+	manager   *Manager
+	sessionID string
+	requestID string
+	pending   *permissionRequest
 }
 
 func NewManager() *Manager {
@@ -231,4 +245,110 @@ func (w *userInputWaiter) Close() {
 		return
 	}
 	delete(activeRun.inputRequests, w.requestID)
+}
+
+func (m *Manager) OpenPermission(ctx context.Context, request agents.PermissionRequest) (agents.PermissionWaiter, error) {
+	sessionID := strings.TrimSpace(request.SessionID)
+	requestID := strings.TrimSpace(request.RequestID)
+	if sessionID == "" {
+		return nil, ErrInvalidSessionID
+	}
+	if requestID == "" {
+		return nil, ErrPermissionNotActive
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	request.SessionID = sessionID
+	request.RequestID = requestID
+	pending := &permissionRequest{request: request, response: make(chan agents.PermissionResponse, 1)}
+
+	m.mu.Lock()
+	activeRun, exists := m.runs[sessionID]
+	if !exists {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s", ErrRunNotActive, sessionID)
+	}
+	if activeRun.permissionRequests == nil {
+		activeRun.permissionRequests = make(map[string]*permissionRequest)
+	}
+	if _, exists := activeRun.permissionRequests[requestID]; exists {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("session: permission request already active: %s", requestID)
+	}
+	activeRun.permissionRequests[requestID] = pending
+	m.mu.Unlock()
+
+	return &permissionWaiter{manager: m, sessionID: sessionID, requestID: requestID, pending: pending}, nil
+}
+
+func (m *Manager) PendingPermission(sessionID string, requestID string) (agents.PermissionRequest, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	requestID = strings.TrimSpace(requestID)
+	if sessionID == "" {
+		return agents.PermissionRequest{}, ErrInvalidSessionID
+	}
+	if requestID == "" {
+		return agents.PermissionRequest{}, ErrPermissionNotActive
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	activeRun := m.runs[sessionID]
+	if activeRun == nil {
+		return agents.PermissionRequest{}, fmt.Errorf("%w: %s", ErrRunNotActive, sessionID)
+	}
+	pending := activeRun.permissionRequests[requestID]
+	if pending == nil {
+		return agents.PermissionRequest{}, fmt.Errorf("%w: %s", ErrPermissionNotActive, requestID)
+	}
+	return pending.request, nil
+}
+
+func (m *Manager) ResolvePermission(sessionID string, requestID string, response agents.PermissionResponse) error {
+	sessionID = strings.TrimSpace(sessionID)
+	requestID = strings.TrimSpace(requestID)
+	if sessionID == "" {
+		return ErrInvalidSessionID
+	}
+	if requestID == "" {
+		return ErrPermissionNotActive
+	}
+	m.mu.Lock()
+	activeRun := m.runs[sessionID]
+	if activeRun == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrRunNotActive, sessionID)
+	}
+	pending := activeRun.permissionRequests[requestID]
+	if pending == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrPermissionNotActive, requestID)
+	}
+	delete(activeRun.permissionRequests, requestID)
+	m.mu.Unlock()
+	pending.response <- response
+	return nil
+}
+
+func (w *permissionWaiter) Wait(ctx context.Context) (agents.PermissionResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case response := <-w.pending.response:
+		return response, nil
+	case <-ctx.Done():
+		return agents.PermissionResponse{}, ctx.Err()
+	}
+}
+
+func (w *permissionWaiter) Close() {
+	w.manager.mu.Lock()
+	defer w.manager.mu.Unlock()
+	activeRun := w.manager.runs[w.sessionID]
+	if activeRun == nil || activeRun.permissionRequests[w.requestID] != w.pending {
+		return
+	}
+	delete(activeRun.permissionRequests, w.requestID)
 }

@@ -34,16 +34,23 @@ type updateSessionRequest struct {
 }
 
 type createAgentOptions struct {
-	Codex  *createCodexOptions  `json:"codex,omitempty"`
-	Claude *createClaudeOptions `json:"claude,omitempty"`
+	Codex    *createCodexOptions    `json:"codex,omitempty"`
+	Claude   *createClaudeOptions   `json:"claude,omitempty"`
+	OpenCode *createOpenCodeOptions `json:"opencode,omitempty"`
 }
 
 type createCodexOptions struct {
-	RunDangerously bool `json:"run_dangerously,omitempty"`
+	RunDangerously   bool   `json:"run_dangerously,omitempty"`
+	PermissionPolicy string `json:"permission_policy,omitempty"`
 }
 
 type createClaudeOptions struct {
-	RunDangerously bool `json:"run_dangerously,omitempty"`
+	RunDangerously   bool   `json:"run_dangerously,omitempty"`
+	PermissionPolicy string `json:"permission_policy,omitempty"`
+}
+
+type createOpenCodeOptions struct {
+	PermissionPolicy string `json:"permission_policy,omitempty"`
 }
 
 type createSessionResponse struct {
@@ -63,6 +70,7 @@ type sessionResponse struct {
 	ToolCount                int64   `json:"tool_count"`
 	NotificationAttentionSeq int64   `json:"notification_attention_seq,omitempty"`
 	PendingInput             bool    `json:"pending_input"`
+	PendingPermissionCount   int     `json:"pending_permission_count"`
 	CreatedAt                string  `json:"created_at"`
 	UpdatedAt                string  `json:"updated_at"`
 	CompletedAt              *string `json:"completed_at"`
@@ -505,17 +513,18 @@ func (api API) sessionResponses(ctx context.Context, sessions []store.Session) (
 
 func (api API) sessionResponse(ctx context.Context, session store.Session) (sessionResponse, error) {
 	pendingInput := false
+	pendingPermissionCount := 0
 	if session.Status == store.SessionStatusRunning {
 		var err error
-		pendingInput, err = api.sessionHasPendingInput(ctx, session.ID)
+		pendingInput, pendingPermissionCount, err = api.sessionPendingActivity(ctx, session.ID)
 		if err != nil {
 			return sessionResponse{}, err
 		}
 	}
-	return sessionResponseFromStore(session, pendingInput), nil
+	return sessionResponseFromStore(session, pendingInput, pendingPermissionCount), nil
 }
 
-func sessionResponseFromStore(session store.Session, pendingInput bool) sessionResponse {
+func sessionResponseFromStore(session store.Session, pendingInput bool, pendingPermissionCount int) sessionResponse {
 	var completedAt *string
 	if session.CompletedAt != nil {
 		formatted := session.CompletedAt.UTC().Format(time.RFC3339Nano)
@@ -545,6 +554,7 @@ func sessionResponseFromStore(session store.Session, pendingInput bool) sessionR
 		ToolCount:                session.ToolCount,
 		NotificationAttentionSeq: session.NotificationAttentionSeq,
 		PendingInput:             pendingInput,
+		PendingPermissionCount:   pendingPermissionCount,
 		CreatedAt:                session.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:                session.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		CompletedAt:              completedAt,
@@ -552,33 +562,45 @@ func sessionResponseFromStore(session store.Session, pendingInput bool) sessionR
 	}
 }
 
-func (api API) sessionHasPendingInput(ctx context.Context, sessionID string) (bool, error) {
+func (api API) sessionPendingActivity(ctx context.Context, sessionID string) (bool, int, error) {
 	events, err := api.eventsSinceLatestTerminal(ctx, sessionID)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 
-	pending := make(map[string]bool)
+	pendingInput := make(map[string]bool)
+	pendingPermissions := make(map[string]bool)
 	for _, event := range events {
 		switch event.Type {
 		case "agent.input.requested":
 			requestID := rawPayloadString(event.Payload, "request_id")
 			if requestID != "" {
-				pending[requestID] = true
+				pendingInput[requestID] = true
 			}
 		case "agent.input.answered":
 			requestID := rawPayloadString(event.Payload, "request_id")
 			if requestID != "" {
-				delete(pending, requestID)
+				delete(pendingInput, requestID)
+			}
+		case "agent.permission.requested":
+			requestID := rawPayloadString(event.Payload, "request_id")
+			if requestID != "" {
+				pendingPermissions[requestID] = true
+			}
+		case "agent.permission.resolved", "agent.permission.cancelled":
+			requestID := rawPayloadString(event.Payload, "request_id")
+			if requestID != "" {
+				delete(pendingPermissions, requestID)
 			}
 		default:
 			if isTerminalRunEvent(event.Type) {
-				clear(pending)
+				clear(pendingInput)
+				clear(pendingPermissions)
 			}
 		}
 	}
 
-	return len(pending) > 0, nil
+	return len(pendingInput) > 0, len(pendingPermissions), nil
 }
 
 func (api API) eventsSinceLatestTerminal(ctx context.Context, sessionID string) ([]store.Event, error) {
@@ -629,7 +651,10 @@ func rawPayloadString(payload json.RawMessage, key string) string {
 }
 
 func createSessionAgentOptions(agentType string, options *createAgentOptions) (json.RawMessage, error) {
-	if options == nil || options.Codex == nil && options.Claude == nil {
+	if options == nil || options.Codex == nil && options.Claude == nil && options.OpenCode == nil {
+		if agentType == "codex" || agentType == "claude" || agentType == "opencode" {
+			return json.RawMessage(fmt.Sprintf(`{"%s":{"permission_policy":"ask"}}`, agentType)), nil
+		}
 		return json.RawMessage(`{}`), nil
 	}
 	if options.Codex != nil && agentType != "codex" {
@@ -638,12 +663,25 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 	if options.Claude != nil && agentType != "claude" {
 		return nil, fmt.Errorf("claude options require a claude session")
 	}
+	if options.OpenCode != nil && agentType != "opencode" {
+		return nil, fmt.Errorf("opencode options require an opencode session")
+	}
 
 	agentOptions := map[string]any{}
 	if options.Codex != nil {
 		codexOptions := map[string]any{}
 		if options.Codex.RunDangerously {
 			codexOptions["run_dangerously"] = true
+		}
+		policy, err := permissionPolicy(options.Codex.PermissionPolicy)
+		if err != nil {
+			return nil, err
+		}
+		if policy == "" && !options.Codex.RunDangerously {
+			policy = "ask"
+		}
+		if policy != "" {
+			codexOptions["permission_policy"] = policy
 		}
 		if len(codexOptions) > 0 {
 			agentOptions["codex"] = codexOptions
@@ -654,8 +692,30 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 		if options.Claude.RunDangerously {
 			claudeOptions["run_dangerously"] = true
 		}
+		policy, err := permissionPolicy(options.Claude.PermissionPolicy)
+		if err != nil {
+			return nil, err
+		}
+		if policy == "" && !options.Claude.RunDangerously {
+			policy = "ask"
+		}
+		if policy != "" {
+			claudeOptions["permission_policy"] = policy
+		}
 		if len(claudeOptions) > 0 {
 			agentOptions["claude"] = claudeOptions
+		}
+	}
+	if options.OpenCode != nil {
+		policy, err := permissionPolicy(options.OpenCode.PermissionPolicy)
+		if err != nil {
+			return nil, err
+		}
+		if policy == "" {
+			policy = "ask"
+		}
+		if policy != "" {
+			agentOptions["opencode"] = map[string]any{"permission_policy": policy}
 		}
 	}
 
@@ -664,6 +724,16 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 		return nil, fmt.Errorf("marshal agent options: %w", err)
 	}
 	return encoded, nil
+}
+
+func permissionPolicy(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "ask", "deny", "bypass":
+		return value, nil
+	default:
+		return "", fmt.Errorf("unsupported permission_policy %q", value)
+	}
 }
 
 func submitOptionsMetadata(agentType string, sessionAgentOptions json.RawMessage, options *submitAgentOptions) (map[string]any, map[string]any, error) {
@@ -1668,6 +1738,7 @@ func (api API) runAgent(
 		Metadata:          metadata,
 		Attachments:       attachments,
 		UserInput:         api.runs,
+		Permissions:       api.runs,
 	}, emit)
 	if errors.Is(err, context.Canceled) {
 		if !terminalEventEmitted {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -329,6 +330,7 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 		providerSessionID: strings.TrimSpace(input.ProviderSessionID),
 		action:            agentAction(input.Action),
 		userInput:         input.UserInput,
+		permissions:       input.Permissions,
 	}
 	return run.execute(ctx, input, workdir)
 }
@@ -366,11 +368,12 @@ func (a *Agent) command(workdir string) *exec.Cmd {
 }
 
 type codexRunOptions struct {
-	Model           string
-	ReasoningEffort string
-	ServiceTier     string
-	PlanningMode    bool
-	RunDangerously  bool
+	Model            string
+	ReasoningEffort  string
+	ServiceTier      string
+	PlanningMode     bool
+	RunDangerously   bool
+	PermissionPolicy string
 }
 
 func runOptionsFromMetadata(metadata map[string]any) codexRunOptions {
@@ -380,11 +383,12 @@ func runOptionsFromMetadata(metadata map[string]any) codexRunOptions {
 	}
 
 	options := codexRunOptions{
-		Model:           stringMetadataValue(rawOptions, "model"),
-		ReasoningEffort: stringMetadataValue(rawOptions, "reasoning_effort"),
-		ServiceTier:     stringMetadataValue(rawOptions, "service_tier"),
-		PlanningMode:    boolMetadataValue(rawOptions, "planning_mode"),
-		RunDangerously:  boolMetadataValue(rawOptions, "run_dangerously"),
+		Model:            stringMetadataValue(rawOptions, "model"),
+		ReasoningEffort:  stringMetadataValue(rawOptions, "reasoning_effort"),
+		ServiceTier:      stringMetadataValue(rawOptions, "service_tier"),
+		PlanningMode:     boolMetadataValue(rawOptions, "planning_mode"),
+		RunDangerously:   boolMetadataValue(rawOptions, "run_dangerously"),
+		PermissionPolicy: stringMetadataValue(rawOptions, "permission_policy"),
 	}
 	if options.ServiceTier == "" && boolMetadataValue(rawOptions, "fast_mode") {
 		options.ServiceTier = defaultFastServiceTier
@@ -651,6 +655,7 @@ type appServerRun struct {
 	providerSessionID string
 	action            agents.AgentAction
 	userInput         agents.UserInputBroker
+	permissions       agents.PermissionBroker
 
 	stateMu  sync.Mutex
 	threadID string
@@ -910,21 +915,34 @@ func (r *appServerRun) collaborationModeParam() map[string]any {
 }
 
 func (r *appServerRun) approvalPolicy() string {
-	if r.options.RunDangerously {
+	if r.permissionPolicy() == "bypass" {
 		return "never"
+	}
+	if r.permissionPolicy() == "ask" {
+		return "on-request"
 	}
 	return r.agent.approvalPolicy
 }
 
-func (r *appServerRun) sandboxMode() string {
+func (r *appServerRun) permissionPolicy() string {
+	if r.options.PermissionPolicy != "" {
+		return r.options.PermissionPolicy
+	}
 	if r.options.RunDangerously {
+		return "bypass"
+	}
+	return "deny"
+}
+
+func (r *appServerRun) sandboxMode() string {
+	if r.permissionPolicy() == "bypass" {
 		return "danger-full-access"
 	}
 	return r.agent.sandbox
 }
 
 func (r *appServerRun) networkAccess() bool {
-	if r.options.RunDangerously {
+	if r.permissionPolicy() == "bypass" {
 		return true
 	}
 	return r.agent.networkAccess
@@ -1145,6 +1163,9 @@ func (r *appServerRun) handleServerRequest(ctx context.Context, message *rpcMess
 	if message.Method == "item/tool/requestUserInput" {
 		return r.handleUserInputRequest(ctx, message)
 	}
+	if isCodexPermissionMethod(message.Method) {
+		return r.handlePermissionRequest(ctx, message)
+	}
 
 	event := agents.AgentEvent{
 		Type:   "provider.codex.request",
@@ -1160,6 +1181,193 @@ func (r *appServerRun) handleServerRequest(ctx context.Context, message *rpcMess
 		return err
 	}
 	return r.rpc.sendErrorResponse(message.ID, -32601, "Gorchestra does not handle Codex server requests yet")
+}
+
+func isCodexPermissionMethod(method string) bool {
+	switch method {
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "execCommandApproval", "applyPatchApproval":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *appServerRun) handlePermissionRequest(ctx context.Context, message *rpcMessage) error {
+	request, params, err := codexPermissionRequest(r.sessionID, message)
+	if err != nil {
+		return r.rpc.sendErrorResponse(message.ID, -32602, "invalid Codex permission request params")
+	}
+	if r.permissions == nil || r.permissionPolicy() != "ask" {
+		decision := automaticCodexDecision(request.Options, r.permissionPolicy())
+		return r.rpc.sendResponse(message.ID, codexPermissionResponse(message.Method, params, decision))
+	}
+	waiter, err := r.permissions.OpenPermission(ctx, request)
+	if err != nil {
+		return r.rpc.sendErrorResponse(message.ID, -32000, "Gorchestra could not open a permission request")
+	}
+	defer waiter.Close()
+	if err := r.emitEvent(ctx, normalizedEvent{Event: agents.AgentEvent{
+		Type: "agent.permission.requested", Role: "assistant", Status: "started", Payload: request,
+	}}); err != nil {
+		return err
+	}
+	response, err := waiter.Wait(ctx)
+	if err != nil {
+		_ = r.rpc.sendResponse(message.ID, codexPermissionResponse(message.Method, params, "cancel"))
+		return err
+	}
+	return r.rpc.sendResponse(message.ID, codexPermissionResponse(message.Method, params, response.OptionID))
+}
+
+func automaticCodexDecision(options []agents.PermissionOption, policy string) string {
+	decision := "deny"
+	if policy == "bypass" {
+		decision = "allow"
+	}
+	for _, scope := range []string{"session", "once", ""} {
+		for _, option := range options {
+			if option.Decision == decision && (scope == "" || option.Scope == scope) {
+				return option.ID
+			}
+		}
+	}
+	return "cancel"
+}
+
+func codexPermissionRequest(sessionID string, message *rpcMessage) (agents.PermissionRequest, map[string]any, error) {
+	var params map[string]any
+	if err := json.Unmarshal(message.Params, &params); err != nil {
+		return agents.PermissionRequest{}, nil, err
+	}
+	request := agents.PermissionRequest{
+		SessionID: sessionID, RequestID: firstNonEmpty(mapString(params, "approvalId"), mapString(params, "itemId"), mapString(params, "callId"), message.idKey()),
+		Provider: "codex", ProviderEventType: message.Method, ProviderRequestID: message.idKey(),
+		ThreadID: firstNonEmpty(mapString(params, "threadId"), mapString(params, "conversationId")), TurnID: mapString(params, "turnId"),
+		ItemID: firstNonEmpty(mapString(params, "itemId"), mapString(params, "callId")), Reason: mapString(params, "reason"), CWD: mapString(params, "cwd"),
+	}
+	switch message.Method {
+	case "item/commandExecution/requestApproval":
+		request.Kind, request.Title, request.Command = "command", "Approve command", mapString(params, "command")
+		request.RequestedGrants = params["additionalPermissions"]
+		request.Options = modernCodexOptions(params["availableDecisions"])
+	case "execCommandApproval":
+		request.Kind, request.Title, request.Command = "command", "Approve command", strings.Join(stringSlice(params["command"]), " ")
+		request.Options = legacyCodexOptions()
+	case "item/fileChange/requestApproval":
+		request.Kind, request.Title = "file_change", "Approve file changes"
+		request.Options = modernCodexOptions(nil)
+	case "applyPatchApproval":
+		request.Kind, request.Title = "file_change", "Approve file changes"
+		changes, _ := params["fileChanges"].(map[string]any)
+		for path, raw := range changes {
+			request.Paths = append(request.Paths, path)
+			if change, ok := raw.(map[string]any); ok {
+				if diff := mapString(change, "unified_diff"); diff != "" {
+					request.Diff += diff + "\n"
+				}
+			}
+		}
+		sort.Strings(request.Paths)
+		request.Options = legacyCodexOptions()
+	case "item/permissions/requestApproval":
+		request.Kind, request.Title, request.RequestedGrants = "permissions", "Grant additional access", params["permissions"]
+		request.Options = []agents.PermissionOption{
+			{ID: "grant-turn", Label: "Allow once", Decision: "allow", Scope: "once"},
+			{ID: "grant-session", Label: "Allow for session", Decision: "allow", Scope: "session"},
+			{ID: "deny", Label: "Deny", Decision: "deny", Scope: "once"},
+		}
+	}
+	if request.RequestID == "" {
+		return agents.PermissionRequest{}, nil, errors.New("missing permission request id")
+	}
+	return request, params, nil
+}
+
+func modernCodexOptions(raw any) []agents.PermissionOption {
+	decisions := stringSlice(raw)
+	if len(decisions) == 0 {
+		decisions = []string{"accept", "acceptForSession", "decline", "cancel"}
+	}
+	options := make([]agents.PermissionOption, 0, len(decisions))
+	for _, decision := range decisions {
+		switch decision {
+		case "accept":
+			options = append(options, agents.PermissionOption{ID: decision, Label: "Allow once", Decision: "allow", Scope: "once"})
+		case "acceptForSession":
+			options = append(options, agents.PermissionOption{ID: decision, Label: "Allow for session", Decision: "allow", Scope: "session"})
+		case "decline":
+			options = append(options, agents.PermissionOption{ID: decision, Label: "Deny", Decision: "deny", Scope: "once"})
+		case "cancel":
+			options = append(options, agents.PermissionOption{ID: decision, Label: "Stop run", Decision: "cancel"})
+		}
+	}
+	return options
+}
+
+func legacyCodexOptions() []agents.PermissionOption {
+	return []agents.PermissionOption{
+		{ID: "approved", Label: "Allow once", Decision: "allow", Scope: "once"},
+		{ID: "approved_for_session", Label: "Allow for session", Decision: "allow", Scope: "session"},
+		{ID: "denied", Label: "Deny", Decision: "deny", Scope: "once"},
+		{ID: "abort", Label: "Stop run", Decision: "cancel"},
+	}
+}
+
+func codexPermissionResponse(method string, params map[string]any, optionID string) any {
+	if method == "item/permissions/requestApproval" {
+		switch optionID {
+		case "grant-turn":
+			return map[string]any{"permissions": params["permissions"], "scope": "turn"}
+		case "grant-session":
+			return map[string]any{"permissions": params["permissions"], "scope": "session"}
+		default:
+			return map[string]any{"permissions": map[string]any{}, "scope": "turn"}
+		}
+	}
+	legacy := method == "execCommandApproval" || method == "applyPatchApproval"
+	if legacy {
+		switch optionID {
+		case "accept":
+			optionID = "approved"
+		case "acceptForSession":
+			optionID = "approved_for_session"
+		case "decline":
+			optionID = "denied"
+		case "cancel":
+			optionID = "abort"
+		}
+	} else {
+		switch optionID {
+		case "approved":
+			optionID = "accept"
+		case "approved_for_session":
+			optionID = "acceptForSession"
+		case "denied":
+			optionID = "decline"
+		case "abort":
+			optionID = "cancel"
+		}
+	}
+	return map[string]any{"decision": optionID}
+}
+
+func mapString(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func stringSlice(raw any) []string {
+	if direct, ok := raw.([]string); ok {
+		return direct
+	}
+	values, _ := raw.([]any)
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			result = append(result, text)
+		}
+	}
+	return result
 }
 
 func (r *appServerRun) handleUserInputRequest(ctx context.Context, message *rpcMessage) error {

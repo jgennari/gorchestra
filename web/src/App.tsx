@@ -25,6 +25,7 @@ import type {
 import {
   APIError,
   answerUserInput,
+  resolvePermission,
   archiveSession,
   cancelSession,
   clearSession,
@@ -160,7 +161,6 @@ function App() {
   const [workspaceFileDirty, setWorkspaceFileDirty] = useState(false)
   const [fileRefreshKey, setFileRefreshKey] = useState(0)
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
-  const [followingLatest, setFollowingLatest] = useState(true)
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
   const [notificationAttentionRestored, setNotificationAttentionRestored] = useState(false)
@@ -427,7 +427,6 @@ function App() {
   useEffect(() => {
     setShowDebugEvents(loadSessionDebugPreference(selectedSessionID))
     setOpenWorkspaceFile(null)
-    setFollowingLatest(true)
   }, [selectedSessionID])
 
   useEffect(() => {
@@ -579,7 +578,6 @@ function App() {
     loadOlderEvents,
   } = useSessionEvents(selectedSessionID, {
     onEvent: handleSessionEvent,
-    followLatest: followingLatest,
     refreshKey: eventRefreshKey,
     includeDebugEvents: showDebugEvents,
   })
@@ -770,6 +768,17 @@ function App() {
       throw new Error('Select a session first.')
     }
     await answerUserInput(selectedSessionID, requestID, answers)
+  }
+
+  async function handleResolvePermission(requestID: string, optionID: string) {
+    if (!selectedSessionID) throw new Error('Select a session first.')
+    const sessionID = selectedSessionID
+    try {
+      await resolvePermission(sessionID, requestID, optionID)
+    } finally {
+      setEventRefreshKey((value) => value + 1)
+      void refreshSession(sessionID)
+    }
   }
 
   function handleShowDebugEventsChange(nextShowDebugEvents: boolean) {
@@ -1287,12 +1296,12 @@ function App() {
               hasOlderEvents={hasOlderEvents}
               loadingOlderEvents={loadingOlderEvents}
               onLoadOlderEvents={loadOlderEvents}
-              onFollowLatestChange={setFollowingLatest}
               errorMessage={error || streamError}
               showDebugEvents={showDebugEvents}
               onShowDebugEventsChange={handleShowDebugEventsChange}
               onSubmitPrompt={handleSubmitPrompt}
               onAnswerUserInput={handleAnswerUserInput}
+              onResolvePermission={handleResolvePermission}
               onCancel={handleCancel}
               onUpdateTitle={handleUpdateTitle}
               onUpdateWorkspace={handleUpdateWorkspace}
@@ -1889,6 +1898,7 @@ function applySessionEvent(session: Session, event: AgentEvent, status: SessionS
   const eventCount = (session.event_count ?? 0) + (isTransientEvent(event) ? 0 : 1)
   const toolCount = (session.tool_count ?? 0) + (isToolActivityEvent(event) ? 1 : 0)
   const pendingInput = pendingInputFromEvent(session.pending_input ?? false, event)
+  const pendingPermissionCount = pendingPermissionCountFromEvent(session.pending_permission_count ?? 0, event)
   if (!status) {
     return {
       ...session,
@@ -1896,6 +1906,7 @@ function applySessionEvent(session: Session, event: AgentEvent, status: SessionS
       last_event_seq: nextLastSeq,
       tool_count: toolCount,
       pending_input: pendingInput,
+      pending_permission_count: pendingPermissionCount,
     }
   }
 
@@ -1912,9 +1923,17 @@ function applySessionEvent(session: Session, event: AgentEvent, status: SessionS
     last_event_seq: nextLastSeq,
     tool_count: toolCount,
     pending_input: pendingInput,
+    pending_permission_count: pendingPermissionCount,
     updated_at: updatedAt,
     completed_at: completedAt,
   }
+}
+
+function pendingPermissionCountFromEvent(current: number, event: AgentEvent) {
+  if (event.type === 'agent.permission.requested') return current + 1
+  if (event.type === 'agent.permission.resolved' || event.type === 'agent.permission.cancelled') return Math.max(0, current - 1)
+  if (isTerminalEvent(event.type)) return 0
+  return current
 }
 
 function pendingInputFromEvent(current: boolean, event: AgentEvent) {

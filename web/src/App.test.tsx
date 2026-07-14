@@ -1078,6 +1078,55 @@ test('load older grows transcript by two turns without refetching loaded turns',
   ])
 })
 
+test('loaded older turns remain visible after submitting a new prompt', async () => {
+  const user = userEvent.setup()
+  const baseFetch = fetchMock({
+    events: [
+      event(5, 'user.message.completed', { text: 'Prompt three' }),
+      event(6, 'agent.message.completed', { text: 'Answer three' }),
+      event(7, 'user.message.completed', { text: 'Prompt four' }),
+      event(8, 'agent.message.completed', { text: 'Answer four' }),
+    ],
+    submittedEvents: [
+      event(7, 'user.message.completed', { text: 'Prompt four' }),
+      event(8, 'agent.message.completed', { text: 'Answer four' }),
+      event(9, 'user.message.completed', { text: 'Fresh prompt' }),
+    ],
+  })
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions/sess_1/events?before_seq=5&turns=2') {
+      return jsonResponse({
+        events: [
+          event(1, 'user.message.completed', { text: 'Prompt one' }),
+          event(2, 'agent.message.completed', { text: 'Answer one' }),
+          event(3, 'user.message.completed', { text: 'Prompt two' }),
+          event(4, 'agent.message.completed', { text: 'Answer two' }),
+        ],
+      })
+    }
+    return baseFetch(url, init)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getByText('Prompt three')).toBeInTheDocument())
+  await user.click(screen.getByRole('button', { name: 'Load older events' }))
+  await waitFor(() => expect(screen.getByText('Prompt one')).toBeInTheDocument())
+
+  await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
+
+  await waitFor(() =>
+    expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2')).toHaveLength(
+      2,
+    ),
+  )
+  await waitFor(() => expect(screen.getByText('Fresh prompt')).toBeInTheDocument())
+  expect(screen.getByText('Prompt one')).toBeInTheDocument()
+  expect(screen.getByText('Prompt two')).toBeInTheDocument()
+  expect(screen.getByText('Prompt three')).toBeInTheDocument()
+})
+
 test('desktop pane resize handles update persisted widths', async () => {
   Object.defineProperty(window, 'innerWidth', {
     configurable: true,

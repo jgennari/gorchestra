@@ -471,6 +471,9 @@ func TestCreateSessionAcceptsAvailableCodexAgent(t *testing.T) {
 	if session.AgentType != "codex" {
 		t.Fatalf("expected codex agent type, got %q", session.AgentType)
 	}
+	if decodeTestAgentOptions(t, session.AgentOptions)["codex"]["permission_policy"] != "ask" {
+		t.Fatalf("expected new codex session to ask for permissions, got %s", session.AgentOptions)
+	}
 }
 
 func TestCreateSessionAcceptsAvailableClaudeAgent(t *testing.T) {
@@ -493,6 +496,9 @@ func TestCreateSessionAcceptsAvailableClaudeAgent(t *testing.T) {
 	if session.AgentType != "claude" {
 		t.Fatalf("expected claude agent type, got %q", session.AgentType)
 	}
+	if decodeTestAgentOptions(t, session.AgentOptions)["claude"]["permission_policy"] != "ask" {
+		t.Fatalf("expected new claude session to ask for permissions, got %s", session.AgentOptions)
+	}
 }
 
 func TestCreateSessionAcceptsAvailableOpenCodeAgent(t *testing.T) {
@@ -514,6 +520,9 @@ func TestCreateSessionAcceptsAvailableOpenCodeAgent(t *testing.T) {
 	}
 	if session.AgentType != "opencode" {
 		t.Fatalf("expected opencode agent type, got %q", session.AgentType)
+	}
+	if decodeTestAgentOptions(t, session.AgentOptions)["opencode"]["permission_policy"] != "ask" {
+		t.Fatalf("expected new opencode session to ask for permissions, got %s", session.AgentOptions)
 	}
 }
 
@@ -1073,7 +1082,7 @@ func TestUpdateCodexSessionAgentOptions(t *testing.T) {
 	}
 }
 
-func TestUpdateCodexSessionAgentOptionsCanClearRunDangerously(t *testing.T) {
+func TestUpdateCodexSessionAgentOptionsClearsDangerousModeToAsk(t *testing.T) {
 	ctx := context.Background()
 	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
@@ -1098,8 +1107,9 @@ func TestUpdateCodexSessionAgentOptionsCanClearRunDangerously(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected response options map, got %#v", response.AgentOptions)
 	}
-	if _, ok := responseOptions["codex"]; ok {
-		t.Fatalf("expected codex options to be cleared, got %#v", response.AgentOptions)
+	responseCodex, ok := responseOptions["codex"].(map[string]any)
+	if !ok || responseCodex["permission_policy"] != "ask" {
+		t.Fatalf("expected codex permission policy ask, got %#v", response.AgentOptions)
 	}
 
 	updated, err := dbStore.GetSession(ctx, session.ID)
@@ -1107,8 +1117,8 @@ func TestUpdateCodexSessionAgentOptionsCanClearRunDangerously(t *testing.T) {
 		t.Fatalf("get session: %v", err)
 	}
 	options := decodeTestAgentOptions(t, updated.AgentOptions)
-	if _, ok := options["codex"]; ok {
-		t.Fatalf("expected persisted codex options to be cleared, got %#v", options)
+	if options["codex"]["permission_policy"] != "ask" {
+		t.Fatalf("expected persisted codex permission policy ask, got %#v", options)
 	}
 }
 
@@ -2078,6 +2088,45 @@ func TestAnswerUserInputRejectsInvalidOption(t *testing.T) {
 	assertErrorResponse(t, answerRec, `answer "question_test" is not a valid option`)
 }
 
+func TestResolvePermissionPersistsDecisionBeforeCompletingRun(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, runManager, handler := newIntegrationAPI(t, ctx, permissionAgent{})
+	session := createIntegrationSession(t, ctx, dbStore)
+	messageRec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Do it"}`)
+	if messageRec.Code != http.StatusAccepted {
+		t.Fatalf("submit: %d %s", messageRec.Code, messageRec.Body.String())
+	}
+	waitFor(t, func() bool { return hasEventType(t, ctx, dbStore, session.ID, "agent.permission.requested") })
+	listRec := get(handler, "/api/sessions")
+	var listed listSessionsResponse
+	decodeJSON(t, listRec, &listed)
+	if len(listed.Sessions) != 1 || listed.Sessions[0].PendingPermissionCount != 1 {
+		t.Fatalf("expected one pending permission, got %#v", listed.Sessions)
+	}
+	resolveRec := postJSON(handler, "/api/sessions/"+session.ID+"/permissions/perm_test/resolve", `{"option_id":"allow-session"}`)
+	if resolveRec.Code != http.StatusAccepted {
+		t.Fatalf("resolve: %d %s", resolveRec.Code, resolveRec.Body.String())
+	}
+	waitFor(t, func() bool { return !runManager.Active(session.ID) })
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	resolvedIndex, messageIndex := -1, -1
+	for index, event := range events {
+		if event.Type == "agent.permission.resolved" {
+			resolvedIndex = index
+		}
+		if event.Type == "agent.message.completed" {
+			messageIndex = index
+		}
+	}
+	if resolvedIndex < 0 || messageIndex <= resolvedIndex {
+		t.Fatalf("expected resolution before agent continuation, got %#v", events)
+	}
+	payload := decodeEventPayload(t, events[resolvedIndex])
+	if payload["option_id"] != "allow-session" || payload["scope"] != "session" {
+		t.Fatalf("unexpected resolution payload %#v", payload)
+	}
+}
+
 func TestCancelUnknownSessionReturnsNotFound(t *testing.T) {
 	ctx := context.Background()
 	_, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
@@ -2885,6 +2934,29 @@ type userInputAgent struct{}
 
 func (a userInputAgent) Type() string {
 	return "fake"
+}
+
+type permissionAgent struct{}
+
+func (permissionAgent) Type() string { return "fake" }
+func (permissionAgent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {
+	if err := emit(ctx, agents.AgentEvent{Type: "agent.run.started", Role: "assistant", Status: string(store.EventStatusStarted)}); err != nil {
+		return err
+	}
+	request := agents.PermissionRequest{SessionID: input.SessionID, RequestID: "perm_test", Provider: "fake", ProviderEventType: "permission", Kind: "command", Title: "Approve command", Command: "git push", Options: []agents.PermissionOption{{ID: "allow-session", Label: "Allow for session", Decision: "allow", Scope: "session"}, {ID: "deny", Label: "Deny", Decision: "deny", Scope: "once"}}}
+	waiter, err := input.Permissions.OpenPermission(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer waiter.Close()
+	if err := emit(ctx, agents.AgentEvent{Type: "agent.permission.requested", Role: "assistant", Status: string(store.EventStatusStarted), Payload: request}); err != nil {
+		return err
+	}
+	response, err := waiter.Wait(ctx)
+	if err != nil {
+		return err
+	}
+	return emit(ctx, agents.AgentEvent{Type: "agent.message.completed", Role: "assistant", Status: string(store.EventStatusCompleted), Payload: map[string]any{"text": "Decision: " + response.OptionID}})
 }
 
 func (a userInputAgent) Run(ctx context.Context, input agents.AgentInput, emit agents.EmitFunc) error {

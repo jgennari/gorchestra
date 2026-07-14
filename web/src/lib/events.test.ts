@@ -12,6 +12,7 @@ import {
   lastSeq,
   latestTokenUsage,
   pendingUserInputRequest,
+  pendingPermissionRequests,
   shouldRefreshWorkspaceFilesForEvent,
   statusFromEvent,
 } from '@/lib/events'
@@ -272,6 +273,13 @@ test('pending user input request is derived from replayed events', () => {
   })
 
   expect(pendingUserInputRequest([requested, event(3, 'agent.input.answered', { request_id: 'call_test' })])).toBeNull()
+})
+
+test('pending permission requests retain stable option ids and resolve independently', () => {
+  const first = event(2, 'agent.permission.requested', { request_id: 'perm_1', provider: 'codex', kind: 'command', title: 'Approve command', command: 'git push', options: [{ id: 'accept', label: 'Allow once', decision: 'allow', scope: 'once' }] })
+  const second = event(3, 'agent.permission.requested', { request_id: 'perm_2', provider: 'opencode', kind: 'tool', title: 'Write file', options: [{ id: 'reject-once', label: 'Reject', decision: 'deny', scope: 'once' }] })
+  expect(pendingPermissionRequests([first, second]).map((request) => request.request_id)).toEqual(['perm_1', 'perm_2'])
+  expect(pendingPermissionRequests([first, second, event(4, 'agent.permission.resolved', { request_id: 'perm_1', option_id: 'accept' })])).toMatchObject([{ request_id: 'perm_2', options: [{ id: 'reject-once' }] }])
 })
 
 test('chat timeline only includes hidden debug events when enabled', () => {

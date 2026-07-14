@@ -1,4 +1,4 @@
-import type { AgentEvent, SessionStatus, UserInputQuestion } from '@/lib/api'
+import type { AgentEvent, PermissionRequest, SessionStatus, UserInputQuestion } from '@/lib/api'
 
 export const knownEventTypes = [
   'user.message.completed',
@@ -17,6 +17,9 @@ export const knownEventTypes = [
   'agent.log.delta',
   'agent.input.requested',
   'agent.input.answered',
+  'agent.permission.requested',
+  'agent.permission.resolved',
+  'agent.permission.cancelled',
   'tool.call.started',
   'tool.call.delta',
   'tool.call.completed',
@@ -185,6 +188,8 @@ export type PendingUserInputRequest = {
   createdAt: string
   seq: number
 }
+
+export type PendingPermissionRequest = PermissionRequest & { createdAt: string; seq: number }
 
 export type TokenUsageSnapshot = {
   totalTokens: number
@@ -516,6 +521,40 @@ export function pendingUserInputRequest(events: AgentEvent[]) {
       .filter((request) => request.seq > latestTerminalSeq && !answered.has(request.requestID))
       .sort((left, right) => right.seq - left.seq)[0] ?? null
   )
+}
+
+export function pendingPermissionRequests(events: AgentEvent[]): PendingPermissionRequest[] {
+  const requests = new Map<string, PendingPermissionRequest>()
+  const resolved = new Set<string>()
+  let latestTerminalSeq = 0
+  for (const event of sortedUniqueEvents(events)) {
+    if (isTerminalEvent(event.type)) latestTerminalSeq = event.seq
+    if (event.type === 'agent.permission.requested' && isRecord(event.payload)) {
+      const requestID = payloadString(event.payload, ['request_id'])
+      const options = Array.isArray(event.payload.options)
+        ? event.payload.options.filter(isRecord).flatMap((option) => {
+            const id = payloadString(option, ['id'])
+            const decision = payloadString(option, ['decision']) as 'allow' | 'deny' | 'cancel'
+            if (!id || !['allow', 'deny', 'cancel'].includes(decision)) return []
+            return [{ id, label: payloadString(option, ['label']) || id, description: payloadString(option, ['description']), decision, scope: payloadString(option, ['scope']) as 'once' | 'session' }]
+          })
+        : []
+      if (requestID && options.length > 0) {
+        requests.set(requestID, {
+          request_id: requestID, provider: payloadString(event.payload, ['provider']), provider_event_type: payloadString(event.payload, ['provider_event_type']),
+          kind: payloadString(event.payload, ['kind']), title: payloadString(event.payload, ['title']) || 'Permission required',
+          description: payloadString(event.payload, ['description']), reason: payloadString(event.payload, ['reason']), command: payloadString(event.payload, ['command']),
+          cwd: payloadString(event.payload, ['cwd']), tool_name: payloadString(event.payload, ['tool_name']), tool_input: event.payload.tool_input,
+          paths: Array.isArray(event.payload.paths) ? event.payload.paths.filter((path): path is string => typeof path === 'string') : [],
+          diff: payloadString(event.payload, ['diff']), requested_grants: event.payload.requested_grants, options, createdAt: event.created_at, seq: event.seq,
+        })
+      }
+    }
+    if (event.type === 'agent.permission.resolved' || event.type === 'agent.permission.cancelled') {
+      const requestID = payloadString(event.payload, ['request_id']); if (requestID) resolved.add(requestID)
+    }
+  }
+  return [...requests.values()].filter((request) => request.seq > latestTerminalSeq && !resolved.has(request.request_id)).sort((a, b) => a.seq - b.seq)
 }
 
 export function latestTerminalEvent(events: AgentEvent[]) {

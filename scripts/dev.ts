@@ -1,5 +1,5 @@
 import { mkdir, readdir, stat } from 'node:fs/promises'
-import { basename, extname, join, relative } from 'node:path'
+import { basename, extname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 type Subprocess = ReturnType<typeof Bun.spawn>
@@ -13,6 +13,8 @@ const webHost = tailnetMode ? '0.0.0.0' : '127.0.0.1'
 const backendURL = process.env.BACKEND_URL ?? `http://localhost:${backendPort}`
 const tmpDir = join(repoRoot, '.tmp')
 const backendDB = process.env.GORCHESTRA_DB ?? join(tmpDir, 'sessions.db')
+const humanDB = join(tmpDir, 'human', 'sessions.db')
+const humanLaunchAgent = 'com.joey.gorchestra-human'
 const backendWorkspace = process.env.GORCHESTRA_WORKSPACE ?? ''
 const backendBinary = join(
   tmpDir,
@@ -44,6 +46,7 @@ let lastBackendSignature = ''
 let restartDeferredLogged = false
 
 async function main() {
+  assertSafeDatabaseOwner()
   lastBackendSignature = await backendSignature()
 
   printStartup()
@@ -51,6 +54,16 @@ async function main() {
   startFrontend()
   startBackendWatcher()
   registerShutdownHooks()
+}
+
+function assertSafeDatabaseOwner() {
+  if (resolve(backendDB) !== resolve(humanDB) || process.env.XPC_SERVICE_NAME === humanLaunchAgent) {
+    return
+  }
+
+  throw new Error(
+    `refusing to open the persistent human database outside ${humanLaunchAgent}; use bun run dev:human or choose a different GORCHESTRA_DB`,
+  )
 }
 
 function printStartup() {

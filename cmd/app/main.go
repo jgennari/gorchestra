@@ -73,6 +73,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	addr := net.JoinHostPort(cfg.host, cfg.port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("server listen failed: %v", err)
+	}
+	defer func() {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Printf("server listener close failed: %v", err)
+		}
+	}()
+
 	dbStore, err := store.Open(ctx, cfg.db)
 	if err != nil {
 		log.Fatalf("database startup failed: %v", err)
@@ -149,7 +160,6 @@ func main() {
 		log.Printf("frontend assets unavailable: %v", err)
 	}
 
-	addr := net.JoinHostPort(cfg.host, cfg.port)
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets}),
@@ -168,7 +178,7 @@ func main() {
 				}
 			}()
 		}
-		errc <- server.ListenAndServe()
+		errc <- server.Serve(listener)
 	}()
 
 	select {

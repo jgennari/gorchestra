@@ -23,6 +23,10 @@ test('session attention prioritizes pending input', () => {
   expect(hasSessionAttention([session], { sess_1: 4 })).toBe(true)
 })
 
+test('session attention prioritizes pending permissions', () => {
+  expect(sessionAttention({ ...baseSession, pending_input: true, pending_permission_count: 2 }, { sess_1: 4 })).toBe('pending-permission')
+})
+
 test('session attention marks unseen idle results', () => {
   expect(sessionAttention(baseSession, { sess_1: 2 })).toBe('unseen-idle')
   expect(hasSessionAttention([baseSession], { sess_1: 2 })).toBe(true)

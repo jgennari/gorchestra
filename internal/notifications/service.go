@@ -303,13 +303,33 @@ func (s *Service) Start(ctx context.Context, source EventSource) {
 				if !ok {
 					return
 				}
-				if !isTerminalRunEvent(event.Type) {
-					continue
+				if event.Type == "agent.permission.requested" {
+					go s.notifyPermissionEvent(ctx, event)
+				} else if isTerminalRunEvent(event.Type) {
+					go s.notifyTerminalEvent(ctx, event)
 				}
-				go s.notifyTerminalEvent(ctx, event)
 			}
 		}
 	}()
+}
+
+func (s *Service) notifyPermissionEvent(parent context.Context, event store.Event) {
+	ctx, cancel := context.WithTimeout(parent, sendTimeout)
+	defer cancel()
+	session, err := s.store.GetSession(ctx, event.SessionID)
+	if err != nil {
+		s.logf("permission notification session lookup failed: %v", err)
+		return
+	}
+	body := "An agent is waiting for approval."
+	if strings.TrimSpace(session.Title) != "" {
+		body = session.Title + " is waiting for approval."
+	}
+	if err := s.sendToActiveSubscriptions(ctx, notificationInput{Kind: "permission", Title: "Approval needed", Body: body,
+		Path: "/sessions/" + event.SessionID, Tag: "gorchestra-session-" + event.SessionID, SessionID: event.SessionID,
+		EventType: event.Type, Status: string(event.Status), Seq: event.Seq, Classic: true}); err != nil {
+		s.logf("permission notification send failed: %v", err)
+	}
 }
 
 func (s *Service) notifyTerminalEvent(parent context.Context, event store.Event) {

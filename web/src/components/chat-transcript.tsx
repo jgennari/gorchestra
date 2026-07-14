@@ -45,7 +45,6 @@ type Props = {
   hasOlderEvents?: boolean
   loadingOlderEvents?: boolean
   onLoadOlderEvents?: () => Promise<void> | void
-  onFollowLatestChange?: (followingLatest: boolean) => void
   onOpenFilePath?: (path: string) => Promise<void> | void
 }
 
@@ -60,7 +59,6 @@ export function ChatTranscript({
   hasOlderEvents = false,
   loadingOlderEvents = false,
   onLoadOlderEvents,
-  onFollowLatestChange,
   onOpenFilePath,
 }: Props) {
   const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
@@ -178,10 +176,6 @@ export function ChatTranscript({
       setAutoScrollPausedState(false)
     }
   }, [events.length])
-
-  useEffect(() => {
-    onFollowLatestChange?.(!autoScrollPaused)
-  }, [autoScrollPaused, onFollowLatestChange])
 
   useEffect(() => {
     if (!loadingOlderEvents) {

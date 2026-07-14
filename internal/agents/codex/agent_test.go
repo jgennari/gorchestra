@@ -1245,3 +1245,29 @@ func jsonID(raw json.RawMessage) any {
 	}
 	return id
 }
+
+func TestCodexCommandPermissionUsesAvailableSessionDecisions(t *testing.T) {
+	message := &rpcMessage{ID: json.RawMessage(`42`), Method: "item/commandExecution/requestApproval", Params: json.RawMessage(`{"threadId":"thread_1","turnId":"turn_1","itemId":"item_1","command":"git push","cwd":"/repo","reason":"network","startedAtMs":1,"availableDecisions":["accept", "acceptForSession", {"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["git"]}}, "decline", "cancel"]}`)}
+	request, _, err := codexPermissionRequest("sess_1", message)
+	if err != nil {
+		t.Fatalf("parse permission: %v", err)
+	}
+	if request.RequestID != "item_1" || request.Command != "git push" {
+		t.Fatalf("unexpected request %#v", request)
+	}
+	if got := []string{request.Options[0].ID, request.Options[1].ID, request.Options[2].ID, request.Options[3].ID}; !reflect.DeepEqual(got, []string{"accept", "acceptForSession", "decline", "cancel"}) {
+		t.Fatalf("unexpected decisions %#v", got)
+	}
+	response := codexPermissionResponse(message.Method, map[string]any{}, "acceptForSession")
+	if !reflect.DeepEqual(response, map[string]any{"decision": "acceptForSession"}) {
+		t.Fatalf("unexpected response %#v", response)
+	}
+}
+
+func TestCodexPermissionGrantReturnsRequestedProfileAtSelectedScope(t *testing.T) {
+	permissions := map[string]any{"network": map[string]any{"enabled": true}}
+	response := codexPermissionResponse("item/permissions/requestApproval", map[string]any{"permissions": permissions}, "grant-session")
+	if !reflect.DeepEqual(response, map[string]any{"permissions": permissions, "scope": "session"}) {
+		t.Fatalf("unexpected response %#v", response)
+	}
+}
