@@ -33,13 +33,19 @@ type Props = {
   session: Session | null
   resolvingSessionID?: string | null
   events: AgentEvent[]
+  liveEvents?: AgentEvent[]
   streamState: StreamState
   hasOlderEvents?: boolean
+  hasNewerEvents?: boolean
   loadingOlderEvents?: boolean
+  loadingNewerEvents?: boolean
   errorMessage?: string
   showDebugEvents: boolean
   onShowDebugEventsChange: (showDebugEvents: boolean) => void
   onLoadOlderEvents?: () => Promise<void> | void
+  onLoadNewerEvents?: () => Promise<void> | void
+  onJumpToLatest?: () => Promise<void> | void
+  onFollowingTailChange?: (following: boolean) => void
   onSubmitPrompt: (
     content: string,
     agentOptions?: SubmitAgentOptions,
@@ -71,13 +77,19 @@ export function SessionDetail({
   session,
   resolvingSessionID = null,
   events,
+  liveEvents,
   streamState,
   hasOlderEvents = false,
+  hasNewerEvents = false,
   loadingOlderEvents = false,
+  loadingNewerEvents = false,
   errorMessage = '',
   showDebugEvents,
   onShowDebugEventsChange,
   onLoadOlderEvents,
+  onLoadNewerEvents,
+  onJumpToLatest,
+  onFollowingTailChange,
   onSubmitPrompt,
   onAnswerUserInput,
   onResolvePermission = async () => undefined,
@@ -101,37 +113,38 @@ export function SessionDetail({
 }: Props) {
   const bottomInsetRef = useRef<HTMLDivElement>(null)
   const [bottomInsetHeight, setBottomInsetHeight] = useState(176)
+  const statusEvents = liveEvents ?? events
   const userInputRequest = useMemo(
-    () => (session?.status === 'running' ? pendingUserInputRequest(events) : null),
-    [events, session?.status],
+    () => (session?.status === 'running' ? pendingUserInputRequest(statusEvents) : null),
+    [session?.status, statusEvents],
   )
   const permissionRequests = useMemo(
-    () => (session?.status === 'running' ? pendingPermissionRequests(events) : []),
-    [events, session?.status],
+    () => (session?.status === 'running' ? pendingPermissionRequests(statusEvents) : []),
+    [session?.status, statusEvents],
   )
   const thinking = useMemo(
-    () => session?.status === 'running' && !userInputRequest && activeThinking(events),
-    [events, session?.status, userInputRequest],
+    () => session?.status === 'running' && !userInputRequest && activeThinking(statusEvents),
+    [session?.status, statusEvents, userInputRequest],
   )
   const runActivity = useMemo(
-    () => (session?.status === 'running' && !userInputRequest ? activeRunActivity(events) : null),
-    [events, session?.status, userInputRequest],
+    () => (session?.status === 'running' && !userInputRequest ? activeRunActivity(statusEvents) : null),
+    [session?.status, statusEvents, userInputRequest],
   )
   const streamingResponse = useMemo(
-    () => session?.status === 'running' && !userInputRequest && activeStreamingResponse(events),
-    [events, session?.status, userInputRequest],
+    () => session?.status === 'running' && !userInputRequest && activeStreamingResponse(statusEvents),
+    [session?.status, statusEvents, userInputRequest],
   )
   const activeTool = useMemo(
-    () => session?.status === 'running' && !userInputRequest && activeToolActivity(events),
-    [events, session?.status, userInputRequest],
+    () => session?.status === 'running' && !userInputRequest && activeToolActivity(statusEvents),
+    [session?.status, statusEvents, userInputRequest],
   )
   const activityStatus = thinking
     ? ({ kind: 'thinking' } as const)
     : runActivity && !streamingResponse && !activeTool
       ? ({ kind: 'working', since: runActivity.lastVisibleActivityAt } as const)
       : null
-  const latestTerminal = useMemo(() => latestTerminalEvent(events), [events])
-  const latestQueueEvent = useMemo(() => latestQueuedMessageEvent(events), [events])
+  const latestTerminal = useMemo(() => latestTerminalEvent(statusEvents), [statusEvents])
+  const latestQueueEvent = useMemo(() => latestQueuedMessageEvent(statusEvents), [statusEvents])
 
   useLayoutEffect(() => {
     const element = bottomInsetRef.current
@@ -204,6 +217,7 @@ export function SessionDetail({
     <section className="relative h-full w-full min-h-0 overflow-hidden bg-transparent">
       <div className="absolute inset-0 overflow-hidden">
         <ChatTranscript
+          key={session.id}
           events={events}
           loading={streamState === 'loading'}
           error=""
@@ -212,8 +226,13 @@ export function SessionDetail({
           activityStatus={activityStatus}
           showDebugEvents={showDebugEvents}
           hasOlderEvents={hasOlderEvents}
+          hasNewerEvents={hasNewerEvents}
           loadingOlderEvents={loadingOlderEvents}
+          loadingNewerEvents={loadingNewerEvents}
           onLoadOlderEvents={onLoadOlderEvents}
+          onLoadNewerEvents={onLoadNewerEvents}
+          onJumpToLatest={onJumpToLatest}
+          onFollowingTailChange={onFollowingTailChange}
           onOpenFilePath={onOpenFilePath}
         />
         <div

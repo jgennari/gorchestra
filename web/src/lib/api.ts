@@ -345,8 +345,18 @@ type AnswerUserInputResponse = {
   status: 'answered'
 }
 
-type EventHistoryResponse = {
+export type EventHistoryPage = {
+  first_seq: number
+  last_seq: number
+  has_older: boolean
+  has_newer: boolean
+  starts_mid_turn: boolean
+  ends_mid_turn: boolean
+}
+
+export type EventHistoryResponse = {
   events: AgentEvent[]
+  page?: EventHistoryPage
 }
 
 type NotificationPublicKeyResponse = {
@@ -674,7 +684,7 @@ export async function listRecentEventTurns(
   const data = await requestJSON<EventHistoryResponse>(
     withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
   )
-  return data.events
+  return data
 }
 
 export async function listEventTurnsBefore(
@@ -687,7 +697,19 @@ export async function listEventTurnsBefore(
   const data = await requestJSON<EventHistoryResponse>(
     withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
   )
-  return data.events
+  return data
+}
+
+export async function listEventTurnsAfter(
+  sessionID: string,
+  afterSeq: number,
+  turns = defaultEventTurnPageSize,
+  options: EventListOptions = {},
+) {
+  const params = eventListParams({ after_seq: String(afterSeq), turns: String(turns) }, options)
+  return requestJSON<EventHistoryResponse>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
+  )
 }
 
 export function eventStreamURL(sessionID: string, afterSeq: number, options: EventListOptions = {}) {

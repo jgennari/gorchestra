@@ -1379,6 +1379,18 @@ func TestEventTurnListsUseUnfilteredUserMessageBoundaries(t *testing.T) {
 		t.Fatalf("list oldest event turns: %v", err)
 	}
 	assertSeqs(t, oldest, []int64{1, 2, 4})
+
+	newer, err := store.ListEventTurnsAfterFiltered(ctx, session.ID, 4, 2, 100, EventListFilter{})
+	if err != nil {
+		t.Fatalf("list newer event turns: %v", err)
+	}
+	assertSeqs(t, newer, []int64{5, 7, 8, 9})
+
+	limited, err := store.ListRecentEventTurnsPageFiltered(ctx, session.ID, 2, 3, EventListFilter{})
+	if err != nil {
+		t.Fatalf("list limited recent event turns: %v", err)
+	}
+	assertSeqs(t, limited, []int64{7, 8, 9})
 }
 
 func TestRecentEventTurnsDoNotSplitLargeTurns(t *testing.T) {

@@ -237,7 +237,7 @@ test('scrolling near the top auto-loads older events and leaves the manual butto
 
   const log = screen.getByRole('log', { name: 'Chat messages' })
   setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1000, clientHeight: 400 })
-  fireEvent.wheel(log)
+  fireEvent.wheel(log, { deltaY: -100 })
   fireEvent.scroll(log, { target: { scrollTop: 120 } })
   fireEvent.scroll(log, { target: { scrollTop: 120 } })
 
@@ -264,7 +264,7 @@ test('does not auto-load older events from initial programmatic scroll events', 
   expect(onLoadOlderEvents).not.toHaveBeenCalled()
 })
 
-test('prepends older events without moving the current viewport', async () => {
+test('adjusts the virtual list origin when older timeline rows are prepended', async () => {
   const user = userEvent.setup()
   let resolveLoad: () => void = () => undefined
   const { rerender } = render(
@@ -275,18 +275,19 @@ test('prepends older events without moving the current viewport', async () => {
           resolveLoad = resolve
         })}
       events={[
-        event(251, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 1' }),
-        event(252, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 2' }),
+        event(251, 'user.message.completed', 'user', 'completed', { text: 'Tail prompt 1' }),
+        event(252, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 1' }),
+        event(253, 'user.message.completed', 'user', 'completed', { text: 'Tail prompt 2' }),
+        event(254, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 2' }),
       ]}
     />,
   )
 
   const log = screen.getByRole('log', { name: 'Chat messages' })
-  setScrollMetrics(log, { scrollTop: 180, scrollHeight: 1000, clientHeight: 400 })
+  expect(log).toHaveAttribute('data-first-item-index', '1000000')
 
   await user.click(screen.getByRole('button', { name: 'Load older events' }))
 
-  setScrollMetrics(log, { scrollTop: 180, scrollHeight: 1320, clientHeight: 400 })
   resolveLoad()
   rerender(
     <ChatTranscript
@@ -294,15 +295,17 @@ test('prepends older events without moving the current viewport', async () => {
       loadingOlderEvents={false}
       onLoadOlderEvents={() => Promise.resolve()}
       events={[
-        event(240, 'agent.message.completed', 'assistant', 'completed', { text: 'Older 1' }),
-        event(241, 'agent.message.completed', 'assistant', 'completed', { text: 'Older 2' }),
-        event(251, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 1' }),
-        event(252, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 2' }),
+        event(240, 'user.message.completed', 'user', 'completed', { text: 'Older prompt' }),
+        event(241, 'agent.message.completed', 'assistant', 'completed', { text: 'Older answer' }),
+        event(251, 'user.message.completed', 'user', 'completed', { text: 'Tail prompt 1' }),
+        event(252, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 1' }),
+        event(253, 'user.message.completed', 'user', 'completed', { text: 'Tail prompt 2' }),
+        event(254, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail 2' }),
       ]}
     />,
   )
 
-  await waitFor(() => expect(log.scrollTop).toBe(500))
+  expect(log).toHaveAttribute('data-first-item-index', '999998')
 })
 
 test('load older control is disabled while older events are loading', () => {
@@ -326,7 +329,7 @@ test('pauses auto-scroll when scrolled up and resumes from the latest pill', asy
   const log = screen.getByRole('log', { name: 'Chat messages' })
 
   setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1000, clientHeight: 400 })
-  fireEvent.wheel(log)
+  fireEvent.wheel(log, { deltaY: -100 })
   fireEvent.scroll(log)
 
   expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
@@ -345,7 +348,7 @@ test('pauses auto-scroll when scrolled up and resumes from the latest pill', asy
 
   await user.click(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' }))
 
-  expect(log.scrollTop).toBe(1200)
+  await waitFor(() => expect(log.scrollTop).toBe(1200))
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 
   setScrollMetrics(log, { scrollTop: 1200, scrollHeight: 1400, clientHeight: 400 })
@@ -386,6 +389,39 @@ test('keeps auto-scroll active when content growth emits a scroll event', async 
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 })
 
+test('keeps following the tail after a downward wheel gesture at the bottom', async () => {
+  const onFollowingTailChange = vi.fn()
+  const { rerender } = render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  onFollowingTailChange.mockClear()
+  fireEvent.wheel(log, { deltaY: 100 })
+
+  expect(onFollowingTailChange).not.toHaveBeenCalledWith(false)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+
+  setScrollMetrics(log, { scrollTop: 600, scrollHeight: 1160, clientHeight: 400 })
+  rerender(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' }),
+        event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Two' }),
+      ]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+
+  await waitFor(() => expect(log.scrollTop).toBe(1160))
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
 test('scrolls to bottom when content grows while following latest', async () => {
   const { rerender } = render(
     <ChatTranscript
@@ -407,6 +443,36 @@ test('scrolls to bottom when content grows while following latest', async () => 
   )
 
   await waitFor(() => expect(log.scrollTop).toBe(1160))
+})
+
+test('scrolls to bottom when the last virtual row grows while following latest', async () => {
+  const { rerender } = render(
+    <ChatTranscript
+      events={[event(1, 'tool.call.started', 'assistant', 'started', { item_id: 'tool_1', command: 'go test ./...' })]}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  const initialRowCount = log.querySelectorAll('[data-index]').length
+
+  setScrollMetrics(log, { scrollTop: 600, scrollHeight: 1160, clientHeight: 400 })
+  rerender(
+    <ChatTranscript
+      events={[
+        event(1, 'tool.call.started', 'assistant', 'started', { item_id: 'tool_1', command: 'go test ./...' }),
+        event(2, 'tool.call.delta', 'assistant', 'delta', {
+          item_id: 'tool_1',
+          aggregated_output: 'ok\n'.repeat(40),
+        }),
+      ]}
+    />,
+  )
+
+  expect(log.querySelectorAll('[data-index]')).toHaveLength(initialRowCount)
+  await waitFor(() => expect(log.scrollTop).toBe(1160))
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 })
 
 test('scrolls to bottom when the bottom overlay inset grows while following latest', async () => {
@@ -431,7 +497,17 @@ test('scrolls to bottom when the bottom overlay inset grows while following late
   await waitFor(() => expect(log.scrollTop).toBe(1160))
 })
 
-test('keeps first-load restored content above the composer when content reflows', async () => {
+test('renders first-load restored content in the virtual transcript', () => {
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Restored answer' })]}
+    />,
+  )
+
+  expect(screen.getByRole('log', { name: 'Chat messages' })).toContainElement(screen.getByText('Restored answer'))
+})
+
+test('keeps first-load restored content above the composer while virtual rows settle', async () => {
   const originalResizeObserver = globalThis.ResizeObserver
   const resizeObservers: Array<{ trigger: () => void }> = []
   class TestResizeObserver {
@@ -450,15 +526,17 @@ test('keeps first-load restored content above the composer when content reflows'
   try {
     render(
       <ChatTranscript
+        bottomInsetHeight={176}
         events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Restored answer' })]}
       />,
     )
     const log = screen.getByRole('log', { name: 'Chat messages' })
+    await act(async () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())))
 
-    setScrollMetrics(log, { scrollTop: 1000, scrollHeight: 1000, clientHeight: 400 })
-    setScrollMetrics(log, { scrollTop: 1000, scrollHeight: 1280, clientHeight: 400 })
-
-    resizeObservers.forEach((observer) => observer.trigger())
+    setScrollMetrics(log, { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 })
+    fireEvent.scroll(log)
+    setScrollMetrics(log, { scrollTop: 600, scrollHeight: 1280, clientHeight: 400 })
+    act(() => resizeObservers.forEach((observer) => observer.trigger()))
 
     await waitFor(() => expect(log.scrollTop).toBe(1280))
   } finally {
@@ -475,7 +553,7 @@ test('does not scroll on content growth while auto-scroll is paused', () => {
   const log = screen.getByRole('log', { name: 'Chat messages' })
 
   setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1000, clientHeight: 400 })
-  fireEvent.wheel(log)
+  fireEvent.wheel(log, { deltaY: -100 })
   fireEvent.scroll(log)
 
   setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1160, clientHeight: 400 })
@@ -502,7 +580,7 @@ test('does not scroll on bottom overlay inset growth while auto-scroll is paused
   const log = screen.getByRole('log', { name: 'Chat messages' })
 
   setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1000, clientHeight: 400 })
-  fireEvent.wheel(log)
+  fireEvent.wheel(log, { deltaY: -100 })
   fireEvent.scroll(log)
 
   setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1160, clientHeight: 400 })

@@ -692,6 +692,27 @@ func TestEventHistoryTruncatesLargePayloadStrings(t *testing.T) {
 	}
 }
 
+func TestBoundedEventResponsesCompactsSingleOversizedEvent(t *testing.T) {
+	oversized := testEventWithPayload(1, "tool.call.completed", map[string]any{
+		"aggregated_output": strings.Repeat("x", 1024),
+	})
+
+	for _, preferLatest := range []bool{false, true} {
+		responses := boundedEventResponses([]store.Event{oversized}, preferLatest, 512)
+		if got, want := len(responses), 1; got != want {
+			t.Fatalf("preferLatest=%t: expected %d event, got %d", preferLatest, want, got)
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal(responses[0].Payload, &payload); err != nil {
+			t.Fatalf("preferLatest=%t: expected payload to be JSON object: %v", preferLatest, err)
+		}
+		if payload["_gorchestra_window_truncated"] != true {
+			t.Fatalf("preferLatest=%t: expected window truncation marker, got %#v", preferLatest, payload)
+		}
+	}
+}
+
 func TestEventAttachmentServesOriginalImageDataWhenHistoryIsTruncated(t *testing.T) {
 	store := newFakeHTTPStore()
 	store.addSession(testSessionID)
@@ -728,8 +749,8 @@ func TestEventAttachmentServesOriginalImageDataWhenHistoryIsTruncated(t *testing
 	}
 	attachments := payload["attachments"].([]any)
 	attachment := attachments[0].(map[string]any)
-	if got := attachment["data_url"].(string); !strings.Contains(got, "gorchestra truncated") {
-		t.Fatalf("expected history data_url to be truncated, got %q", got)
+	if got := attachment["data_url"].(string); got != "" {
+		t.Fatalf("expected history data_url to be omitted, got %q", got)
 	}
 
 	image := httptest.NewRecorder()
@@ -887,13 +908,47 @@ func TestEventHistoryBeforeSeqReturnsPreviousCompleteTurns(t *testing.T) {
 	}
 }
 
+func TestEventHistoryAfterSeqReturnsNextCompleteTurnsWithHardLimit(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEvent(1, "user.message.completed"),
+		testEvent(2, "agent.message.completed"),
+		testEvent(3, "user.message.completed"),
+		testEvent(4, "agent.message.completed"),
+		testEvent(5, "user.message.completed"),
+		testEvent(6, "agent.message.completed"),
+		testEvent(7, "user.message.completed"),
+		testEvent(8, "agent.message.completed"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?after_seq=2&turns=2&limit=3", nil)
+	rec := httptest.NewRecorder()
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+	if got := eventSeqs(response.Events); !reflect.DeepEqual(got, []int64{3, 4, 5}) {
+		t.Fatalf("expected bounded forward turn page, got %v", got)
+	}
+	if !response.Page.HasNewer || !response.Page.EndsMidTurn {
+		t.Fatalf("expected forward continuation metadata, got %#v", response.Page)
+	}
+	call := store.lastListCall(t)
+	if call.mode != "after_turns" || call.afterSeq != 2 || call.turns != 2 || call.limit != 3 {
+		t.Fatalf("expected bounded forward turn call, got %#v", call)
+	}
+}
+
 func TestEventHistoryRejectsInvalidTurnPagination(t *testing.T) {
 	for _, query := range []string{
 		"?tail=true&turns=0",
 		"?tail=true&turns=nope",
 		"?turns=2",
-		"?after_seq=1&turns=2",
-		"?tail=true&turns=2&limit=10",
 	} {
 		t.Run(query, func(t *testing.T) {
 			store := newFakeHTTPStore()
@@ -1114,6 +1169,36 @@ func TestSSEReplaySendsMissedEventsBeforeLiveEvents(t *testing.T) {
 
 	body := rec.Body.String()
 	assertSeqOrder(t, body, 1, 2)
+}
+
+func TestSSERequestsBoundedTailResyncWhenReplayExceedsLimit(t *testing.T) {
+	fakeStore := newFakeHTTPStore()
+	fakeStore.addSession(testSessionID)
+	events := make([]store.Event, 0, maxEventLimit+1)
+	for seq := 1; seq <= maxEventLimit+1; seq++ {
+		events = append(events, testEvent(int64(seq), "agent.message.completed"))
+	}
+	fakeStore.setEvents(testSessionID, events...)
+
+	rec := httptest.NewRecorder()
+	NewRouter(Dependencies{Store: fakeStore, Events: &fakeSubscriber{}}).ServeHTTP(
+		rec,
+		httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events/stream?after_seq=0", nil),
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: "+streamResyncEventType+"\n") {
+		t.Fatalf("expected bounded resync control event:\n%s", body)
+	}
+	if !strings.Contains(body, `"reason":"replay_window_exceeded"`) {
+		t.Fatalf("expected replay overflow reason:\n%s", body)
+	}
+	if strings.Contains(body, `"seq":`) {
+		t.Fatalf("expected no durable replay events before resync:\n%s", body)
+	}
 }
 
 func TestSSEFiltersDebugReplayAndLiveEventsByDefault(t *testing.T) {
@@ -1622,6 +1707,11 @@ func (s *fakeHTTPStore) applySessionCounts(session *store.Session) {
 	events := s.events[session.ID]
 	session.EventCount = int64(len(events))
 	session.ToolCount = int64(countToolActivityEvents(events))
+	for _, event := range events {
+		if !event.Transient && event.Seq > session.LastEventSeq {
+			session.LastEventSeq = event.Seq
+		}
+	}
 }
 
 func countToolActivityEvents(events []store.Event) int {
@@ -2016,7 +2106,17 @@ func (s *fakeHTTPStore) ListRecentEventTurnsFiltered(
 	turns int,
 	filter store.EventListFilter,
 ) ([]store.Event, error) {
-	return s.listEventTurns(sessionID, 0, false, turns, filter)
+	return s.listEventTurns(sessionID, 0, false, false, turns, 0, filter)
+}
+
+func (s *fakeHTTPStore) ListRecentEventTurnsPageFiltered(
+	_ context.Context,
+	sessionID string,
+	turns int,
+	limit int,
+	filter store.EventListFilter,
+) ([]store.Event, error) {
+	return s.listEventTurns(sessionID, 0, false, false, turns, limit, filter)
 }
 
 func (s *fakeHTTPStore) ListEventTurnsBeforeFiltered(
@@ -2026,24 +2126,52 @@ func (s *fakeHTTPStore) ListEventTurnsBeforeFiltered(
 	turns int,
 	filter store.EventListFilter,
 ) ([]store.Event, error) {
-	return s.listEventTurns(sessionID, beforeSeq, true, turns, filter)
+	return s.listEventTurns(sessionID, beforeSeq, true, false, turns, 0, filter)
+}
+
+func (s *fakeHTTPStore) ListEventTurnsBeforePageFiltered(
+	_ context.Context,
+	sessionID string,
+	beforeSeq int64,
+	turns int,
+	limit int,
+	filter store.EventListFilter,
+) ([]store.Event, error) {
+	return s.listEventTurns(sessionID, beforeSeq, true, false, turns, limit, filter)
+}
+
+func (s *fakeHTTPStore) ListEventTurnsAfterFiltered(
+	_ context.Context,
+	sessionID string,
+	afterSeq int64,
+	turns int,
+	limit int,
+	filter store.EventListFilter,
+) ([]store.Event, error) {
+	return s.listEventTurns(sessionID, afterSeq, false, true, turns, limit, filter)
 }
 
 func (s *fakeHTTPStore) listEventTurns(
 	sessionID string,
-	beforeSeq int64,
+	boundSeq int64,
 	hasBeforeSeq bool,
+	hasAfterSeq bool,
 	turns int,
+	limit int,
 	filter store.EventListFilter,
 ) ([]store.Event, error) {
 	s.mu.Lock()
 	mode := "tail_turns"
 	if hasBeforeSeq {
 		mode = "before_turns"
+	} else if hasAfterSeq {
+		mode = "after_turns"
 	}
 	s.listCalls = append(s.listCalls, listCall{
 		sessionID: sessionID,
-		beforeSeq: beforeSeq,
+		beforeSeq: boundSeq,
+		afterSeq:  boundSeq,
+		limit:     limit,
 		turns:     turns,
 		mode:      mode,
 		filter:    filter,
@@ -2056,7 +2184,10 @@ func (s *fakeHTTPStore) listEventTurns(
 	events := s.events[sessionID]
 	turnStarts := make([]int64, 0)
 	for _, event := range events {
-		if hasBeforeSeq && event.Seq >= beforeSeq {
+		if hasBeforeSeq && event.Seq >= boundSeq {
+			continue
+		}
+		if hasAfterSeq && event.Seq <= boundSeq {
 			continue
 		}
 		if event.Type == "user.message.completed" {
@@ -2064,7 +2195,13 @@ func (s *fakeHTTPStore) listEventTurns(
 		}
 	}
 	startSeq := int64(0)
-	if len(turnStarts) >= turns {
+	endSeq := int64(0)
+	if hasAfterSeq {
+		startSeq = boundSeq + 1
+		if len(turnStarts) > turns {
+			endSeq = turnStarts[turns]
+		}
+	} else if len(turnStarts) >= turns {
 		startSeq = turnStarts[len(turnStarts)-turns]
 	}
 
@@ -2073,11 +2210,21 @@ func (s *fakeHTTPStore) listEventTurns(
 		if startSeq > 0 && event.Seq < startSeq {
 			continue
 		}
-		if hasBeforeSeq && event.Seq >= beforeSeq {
+		if hasBeforeSeq && event.Seq >= boundSeq {
+			continue
+		}
+		if endSeq > 0 && event.Seq >= endSeq {
 			continue
 		}
 		if eventVisible(event, filter) {
 			filtered = append(filtered, event)
+		}
+	}
+	if limit > 0 && len(filtered) > limit {
+		if hasAfterSeq {
+			filtered = filtered[:limit]
+		} else {
+			filtered = filtered[len(filtered)-limit:]
 		}
 	}
 	return append([]store.Event(nil), filtered...), nil

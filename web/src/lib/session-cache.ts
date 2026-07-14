@@ -29,7 +29,7 @@ type SyncCachedSessions = {
 }
 
 const dbName = 'gorchestra-session-cache'
-const dbVersion = 2
+const dbVersion = 3
 const sessionsStore = 'sessions'
 const eventsStore = 'events'
 const cachedSessionLimit = 8
@@ -124,6 +124,7 @@ export async function readCachedSessionEvents(
   sessionID: string,
   includeDebugEvents = false,
 ): Promise<CachedSessionEvents | null> {
+  if (includeDebugEvents) return null
   const db = await openCacheDB()
   if (!db) return null
 
@@ -163,6 +164,7 @@ export async function writeCachedSessionEvents(
   includeDebugEvents = false,
   cursorSeq = lastSeq(events),
 ): Promise<void> {
+  if (includeDebugEvents) return
   const db = await openCacheDB()
   if (!db) return
 
@@ -312,7 +314,7 @@ async function openCacheDB(): Promise<IDBDatabase | null> {
     request.onerror = () => resolve(null)
     request.onupgradeneeded = (event) => {
       const db = request.result
-      if (event.oldVersion > 0 && event.oldVersion < 2 && db.objectStoreNames.contains(eventsStore)) {
+      if (event.oldVersion > 0 && event.oldVersion < 3 && db.objectStoreNames.contains(eventsStore)) {
         db.deleteObjectStore(eventsStore)
       }
       if (!db.objectStoreNames.contains(sessionsStore)) {

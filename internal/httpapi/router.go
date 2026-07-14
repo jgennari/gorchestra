@@ -30,9 +30,11 @@ const (
 	maxEventTurnLimit        = 50
 	eventHistoryBackfillStep = 250
 	maxEventPayloadStringLen = 64 * 1024
+	maxEventHistoryBytes     = 2 * 1024 * 1024
 	defaultSessionLimit      = 50
 	maxSessionLimit          = 100
 	streamHeartbeat          = 15 * time.Second
+	streamResyncEventType    = "stream.resync.required"
 	immutableAssetCache      = "public, max-age=31536000, immutable"
 	revalidatingCache        = "no-cache"
 	staticShellCache         = "public, max-age=3600"
@@ -65,6 +67,9 @@ type Store interface {
 	ListEventsBeforeFiltered(ctx context.Context, sessionID string, beforeSeq int64, limit int, filter store.EventListFilter) ([]store.Event, error)
 	ListRecentEventTurnsFiltered(ctx context.Context, sessionID string, turns int, filter store.EventListFilter) ([]store.Event, error)
 	ListEventTurnsBeforeFiltered(ctx context.Context, sessionID string, beforeSeq int64, turns int, filter store.EventListFilter) ([]store.Event, error)
+	ListRecentEventTurnsPageFiltered(ctx context.Context, sessionID string, turns int, limit int, filter store.EventListFilter) ([]store.Event, error)
+	ListEventTurnsBeforePageFiltered(ctx context.Context, sessionID string, beforeSeq int64, turns int, limit int, filter store.EventListFilter) ([]store.Event, error)
+	ListEventTurnsAfterFiltered(ctx context.Context, sessionID string, afterSeq int64, turns int, limit int, filter store.EventListFilter) ([]store.Event, error)
 	ClearNotificationAttention(ctx context.Context, sessionID string) error
 }
 
@@ -146,7 +151,22 @@ type eventResponse struct {
 }
 
 type eventHistoryResponse struct {
-	Events []eventResponse `json:"events"`
+	Events []eventResponse  `json:"events"`
+	Page   eventHistoryPage `json:"page"`
+}
+
+type eventHistoryPage struct {
+	FirstSeq      int64 `json:"first_seq"`
+	LastSeq       int64 `json:"last_seq"`
+	HasOlder      bool  `json:"has_older"`
+	HasNewer      bool  `json:"has_newer"`
+	StartsMidTurn bool  `json:"starts_mid_turn"`
+	EndsMidTurn   bool  `json:"ends_mid_turn"`
+}
+
+type eventHistoryResult struct {
+	Events       []store.Event
+	PreferLatest bool
 }
 
 func NewRouter(deps ...Dependencies) http.Handler {
@@ -307,14 +327,8 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	limit := 0
-	if turns == 0 {
-		limit, ok = parseLimit(w, r)
-		if !ok {
-			return
-		}
-	} else if r.URL.Query().Has("limit") {
-		writeError(w, http.StatusBadRequest, "use only one event history page size")
+	limit, ok := parseLimit(w, r)
+	if !ok {
 		return
 	}
 	filter, ok := parseEventListFilter(w, r)
@@ -322,7 +336,7 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := api.listHistoryEvents(r, sessionID, limit, turns, filter)
+	result, err := api.listHistoryEvents(r, sessionID, limit, turns, filter)
 	if errors.Is(err, errInvalidEventHistoryCursor) {
 		writeError(w, http.StatusBadRequest, eventHistoryCursorMessage(err))
 		return
@@ -332,7 +346,13 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, eventHistoryResponse{Events: eventResponses(events)})
+	responses := boundedEventResponses(result.Events, result.PreferLatest, maxEventHistoryBytes)
+	page, err := api.eventHistoryPage(r.Context(), sessionID, responses, filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to inspect event page")
+		return
+	}
+	writeJSON(w, http.StatusOK, eventHistoryResponse{Events: responses, Page: page})
 }
 
 func (api API) eventAttachmentHandler(w http.ResponseWriter, r *http.Request) {
@@ -392,7 +412,7 @@ func (api API) listHistoryEvents(
 	limit int,
 	turns int,
 	filter store.EventListFilter,
-) ([]store.Event, error) {
+) (eventHistoryResult, error) {
 	query := r.URL.Query()
 	rawAfterSeq := query.Get("after_seq")
 	rawBeforeSeq := query.Get("before_seq")
@@ -402,7 +422,7 @@ func (api API) listHistoryEvents(
 	if rawTail != "" {
 		parsedTail, err := strconv.ParseBool(rawTail)
 		if err != nil {
-			return nil, fmt.Errorf("%w: tail must be a boolean", errInvalidEventHistoryCursor)
+			return eventHistoryResult{}, fmt.Errorf("%w: tail must be a boolean", errInvalidEventHistoryCursor)
 		}
 		tail = parsedTail
 	}
@@ -418,38 +438,52 @@ func (api API) listHistoryEvents(
 		cursorCount++
 	}
 	if cursorCount > 1 {
-		return nil, fmt.Errorf("%w: use only one event history cursor", errInvalidEventHistoryCursor)
+		return eventHistoryResult{}, fmt.Errorf("%w: use only one event history cursor", errInvalidEventHistoryCursor)
 	}
-	if turns > 0 && !tail && rawBeforeSeq == "" {
-		return nil, fmt.Errorf("%w: turns requires tail=true or before_seq", errInvalidEventHistoryCursor)
+	if turns > 0 && !tail && rawBeforeSeq == "" && rawAfterSeq == "" {
+		return eventHistoryResult{}, fmt.Errorf("%w: turns requires tail=true, before_seq, or after_seq", errInvalidEventHistoryCursor)
 	}
 
 	if tail {
+		var events []store.Event
+		var err error
 		if turns > 0 {
-			return api.store.ListRecentEventTurnsFiltered(r.Context(), sessionID, turns, filter)
+			events, err = api.store.ListRecentEventTurnsPageFiltered(r.Context(), sessionID, turns, limit, filter)
+		} else {
+			events, err = api.listBoundarySafeRecentEvents(r.Context(), sessionID, limit, filter)
 		}
-		return api.listBoundarySafeRecentEvents(r.Context(), sessionID, limit, filter)
+		return eventHistoryResult{Events: events, PreferLatest: true}, err
 	}
 	if rawBeforeSeq != "" {
 		beforeSeq, err := parseNonNegativeInt64(rawBeforeSeq, "before_seq")
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s", errInvalidEventHistoryCursor, err.Error())
+			return eventHistoryResult{}, fmt.Errorf("%w: %s", errInvalidEventHistoryCursor, err.Error())
 		}
+		var events []store.Event
 		if turns > 0 {
-			return api.store.ListEventTurnsBeforeFiltered(r.Context(), sessionID, beforeSeq, turns, filter)
+			events, err = api.store.ListEventTurnsBeforePageFiltered(r.Context(), sessionID, beforeSeq, turns, limit, filter)
+		} else {
+			events, err = api.listBoundarySafeEventsBefore(r.Context(), sessionID, beforeSeq, limit, filter)
 		}
-		return api.listBoundarySafeEventsBefore(r.Context(), sessionID, beforeSeq, limit, filter)
+		return eventHistoryResult{Events: events, PreferLatest: true}, err
 	}
 
 	afterSeq := int64(0)
 	if rawAfterSeq != "" {
 		parsedAfterSeq, err := parseNonNegativeInt64(rawAfterSeq, "after_seq")
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s", errInvalidEventHistoryCursor, err.Error())
+			return eventHistoryResult{}, fmt.Errorf("%w: %s", errInvalidEventHistoryCursor, err.Error())
 		}
 		afterSeq = parsedAfterSeq
 	}
-	return api.store.ListEventsFiltered(r.Context(), sessionID, afterSeq, limit, filter)
+	var events []store.Event
+	var err error
+	if turns > 0 {
+		events, err = api.store.ListEventTurnsAfterFiltered(r.Context(), sessionID, afterSeq, turns, limit, filter)
+	} else {
+		events, err = api.store.ListEventsFiltered(r.Context(), sessionID, afterSeq, limit, filter)
+	}
+	return eventHistoryResult{Events: events}, err
 }
 
 func (api API) listBoundarySafeRecentEvents(
@@ -557,7 +591,7 @@ func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {
 	liveEvents, unsubscribe := api.events.Subscribe(sessionID)
 	defer unsubscribe()
 
-	replayedEvents, err := api.replayEvents(r.Context(), sessionID, afterSeq, filter)
+	replayedEvents, resyncRequired, err := api.replayEvents(r.Context(), sessionID, afterSeq, filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to replay events")
 		return
@@ -573,6 +607,15 @@ func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	flusher.Flush()
+	if resyncRequired {
+		if err := writeSSEControl(w, streamResyncEventType, map[string]any{
+			"reason":    "replay_window_exceeded",
+			"after_seq": afterSeq,
+		}); err == nil {
+			flusher.Flush()
+		}
+		return
+	}
 
 	highestSeqSent := afterSeq
 	for _, event := range replayedEvents {
@@ -669,31 +712,26 @@ func (api API) replayEvents(
 	sessionID string,
 	afterSeq int64,
 	filter store.EventListFilter,
-) ([]store.Event, error) {
-	events := make([]store.Event, 0)
-	nextAfterSeq := afterSeq
-
-	for {
-		page, err := api.store.ListEventsFiltered(ctx, sessionID, nextAfterSeq, maxEventLimit, filter)
+) ([]store.Event, bool, error) {
+	events, err := api.store.ListEventsFiltered(ctx, sessionID, afterSeq, maxEventLimit+1, filter)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(events) > maxEventLimit {
+		return nil, true, nil
+	}
+	usedBytes := 0
+	for _, event := range events {
+		encoded, err := json.Marshal(newEventResponse(event))
 		if err != nil {
-			return nil, err
+			return nil, false, fmt.Errorf("marshal replay event: %w", err)
 		}
-		if len(page) == 0 {
-			return events, nil
-		}
-
-		events = append(events, page...)
-
-		lastSeq := page[len(page)-1].Seq
-		if lastSeq <= nextAfterSeq {
-			return nil, fmt.Errorf("event replay did not advance past seq %d", nextAfterSeq)
-		}
-		nextAfterSeq = lastSeq
-
-		if len(page) < maxEventLimit {
-			return events, nil
+		usedBytes += len(encoded)
+		if usedBytes > maxEventHistoryBytes {
+			return nil, true, nil
 		}
 	}
+	return events, false, nil
 }
 
 func (api API) sessionExists(w http.ResponseWriter, r *http.Request, sessionID string) bool {
@@ -855,6 +893,87 @@ func eventResponses(events []store.Event) []eventResponse {
 	return responses
 }
 
+func boundedEventResponses(events []store.Event, preferLatest bool, maxBytes int) []eventResponse {
+	responses := eventResponses(events)
+	if maxBytes <= 0 || len(responses) == 0 {
+		return responses
+	}
+
+	used := 2
+	if preferLatest {
+		start := len(responses)
+		for index := len(responses) - 1; index >= 0; index-- {
+			encoded, err := json.Marshal(responses[index])
+			if err != nil {
+				continue
+			}
+			next := used + len(encoded)
+			if start < len(responses) {
+				next++
+			}
+			if next > maxBytes && start < len(responses) {
+				break
+			}
+			if next > maxBytes {
+				responses[index].Payload = json.RawMessage(`{"_gorchestra_window_truncated":true}`)
+				return responses[index : index+1]
+			}
+			start = index
+			used = next
+		}
+		return responses[start:]
+	}
+
+	end := 0
+	for index := range responses {
+		encoded, err := json.Marshal(responses[index])
+		if err != nil {
+			continue
+		}
+		next := used + len(encoded)
+		if end > 0 {
+			next++
+		}
+		if next > maxBytes && end > 0 {
+			break
+		}
+		if next > maxBytes {
+			responses[index].Payload = json.RawMessage(`{"_gorchestra_window_truncated":true}`)
+			return responses[index : index+1]
+		}
+		end = index + 1
+		used = next
+	}
+	return responses[:end]
+}
+
+func (api API) eventHistoryPage(
+	ctx context.Context,
+	sessionID string,
+	events []eventResponse,
+	_ store.EventListFilter,
+) (eventHistoryPage, error) {
+	if len(events) == 0 {
+		return eventHistoryPage{}, nil
+	}
+	first := events[0]
+	last := events[len(events)-1]
+	session, err := api.store.GetSession(ctx, sessionID)
+	if err != nil {
+		return eventHistoryPage{}, err
+	}
+	hasOlder := first.Seq > 1
+	hasNewer := session.LastEventSeq > last.Seq
+	return eventHistoryPage{
+		FirstSeq:      first.Seq,
+		LastSeq:       last.Seq,
+		HasOlder:      hasOlder,
+		HasNewer:      hasNewer,
+		StartsMidTurn: hasOlder && first.Type != "user.message.completed",
+		EndsMidTurn:   hasNewer,
+	}, nil
+}
+
 func newEventResponse(event store.Event) eventResponse {
 	return eventResponse{
 		ID:        event.ID,
@@ -870,7 +989,7 @@ func newEventResponse(event store.Event) eventResponse {
 }
 
 func responseEventPayload(payload json.RawMessage) json.RawMessage {
-	if len(payload) <= maxEventPayloadStringLen {
+	if len(payload) <= maxEventPayloadStringLen && !bytes.Contains(payload, []byte(`"data_url"`)) {
 		return payload
 	}
 
@@ -896,6 +1015,13 @@ func truncatePayloadValue(value any) (any, bool) {
 		next := make(map[string]any, len(typed)+1)
 		changed := false
 		for key, child := range typed {
+			if key == "data_url" {
+				if text, ok := child.(string); ok && text != "" {
+					next[key] = ""
+					changed = true
+					continue
+				}
+			}
 			truncatedChild, childChanged := truncatePayloadValue(child)
 			next[key] = truncatedChild
 			changed = changed || childChanged
@@ -1004,6 +1130,18 @@ func writeSSE(w http.ResponseWriter, event store.Event) error {
 	}
 
 	return nil
+}
+
+func writeSSEControl(w http.ResponseWriter, eventType string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal sse control event: %w", err)
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\n", eventType); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "data: %s\n\n", body)
+	return err
 }
 
 func writeSSEComment(w http.ResponseWriter, comment string) error {

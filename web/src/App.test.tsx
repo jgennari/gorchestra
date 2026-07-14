@@ -901,7 +901,21 @@ test('successful prompt submit keeps the current transcript visible while histor
 
 test('switching back to a cached session restores transcript before replaying stream updates', async () => {
   const user = userEvent.setup()
-  const fetch = fetchMock()
+  const baseFetch = fetchMock()
+  let tailRequests = 0
+  let resolveTailRefresh: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions/sess_1/events?tail=true&turns=2') {
+      tailRequests += 1
+      if (tailRequests === 2) {
+        await new Promise<void>((resolve) => {
+          resolveTailRefresh = resolve
+        })
+        return jsonResponse({ events: [event(40, 'user.message.completed', { text: 'Cached prompt' })] })
+      }
+    }
+    return baseFetch(url, init)
+  })
   vi.stubGlobal('fetch', fetch)
 
   render(<App />)
@@ -917,11 +931,16 @@ test('switching back to a cached session restores transcript before replaying st
 
   await user.click(screen.getAllByRole('button', { name: /Inspect repo/ })[0])
 
-  expect(screen.getByText('Cached prompt')).toBeInTheDocument()
+  expect(await screen.findByText('Cached prompt')).toBeInTheDocument()
   expect(screen.queryByText('Loading chat history...')).not.toBeInTheDocument()
   expect(
     fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2'),
-  ).toHaveLength(1)
+  ).toHaveLength(2)
+
+  await act(async () => {
+    resolveTailRefresh?.()
+    await Promise.resolve()
+  })
 
   await waitFor(() =>
     expect(

@@ -1026,6 +1026,16 @@ func (s *Store) ListRecentEventTurnsFiltered(
 	turns int,
 	filter EventListFilter,
 ) ([]Event, error) {
+	return s.ListRecentEventTurnsPageFiltered(ctx, sessionID, turns, 0, filter)
+}
+
+func (s *Store) ListRecentEventTurnsPageFiltered(
+	ctx context.Context,
+	sessionID string,
+	turns int,
+	limit int,
+	filter EventListFilter,
+) ([]Event, error) {
 	startSeq, found, err := s.eventTurnStartSeq(ctx, sessionID, nil, turns)
 	if err != nil {
 		return nil, err
@@ -1033,7 +1043,7 @@ func (s *Store) ListRecentEventTurnsFiltered(
 	if !found {
 		startSeq = 0
 	}
-	return s.listEventTurnRange(ctx, sessionID, startSeq, nil, filter)
+	return s.listEventTurnRange(ctx, sessionID, startSeq, nil, limit, true, filter)
 }
 
 func (s *Store) ListEventTurnsBeforeFiltered(
@@ -1043,6 +1053,17 @@ func (s *Store) ListEventTurnsBeforeFiltered(
 	turns int,
 	filter EventListFilter,
 ) ([]Event, error) {
+	return s.ListEventTurnsBeforePageFiltered(ctx, sessionID, beforeSeq, turns, 0, filter)
+}
+
+func (s *Store) ListEventTurnsBeforePageFiltered(
+	ctx context.Context,
+	sessionID string,
+	beforeSeq int64,
+	turns int,
+	limit int,
+	filter EventListFilter,
+) ([]Event, error) {
 	startSeq, found, err := s.eventTurnStartSeq(ctx, sessionID, &beforeSeq, turns)
 	if err != nil {
 		return nil, err
@@ -1050,7 +1071,26 @@ func (s *Store) ListEventTurnsBeforeFiltered(
 	if !found {
 		startSeq = 0
 	}
-	return s.listEventTurnRange(ctx, sessionID, startSeq, &beforeSeq, filter)
+	return s.listEventTurnRange(ctx, sessionID, startSeq, &beforeSeq, limit, true, filter)
+}
+
+func (s *Store) ListEventTurnsAfterFiltered(
+	ctx context.Context,
+	sessionID string,
+	afterSeq int64,
+	turns int,
+	limit int,
+	filter EventListFilter,
+) ([]Event, error) {
+	endSeq, found, err := s.eventTurnEndSeq(ctx, sessionID, afterSeq, turns)
+	if err != nil {
+		return nil, err
+	}
+	var beforeSeq *int64
+	if found {
+		beforeSeq = &endSeq
+	}
+	return s.listEventTurnRange(ctx, sessionID, afterSeq+1, beforeSeq, limit, false, filter)
 }
 
 func (s *Store) eventTurnStartSeq(ctx context.Context, sessionID string, beforeSeq *int64, turns int) (int64, bool, error) {
@@ -1073,11 +1113,27 @@ func (s *Store) eventTurnStartSeq(ctx context.Context, sessionID string, beforeS
 	return seq, true, nil
 }
 
+func (s *Store) eventTurnEndSeq(ctx context.Context, sessionID string, afterSeq int64, turns int) (int64, bool, error) {
+	query := `SELECT seq FROM events
+		WHERE session_id = ? AND type = 'user.message.completed' AND seq > ?
+		ORDER BY seq ASC LIMIT 1 OFFSET ?`
+	var seq int64
+	if err := s.db.QueryRowContext(ctx, query, sessionID, afterSeq, turns).Scan(&seq); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("find event turn end boundary: %w", err)
+	}
+	return seq, true, nil
+}
+
 func (s *Store) listEventTurnRange(
 	ctx context.Context,
 	sessionID string,
 	startSeq int64,
 	beforeSeq *int64,
+	limit int,
+	preferLatest bool,
 	filter EventListFilter,
 ) ([]Event, error) {
 	query := `SELECT id, session_id, seq, type, role, status, payload_json, created_at
@@ -1095,7 +1151,16 @@ func (s *Store) listEventTurnRange(
 	if !filter.IncludeDebug {
 		query += ` ` + nonDebugEventSQL()
 	}
-	query += ` ORDER BY seq ASC`
+	if preferLatest && limit > 0 {
+		query += ` ORDER BY seq DESC LIMIT ?`
+		args = append(args, limit)
+	} else {
+		query += ` ORDER BY seq ASC`
+		if limit > 0 {
+			query += ` LIMIT ?`
+			args = append(args, limit)
+		}
+	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1113,6 +1178,9 @@ func (s *Store) listEventTurnRange(
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list event turns rows: %w", err)
+	}
+	if preferLatest && limit > 0 {
+		reverseEvents(events)
 	}
 	return events, nil
 }

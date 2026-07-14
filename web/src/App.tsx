@@ -571,11 +571,17 @@ function App() {
 
   const {
     events,
+    liveEvents,
     streamState,
     error: streamError,
     hasOlderEvents,
+    hasNewerEvents,
     loadingOlderEvents,
+    loadingNewerEvents,
     loadOlderEvents,
+    loadNewerEvents,
+    jumpToLatest,
+    setFollowingTail,
   } = useSessionEvents(selectedSessionID, {
     onEvent: handleSessionEvent,
     refreshKey: eventRefreshKey,
@@ -583,14 +589,14 @@ function App() {
   })
 
   useEffect(() => {
-    selectedEventsRef.current = events
-  }, [events])
+    selectedEventsRef.current = liveEvents
+  }, [liveEvents])
 
   useEffect(() => {
     if (!selectedSessionID || !notificationAttentionRestored) {
       return
     }
-    const latestSeq = Math.max(lastSeq(events), latestSessionSeq(selectedSession))
+    const latestSeq = Math.max(lastSeq(liveEvents), latestSessionSeq(selectedSession))
     const heldAttentionSeq = effectiveNotificationAttentionSeqBySession[selectedSessionID] ?? 0
     if (heldAttentionSeq > 0 && latestSeq <= heldAttentionSeq) {
       return
@@ -598,7 +604,7 @@ function App() {
     markSessionSeen(selectedSessionID, latestSeq)
   }, [
     effectiveNotificationAttentionSeqBySession,
-    events,
+    liveEvents,
     markSessionSeen,
     notificationAttentionRestored,
     selectedSession,
@@ -1292,10 +1298,16 @@ function App() {
               session={selectedSession}
               resolvingSessionID={resolvingChatSessionID}
               events={events}
+              liveEvents={liveEvents}
               streamState={streamState}
               hasOlderEvents={hasOlderEvents}
+              hasNewerEvents={hasNewerEvents}
               loadingOlderEvents={loadingOlderEvents}
+              loadingNewerEvents={loadingNewerEvents}
               onLoadOlderEvents={loadOlderEvents}
+              onLoadNewerEvents={loadNewerEvents}
+              onJumpToLatest={jumpToLatest}
+              onFollowingTailChange={setFollowingTail}
               errorMessage={error || streamError}
               showDebugEvents={showDebugEvents}
               onShowDebugEventsChange={handleShowDebugEventsChange}
