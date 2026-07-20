@@ -314,13 +314,18 @@ func TestInvalidJSONProducesParseError(t *testing.T) {
 
 func TestAgentRunsFakeClaudeStream(t *testing.T) {
 	t.Setenv("GORCHESTRA_FAKE_CLAUDE_STREAM", "1")
+	t.Setenv("GORCHESTRA_FAKE_CLAUDE_EXPECT_ENV", "run-only")
+	t.Setenv("GORCHESTRA_FAKE_CLAUDE_EXPECT_CONTEXT", "Use the Gorchestra host controls.")
+	t.Setenv("GORCHESTRA_AGENT_RUN_TEST_VALUE", "parent")
 	agent := fakeClaudeAgent(t)
 	recorder := newEventRecorder()
 
 	err := agent.Run(context.Background(), agents.AgentInput{
-		SessionID: "sess_test",
-		Message:   "hello",
-		Workdir:   t.TempDir(),
+		SessionID:   "sess_test",
+		Message:     "hello",
+		Workdir:     t.TempDir(),
+		Environment: map[string]string{"GORCHESTRA_AGENT_RUN_TEST_VALUE": "run-only"},
+		Context:     "Use the Gorchestra host controls.",
 	}, recorder.emit)
 	if err != nil {
 		t.Fatalf("run agent: %v", err)
@@ -333,6 +338,9 @@ func TestAgentRunsFakeClaudeStream(t *testing.T) {
 		"agent.message.completed",
 		"agent.run.completed",
 	})
+	if got := os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE"); got != "parent" {
+		t.Fatalf("expected parent environment to remain unchanged, got %q", got)
+	}
 }
 
 func normalizeLines(t *testing.T, lines []string) []normalizedEvent {
@@ -410,6 +418,21 @@ func (r *eventRecorder) snapshot() []normalizedEvent {
 }
 
 func runFakeClaude() {
+	if expected := os.Getenv("GORCHESTRA_FAKE_CLAUDE_EXPECT_ENV"); expected != "" && os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE") != expected {
+		os.Exit(10)
+	}
+	if expected := os.Getenv("GORCHESTRA_FAKE_CLAUDE_EXPECT_CONTEXT"); expected != "" {
+		prompt := ""
+		for index, arg := range os.Args {
+			if arg == "-p" && index+1 < len(os.Args) {
+				prompt = os.Args[index+1]
+				break
+			}
+		}
+		if !strings.Contains(prompt, "<gorchestra_context>\n"+expected+"\n</gorchestra_context>") || !strings.HasSuffix(prompt, "\n\nhello") {
+			os.Exit(11)
+		}
+	}
 	encoder := json.NewEncoder(os.Stdout)
 	_ = encoder.Encode(map[string]any{
 		"type":       "system",

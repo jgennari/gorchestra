@@ -8,6 +8,7 @@ import {
   eventStreamURL,
   fetchAgentOptions,
   fetchQueuedMessages,
+  getHostStatus,
   getSessionFileContent,
   isAgentType,
   listEvents,
@@ -18,16 +19,23 @@ import {
   listRecentEventTurns,
   listSessions,
   listSessionFiles,
+  listHostLogs,
   listWorkspaceRoots,
   restoreSession,
   searchSessionFiles,
   sessionActivityStreamURL,
   removeQueuedMessage,
+  restartHost,
+  startHost,
+  stopHost,
   submitMessage,
   updateSessionAgentOptions,
   updateSessionFileContent,
   updateSessionTitle,
   updateSessionWorkspace,
+  validateHost,
+  checkHost,
+  hostLogStreamURL,
 } from '@/lib/api'
 
 test('session API helpers build the expected URLs', async () => {
@@ -545,6 +553,47 @@ test('agent type validation only accepts known agents', () => {
   expect(isAgentType('opencode')).toBe(true)
   expect(isAgentType('pi')).toBe(true)
   expect(isAgentType('other')).toBe(false)
+})
+
+test('host API helpers use the session host endpoints', async () => {
+  const status = {
+    session_id: 'sess_1',
+    config: { path: '.gorchestra/host.yaml', present: true, valid: true, stale: false, errors: [] },
+    runtime: { status: 'stopped' },
+    services: [],
+    log_cursor: 0,
+  }
+  const expectedPosts = new Set(['validate', 'start', 'stop', 'restart', 'check'])
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(url)
+    if (path === '/api/sessions/sess_1/host') {
+      expect(init?.method).toBeUndefined()
+      return jsonResponse(status)
+    }
+    if (path === '/api/sessions/sess_1/host/logs?after_seq=4&limit=200&service=web') {
+      expect(init?.method).toBeUndefined()
+      return jsonResponse({ chunks: [], first_seq: 0, last_seq: 0, truncated: false })
+    }
+    const action = path.slice('/api/sessions/sess_1/host/'.length)
+    if (expectedPosts.has(action)) {
+      expect(init?.method).toBe('POST')
+      return jsonResponse(status)
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await getHostStatus('sess_1')
+  await validateHost('sess_1')
+  await startHost('sess_1')
+  await stopHost('sess_1')
+  await restartHost('sess_1')
+  await checkHost('sess_1')
+  await listHostLogs('sess_1', { afterSeq: 4, limit: 200, service: 'web' })
+
+  expect(hostLogStreamURL('sess_1', 4, 'web')).toBe(
+    '/api/sessions/sess_1/host/logs/stream?after_seq=4&service=web',
+  )
 })
 
 function jsonResponse(body: unknown) {

@@ -301,6 +301,9 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 	}
 
 	cmd := a.command(workdir)
+	if err := agents.ApplyEnvironment(cmd, input.Environment); err != nil {
+		return fmt.Errorf("configure codex environment: %w", err)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("create codex stdin pipe: %w", err)
@@ -692,7 +695,7 @@ func (r *appServerRun) executeMessage(ctx context.Context, input agents.AgentInp
 			return err
 		}
 	}
-	if err := r.startTurn(ctx, input.Message, workdir); err != nil {
+	if err := r.startTurn(ctx, input.ProviderMessage(), workdir); err != nil {
 		return err
 	}
 	return r.awaitTerminal(ctx)

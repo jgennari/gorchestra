@@ -23,6 +23,7 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "push_subscriptions")
 	assertTableExists(t, ctx, store, "push_delivery_attempts")
 	assertTableExists(t, ctx, store, "notification_attention")
+	assertTableExists(t, ctx, store, "host_runtimes")
 	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
 	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
 	assertColumnExists(t, ctx, store, "sessions", "next_event_seq")
@@ -41,8 +42,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 12 {
-		t.Fatalf("expected twelve recorded migrations, got %d", count)
+	if count != 13 {
+		t.Fatalf("expected thirteen recorded migrations, got %d", count)
 	}
 }
 

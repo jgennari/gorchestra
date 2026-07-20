@@ -682,6 +682,28 @@ test('copies fenced code blocks from user and assistant messages', async () => {
   expect(writeText).toHaveBeenNthCalledWith(2, expect.stringContaining('const answer = 42'))
 })
 
+test('shows an explicit error when code cannot be copied', async () => {
+  const user = userEvent.setup()
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: vi.fn(async () => { throw new DOMException('Denied', 'NotAllowedError') }) },
+  })
+  Object.defineProperty(document, 'execCommand', {
+    configurable: true,
+    value: vi.fn(() => false),
+  })
+
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: '```\nno copy\n```' })]}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Copy code' }))
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Copy failed')
+})
+
 test('copies full message text from the timestamp rail and hides copy while streaming', async () => {
   const user = userEvent.setup()
   const writeText = vi.fn(async () => undefined)
@@ -923,9 +945,11 @@ test('collapses extra tool calls after the next message bubble appears', async (
   expect(screen.getByText('tool-3')).toBeInTheDocument()
   expect(screen.queryByText('tool-4')).not.toBeInTheDocument()
   expect(screen.getByText('Done with the tools.')).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: /show 2 more/i })).toBeInTheDocument()
+  const showMoreButton = screen.getByRole('button', { name: /show 2 more/i })
+  expect(showMoreButton).toHaveClass('flex', 'min-h-6', 'w-fit', 'py-1', 'leading-4')
+  expect(showMoreButton).not.toHaveClass('inline-flex', 'py-0', 'leading-none')
 
-  await user.click(screen.getByRole('button', { name: /show 2 more/i }))
+  await user.click(showMoreButton)
 
   expect(screen.getByText('tool-4')).toBeInTheDocument()
   expect(screen.getByText('tool-5')).toBeInTheDocument()

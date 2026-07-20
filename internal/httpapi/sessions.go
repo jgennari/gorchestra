@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -375,6 +377,10 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if workspaceChanged {
+		if err := api.stopHostedPreview(r.Context(), sessionID); err != nil {
+			writeError(w, http.StatusConflict, "failed to stop the hosted preview before changing workspace: "+err.Error())
+			return
+		}
 		previousWorkspacePath := session.WorkspacePath
 		session, err = api.store.UpdateSessionWorkspace(r.Context(), store.UpdateSessionWorkspaceParams{
 			ID:            sessionID,
@@ -447,6 +453,10 @@ func (api API) archiveSessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if session.Status == store.SessionStatusRunning {
 		writeError(w, http.StatusConflict, "running session cannot be archived")
+		return
+	}
+	if err := api.stopHostedPreview(r.Context(), sessionID); err != nil {
+		writeError(w, http.StatusConflict, "failed to stop the hosted preview before archiving: "+err.Error())
 		return
 	}
 
@@ -1735,6 +1745,8 @@ func (api API) runAgent(
 		Action:            action,
 		Message:           message,
 		Workdir:           sessionWorkspacePath(session, api.workdir),
+		Environment:       api.agentRuntimeEnvironment(session.ID),
+		Context:           api.agentHostingContext(sessionWorkspacePath(session, api.workdir)),
 		Metadata:          metadata,
 		Attachments:       attachments,
 		UserInput:         api.runs,
@@ -1796,6 +1808,28 @@ func (api API) runAgent(
 		return false
 	}
 	return true
+}
+
+func (api API) agentRuntimeEnvironment(sessionID string) map[string]string {
+	environment := map[string]string{
+		"GORCHESTRA_SESSION_ID": sessionID,
+	}
+	if strings.TrimSpace(api.agentAPIURL) != "" {
+		environment["GORCHESTRA_API_URL"] = strings.TrimRight(api.agentAPIURL, "/")
+	}
+	if strings.TrimSpace(api.executable) != "" {
+		environment["GORCHESTRA_BIN"] = api.executable
+	}
+	return environment
+}
+
+func (api API) agentHostingContext(workspacePath string) string {
+	recipePath := filepath.Join(workspacePath, ".gorchestra", "host.yaml")
+	if info, err := os.Stat(recipePath); err != nil || info.IsDir() {
+		return ""
+	}
+	return `This workspace has a Gorchestra hosted-preview recipe at .gorchestra/host.yaml.
+Use "$GORCHESTRA_BIN" host validate|status|start|stop|restart|check|logs|url to manage this session's preview. The CLI targets this session automatically through GORCHESTRA_SESSION_ID and GORCHESTRA_API_URL.`
 }
 
 func (api API) persistProviderSessionIDFromEvent(

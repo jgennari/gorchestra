@@ -27,6 +27,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents/opencode"
 	"github.com/jgennari/gorchestra/internal/agents/pi"
 	"github.com/jgennari/gorchestra/internal/events"
+	"github.com/jgennari/gorchestra/internal/hosting"
 	"github.com/jgennari/gorchestra/internal/httpapi"
 	"github.com/jgennari/gorchestra/internal/notifications"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
@@ -39,28 +40,39 @@ const databaseFileName = "gorchestra.db"
 var version = "dev"
 
 type config struct {
-	configPath     string
-	host           string
-	port           string
-	dataDir        string
-	db             string
-	workspace      string
-	workspaceRoots []string
-	codexBin       string
-	codexSandbox   string
-	codexNetwork   bool
-	codexSearch    string
-	codexModel     string
-	claudeBin      string
-	claudeModel    string
-	opencodeBin    string
-	piBin          string
-	pushSubject    string
-	open           bool
-	showVersion    bool
+	configPath         string
+	host               string
+	port               string
+	dataDir            string
+	db                 string
+	workspace          string
+	workspaceRoots     []string
+	codexBin           string
+	codexSandbox       string
+	codexNetwork       bool
+	codexSearch        string
+	codexModel         string
+	claudeBin          string
+	claudeModel        string
+	opencodeBin        string
+	piBin              string
+	pushSubject        string
+	previewURLTemplate string
+	open               bool
+	showVersion        bool
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "host" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := runHostCLI(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "gorchestra host: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	cfg, err := parseConfig()
 	if err != nil {
 		log.Fatalf("configuration failed: %v", err)
@@ -102,6 +114,19 @@ func main() {
 	notificationService.Start(ctx, eventService)
 	if err := recoverInterruptedRuns(ctx, dbStore, eventService); err != nil {
 		log.Fatalf("recover interrupted runs failed: %v", err)
+	}
+	hostingManager, err := initializeHostingManager(ctx, dbStore, eventService, cfg.previewURLTemplate)
+	if err != nil {
+		log.Fatalf("hosted preview startup failed: %v", err)
+	}
+	if hostingManager != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := hostingManager.Shutdown(shutdownCtx); err != nil {
+				log.Printf("hosted preview shutdown failed: %v", err)
+			}
+		}()
 	}
 
 	codexAgent := codex.New(
@@ -160,9 +185,13 @@ func main() {
 		log.Printf("frontend assets unavailable: %v", err)
 	}
 
+	executable, err := os.Executable()
+	if err != nil {
+		log.Printf("resolve gorchestra executable failed: %v", err)
+	}
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets}),
+		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets, AgentAPIURL: listeningURL("127.0.0.1", cfg.port), Executable: executable, Hosting: hostingManager, HostStore: dbStore}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -188,10 +217,17 @@ func main() {
 		}
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("server shutdown failed: %v", err)
+		}
+		cancel()
+
+		if hostingManager != nil {
+			hostingShutdownCtx, hostingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := hostingManager.Shutdown(hostingShutdownCtx); err != nil {
+				log.Printf("hosted preview shutdown failed: %v", err)
+			}
+			hostingCancel()
 		}
 
 		if err := <-errc; err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -226,6 +262,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	flags.StringVar(&cfg.opencodeBin, "opencode-bin", "", "path to the OpenCode CLI binary")
 	flags.StringVar(&cfg.piBin, "pi-bin", "", "path to the Pi CLI binary")
 	flags.StringVar(&cfg.pushSubject, "push-subject", "", "VAPID subject for Web Push notifications")
+	flags.StringVar(&cfg.previewURLTemplate, "preview-url-template", "", "hosted preview URL template containing {slug}")
 	flags.BoolVar(&cfg.open, "open", false, "open the app in the default browser after startup")
 	flags.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -247,6 +284,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	opencodeBinFlag := flagWasSet(flags, "opencode-bin")
 	piBinFlag := flagWasSet(flags, "pi-bin")
 	pushSubjectFlag := flagWasSet(flags, "push-subject")
+	previewURLTemplateFlag := flagWasSet(flags, "preview-url-template")
 	openFlag := flagWasSet(flags, "open")
 	workspaceRootsFlag := flagWasSet(flags, "workspace-root")
 	if cfg.showVersion {
@@ -310,8 +348,14 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	if !pushSubjectFlag {
 		cfg.pushSubject = envOr(configGetenv, "GORCHESTRA_PUSH_SUBJECT", notifications.DefaultSubscriber)
 	}
+	if !previewURLTemplateFlag {
+		cfg.previewURLTemplate = envOr(configGetenv, "GORCHESTRA_PREVIEW_URL_TEMPLATE", "http://{slug}.localhost:"+cfg.port)
+	}
 	if !openFlag {
 		cfg.open = envBool(configGetenv, "GORCHESTRA_OPEN", false)
+	}
+	if err := hosting.ValidatePreviewURLTemplate(cfg.previewURLTemplate); err != nil {
+		return config{}, fmt.Errorf("preview URL template: %w", err)
 	}
 
 	if cfg.db == "" {

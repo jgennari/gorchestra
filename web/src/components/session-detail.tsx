@@ -27,6 +27,7 @@ import {
   pendingUserInputRequest,
   pendingPermissionRequests,
 } from '@/lib/events'
+import { clipboardCopyErrorMessage, copyText } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
 
 type Props = {
@@ -398,6 +399,7 @@ function SessionDetailsMenu({
   const [open, setOpen] = useState(false)
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [copiedField, setCopiedField] = useState<'session' | 'workspace' | null>(null)
+  const [copyFailed, setCopyFailed] = useState(false)
   const [savingPermissionPolicy, setSavingPermissionPolicy] = useState(false)
   const permissionPolicy = effectivePermissionPolicy(session)
   const mobileActionPending =
@@ -438,12 +440,14 @@ function SessionDetailsMenu({
   }, [open])
 
   async function handleCopy(value: string, field: 'session' | 'workspace') {
+    setCopyFailed(false)
     try {
-      await navigator.clipboard.writeText(value)
+      await copyText(value)
       setCopiedField(field)
       window.setTimeout(() => setCopiedField(null), 1200)
     } catch {
       setCopiedField(null)
+      setCopyFailed(true)
     }
   }
 
@@ -470,7 +474,10 @@ function SessionDetailsMenu({
         aria-label="Session details"
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          setCopyFailed(false)
+          setOpen((value) => !value)
+        }}
       >
         <Ellipsis aria-hidden="true" />
       </Button>
@@ -513,6 +520,11 @@ function SessionDetailsMenu({
                 </Button>
               }
             />
+            {copyFailed ? (
+              <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+                {clipboardCopyErrorMessage}
+              </p>
+            ) : null}
             {session.agent_type === 'codex' || session.agent_type === 'claude' || session.agent_type === 'opencode' ? (
               <div className="space-y-2"><p className="text-xs font-medium text-muted-foreground">Permissions</p><PermissionPolicyControl value={permissionPolicy} disabled={savingPermissionPolicy || session.status === 'running'} onChange={(value) => void handlePermissionPolicyChange(value)} /></div>
             ) : null}

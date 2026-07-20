@@ -3,6 +3,10 @@ package agents
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os/exec"
+	"sort"
+	"strings"
 )
 
 var ErrUnavailable = errors.New("agents: unavailable")
@@ -71,10 +75,68 @@ type AgentInput struct {
 	Action            AgentAction
 	Message           string
 	Workdir           string
+	Environment       map[string]string
+	Context           string
 	Metadata          map[string]any
 	Attachments       []Attachment
 	UserInput         UserInputBroker
 	Permissions       PermissionBroker
+}
+
+// ProviderMessage returns the message sent to an agent provider. Context is
+// deliberately kept separate from Message so orchestration can persist and
+// display the original user-authored message while giving the provider trusted
+// Gorchestra runtime instructions.
+func (input AgentInput) ProviderMessage() string {
+	context := strings.TrimSpace(input.Context)
+	if context == "" {
+		return input.Message
+	}
+
+	message := "<gorchestra_context>\n" + context + "\n</gorchestra_context>"
+	if input.Message != "" {
+		message += "\n\n" + input.Message
+	}
+	return message
+}
+
+// ApplyEnvironment adds run-scoped environment values to cmd without changing
+// the parent process environment. Callers intentionally use this only for agent
+// runs, not availability or options probes.
+func ApplyEnvironment(cmd *exec.Cmd, overrides map[string]string) error {
+	if len(overrides) == 0 {
+		return nil
+	}
+
+	environment := cmd.Environ()
+	positions := make(map[string]int, len(environment))
+	for index, entry := range environment {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			positions[key] = index
+		}
+	}
+
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := overrides[key]
+		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, '\x00') {
+			return fmt.Errorf("invalid environment variable %q", key)
+		}
+		entry := key + "=" + value
+		if index, ok := positions[key]; ok {
+			environment[index] = entry
+			continue
+		}
+		positions[key] = len(environment)
+		environment = append(environment, entry)
+	}
+	cmd.Env = environment
+	return nil
 }
 
 type Attachment struct {

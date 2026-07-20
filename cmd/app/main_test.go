@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	eventservice "github.com/jgennari/gorchestra/internal/events"
@@ -31,6 +32,9 @@ func TestParseConfigUsesDataDirForDefaultDatabase(t *testing.T) {
 	}
 	if cfg.port != "18080" {
 		t.Fatalf("expected port 18080, got %q", cfg.port)
+	}
+	if cfg.previewURLTemplate != "http://{slug}.localhost:18080" {
+		t.Fatalf("expected local preview URL template, got %q", cfg.previewURLTemplate)
 	}
 	if cfg.dataDir != dataDir {
 		t.Fatalf("expected data dir %q, got %q", dataDir, cfg.dataDir)
@@ -107,6 +111,7 @@ GORCHESTRA_CLAUDE_MODEL=claude-test
 GORCHESTRA_OPENCODE_BIN=/opt/opencode/bin/opencode
 GORCHESTRA_PI_BIN=/opt/pi/bin/pi
 GORCHESTRA_PUSH_SUBJECT=mailto:ops@example.com
+GORCHESTRA_PREVIEW_URL_TEMPLATE=http://{slug}.dev.gennari.industries
 GORCHESTRA_OPEN=true
 `, dataDir, workspace, firstRoot, os.PathListSeparator, secondRoot))
 
@@ -153,6 +158,9 @@ GORCHESTRA_OPEN=true
 	}
 	if cfg.pushSubject != "mailto:ops@example.com" {
 		t.Fatalf("expected push subject from config, got %#v", cfg)
+	}
+	if cfg.previewURLTemplate != "http://{slug}.dev.gennari.industries" {
+		t.Fatalf("expected preview URL template from config, got %#v", cfg)
 	}
 	if cfg.codexNetwork || !cfg.open {
 		t.Fatalf("expected boolean config values, got network=%v open=%v", cfg.codexNetwork, cfg.open)
@@ -204,6 +212,19 @@ func TestParseConfigPushSubjectFlagOverridesEnvironment(t *testing.T) {
 
 	if cfg.pushSubject != "https://example.com/gorchestra" {
 		t.Fatalf("expected flag push subject, got %q", cfg.pushSubject)
+	}
+}
+
+func TestParseConfigRejectsInvalidPreviewURLTemplate(t *testing.T) {
+	workspace := t.TempDir()
+
+	_, err := parseConfigArgs([]string{
+		"--workspace", workspace,
+		"--data-dir", filepath.Join(t.TempDir(), "data"),
+		"--preview-url-template", "http://localhost/previews/{slug}",
+	}, emptyEnv)
+	if err == nil || !strings.Contains(err.Error(), "must place {slug} in the hostname") {
+		t.Fatalf("expected invalid preview URL template error, got %v", err)
 	}
 }
 

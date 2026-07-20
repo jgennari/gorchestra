@@ -27,6 +27,7 @@ import type {
   ChatTranscriptTool,
 } from '@/lib/events'
 import { buildChatTimeline } from '@/lib/events'
+import { clipboardCopyErrorMessage, copyText } from '@/lib/clipboard'
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
@@ -608,6 +609,7 @@ function ChatMessageRow({
   const [showAllTools, setShowAllTools] = useState(false)
   const [showMessageRail, setShowMessageRail] = useState(false)
   const [messageCopied, setMessageCopied] = useState(false)
+  const [messageCopyFailed, setMessageCopyFailed] = useState(false)
   const hoverIntentTimerRef = useRef<number | null>(null)
   const shouldCollapseTools = collapseExtraTools && message.tools.length > 3
   const visibleTools = !shouldCollapseTools || showAllTools ? message.tools : message.tools.slice(0, 3)
@@ -647,12 +649,14 @@ function ChatMessageRow({
     if (!message.text) {
       return
     }
+    setMessageCopyFailed(false)
     try {
-      await navigator.clipboard.writeText(message.text)
+      await copyText(message.text)
       setMessageCopied(true)
       window.setTimeout(() => setMessageCopied(false), 1200)
     } catch {
       setMessageCopied(false)
+      setMessageCopyFailed(true)
     }
   }
 
@@ -675,6 +679,11 @@ function ChatMessageRow({
               <time className="text-[11px] font-normal tabular-nums text-muted-foreground/80" dateTime={message.createdAt}>
                 {timestamp}
               </time>
+              {messageCopyFailed ? (
+                <span role="alert" title={clipboardCopyErrorMessage} className="pointer-events-auto whitespace-nowrap text-[11px] font-medium text-destructive">
+                  Copy failed
+                </span>
+              ) : null}
               {showMessageRail && showMessageCopy ? (
                 <button
                   type="button"
@@ -735,7 +744,7 @@ function ChatMessageRow({
             {shouldCollapseTools ? (
               <button
                 type="button"
-                className="inline-flex items-center gap-0.5 rounded py-0 text-[10px] font-normal leading-none text-muted-foreground/65 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="relative z-10 -ml-1 flex min-h-6 w-fit items-center gap-0.5 rounded px-1 py-1 text-[10px] font-normal leading-4 text-muted-foreground/65 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-expanded={showAllTools}
                 onClick={() => setShowAllTools((current) => !current)}
               >
@@ -1041,33 +1050,48 @@ function FloatingCopyButton({
   variant?: MarkdownVariant
 }) {
   const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
 
   async function handleCopy() {
+    setCopyFailed(false)
     try {
-      await navigator.clipboard.writeText(value)
+      await copyText(value)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     } catch {
       setCopied(false)
+      setCopyFailed(true)
     }
   }
 
   return (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={() => void handleCopy()}
-      className={cn(
-        'absolute right-4 top-2 z-10 inline-flex size-7 items-center justify-center rounded-md border text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        variant === 'inverted'
-          ? 'border-primary-foreground/20 bg-primary-foreground/12 text-primary-foreground hover:bg-primary-foreground/20'
-          : variant === 'plan'
-            ? 'border-amber-300/70 bg-amber-50/95 text-amber-800 hover:bg-amber-100 dark:border-amber-300/35 dark:bg-amber-950/80 dark:text-amber-100 dark:hover:bg-amber-900'
-            : 'border-border/70 bg-background/90 text-muted-foreground hover:bg-background hover:text-foreground',
-      )}
-    >
-      {copied ? <Check className="size-3.5" aria-hidden="true" /> : <Copy className="size-3.5" aria-hidden="true" />}
-    </button>
+    <>
+      {copyFailed ? (
+        <span
+          role="alert"
+          title={clipboardCopyErrorMessage}
+          className="absolute right-12 top-2 z-10 whitespace-nowrap rounded-md border border-destructive/30 bg-background/95 px-2 py-1 text-[11px] font-medium text-destructive shadow-sm"
+        >
+          Copy failed
+        </span>
+      ) : null}
+      <button
+        type="button"
+        aria-label={label}
+        title={copyFailed ? clipboardCopyErrorMessage : label}
+        onClick={() => void handleCopy()}
+        className={cn(
+          'absolute right-4 top-2 z-10 inline-flex size-7 items-center justify-center rounded-md border text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          variant === 'inverted'
+            ? 'border-primary-foreground/20 bg-primary-foreground/12 text-primary-foreground hover:bg-primary-foreground/20'
+            : variant === 'plan'
+              ? 'border-amber-300/70 bg-amber-50/95 text-amber-800 hover:bg-amber-100 dark:border-amber-300/35 dark:bg-amber-950/80 dark:text-amber-100 dark:hover:bg-amber-900'
+              : 'border-border/70 bg-background/90 text-muted-foreground hover:bg-background hover:text-foreground',
+        )}
+      >
+        {copied ? <Check className="size-3.5" aria-hidden="true" /> : <Copy className="size-3.5" aria-hidden="true" />}
+      </button>
+    </>
   )
 }
 

@@ -64,6 +64,10 @@
   padding-top: calc(max(env(safe-area-inset-top, 0px), 2rem) + 5rem);
 }
 
+.host-preview-body {
+  padding-top: calc(max(env(safe-area-inset-top, 0px), 2rem) + 5.25rem);
+}
+
 .mobile-file-viewer-panel {
   top: calc(max(env(safe-area-inset-top, 0px), 2rem) + 5rem);
 }
@@ -86,6 +90,10 @@
     padding-top: calc(env(safe-area-inset-top, 0px) + 4.625rem);
   }
 
+  .host-preview-body {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 4.875rem);
+  }
+
   .mobile-file-viewer-panel {
     top: calc(env(safe-area-inset-top, 0px) + 4.625rem);
   }
@@ -93,6 +101,10 @@
 
 @media (min-width: 1024px) {
   .host-console-frame {
+    padding-top: 4.75rem;
+  }
+
+  .host-preview-body {
     padding-top: 4.75rem;
   }
 

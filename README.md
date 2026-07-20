@@ -59,6 +59,7 @@ Start a session, choose a workspace, and let the agent run. Gorchestra keeps the
 - Keep typing while a run is active, queue messages, attach images, and answer agent-requested prompts when a run needs input.
 - Browse, search, preview, and edit workspace files from the side rail.
 - Review file-change diffs and jump straight into the editor for the changed file.
+- Start a workspace-defined development stack and open its stable, session-scoped preview URL.
 - Refresh or reconnect without losing the session history.
 
 <p align="center">
@@ -147,6 +148,7 @@ gorchestra --claude-bin /path/to/claude
 gorchestra --claude-model claude-sonnet-4-5
 gorchestra --opencode-bin /path/to/opencode
 gorchestra --pi-bin /path/to/pi
+gorchestra --preview-url-template 'http://{slug}.localhost:8080'
 gorchestra --version
 ```
 
@@ -160,7 +162,7 @@ Linux: $XDG_DATA_HOME/gorchestra/gorchestra.db
 Linux fallback: ~/.local/share/gorchestra/gorchestra.db
 ```
 
-Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, `GORCHESTRA_CLAUDE_BIN`, `GORCHESTRA_CLAUDE_MODEL`, `GORCHESTRA_OPENCODE_BIN`, `GORCHESTRA_PI_BIN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
+Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, `GORCHESTRA_PREVIEW_URL_TEMPLATE`, `GORCHESTRA_CLAUDE_BIN`, `GORCHESTRA_CLAUDE_MODEL`, `GORCHESTRA_OPENCODE_BIN`, `GORCHESTRA_PI_BIN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
 
 Config files use the same env-style names:
 
@@ -171,6 +173,7 @@ GORCHESTRA_DATA_DIR=/opt/homebrew/var/gorchestra
 GORCHESTRA_WORKSPACE=~
 GORCHESTRA_WORKSPACE_ROOTS=~
 GORCHESTRA_OPEN=false
+GORCHESTRA_PREVIEW_URL_TEMPLATE=http://{slug}.localhost:15173
 GORCHESTRA_CODEX_BIN=codex
 GORCHESTRA_CLAUDE_BIN=claude
 GORCHESTRA_OPENCODE_BIN=opencode
@@ -187,6 +190,20 @@ rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/gorchestra"
 ```
 
 Codex shell commands run with network access enabled by default. Codex native web search runs in live mode by default; use `--codex-web-search=cached` or `--codex-web-search=disabled` to change it.
+
+## Hosted Development Previews
+
+A session can supervise a development stack declared in `<workspace>/.gorchestra/host.yaml`. Gorchestra runs the declared foreground processes outside the agent turn, waits for readiness, combines named services behind one stable host with path routes, and keeps bounded stdout/stderr logs in the session UI. The same lifecycle is available through `gorchestra host` for agents and terminal use.
+
+```sh
+gorchestra host validate --session "$SESSION_ID"
+gorchestra host start --session "$SESSION_ID"
+gorchestra host logs --session "$SESSION_ID" --follow
+gorchestra host url --session "$SESSION_ID"
+gorchestra host stop --session "$SESSION_ID"
+```
+
+Previews are available on macOS and Linux. They stop when Gorchestra shuts down and do not start automatically on its next boot. See [Hosted development previews](docs/hosted-previews.md) for the recipe schema, multi-service example, CLI, lifecycle, security model, Docker Compose guidance, and tailnet ingress setup.
 
 ## Build From Source
 

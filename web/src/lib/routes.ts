@@ -1,6 +1,6 @@
 const sessionRoutePrefix = '/sessions/'
 
-export type SessionRouteView = 'session' | 'console' | 'files'
+export type SessionRouteView = 'session' | 'console' | 'files' | 'host'
 
 export type SessionRoute = {
   sessionID: string | null
@@ -9,7 +9,7 @@ export type SessionRoute = {
   filePath: string | null
 }
 
-const routeViews = new Set<SessionRouteView>(['console', 'files'])
+const routeViews = new Set<SessionRouteView>(['console', 'files', 'host'])
 
 export function sessionRouteFromPathname(pathname: string): SessionRoute {
   if (!pathname.startsWith(sessionRoutePrefix)) {

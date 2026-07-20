@@ -31,6 +31,12 @@ test('session route helpers parse and build session paths', () => {
     view: 'files',
     filePath: null,
   })
+  expect(sessionRouteFromPathname('/sessions/sess_123/host')).toEqual({
+    sessionID: 'sess_123',
+    sessionSlug: null,
+    view: 'host',
+    filePath: null,
+  })
   expect(sessionRouteFromPathname('/sessions/sess_123/files/src%2Fmain.go')).toEqual({
     sessionID: 'sess_123',
     sessionSlug: null,
@@ -72,6 +78,7 @@ test('session route helpers parse and build session paths', () => {
   expect(sessionPath('sess_123')).toBe('/sessions/sess_123')
   expect(sessionPath('sess_123', 'console')).toBe('/sessions/sess_123/console')
   expect(sessionPath('sess_123', 'files')).toBe('/sessions/sess_123/files')
+  expect(sessionPath('sess_123', 'host')).toBe('/sessions/sess_123/host')
   expect(sessionPath('sess_123', 'files', 'src/main.go')).toBe('/sessions/sess_123/files/src%2Fmain.go')
   expect(sessionPath('sess_/encoded')).toBe('/sessions/sess_%2Fencoded')
   expect(sessionPath(null)).toBe('/')

@@ -132,13 +132,18 @@ func TestOpenCodeMessageChunksPreserveLeadingWhitespace(t *testing.T) {
 
 func TestAgentRunsFakeOpenCodeACP(t *testing.T) {
 	t.Setenv("GORCHESTRA_FAKE_OPENCODE_ACP", "1")
+	t.Setenv("GORCHESTRA_FAKE_OPENCODE_EXPECT_ENV", "run-only")
+	t.Setenv("GORCHESTRA_FAKE_OPENCODE_EXPECT_CONTEXT", "Use the Gorchestra host controls.")
+	t.Setenv("GORCHESTRA_AGENT_RUN_TEST_VALUE", "parent")
 	agent := fakeOpenCodeAgent(t)
 	recorder := newEventRecorder()
 
 	err := agent.Run(context.Background(), agents.AgentInput{
-		SessionID: "sess_test",
-		Message:   "hello",
-		Workdir:   t.TempDir(),
+		SessionID:   "sess_test",
+		Message:     "hello",
+		Workdir:     t.TempDir(),
+		Environment: map[string]string{"GORCHESTRA_AGENT_RUN_TEST_VALUE": "run-only"},
+		Context:     "Use the Gorchestra host controls.",
 	}, recorder.emit)
 	if err != nil {
 		t.Fatalf("run agent: %v", err)
@@ -158,6 +163,9 @@ func TestAgentRunsFakeOpenCodeACP(t *testing.T) {
 	completedPayload := events[2].Event.Payload.(map[string]any)
 	if completedPayload["text"] != "Hello" {
 		t.Fatalf("expected completed message snapshot, got %#v", completedPayload)
+	}
+	if got := os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE"); got != "parent" {
+		t.Fatalf("expected parent environment to remain unchanged, got %q", got)
 	}
 }
 
@@ -280,6 +288,9 @@ func (r *eventRecorder) snapshot() []normalizedEvent {
 }
 
 func runFakeOpenCode() {
+	if expected := os.Getenv("GORCHESTRA_FAKE_OPENCODE_EXPECT_ENV"); expected != "" && os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE") != expected {
+		os.Exit(10)
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
 	expectedModel := os.Getenv("GORCHESTRA_FAKE_OPENCODE_EXPECT_MODEL")
@@ -344,6 +355,12 @@ func runFakeOpenCode() {
 				"result":  map[string]any{},
 			})
 		case "session/prompt":
+			if expected := os.Getenv("GORCHESTRA_FAKE_OPENCODE_EXPECT_CONTEXT"); expected != "" {
+				prompt := fakeOpenCodePromptText(request)
+				if !strings.Contains(prompt, "<gorchestra_context>\n"+expected+"\n</gorchestra_context>") || !strings.HasSuffix(prompt, "\n\nhello") {
+					os.Exit(11)
+				}
+			}
 			if !modelSet {
 				_ = encoder.Encode(map[string]any{
 					"jsonrpc": "2.0",
@@ -380,6 +397,19 @@ func runFakeOpenCode() {
 			})
 		}
 	}
+}
+
+func fakeOpenCodePromptText(request map[string]any) string {
+	params, _ := request["params"].(map[string]any)
+	prompt, _ := params["prompt"].([]any)
+	for _, item := range prompt {
+		content, _ := item.(map[string]any)
+		if content["type"] == "text" {
+			text, _ := content["text"].(string)
+			return text
+		}
+	}
+	return ""
 }
 
 func TestPermissionOptionsPreserveACPIDsAndScopes(t *testing.T) {

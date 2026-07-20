@@ -251,6 +251,70 @@ export type ConsoleStatus = {
   exit_code?: number | null
 }
 
+export type HostRuntimeState = 'stopped' | 'starting' | 'running' | 'stopping' | 'failed'
+export type HostServiceState = 'stopped' | 'starting' | 'running' | 'failed'
+
+export type HostConfigStatus = {
+  path: string
+  present: boolean
+  valid: boolean
+  stale: boolean
+  digest?: string
+  loaded_digest?: string
+  name?: string
+  errors: string[]
+}
+
+export type HostRuntimeStatus = {
+  status: HostRuntimeState
+  url?: string
+  started_at?: string
+  stopped_at?: string
+  error?: string
+}
+
+export type HostServiceStatus = {
+  name: string
+  status: HostServiceState
+  port?: number
+  route_paths: string[]
+  started_at?: string
+  stopped_at?: string
+  exit_code?: number | null
+  error?: string
+}
+
+export type HostStatus = {
+  session_id: string
+  config: HostConfigStatus
+  runtime: HostRuntimeStatus
+  services: HostServiceStatus[]
+  log_cursor: number
+}
+
+export type HostLogStream = 'stdout' | 'stderr'
+
+export type HostLogChunk = {
+  seq: number
+  service: string
+  stream: HostLogStream
+  data: string
+  created_at: string
+}
+
+export type HostLogsResponse = {
+  chunks: HostLogChunk[]
+  first_seq: number
+  last_seq: number
+  truncated: boolean
+}
+
+export type HostLogOptions = {
+  afterSeq?: number
+  limit?: number
+  service?: string
+}
+
 export type PushSubscriptionPayload = {
   endpoint?: string | null
   keys?: {
@@ -762,6 +826,52 @@ export async function startConsole(sessionID: string) {
 export async function killConsole(sessionID: string) {
   await requestNoContent(`/api/sessions/${encodeURIComponent(sessionID)}/console`, {
     method: 'DELETE',
+  })
+}
+
+export async function getHostStatus(sessionID: string) {
+  return requestJSON<HostStatus>(`/api/sessions/${encodeURIComponent(sessionID)}/host`)
+}
+
+export async function validateHost(sessionID: string) {
+  return hostAction(sessionID, 'validate')
+}
+
+export async function startHost(sessionID: string) {
+  return hostAction(sessionID, 'start')
+}
+
+export async function stopHost(sessionID: string) {
+  return hostAction(sessionID, 'stop')
+}
+
+export async function restartHost(sessionID: string) {
+  return hostAction(sessionID, 'restart')
+}
+
+export async function checkHost(sessionID: string) {
+  return hostAction(sessionID, 'check')
+}
+
+export async function listHostLogs(sessionID: string, options: HostLogOptions = {}) {
+  const params = new URLSearchParams()
+  if (options.afterSeq !== undefined) params.set('after_seq', String(options.afterSeq))
+  if (options.limit !== undefined) params.set('limit', String(options.limit))
+  if (options.service) params.set('service', options.service)
+  return requestJSON<HostLogsResponse>(
+    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/host/logs`, params),
+  )
+}
+
+export function hostLogStreamURL(sessionID: string, afterSeq = 0, service?: string) {
+  const params = new URLSearchParams({ after_seq: String(afterSeq) })
+  if (service) params.set('service', service)
+  return withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/host/logs/stream`, params)
+}
+
+function hostAction(sessionID: string, action: 'validate' | 'start' | 'stop' | 'restart' | 'check') {
+  return requestJSON<HostStatus>(`/api/sessions/${encodeURIComponent(sessionID)}/host/${action}`, {
+    method: 'POST',
   })
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents"
 	"github.com/jgennari/gorchestra/internal/console"
 	eventservice "github.com/jgennari/gorchestra/internal/events"
+	"github.com/jgennari/gorchestra/internal/hosting"
 	"github.com/jgennari/gorchestra/internal/notifications"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
@@ -104,6 +105,28 @@ type NotificationService interface {
 	Debug(ctx context.Context) (notifications.DebugState, error)
 }
 
+// HostRuntimeStore is deliberately separate from Store so the hosted-preview
+// control plane does not expand every HTTP store fake and alternate backend.
+type HostRuntimeStore interface {
+	GetHostRuntime(ctx context.Context, sessionID string) (store.HostRuntime, error)
+}
+
+// HostingManager is the HTTP-facing portion of the hosted-preview supervisor.
+// Keeping this as a narrow interface makes API behavior testable without
+// starting child processes or binding ports.
+type HostingManager interface {
+	Start(context.Context, hosting.StartRequest) (hosting.Snapshot, error)
+	Stop(context.Context, string) (hosting.Snapshot, error)
+	Restart(context.Context, hosting.StartRequest) (hosting.Snapshot, error)
+	Status(string) (hosting.Snapshot, error)
+	Wait(context.Context, string) (hosting.Snapshot, error)
+	Check(context.Context, string) ([]hosting.ServiceCheck, error)
+	Logs(string, uint64, int, string) (hosting.LogSnapshot, error)
+	SubscribeLogs(string, uint64, string) (hosting.LogSnapshot, <-chan hosting.LogChunk, func(), error)
+	LookupHost(string) (string, bool)
+	ServeHTTP(http.ResponseWriter, *http.Request)
+}
+
 type Dependencies struct {
 	Store          Store
 	Events         EventService
@@ -114,6 +137,10 @@ type Dependencies struct {
 	Workdir        string
 	WorkspaceRoots []string
 	StaticAssets   fs.FS
+	AgentAPIURL    string
+	Executable     string
+	Hosting        HostingManager
+	HostStore      HostRuntimeStore
 }
 
 type API struct {
@@ -126,6 +153,10 @@ type API struct {
 	workdir       string
 	workspaces    workspaceConfig
 	staticAssets  fs.FS
+	agentAPIURL   string
+	executable    string
+	hosting       HostingManager
+	hostStore     HostRuntimeStore
 }
 
 var _ RunManager = (*runcontrol.Manager)(nil)
@@ -181,6 +212,10 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.workdir = deps[0].Workdir
 		api.workspaces = newWorkspaceConfig(deps[0].Workdir, deps[0].WorkspaceRoots)
 		api.staticAssets = deps[0].StaticAssets
+		api.agentAPIURL = deps[0].AgentAPIURL
+		api.executable = deps[0].Executable
+		api.hosting = deps[0].Hosting
+		api.hostStore = deps[0].HostStore
 	}
 	if api.console == nil {
 		api.console = console.NewManager()
@@ -222,6 +257,16 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
 		r.Get("/api/sessions/{sessionId}/events/{seq}/attachments/{attachmentIndex}", api.eventAttachmentHandler)
 	}
+	if api.store != nil && api.hosting != nil {
+		r.Get("/api/sessions/{sessionId}/host", api.hostStatusHandler)
+		r.Post("/api/sessions/{sessionId}/host/validate", api.validateHostHandler)
+		r.Post("/api/sessions/{sessionId}/host/start", api.startHostHandler)
+		r.Post("/api/sessions/{sessionId}/host/stop", api.stopHostHandler)
+		r.Post("/api/sessions/{sessionId}/host/restart", api.restartHostHandler)
+		r.Post("/api/sessions/{sessionId}/host/check", api.checkHostHandler)
+		r.Get("/api/sessions/{sessionId}/host/logs", api.hostLogsHandler)
+		r.Get("/api/sessions/{sessionId}/host/logs/stream", api.hostLogStreamHandler)
+	}
 	if api.store != nil && api.events != nil {
 		r.Get("/api/sessions/{sessionId}/events/stream", api.eventStreamHandler)
 		r.Get("/api/sessions/activity/stream", api.sessionActivityStreamHandler)
@@ -236,7 +281,27 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	}
 	r.NotFound(api.notFoundHandler)
 
+	if api.hosting != nil {
+		return hostedPreviewDispatch{app: r, hosting: api.hosting}
+	}
 	return r
+}
+
+type hostedPreviewDispatch struct {
+	app     http.Handler
+	hosting HostingManager
+}
+
+func (h hostedPreviewDispatch) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == hosting.IngressHealthPath {
+		h.hosting.ServeHTTP(w, r)
+		return
+	}
+	if _, ok := h.hosting.LookupHost(r.Host); ok {
+		h.hosting.ServeHTTP(w, r)
+		return
+	}
+	h.app.ServeHTTP(w, r)
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {

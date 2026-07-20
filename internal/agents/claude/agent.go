@@ -149,7 +149,11 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 	}
 
 	options := runOptionsFromMetadata(input.Metadata)
-	cmd := a.commandWithOptions(input.Message, strings.TrimSpace(input.ProviderSessionID), workdir, options)
+	message := input.ProviderMessage()
+	cmd := a.commandWithOptions(message, strings.TrimSpace(input.ProviderSessionID), workdir, options)
+	if err := agents.ApplyEnvironment(cmd, input.Environment); err != nil {
+		return fmt.Errorf("configure claude environment: %w", err)
+	}
 	var stdin io.WriteCloser
 	if options.interactivePermissions() {
 		stdin, err = cmd.StdinPipe()
@@ -177,7 +181,7 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 		normalizer:  newNormalizer(),
 		stdin:       stdin,
 		sessionID:   input.SessionID,
-		message:     input.Message,
+		message:     message,
 		permissions: input.Permissions,
 		options:     options,
 	}

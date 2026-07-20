@@ -283,6 +283,9 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 	}
 
 	cmd := a.command(workdir, input.ProviderSessionID)
+	if err := agents.ApplyEnvironment(cmd, input.Environment); err != nil {
+		return fmt.Errorf("configure pi environment: %w", err)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("create pi stdin pipe: %w", err)
@@ -311,7 +314,7 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 		attachments:       input.Attachments,
 		options:           runOptionsFromMetadata(input.Metadata),
 	}
-	return run.execute(ctx, input.Message)
+	return run.execute(ctx, input.ProviderMessage())
 }
 
 func (a *Agent) workdirForRun(inputWorkdir string) (string, error) {

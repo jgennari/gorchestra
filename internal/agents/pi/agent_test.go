@@ -145,13 +145,18 @@ func TestSampleRPCEventsNormalizeExpectedEvents(t *testing.T) {
 
 func TestAgentRunsFakePiRPC(t *testing.T) {
 	t.Setenv("GORCHESTRA_FAKE_PI_RPC", "1")
+	t.Setenv("GORCHESTRA_FAKE_PI_EXPECT_ENV", "run-only")
+	t.Setenv("GORCHESTRA_FAKE_PI_EXPECT_CONTEXT", "Use the Gorchestra host controls.")
+	t.Setenv("GORCHESTRA_AGENT_RUN_TEST_VALUE", "parent")
 	agent := fakePiAgent(t)
 	recorder := newEventRecorder()
 
 	err := agent.Run(context.Background(), agents.AgentInput{
-		SessionID: "sess_test",
-		Message:   "hello",
-		Workdir:   t.TempDir(),
+		SessionID:   "sess_test",
+		Message:     "hello",
+		Workdir:     t.TempDir(),
+		Environment: map[string]string{"GORCHESTRA_AGENT_RUN_TEST_VALUE": "run-only"},
+		Context:     "Use the Gorchestra host controls.",
 		Metadata: map[string]any{
 			"pi_options": map[string]any{
 				"model":          "anthropic/claude-sonnet-4-5",
@@ -172,6 +177,9 @@ func TestAgentRunsFakePiRPC(t *testing.T) {
 	startPayload := events[0].Event.Payload.(map[string]any)
 	if startPayload["provider_session_id"] != "pi_fake" {
 		t.Fatalf("expected provider session id pi_fake, got %#v", startPayload)
+	}
+	if got := os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE"); got != "parent" {
+		t.Fatalf("expected parent environment to remain unchanged, got %q", got)
 	}
 }
 
@@ -273,6 +281,9 @@ func (r *eventRecorder) snapshot() []normalizedEvent {
 }
 
 func runFakePi() {
+	if expected := os.Getenv("GORCHESTRA_FAKE_PI_EXPECT_ENV"); expected != "" && os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE") != expected {
+		os.Exit(10)
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
 	expectedModelSet := false
@@ -304,6 +315,14 @@ func runFakePi() {
 			}
 			_ = encoder.Encode(map[string]any{"commandId": commandID, "data": map[string]any{}})
 		case "prompt":
+			if expected := os.Getenv("GORCHESTRA_FAKE_PI_EXPECT_CONTEXT"); expected != "" {
+				data, _ := request["data"].(map[string]any)
+				prompt, _ := data["prompt"].(string)
+				if !strings.Contains(prompt, "<gorchestra_context>\n"+expected+"\n</gorchestra_context>") || !strings.HasSuffix(prompt, "\n\nhello") {
+					_ = encoder.Encode(map[string]any{"commandId": commandID, "error": "unexpected prompt context"})
+					continue
+				}
+			}
 			if !expectedModelSet && os.Getenv("GORCHESTRA_FAKE_PI_EXPECT_MODEL") != "" {
 				_ = encoder.Encode(map[string]any{"commandId": commandID, "error": "model was not set"})
 				continue

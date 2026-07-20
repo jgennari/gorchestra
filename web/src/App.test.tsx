@@ -315,6 +315,24 @@ test('header files view opens workspace files inline', async () => {
   expect(within(fileViewer).getByLabelText('File editor')).toHaveValue('package main\n')
 })
 
+test('header hosted preview view updates the route and shows host status', async () => {
+  const user = userEvent.setup()
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  await user.click(screen.getAllByRole('button', { name: 'Show hosted preview' })[0])
+
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/host'))
+  expect(await screen.findByText('No host recipe found')).toBeInTheDocument()
+  expect(within(screen.getByTestId('floating-host-header')).getByRole('button', { name: 'Session details' })).toBeInTheDocument()
+  expect(
+    screen
+      .getAllByRole('button', { name: 'Show hosted preview' })
+      .some((button) => button.getAttribute('aria-pressed') === 'true'),
+  ).toBe(true)
+})
+
 test('loading with a session route selects that session', async () => {
   window.history.replaceState({}, '', '/sessions/sess_2')
 
@@ -1501,6 +1519,26 @@ function fetchMock({
       if (matchedSession) {
         return jsonResponse({ session_id: matchedSession.id, workspace_path: matchedSession.workspace_path, running: false })
       }
+    }
+    const hostMatch = path.match(/^\/api\/sessions\/([^/?]+)\/host$/)
+    if (hostMatch) {
+      return jsonResponse({
+        session_id: decodeURIComponent(hostMatch[1]),
+        config: {
+          path: '.gorchestra/host.yaml',
+          present: false,
+          valid: false,
+          stale: false,
+          errors: [],
+        },
+        runtime: { status: 'stopped' },
+        services: [],
+        log_cursor: 0,
+      })
+    }
+    const hostLogsMatch = path.match(/^\/api\/sessions\/([^/?]+)\/host\/logs$/)
+    if (hostLogsMatch) {
+      return jsonResponse({ chunks: [], first_seq: 0, last_seq: 0, truncated: false })
     }
     if (path === '/api/sessions/sess_1/events?before_seq=252&turns=2') {
       return jsonResponse({ events: olderEvents })

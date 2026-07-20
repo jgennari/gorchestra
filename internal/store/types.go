@@ -32,6 +32,26 @@ const (
 	QueuedMessageStatusRemoved QueuedMessageStatus = "removed"
 )
 
+type HostRuntimeStatus string
+
+const (
+	HostRuntimeStatusStopped  HostRuntimeStatus = "stopped"
+	HostRuntimeStatusStarting HostRuntimeStatus = "starting"
+	HostRuntimeStatusRunning  HostRuntimeStatus = "running"
+	HostRuntimeStatusStopping HostRuntimeStatus = "stopping"
+	HostRuntimeStatusFailed   HostRuntimeStatus = "failed"
+)
+
+type HostServiceStatus string
+
+const (
+	HostServiceStatusStopped  HostServiceStatus = "stopped"
+	HostServiceStatusStarting HostServiceStatus = "starting"
+	HostServiceStatusRunning  HostServiceStatus = "running"
+	HostServiceStatusStopping HostServiceStatus = "stopping"
+	HostServiceStatusFailed   HostServiceStatus = "failed"
+)
+
 type Session struct {
 	ID                       string
 	Title                    string
@@ -75,6 +95,37 @@ type QueuedMessage struct {
 	AgentOptions json.RawMessage
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+}
+
+// HostRuntime is the durable control-plane snapshot for one session preview.
+// Process handles and logs remain in memory; PID is diagnostic only and is
+// cleared during startup recovery.
+type HostRuntime struct {
+	SessionID      string
+	RouteSlug      string
+	WorkspacePath  string
+	ConfigPath     string
+	RecipeName     string
+	RecipeHash     string
+	RecipeSnapshot []byte
+	Status         HostRuntimeStatus
+	Services       []HostServiceSnapshot
+	StartedAt      *time.Time
+	StoppedAt      *time.Time
+	LastError      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type HostServiceSnapshot struct {
+	Name      string            `json:"name"`
+	Port      int               `json:"port,omitempty"`
+	PID       int               `json:"pid,omitempty"`
+	Status    HostServiceStatus `json:"status"`
+	ExitCode  *int              `json:"exit_code,omitempty"`
+	Error     string            `json:"error,omitempty"`
+	StartedAt *time.Time        `json:"started_at,omitempty"`
+	StoppedAt *time.Time        `json:"stopped_at,omitempty"`
 }
 
 type NotificationKeys struct {
@@ -174,6 +225,21 @@ type EnqueueMessageParams struct {
 	Content      string
 	AgentOptions json.RawMessage
 	MaxPending   int
+}
+
+type SaveHostRuntimeParams struct {
+	SessionID      string
+	RouteSlug      string
+	WorkspacePath  string
+	ConfigPath     string
+	RecipeName     string
+	RecipeHash     string
+	RecipeSnapshot []byte
+	Status         HostRuntimeStatus
+	Services       []HostServiceSnapshot
+	StartedAt      *time.Time
+	StoppedAt      *time.Time
+	LastError      string
 }
 
 type QueueMessageIDParams struct {

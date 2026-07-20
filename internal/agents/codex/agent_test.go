@@ -233,13 +233,18 @@ func TestReadAppServerAcceptsLargeResponseWithoutRetainingRaw(t *testing.T) {
 }
 
 func TestAgentRunsFakeAppServerSuccess(t *testing.T) {
+	t.Setenv("GORCHESTRA_FAKE_CODEX_EXPECT_ENV", "run-only")
+	t.Setenv("GORCHESTRA_FAKE_CODEX_EXPECT_CONTEXT", "Use the Gorchestra host controls.")
+	t.Setenv("GORCHESTRA_AGENT_RUN_TEST_VALUE", "parent")
 	agent := fakeAppServerAgent(t, "success")
 	recorder := newEventRecorder()
 
 	err := agent.Run(context.Background(), agents.AgentInput{
-		SessionID: "sess_test",
-		Message:   "Say hello",
-		Workdir:   t.TempDir(),
+		SessionID:   "sess_test",
+		Message:     "Say hello",
+		Workdir:     t.TempDir(),
+		Environment: map[string]string{"GORCHESTRA_AGENT_RUN_TEST_VALUE": "run-only"},
+		Context:     "Use the Gorchestra host controls.",
 	}, recorder.emit)
 	if err != nil {
 		t.Fatalf("run agent: %v", err)
@@ -252,6 +257,9 @@ func TestAgentRunsFakeAppServerSuccess(t *testing.T) {
 		"agent.message.completed",
 		"agent.run.completed",
 	})
+	if got := os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE"); got != "parent" {
+		t.Fatalf("expected parent environment to remain unchanged, got %q", got)
+	}
 }
 
 func TestAgentResumesExistingProviderSession(t *testing.T) {
@@ -967,6 +975,9 @@ func (w bufferWriteCloser) Close() error {
 }
 
 func runFakeAppServer(mode string) {
+	if expected := os.Getenv("GORCHESTRA_FAKE_CODEX_EXPECT_ENV"); expected != "" && os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE") != expected {
+		os.Exit(10)
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -1092,6 +1103,12 @@ func runFakeAppServer(mode string) {
 			})
 			return
 		case "turn/start":
+			if expected := os.Getenv("GORCHESTRA_FAKE_CODEX_EXPECT_CONTEXT"); expected != "" {
+				prompt := fakeCodexPromptText(request.Params)
+				if !strings.Contains(prompt, "<gorchestra_context>\n"+expected+"\n</gorchestra_context>") || !strings.HasSuffix(prompt, "\n\nSay hello") {
+					os.Exit(11)
+				}
+			}
 			fakeRespond(request.ID, map[string]any{
 				"turn": map[string]any{
 					"id":     "turn_fake",
@@ -1175,6 +1192,24 @@ func runFakeAppServer(mode string) {
 			fakeRespondError(request.ID, -32601, "unknown fake method")
 		}
 	}
+}
+
+func fakeCodexPromptText(raw json.RawMessage) string {
+	var params struct {
+		Input []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return ""
+	}
+	for _, item := range params.Input {
+		if item.Type == "text" {
+			return item.Text
+		}
+	}
+	return ""
 }
 
 func recordFakeAppServerStart() {

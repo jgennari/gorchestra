@@ -305,6 +305,25 @@ test('floating chat header shows session details and copies the session key', as
   expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
 })
 
+test('session details reports when clipboard access and fallback both fail', async () => {
+  const user = userEvent.setup()
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: vi.fn(async () => { throw new DOMException('Denied', 'NotAllowedError') }) },
+  })
+  Object.defineProperty(document, 'execCommand', {
+    configurable: true,
+    value: vi.fn(() => false),
+  })
+
+  renderDetail()
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
+  const popover = screen.getByRole('dialog', { name: 'Session details' })
+  await user.click(within(popover).getByRole('button', { name: 'Copy session key' }))
+
+  expect(await within(popover).findByRole('alert')).toHaveTextContent('Select the text and copy it manually.')
+})
+
 test('floating chat header updates the codex permission policy', async () => {
   const user = userEvent.setup()
   const onUpdateAgentOptions = vi.fn(async () => undefined)

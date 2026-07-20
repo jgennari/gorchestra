@@ -1,4 +1,4 @@
-import { Bell, Folder, Menu, MessageSquare, Plus, Terminal, X } from 'lucide-react'
+import { Bell, Folder, Menu, MessageSquare, Plus, Server, Terminal, X } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -62,6 +62,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { HostConsole } from '@/components/host-console'
+import { HostPreview } from '@/components/host-preview'
 import { NotificationsDialog } from '@/components/notifications-dialog'
 import { RunHealthRail } from '@/components/run-health-rail'
 import { ChatSessionHeader, SessionDetail } from '@/components/session-detail'
@@ -1092,13 +1093,19 @@ function App() {
     ? (sessions.find((session) => session.id === confirmSessionNavigation.targetSessionID) ?? null)
     : null
   const viewOffsetClassName =
-    appView === 'console' ? 'translate-x-9' : appView === 'files' ? 'translate-x-[4.5rem]' : 'translate-x-0'
+    appView === 'console'
+      ? 'translate-x-8'
+      : appView === 'files'
+        ? 'translate-x-16'
+        : appView === 'host'
+          ? 'translate-x-24'
+          : 'translate-x-0'
   const viewToggle = (
-    <div className="relative grid shrink-0 grid-cols-3 rounded-md bg-muted p-1 shadow-inner">
+    <div className="relative grid shrink-0 grid-cols-4 rounded-md bg-muted p-1 shadow-inner">
       <span
         aria-hidden="true"
         className={cn(
-          'absolute bottom-1 left-1 top-1 w-9 rounded-sm bg-background shadow-sm transition-transform duration-150 ease-out',
+          'absolute bottom-1 left-1 top-1 w-8 rounded-sm bg-background shadow-sm transition-transform duration-150 ease-out',
           viewOffsetClassName,
         )}
       />
@@ -1107,7 +1114,7 @@ function App() {
         aria-label="Show chat"
         aria-pressed={appView === 'session'}
         className={cn(
-          'relative z-10 flex h-8 w-9 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          'relative z-10 flex h-8 w-8 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           appView === 'session' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
         )}
         onClick={() => selectAppView('session')}
@@ -1119,7 +1126,7 @@ function App() {
         aria-label="Show console"
         aria-pressed={appView === 'console'}
         className={cn(
-          'relative z-10 flex h-8 w-9 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          'relative z-10 flex h-8 w-8 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           appView === 'console' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
         )}
         onClick={() => selectAppView('console')}
@@ -1131,12 +1138,24 @@ function App() {
         aria-label="Show files"
         aria-pressed={appView === 'files'}
         className={cn(
-          'relative z-10 flex h-8 w-9 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          'relative z-10 flex h-8 w-8 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           appView === 'files' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
         )}
         onClick={() => selectAppView('files')}
       >
         <Folder className="size-4" />
+      </button>
+      <button
+        type="button"
+        aria-label="Show hosted preview"
+        aria-pressed={appView === 'host'}
+        className={cn(
+          'relative z-10 flex h-8 w-8 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          appView === 'host' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+        )}
+        onClick={() => selectAppView('host')}
+      >
+        <Server className="size-4" />
       </button>
     </div>
   )
@@ -1212,6 +1231,94 @@ function App() {
               onUpdateWorkspace={handleUpdateWorkspace}
               onTitleEditStateChange={handleTitleEditStateChange}
             />
+          ) : appView === 'host' ? (
+            <>
+              <div
+                data-testid="mobile-floating-host-header"
+                className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden"
+              >
+                <FilesWorkspaceHeader
+                  session={selectedSession}
+                  resolvingSessionID={resolvingSelectedSessionID}
+                  fallbackTitle="Preview"
+                  errorMessage={error || streamError}
+                  leadingAction={openSessionsButton}
+                  headerActions={viewToggle}
+                  onUpdateTitle={handleUpdateTitle}
+                  onUpdateWorkspace={handleUpdateWorkspace}
+                  hasUnsavedWorkspaceFile={workspaceFileDirty}
+                  onTitleEditStateChange={handleTitleEditStateChange}
+                  onUpdateAgentOptions={handleUpdateAgentOptions}
+                  showDebugEvents={showDebugEvents}
+                  onShowDebugEventsChange={handleShowDebugEventsChange}
+                  onClear={() => {
+                    requestSessionAction('clear')
+                    return Promise.resolve()
+                  }}
+                  onCompact={() => {
+                    requestSessionAction('compact')
+                    return Promise.resolve()
+                  }}
+                  onToggleArchive={() => {
+                    requestArchiveSession()
+                    return Promise.resolve()
+                  }}
+                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
+                  clearPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      : false
+                  }
+                  compactPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      : false
+                  }
+                  archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+                />
+              </div>
+              <div data-testid="floating-host-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
+                <FilesWorkspaceHeader
+                  session={selectedSession}
+                  resolvingSessionID={resolvingSelectedSessionID}
+                  fallbackTitle="Preview"
+                  errorMessage={error || streamError}
+                  headerActions={viewToggle}
+                  onUpdateTitle={handleUpdateTitle}
+                  onUpdateWorkspace={handleUpdateWorkspace}
+                  hasUnsavedWorkspaceFile={workspaceFileDirty}
+                  onTitleEditStateChange={handleTitleEditStateChange}
+                  onUpdateAgentOptions={handleUpdateAgentOptions}
+                  showDebugEvents={showDebugEvents}
+                  onShowDebugEventsChange={handleShowDebugEventsChange}
+                  onClear={() => {
+                    requestSessionAction('clear')
+                    return Promise.resolve()
+                  }}
+                  onCompact={() => {
+                    requestSessionAction('compact')
+                    return Promise.resolve()
+                  }}
+                  onToggleArchive={() => {
+                    requestArchiveSession()
+                    return Promise.resolve()
+                  }}
+                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
+                  clearPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      : false
+                  }
+                  compactPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      : false
+                  }
+                  archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+                />
+              </div>
+              <HostPreview session={selectedSession} resolvingSessionID={resolvingSelectedSessionID} />
+            </>
           ) : appView === 'files' ? (
             <>
               <div
@@ -1580,6 +1687,7 @@ function App() {
 function FilesWorkspaceHeader({
   session,
   resolvingSessionID,
+  fallbackTitle = 'Files',
   errorMessage,
   leadingAction,
   headerActions,
@@ -1600,6 +1708,7 @@ function FilesWorkspaceHeader({
 }: {
   session: Session | null
   resolvingSessionID: string | null
+  fallbackTitle?: string
   errorMessage: string
   leadingAction?: ReactNode
   headerActions?: ReactNode
@@ -1651,7 +1760,7 @@ function FilesWorkspaceHeader({
       <div className="command-chat-header flex min-h-14 items-center justify-between gap-3 rounded-xl border border-border/90 px-3 py-2 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]">
         {leadingAction ? <div className="shrink-0">{leadingAction}</div> : null}
         <div className="min-w-0 flex-1">
-          <p className="truncate text-lg font-semibold">{resolvingSessionID ? 'Loading session...' : 'Files'}</p>
+          <p className="truncate text-lg font-semibold">{resolvingSessionID ? 'Loading session...' : fallbackTitle}</p>
         </div>
         {headerActions}
       </div>
