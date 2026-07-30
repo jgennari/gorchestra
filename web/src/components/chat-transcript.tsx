@@ -320,7 +320,7 @@ export function ChatTranscript({
           scrollerRef={(element) => {
             scrollerElementRef.current = element instanceof HTMLElement ? element : null
           }}
-          className="chat-scroll-area h-full min-h-0"
+          className="chat-scroll-area subtle-scrollbar h-full min-h-0"
           data={virtualItems}
           computeItemKey={(_, item) => item.id}
           firstItemIndex={firstItemIndex}

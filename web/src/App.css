@@ -302,27 +302,30 @@
 
 .chat-scroll-area {
   overscroll-behavior-y: none;
+}
+
+.subtle-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   transition: scrollbar-color 160ms ease;
 }
 
-.chat-scroll-area:hover,
-.chat-scroll-area:focus-within,
-.chat-scroll-area[data-scrolling='true'] {
+.subtle-scrollbar:hover,
+.subtle-scrollbar:focus-within,
+.subtle-scrollbar[data-scrolling='true'] {
   scrollbar-color: hsl(var(--muted-foreground) / 0.32) transparent;
 }
 
-.chat-scroll-area::-webkit-scrollbar {
+.subtle-scrollbar::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-.chat-scroll-area::-webkit-scrollbar-track {
+.subtle-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.chat-scroll-area::-webkit-scrollbar-thumb {
+.subtle-scrollbar::-webkit-scrollbar-thumb {
   min-height: 48px;
   border: 2px solid transparent;
   border-radius: 999px;
@@ -330,13 +333,13 @@
   background-color: transparent;
 }
 
-.chat-scroll-area:hover::-webkit-scrollbar-thumb,
-.chat-scroll-area:focus-within::-webkit-scrollbar-thumb,
-.chat-scroll-area[data-scrolling='true']::-webkit-scrollbar-thumb {
+.subtle-scrollbar:hover::-webkit-scrollbar-thumb,
+.subtle-scrollbar:focus-within::-webkit-scrollbar-thumb,
+.subtle-scrollbar[data-scrolling='true']::-webkit-scrollbar-thumb {
   background-color: hsl(var(--muted-foreground) / 0.3);
 }
 
-.chat-scroll-area::-webkit-scrollbar-thumb:hover {
+.subtle-scrollbar::-webkit-scrollbar-thumb:hover {
   background-color: hsl(var(--muted-foreground) / 0.46);
 }
 

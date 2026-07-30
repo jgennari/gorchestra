@@ -70,6 +70,7 @@ test('run health rail shows metrics and active chat status without session ident
   expect(screen.queryByText('Connection')).not.toBeInTheDocument()
   expect(screen.queryByText('Live')).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Refresh files' })).toBeInTheDocument()
+  expect(screen.getByTestId('workspace-file-scroll-area')).toHaveClass('subtle-scrollbar')
   expect(screen.queryByRole('button', { name: /cancel run/i })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /theme/i })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Archive selected session' })).toBeDisabled()

@@ -332,7 +332,7 @@ export function WorkspaceFileBrowser({
         {session ? pathLabel : resolvingSessionID ? 'Loading session' : 'No session selected'}
       </p>
 
-      <div className="mt-1 min-h-0 flex-1 overflow-auto">
+      <div data-testid="workspace-file-scroll-area" className="subtle-scrollbar mt-1 min-h-0 flex-1 overflow-auto">
         {resolvingSessionID && !sessionID ? (
           <LoadingFiles label="Loading session" />
         ) : !sessionID ? (
