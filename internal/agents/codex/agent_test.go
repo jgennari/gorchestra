@@ -1235,7 +1235,10 @@ func runFakeAppServer(mode string) {
 						"status": "completed",
 					},
 				})
-				return
+				// Keep the fake process alive until the agent closes stdin. Exiting here
+				// races the notification reader and can make process exit appear before
+				// the terminal turn event on faster CI hosts.
+				continue
 			case "user-input":
 				fakeWrite(map[string]any{
 					"jsonrpc": "2.0",
