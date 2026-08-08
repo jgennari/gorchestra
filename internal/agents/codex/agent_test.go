@@ -135,6 +135,51 @@ func TestReasoningItemStartedNormalizesThinkingStarted(t *testing.T) {
 	}
 }
 
+func TestErrorNotificationWaitsForTurnCompleted(t *testing.T) {
+	normalizer := newNormalizer()
+	events := normalizer.normalize("error", json.RawMessage(`{
+		"threadId":"thread_1",
+		"turnId":"turn_1",
+		"willRetry":false,
+		"error":{
+			"message":"response stream disconnected",
+			"additionalDetails":"websocket closed before response.completed",
+			"codexErrorInfo":{"type":"ResponseStreamDisconnected"}
+		}
+	}`))
+
+	if len(events) != 1 {
+		t.Fatalf("expected one error event, got %#v", events)
+	}
+	if events[0].Event.Type != "agent.log.delta" || events[0].Event.Status != "failed" {
+		t.Fatalf("expected nonterminal failed log event, got %#v", events[0])
+	}
+	if events[0].Terminal != terminalNone || normalizer.terminal {
+		t.Fatalf("expected error notification to remain nonterminal, got %#v", events[0])
+	}
+	payload, ok := events[0].Event.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload map, got %#v", events[0].Event.Payload)
+	}
+	if payload["error"] != "response stream disconnected" || payload["will_retry"] != false {
+		t.Fatalf("expected error and retry metadata, got %#v", payload)
+	}
+	if payload["details"] != "websocket closed before response.completed" || payload["codex_error_info"] == nil {
+		t.Fatalf("expected Codex error details, got %#v", payload)
+	}
+
+	terminalEvents := normalizer.normalize("turn/completed", json.RawMessage(`{
+		"threadId":"thread_1",
+		"turn":{"id":"turn_1","status":"failed","error":{"message":"response stream disconnected"}}
+	}`))
+	if len(terminalEvents) != 1 || terminalEvents[0].Event.Type != "agent.run.failed" {
+		t.Fatalf("expected turn/completed to fail the run, got %#v", terminalEvents)
+	}
+	if terminalEvents[0].Terminal != terminalFailed || !normalizer.terminal {
+		t.Fatalf("expected terminal failure from turn/completed, got %#v", terminalEvents[0])
+	}
+}
+
 func TestCommandFixtureNormalizesToolEvents(t *testing.T) {
 	events := normalizeFixture(t, "command.jsonl")
 	assertAgentEventTypes(t, events, []string{
@@ -259,6 +304,38 @@ func TestAgentRunsFakeAppServerSuccess(t *testing.T) {
 	})
 	if got := os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE"); got != "parent" {
 		t.Fatalf("expected parent environment to remain unchanged, got %q", got)
+	}
+}
+
+func TestAgentContinuesAfterRetryableError(t *testing.T) {
+	agent := fakeAppServerAgent(t, "retry-success")
+	recorder := newEventRecorder()
+
+	err := agent.Run(context.Background(), agents.AgentInput{
+		SessionID: "sess_test",
+		Message:   "Say hello",
+		Workdir:   t.TempDir(),
+	}, recorder.emit)
+	if err != nil {
+		t.Fatalf("run agent: %v", err)
+	}
+
+	events := recorder.snapshot()
+	assertAgentEventTypes(t, events, []string{
+		"agent.run.started",
+		"agent.status.started",
+		"agent.log.delta",
+		"agent.message.delta",
+		"agent.message.completed",
+		"agent.run.completed",
+	})
+	assertTerminalCount(t, events, 1)
+	payload, ok := events[2].Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected retry payload map, got %#v", events[2].Payload)
+	}
+	if payload["will_retry"] != true || payload["error"] != "Reconnecting... 2/5" {
+		t.Fatalf("expected retryable error metadata, got %#v", payload)
 	}
 }
 
@@ -1123,7 +1200,19 @@ func runFakeAppServer(mode string) {
 				},
 			})
 			switch mode {
-			case "success", "stderr":
+			case "success", "stderr", "retry-success":
+				if mode == "retry-success" {
+					fakeNotify("error", map[string]any{
+						"threadId":  "thread_fake",
+						"turnId":    "turn_fake",
+						"willRetry": true,
+						"error": map[string]any{
+							"message":           "Reconnecting... 2/5",
+							"additionalDetails": "websocket closed before response.completed",
+							"codexErrorInfo":    map[string]any{"type": "ResponseStreamDisconnected"},
+						},
+					})
+				}
 				fakeNotify("item/agentMessage/delta", map[string]any{
 					"threadId": "thread_fake",
 					"turnId":   "turn_fake",

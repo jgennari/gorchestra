@@ -81,11 +81,21 @@ func (n *normalizer) normalize(method string, params json.RawMessage) []normaliz
 		message := firstNonEmpty(stringAt(params, "error", "message"), "codex error")
 		payload := basePayload(method, params)
 		payload["error"] = message
+		payload["text"] = message
 		if details := stringAt(params, "error", "additionalDetails"); details != "" {
 			payload["details"] = details
 		}
-		n.markTerminal(terminalFailed, message)
-		return []normalizedEvent{{Event: event("agent.run.failed", "assistant", "failed", payload), Terminal: terminalFailed}}
+		if codexErrorInfo := anyAt(params, "error", "codexErrorInfo"); codexErrorInfo != nil {
+			payload["codex_error_info"] = codexErrorInfo
+		}
+		status := "failed"
+		if willRetry, ok := anyAt(params, "willRetry").(bool); ok {
+			payload["will_retry"] = willRetry
+			if willRetry {
+				status = "delta"
+			}
+		}
+		return []normalizedEvent{{Event: event("agent.log.delta", "system", status, payload)}}
 	case "warning", "guardianWarning", "deprecationNotice", "configWarning":
 		payload := basePayload(method, params)
 		payload["text"] = warningText(params)
