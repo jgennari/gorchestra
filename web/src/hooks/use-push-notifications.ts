@@ -9,7 +9,7 @@ import {
 } from '@/lib/api'
 import { readNotificationWorkerDiagnostic, type NotificationWorkerDiagnostic } from '@/lib/notification-attention'
 
-type NotificationStatus = 'unsupported' | 'default' | 'denied' | 'enabling' | 'enabled' | 'error'
+export type NotificationStatus = 'unsupported' | 'default' | 'denied' | 'enabling' | 'enabled' | 'error'
 type NotificationTestState = 'idle' | 'sending' | 'sent'
 type BadgeTestState = 'idle' | 'setting' | 'set' | 'clearing' | 'cleared' | 'unsupported' | 'error'
 type SessionStopNotificationDetails = {

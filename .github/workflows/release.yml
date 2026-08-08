@@ -44,6 +44,8 @@ jobs:
 
       - name: Build frontend
         working-directory: web
+        env:
+          VITE_GORCHESTRA_VERSION: ${{ steps.version.outputs.version }}
         run: bun run build
 
       - name: Stage embedded frontend assets

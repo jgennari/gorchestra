@@ -35,7 +35,7 @@ async function main() {
 
 async function build() {
   await run(['bun', 'install', '--frozen-lockfile'], webDir)
-  await run(['bun', 'run', 'build'], webDir)
+  await run(['bun', 'run', 'build'], webDir, { VITE_GORCHESTRA_VERSION: version })
   await stageAssets()
   await run(['go', 'test', './...'], repoRoot)
   await mkdir(releaseDir, { recursive: true })
@@ -78,10 +78,14 @@ async function writeChecksums() {
   console.log(`[build] wrote ${relative(repoRoot, join(releaseDir, 'SHA256SUMS'))}`)
 }
 
-async function run(args: string[], cwd: string) {
+async function run(args: string[], cwd: string, env: Record<string, string> = {}) {
   console.log(`[build] ${args.join(' ')}`)
   const proc = Bun.spawn(args, {
     cwd,
+    env: {
+      ...process.env,
+      ...env,
+    },
     stdout: 'inherit',
     stderr: 'inherit',
   })

@@ -44,7 +44,7 @@ Build the same release archives locally:
 ```sh
 cd web
 bun install --frozen-lockfile
-bun run build
+VITE_GORCHESTRA_VERSION=0.1.0 bun run build
 
 cd ..
 bun run build:stage
@@ -84,6 +84,8 @@ For a manual tap update:
    `brew audit --strict --online jgennari/tap/gorchestra`.
 
 The formula builds from source with Go and uses the embedded frontend assets
-committed in this repository. It does not require Bun during installation.
+committed in this repository. The embedded assets carry the release version
+shown in the app menu, so GitHub archives and Homebrew builds report the same
+version. The formula does not require Bun during installation.
 
 Later, macOS artifacts can be signed and notarized.

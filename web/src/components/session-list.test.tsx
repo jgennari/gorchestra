@@ -131,15 +131,15 @@ test('idle session rows show unseen results with a solid yellow indicator', () =
   expect(screen.getByRole('img', { name: 'Session has unseen results' })).not.toHaveClass('animate-pulse')
 })
 
-test('session list exposes the global theme toggle', async () => {
+test('session list exposes the app menu action', async () => {
   const user = userEvent.setup()
-  const onThemeToggle = vi.fn()
+  const onOpen = vi.fn()
 
-  render(<SessionListHarness onThemeToggle={onThemeToggle} />)
+  render(<SessionListHarness appMenuAction={<button onClick={onOpen}>App menu</button>} />)
 
-  await user.click(screen.getByRole('button', { name: 'Theme: System' }))
+  await user.click(screen.getByRole('button', { name: 'App menu' }))
 
-  expect(onThemeToggle).toHaveBeenCalledOnce()
+  expect(onOpen).toHaveBeenCalledOnce()
 })
 
 test('full session list uses the app icon instead of the text header', () => {
@@ -209,9 +209,6 @@ function baseProps() {
     onFiltersChange: () => undefined,
     onSelect: () => undefined,
     onCreate: () => undefined,
-    themePreference: 'system' as const,
-    resolvedTheme: 'light' as const,
-    onThemeToggle: () => undefined,
   }
 }
 

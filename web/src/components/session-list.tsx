@@ -6,14 +6,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { StatusBadge } from '@/components/status-badge'
-import { ThemeToggle } from '@/components/theme-toggle'
 import {
   defaultSessionListFilters,
   type SessionListAgentFilter,
   type SessionListFilters,
   type SessionListStatusFilter,
 } from '@/components/session-list-filters'
-import type { ResolvedTheme, ThemePreference } from '@/hooks/use-theme'
 import { sessionAttention } from '@/lib/session-attention'
 import { cn } from '@/lib/utils'
 
@@ -28,10 +26,7 @@ type Props = {
   onFiltersChange: (filters: SessionListFilters) => void
   onSelect: (sessionID: string) => void
   onCreate: () => void
-  themePreference: ThemePreference
-  resolvedTheme: ResolvedTheme
-  onThemeToggle: () => void
-  notificationsAction?: ReactNode
+  appMenuAction?: ReactNode
   variant?: 'full' | 'embedded'
 }
 
@@ -46,10 +41,7 @@ export function SessionList({
   onFiltersChange,
   onSelect,
   onCreate,
-  themePreference,
-  resolvedTheme,
-  onThemeToggle,
-  notificationsAction,
+  appMenuAction,
   variant = 'full',
 }: Props) {
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -105,12 +97,7 @@ export function SessionList({
         <div className="flex items-center justify-between gap-3 border-b border-border/70 p-4">
           <img src="/icon.svg" alt="Gorchestra" className="sidebar-logo-mark h-9 w-9 shrink-0" />
           <div className="flex shrink-0 items-center gap-2">
-            {notificationsAction}
-            <ThemeToggle
-              preference={themePreference}
-              resolvedTheme={resolvedTheme}
-              onToggle={onThemeToggle}
-            />
+            {appMenuAction}
             <Button aria-label="Create session" size="icon" onClick={onCreate} className="shadow-sm">
               <Plus />
             </Button>
