@@ -24,6 +24,7 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "push_delivery_attempts")
 	assertTableExists(t, ctx, store, "notification_attention")
 	assertTableExists(t, ctx, store, "host_runtimes")
+	assertTableExists(t, ctx, store, "session_token_usage")
 	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
 	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
 	assertColumnExists(t, ctx, store, "sessions", "next_event_seq")
@@ -42,8 +43,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 13 {
-		t.Fatalf("expected thirteen recorded migrations, got %d", count)
+	if count != 14 {
+		t.Fatalf("expected fourteen recorded migrations, got %d", count)
 	}
 }
 
@@ -91,8 +92,10 @@ INSERT INTO sessions (id, title, agent_type, status, created_at, updated_at)
 INSERT INTO events (id, session_id, seq, type, role, status, payload_json, created_at)
   VALUES
     ('evt_1', 'sess_codex', 1, 'agent.run.started', 'assistant', 'started', '{"provider":"codex","thread_id":"thread_first"}', ?),
-    ('evt_2', 'sess_codex', 2, 'agent.run.started', 'assistant', 'started', '{"provider":"codex","thread_id":"thread_second"}', ?);
-`, now, now, now, now, now, now, now)
+    ('evt_2', 'sess_codex', 2, 'agent.run.started', 'assistant', 'started', '{"provider":"codex","thread_id":"thread_second"}', ?),
+    ('evt_3', 'sess_codex', 3, 'provider.codex.event', 'system', 'completed', '{"provider":"codex","provider_event_type":"thread/tokenUsage/updated","raw":{"threadId":"thread_first","tokenUsage":{"total":{"totalTokens":100}}}}', ?),
+    ('evt_4', 'sess_codex', 4, 'provider.codex.event', 'system', 'completed', '{"provider":"codex","provider_event_type":"thread/tokenUsage/updated","raw":{"threadId":"thread_second","tokenUsage":{"total":{"totalTokens":40}}}}', ?);
+`, now, now, now, now, now, now, now, now, now)
 	if err != nil {
 		_ = db.Close()
 		t.Fatalf("seed legacy db: %v", err)
@@ -117,6 +120,9 @@ INSERT INTO events (id, session_id, seq, type, role, status, payload_json, creat
 	}
 	if session.ProviderSessionID != "thread_first" {
 		t.Fatalf("expected provider session id thread_first, got %q", session.ProviderSessionID)
+	}
+	if session.TokenCount != 140 {
+		t.Fatalf("expected migrated lifetime token count 140, got %d", session.TokenCount)
 	}
 }
 
@@ -1265,6 +1271,73 @@ func TestSessionReadsIncludeActivityCounts(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].EventCount != 5 || sessions[0].ToolCount != 2 {
 		t.Fatalf("expected listed session activity counts, got %#v", sessions)
+	}
+}
+
+func TestSessionTokenUsageTracksHighScoreAcrossContexts(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	appendUsage := func(contextID string, totalTokens int64) Event {
+		t.Helper()
+		payload, err := json.Marshal(map[string]any{
+			"provider": "codex",
+			"usage": map[string]any{
+				"context_id":   contextID,
+				"total_tokens": totalTokens,
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal token usage: %v", err)
+		}
+		event, err := store.AppendEvent(ctx, AppendEventParams{
+			SessionID: session.ID,
+			Type:      "provider.codex.event",
+			Role:      "system",
+			Status:    EventStatusCompleted,
+			Payload:   payload,
+		})
+		if err != nil {
+			t.Fatalf("append token usage: %v", err)
+		}
+		return event
+	}
+
+	appendUsage("thread_1", 100)
+	appendUsage("thread_1", 150)
+	lowerSnapshot := appendUsage("thread_1", 120)
+	appendUsage("thread_2", 40)
+	latest := appendUsage("thread_2", 90)
+
+	var lowerPayload map[string]any
+	if err := json.Unmarshal(lowerSnapshot.Payload, &lowerPayload); err != nil {
+		t.Fatalf("decode lower snapshot payload: %v", err)
+	}
+	if lowerPayload["session_total_tokens"] != float64(150) {
+		t.Fatalf("expected lower snapshot to preserve high score 150, got %#v", lowerPayload)
+	}
+	var latestPayload map[string]any
+	if err := json.Unmarshal(latest.Payload, &latestPayload); err != nil {
+		t.Fatalf("decode latest token payload: %v", err)
+	}
+	if latestPayload["session_total_tokens"] != float64(240) {
+		t.Fatalf("expected latest session total 240, got %#v", latestPayload)
+	}
+
+	persisted, err := store.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if persisted.TokenCount != 240 {
+		t.Fatalf("expected lifetime token count 240, got %d", persisted.TokenCount)
+	}
+	sessions, err := store.ListSessions(ctx, ListSessionsParams{})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].TokenCount != 240 {
+		t.Fatalf("expected listed lifetime token count 240, got %#v", sessions)
 	}
 }
 

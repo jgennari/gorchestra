@@ -12,6 +12,7 @@ export type Session = {
   event_count: number
   last_event_seq?: number
   tool_count: number
+  token_count?: number
   notification_attention_seq?: number
   pending_input?: boolean
   pending_permission_count?: number

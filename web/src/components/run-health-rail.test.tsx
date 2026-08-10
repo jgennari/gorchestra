@@ -65,6 +65,7 @@ test('run health rail shows metrics and active chat status without session ident
   expect(screen.queryByRole('tab', { name: /debug/i })).not.toBeInTheDocument()
   expect(screen.getByText('Events')).toBeInTheDocument()
   expect(screen.getByText('Tools')).toBeInTheDocument()
+  expect(screen.getByText('Tokens')).toBeInTheDocument()
   expect(screen.getAllByText('1.2k')).toHaveLength(2)
   expect(screen.getByText('Agent message')).toBeInTheDocument()
   expect(screen.queryByText('Connection')).not.toBeInTheDocument()
@@ -166,7 +167,7 @@ test('run health rail exposes codex clear and compact actions', async () => {
     />,
   )
 
-  const tokenPanel = screen.getByText('Tokens').closest('section')
+  const tokenPanel = screen.getByText('No token usage yet').closest('section')
   expect(tokenPanel).toBeInTheDocument()
   expect(within(tokenPanel as HTMLElement).getByText('No token usage yet')).toBeInTheDocument()
 
@@ -224,7 +225,7 @@ test('run health rail shows latest token usage summary', () => {
     />,
   )
 
-  expect(screen.getByText('Tokens')).toBeInTheDocument()
+  expect(screen.getAllByText('Tokens')).toHaveLength(2)
   expect(screen.getByText('5%')).toBeInTheDocument()
   expect(screen.getByText('14k / 258k current')).toBeInTheDocument()
   expect(screen.getByText('14k cumulative')).toBeInTheDocument()
@@ -232,6 +233,30 @@ test('run health rail shows latest token usage summary', () => {
   expect(screen.getByText('Output')).toBeInTheDocument()
   expect(screen.getByText('4.5k cached (32%)')).toBeInTheDocument()
   expect(screen.getByText('0 reasoning')).toBeInTheDocument()
+})
+
+test('run health rail shows lifetime session tokens across cleared contexts', () => {
+  render(
+    <RunHealthRail
+      session={{ ...session, agent_type: 'codex', token_count: 614_805_054 }}
+      events={[
+        event(1, 'provider.codex.event', 'system', 'completed', {
+          provider: 'codex',
+          provider_event_type: 'thread/tokenUsage/updated',
+          session_total_tokens: 614_805_054,
+          raw: tokenUsageRaw(),
+        }),
+      ]}
+      streamState="connected"
+      streamError=""
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  const activityPanel = screen.getByText('Activity').closest('section')
+  expect(within(activityPanel as HTMLElement).getByText('Tokens')).toBeInTheDocument()
+  expect(within(activityPanel as HTMLElement).getByText('614.8M')).toBeInTheDocument()
+  expect(screen.getByText('614.8M cumulative')).toBeInTheDocument()
 })
 
 test('run health rail shows OpenCode context usage without token breakdown rows', () => {
@@ -256,7 +281,7 @@ test('run health rail shows OpenCode context usage without token breakdown rows'
     />,
   )
 
-  expect(screen.getByText('Tokens')).toBeInTheDocument()
+  expect(screen.getAllByText('Tokens')).toHaveLength(2)
   expect(screen.getByText('27%')).toBeInTheDocument()
   expect(screen.getByText('53k / 200k current')).toBeInTheDocument()
   expect(screen.getByText('$0.1234 cost')).toBeInTheDocument()

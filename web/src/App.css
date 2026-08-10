@@ -100,6 +100,10 @@
 }
 
 @media (min-width: 1024px) {
+  .app-shell {
+    top: 0;
+  }
+
   .host-console-frame {
     padding-top: 4.75rem;
   }

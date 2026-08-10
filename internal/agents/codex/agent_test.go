@@ -227,6 +227,29 @@ func TestUnknownFixtureNormalizesProviderEvent(t *testing.T) {
 	}
 }
 
+func TestTokenUsageNotificationIncludesNormalizedSessionUsage(t *testing.T) {
+	normalizer := newNormalizer()
+	events := normalizer.normalize("thread/tokenUsage/updated", json.RawMessage(`{
+		"threadId":"thread_1",
+		"tokenUsage":{"total":{"totalTokens":12345}}
+	}`))
+
+	if len(events) != 1 || events[0].Event.Type != "provider.codex.event" {
+		t.Fatalf("expected one provider token event, got %#v", events)
+	}
+	payload := events[0].Event.Payload.(map[string]any)
+	usage, ok := payload["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected normalized usage payload, got %#v", payload)
+	}
+	if usage["context_id"] != "thread_1" || usage["total_tokens"] != float64(12345) {
+		t.Fatalf("unexpected normalized usage payload: %#v", usage)
+	}
+	if payload["raw"] == nil {
+		t.Fatal("expected raw token payload to remain available")
+	}
+}
+
 func TestInvalidJSONRPCProducesParseError(t *testing.T) {
 	data, err := os.ReadFile("testdata/invalid.jsonl")
 	if err != nil {

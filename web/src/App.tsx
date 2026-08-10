@@ -2024,6 +2024,7 @@ function applySessionEvent(session: Session, event: AgentEvent, status: SessionS
   const nextLastSeq = Math.max(currentLastSeq, event.seq)
   const eventCount = (session.event_count ?? 0) + (isTransientEvent(event) ? 0 : 1)
   const toolCount = (session.tool_count ?? 0) + (isToolActivityEvent(event) ? 1 : 0)
+  const tokenCount = Math.max(session.token_count ?? 0, payloadNumber(event.payload, 'session_total_tokens') ?? 0)
   const pendingInput = pendingInputFromEvent(session.pending_input ?? false, event)
   const pendingPermissionCount = pendingPermissionCountFromEvent(session.pending_permission_count ?? 0, event)
   if (!status) {
@@ -2032,6 +2033,7 @@ function applySessionEvent(session: Session, event: AgentEvent, status: SessionS
       event_count: eventCount,
       last_event_seq: nextLastSeq,
       tool_count: toolCount,
+      token_count: tokenCount,
       pending_input: pendingInput,
       pending_permission_count: pendingPermissionCount,
     }
@@ -2049,6 +2051,7 @@ function applySessionEvent(session: Session, event: AgentEvent, status: SessionS
     event_count: eventCount,
     last_event_seq: nextLastSeq,
     tool_count: toolCount,
+    token_count: tokenCount,
     pending_input: pendingInput,
     pending_permission_count: pendingPermissionCount,
     updated_at: updatedAt,
@@ -2083,6 +2086,14 @@ function payloadString(payload: unknown, key: string) {
   }
   const value = (payload as Record<string, unknown>)[key]
   return typeof value === 'string' ? value : null
+}
+
+function payloadNumber(payload: unknown, key: string) {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    return null
+  }
+  const value = (payload as Record<string, unknown>)[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function sortSessions(sessions: Session[]) {

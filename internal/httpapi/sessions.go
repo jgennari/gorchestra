@@ -70,6 +70,7 @@ type sessionResponse struct {
 	EventCount               int64   `json:"event_count"`
 	LastEventSeq             int64   `json:"last_event_seq"`
 	ToolCount                int64   `json:"tool_count"`
+	TokenCount               int64   `json:"token_count"`
 	NotificationAttentionSeq int64   `json:"notification_attention_seq,omitempty"`
 	PendingInput             bool    `json:"pending_input"`
 	PendingPermissionCount   int     `json:"pending_permission_count"`
@@ -562,6 +563,7 @@ func sessionResponseFromStore(session store.Session, pendingInput bool, pendingP
 		EventCount:               session.EventCount,
 		LastEventSeq:             session.LastEventSeq,
 		ToolCount:                session.ToolCount,
+		TokenCount:               session.TokenCount,
 		NotificationAttentionSeq: session.NotificationAttentionSeq,
 		PendingInput:             pendingInput,
 		PendingPermissionCount:   pendingPermissionCount,

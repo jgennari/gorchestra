@@ -444,12 +444,13 @@ func TestRestoreSessionRouteExists(t *testing.T) {
 func TestGetSessionReturnsSession(t *testing.T) {
 	fakeStore := newFakeHTTPStore()
 	fakeStore.addSessionWith(store.Session{
-		ID:        testSessionID,
-		Title:     "Inspect repository",
-		AgentType: "codex",
-		Status:    store.SessionStatusIdle,
-		CreatedAt: testCreatedAt,
-		UpdatedAt: testCreatedAt,
+		ID:         testSessionID,
+		Title:      "Inspect repository",
+		AgentType:  "codex",
+		Status:     store.SessionStatusIdle,
+		TokenCount: 12345,
+		CreatedAt:  testCreatedAt,
+		UpdatedAt:  testCreatedAt,
 	})
 	fakeStore.setEvents(
 		testSessionID,
@@ -482,6 +483,9 @@ func TestGetSessionReturnsSession(t *testing.T) {
 	}
 	if response.ToolCount != 2 {
 		t.Fatalf("expected tool_count 2, got %d", response.ToolCount)
+	}
+	if response.TokenCount != 12345 {
+		t.Fatalf("expected token_count 12345, got %d", response.TokenCount)
 	}
 }
 

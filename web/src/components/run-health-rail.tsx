@@ -44,6 +44,11 @@ export function RunHealthRail({
 }: Props) {
   const latestEvent = events.at(-1)
   const tokenUsage = latestTokenUsage(events)
+  const providerCumulativeTokenCount = tokenUsage?.kind === 'context' ? 0 : (tokenUsage?.total.totalTokens ?? 0)
+  const cumulativeTokenCount = Math.max(
+    session?.token_count ?? 0,
+    tokenUsage?.sessionTotalTokens ?? providerCumulativeTokenCount,
+  )
   const totalEventCount = Math.max(session?.event_count ?? 0, events.length)
   const loadedToolCount = groupEvents(events).filter(
     (group) => group.kind === 'tool-call' || group.kind === 'file-change',
@@ -54,7 +59,7 @@ export function RunHealthRail({
     !session || session.agent_type !== 'codex' || session.status === 'running' || Boolean(session.archived_at) || actionPending
   const compactDisabled = codexActionDisabled || !session?.provider_session_id
   const showCodexActions = session?.agent_type === 'codex'
-  const showTokenPanel = Boolean(tokenUsage) || showCodexActions
+  const showTokenPanel = Boolean(tokenUsage) || cumulativeTokenCount > 0 || showCodexActions
 
   return (
     <aside className="command-rail flex h-full w-full shrink-0 flex-col px-3 py-4">
@@ -69,9 +74,10 @@ export function RunHealthRail({
               error={streamError}
             />
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="mt-3 grid grid-cols-3 gap-2">
             <Metric label="Events" value={totalEventCount} />
             <Metric label="Tools" value={totalToolCount} />
+            <Metric label="Tokens" value={cumulativeTokenCount} />
           </div>
           <div className="mt-3 border-t border-border/60 pt-3">
             <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
@@ -105,7 +111,11 @@ export function RunHealthRail({
         {showTokenPanel ? (
           <RailPanel>
             <RailSectionTitle icon={Gauge} label="Tokens" />
-            {tokenUsage ? <TokenUsageView usage={tokenUsage} /> : <TokenUsageEmptyState />}
+            {tokenUsage ? (
+              <TokenUsageView usage={tokenUsage} cumulativeTokenCount={cumulativeTokenCount} />
+            ) : (
+              <TokenUsageEmptyState />
+            )}
             {showCodexActions ? (
               <CodexContextActions
                 clearPending={clearPending}
@@ -184,14 +194,16 @@ function RailSectionTitle({ icon: Icon, label }: { icon: LucideIcon; label: stri
 
 function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded bg-surface-muted/72 px-2 py-2 text-center">
-      <p className="text-lg font-semibold tabular-nums leading-none">{formatCompactCount(value)}</p>
-      <p className="mt-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
+    <div className="min-w-0 rounded bg-surface-muted/72 px-1.5 py-2 text-center">
+      <p className="truncate text-lg font-semibold tabular-nums leading-none" title={value.toLocaleString()}>
+        {formatCompactCount(value)}
+      </p>
+      <p className="mt-1 truncate text-[10px] uppercase tracking-[0.1em] text-muted-foreground">{label}</p>
     </div>
   )
 }
 
-function TokenUsageView({ usage }: { usage: TokenUsageSummary }) {
+function TokenUsageView({ usage, cumulativeTokenCount }: { usage: TokenUsageSummary; cumulativeTokenCount: number }) {
   const contextOnly = usage.kind === 'context'
   const contextTokens = usage.last.totalTokens > 0 ? usage.last.totalTokens : usage.total.totalTokens
   const contextPercent = contextTokens / usage.modelContextWindow
@@ -220,7 +232,7 @@ function TokenUsageView({ usage }: { usage: TokenUsageSummary }) {
         ) : null
       ) : (
         <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-          {formatTokenCount(usage.total.totalTokens)} cumulative
+          {formatTokenCount(cumulativeTokenCount)} cumulative
         </p>
       )}
 
@@ -337,6 +349,7 @@ function tokenPressureBarClassName(percent: number) {
 }
 
 function formatTokenCount(value: number) {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 10_000) return `${Math.round(value / 1_000)}k`
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
@@ -344,6 +357,7 @@ function formatTokenCount(value: number) {
 }
 
 function formatCompactCount(value: number) {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
   return String(value)

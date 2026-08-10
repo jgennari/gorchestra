@@ -77,6 +77,8 @@ func (n *normalizer) normalize(method string, params json.RawMessage) []normaliz
 		return n.normalizeItemLifecycle(method, params, false)
 	case "turn/completed":
 		return compact(n.normalizeTurnCompleted(method, params))
+	case "thread/tokenUsage/updated":
+		return []normalizedEvent{n.normalizeTokenUsage(method, params)}
 	case "error":
 		message := firstNonEmpty(stringAt(params, "error", "message"), "codex error")
 		payload := basePayload(method, params)
@@ -103,6 +105,20 @@ func (n *normalizer) normalize(method string, params json.RawMessage) []normaliz
 	default:
 		return []normalizedEvent{n.unknown("provider.codex.event", method, params)}
 	}
+}
+
+func (n *normalizer) normalizeTokenUsage(method string, params json.RawMessage) normalizedEvent {
+	payload := basePayload(method, params)
+	payload["raw"] = json.RawMessage(params)
+	threadID := stringAt(params, "threadId")
+	totalTokens := anyAt(params, "tokenUsage", "total", "totalTokens")
+	if threadID != "" && totalTokens != nil {
+		payload["usage"] = map[string]any{
+			"context_id":   threadID,
+			"total_tokens": totalTokens,
+		}
+	}
+	return normalizedEvent{Event: event("provider.codex.event", "system", "completed", payload)}
 }
 
 func (n *normalizer) normalizeItemLifecycle(method string, params json.RawMessage, started bool) []normalizedEvent {

@@ -123,6 +123,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND `+durableEventSQL+`) AS event_count,
 		        COALESCE((SELECT MAX(seq) FROM events WHERE events.session_id = sessions.id AND `+durableEventSQL+`), 0) AS last_event_seq,
 		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND type IN ('tool.call.started', 'file.change.started')) AS tool_count,
+		        COALESCE((SELECT SUM(token_count) FROM session_token_usage WHERE session_token_usage.session_id = sessions.id), 0) AS token_count,
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
 		        created_at, updated_at, completed_at, archived_at
 		 FROM sessions
@@ -148,6 +149,7 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND ` + durableEventSQL + `) AS event_count,
 		        COALESCE((SELECT MAX(seq) FROM events WHERE events.session_id = sessions.id AND ` + durableEventSQL + `), 0) AS last_event_seq,
 		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND type IN ('tool.call.started', 'file.change.started')) AS tool_count,
+		        COALESCE((SELECT SUM(token_count) FROM session_token_usage WHERE session_token_usage.session_id = sessions.id), 0) AS token_count,
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
 		        created_at, updated_at, completed_at, archived_at
 		 FROM sessions`
@@ -559,6 +561,18 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 		return Event{}, fmt.Errorf("%w: session %s", ErrNotFound, params.SessionID)
 	}
 
+	payload := append(json.RawMessage(nil), params.Payload...)
+	if usage, ok := normalizedSessionTokenUsage(payload); ok {
+		sessionTotal, err := upsertSessionTokenUsage(ctx, tx, params.SessionID, params.Seq, usage)
+		if err != nil {
+			return Event{}, err
+		}
+		payload, err = payloadWithSessionTotalTokens(payload, sessionTotal)
+		if err != nil {
+			return Event{}, err
+		}
+	}
+
 	id, err := NewEventID()
 	if err != nil {
 		return Event{}, err
@@ -571,7 +585,7 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 		Type:      params.Type,
 		Role:      params.Role,
 		Status:    params.Status,
-		Payload:   append(json.RawMessage(nil), params.Payload...),
+		Payload:   payload,
 		CreatedAt: s.now(),
 	}
 
@@ -596,6 +610,81 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 	}
 
 	return event, nil
+}
+
+type sessionTokenUsage struct {
+	Provider    string
+	ContextID   string
+	TotalTokens int64
+}
+
+func normalizedSessionTokenUsage(payload json.RawMessage) (sessionTokenUsage, bool) {
+	var value struct {
+		Provider string `json:"provider"`
+		Usage    *struct {
+			ContextID   string `json:"context_id"`
+			TotalTokens int64  `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &value); err != nil || value.Usage == nil {
+		return sessionTokenUsage{}, false
+	}
+	usage := sessionTokenUsage{
+		Provider:    strings.TrimSpace(value.Provider),
+		ContextID:   strings.TrimSpace(value.Usage.ContextID),
+		TotalTokens: value.Usage.TotalTokens,
+	}
+	if usage.Provider == "" || usage.ContextID == "" || usage.TotalTokens <= 0 {
+		return sessionTokenUsage{}, false
+	}
+	return usage, true
+}
+
+func upsertSessionTokenUsage(
+	ctx context.Context,
+	tx *sql.Tx,
+	sessionID string,
+	eventSeq int64,
+	usage sessionTokenUsage,
+) (int64, error) {
+	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO session_token_usage (session_id, provider, context_id, token_count, last_event_seq)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(session_id, provider, context_id) DO UPDATE SET
+		   token_count = MAX(token_count, excluded.token_count),
+		   last_event_seq = MAX(last_event_seq, excluded.last_event_seq)`,
+		sessionID,
+		usage.Provider,
+		usage.ContextID,
+		usage.TotalTokens,
+		eventSeq,
+	); err != nil {
+		return 0, fmt.Errorf("upsert session token usage: %w", err)
+	}
+
+	var sessionTotal int64
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT COALESCE(SUM(token_count), 0) FROM session_token_usage WHERE session_id = ?`,
+		sessionID,
+	).Scan(&sessionTotal); err != nil {
+		return 0, fmt.Errorf("sum session token usage: %w", err)
+	}
+	return sessionTotal, nil
+}
+
+func payloadWithSessionTotalTokens(payload json.RawMessage, sessionTotal int64) (json.RawMessage, error) {
+	var value map[string]any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return nil, fmt.Errorf("decode token usage payload: %w", err)
+	}
+	value["session_total_tokens"] = sessionTotal
+	updated, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encode token usage payload: %w", err)
+	}
+	return updated, nil
 }
 
 func (s *Store) EnqueueMessage(ctx context.Context, params EnqueueMessageParams) (QueuedMessage, error) {
@@ -1278,6 +1367,7 @@ func scanSession(row rowScanner) (Session, error) {
 	var eventCount int64
 	var lastEventSeq int64
 	var toolCount int64
+	var tokenCount int64
 	var notificationAttentionSeq int64
 	var createdAt string
 	var updatedAt string
@@ -1295,6 +1385,7 @@ func scanSession(row rowScanner) (Session, error) {
 		&eventCount,
 		&lastEventSeq,
 		&toolCount,
+		&tokenCount,
 		&notificationAttentionSeq,
 		&createdAt,
 		&updatedAt,
@@ -1333,6 +1424,7 @@ func scanSession(row rowScanner) (Session, error) {
 	session.EventCount = eventCount
 	session.LastEventSeq = lastEventSeq
 	session.ToolCount = toolCount
+	session.TokenCount = tokenCount
 	session.NotificationAttentionSeq = notificationAttentionSeq
 	session.CreatedAt = parsedCreatedAt
 	session.UpdatedAt = parsedUpdatedAt

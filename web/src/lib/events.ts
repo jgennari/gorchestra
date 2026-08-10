@@ -204,6 +204,7 @@ export type TokenUsageSummary = {
   total: TokenUsageSnapshot
   last: TokenUsageSnapshot
   modelContextWindow: number
+  sessionTotalTokens?: number
   cost?: {
     amount: number
     currency: string
@@ -2056,9 +2057,15 @@ function tokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
     total,
     last,
     modelContextWindow,
+    sessionTotalTokens: positivePayloadNumber(event.payload, ['session_total_tokens']),
     updatedAt: event.created_at,
     seq: event.seq,
   }
+}
+
+function positivePayloadNumber(payload: unknown, keys: string[]) {
+  const value = payloadNumber(payload, keys)
+  return value > 0 ? value : undefined
 }
 
 function openCodeTokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {

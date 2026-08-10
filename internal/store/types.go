@@ -63,6 +63,7 @@ type Session struct {
 	EventCount               int64
 	LastEventSeq             int64
 	ToolCount                int64
+	TokenCount               int64
 	NotificationAttentionSeq int64
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
