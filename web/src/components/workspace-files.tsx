@@ -535,7 +535,7 @@ export function WorkspaceFileContentView({
           </div>
         ) : markdown ? (
           mode === 'preview' ? (
-            <MarkdownFilePreview content={draft} />
+            <MarkdownFilePreview content={draft} resolvedTheme={resolvedTheme} />
           ) : (
             <WorkspaceFileEditor file={file} value={draft} resolvedTheme={resolvedTheme} onChange={handleDraftChange} />
           )
@@ -685,7 +685,7 @@ function WorkspaceFileEditor({
   )
 }
 
-function MarkdownFilePreview({ content }: { content: string }) {
+function MarkdownFilePreview({ content, resolvedTheme }: { content: string; resolvedTheme: 'light' | 'dark' }) {
   return (
     <article className="mx-auto min-h-full max-w-3xl rounded-md bg-background/72 px-6 py-5 text-sm leading-7 text-foreground shadow-sm ring-1 ring-border/60">
       <ReactMarkdown
@@ -706,7 +706,7 @@ function MarkdownFilePreview({ content }: { content: string }) {
           blockquote: ({ children }) => (
             <blockquote className="my-4 border-l-2 border-border pl-4 text-muted-foreground">{children}</blockquote>
           ),
-          code: MarkdownPreviewCode,
+          code: (props) => <MarkdownPreviewCode {...props} resolvedTheme={resolvedTheme} />,
           pre: ({ children }) => <>{children}</>,
           table: ({ children }) => (
             <div className="my-4 overflow-auto">
@@ -724,7 +724,15 @@ function MarkdownFilePreview({ content }: { content: string }) {
   )
 }
 
-function MarkdownPreviewCode({ children, className }: ComponentProps<'code'>) {
+function MarkdownPreviewCode({
+  children,
+  className,
+  resolvedTheme,
+}: ComponentProps<'code'> & { resolvedTheme: 'light' | 'dark' }) {
+  if (className?.split(/\s+/).some((name) => name.toLowerCase() === 'language-mermaid')) {
+    return <MermaidDiagram source={String(children ?? '').replace(/\n$/, '')} resolvedTheme={resolvedTheme} />
+  }
+
   const block = className?.startsWith('language-') || String(children ?? '').includes('\n')
   if (block) {
     return (
@@ -734,6 +742,99 @@ function MarkdownPreviewCode({ children, className }: ComponentProps<'code'>) {
     )
   }
   return <code className="rounded bg-surface-muted px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
+}
+
+type MermaidRenderState =
+  | { status: 'loading' }
+  | { status: 'rendered'; svg: string }
+  | { status: 'error'; message: string }
+
+let mermaidRenderCounter = 0
+let mermaidRenderQueue = Promise.resolve()
+
+function MermaidDiagram({ source, resolvedTheme }: { source: string; resolvedTheme: 'light' | 'dark' }) {
+  const [state, setState] = useState<MermaidRenderState>({ status: 'loading' })
+
+  useEffect(() => {
+    let cancelled = false
+    setState({ status: 'loading' })
+
+    void renderMermaidDiagram(source, resolvedTheme).then(
+      (svg) => {
+        if (!cancelled) setState({ status: 'rendered', svg })
+      },
+      (error: unknown) => {
+        if (!cancelled) setState({ status: 'error', message: mermaidErrorMessage(error) })
+      },
+    )
+
+    return () => {
+      cancelled = true
+    }
+  }, [resolvedTheme, source])
+
+  if (state.status === 'loading') {
+    return (
+      <div className="my-4 flex min-h-28 items-center justify-center rounded-md border border-border/70 bg-surface-muted/40 text-xs text-muted-foreground">
+        <Loader2 className="mr-2 size-4 animate-spin" aria-hidden="true" />
+        Rendering diagram
+      </div>
+    )
+  }
+
+  if (state.status === 'error') {
+    return (
+      <div className="my-4 overflow-hidden rounded-md border border-destructive/50 bg-destructive/5">
+        <p role="alert" className="m-0 border-b border-destructive/30 px-3 py-2 text-xs text-destructive">
+          Unable to render Mermaid diagram: {state.message}
+        </p>
+        <pre className="m-0 overflow-auto p-3 font-mono text-xs leading-relaxed">
+          <code>{source}</code>
+        </pre>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      role="img"
+      aria-label="Mermaid diagram"
+      className="my-4 overflow-auto rounded-md border border-border/70 bg-surface-muted/25 p-3 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"
+      dangerouslySetInnerHTML={{ __html: state.svg }}
+    />
+  )
+}
+
+function renderMermaidDiagram(source: string, resolvedTheme: 'light' | 'dark') {
+  const render = async () => {
+    const { default: mermaid } = await import('mermaid')
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      suppressErrorRendering: true,
+      theme: resolvedTheme === 'dark' ? 'dark' : 'default',
+    })
+    const id = `gorchestra-mermaid-${++mermaidRenderCounter}`
+    const { svg } = await mermaid.render(id, source)
+    return svg
+  }
+
+  const result = mermaidRenderQueue.then(render, render)
+  mermaidRenderQueue = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  return result
+}
+
+function mermaidErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim()
+  }
+  if (typeof error === 'string' && error.trim()) {
+    return error.trim()
+  }
+  return 'Unknown rendering error'
 }
 
 function gitSummaryLabel(label: string) {
