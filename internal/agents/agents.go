@@ -32,6 +32,41 @@ type OptionsProvider interface {
 	Options(ctx context.Context) (Options, error)
 }
 
+type SkillProvider interface {
+	Skills(ctx context.Context, query SkillQuery) (SkillCatalog, error)
+}
+
+type SkillQuery struct {
+	Workdir     string
+	ForceReload bool
+}
+
+type SkillCatalog struct {
+	Skills []Skill      `json:"skills"`
+	Errors []SkillError `json:"errors"`
+}
+
+type Skill struct {
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	DisplayName      string `json:"display_name,omitempty"`
+	ShortDescription string `json:"short_description,omitempty"`
+	BrandColor       string `json:"brand_color,omitempty"`
+	Path             string `json:"path"`
+	Scope            string `json:"scope"`
+	Enabled          bool   `json:"enabled"`
+}
+
+type SkillError struct {
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
+type SkillReference struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
 type Options struct {
 	DefaultModel       string                    `json:"default_model"`
 	Models             []ModelOption             `json:"models"`
@@ -79,6 +114,7 @@ type AgentInput struct {
 	Context           string
 	Metadata          map[string]any
 	Attachments       []Attachment
+	Skills            []SkillReference
 	UserInput         UserInputBroker
 	Permissions       PermissionBroker
 }

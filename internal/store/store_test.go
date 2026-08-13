@@ -29,6 +29,7 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
 	assertColumnExists(t, ctx, store, "sessions", "next_event_seq")
 	assertColumnExists(t, ctx, store, "push_subscriptions", "origin")
+	assertColumnExists(t, ctx, store, "queued_messages", "skills_json")
 }
 
 func TestMigrationsAreIdempotent(t *testing.T) {
@@ -43,8 +44,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 14 {
-		t.Fatalf("expected fourteen recorded migrations, got %d", count)
+	if count != 15 {
+		t.Fatalf("expected fifteen recorded migrations, got %d", count)
 	}
 }
 
@@ -589,6 +590,7 @@ func TestQueuedMessagesSequenceAndLifecycle(t *testing.T) {
 		SessionID:    session.ID,
 		Content:      "First",
 		AgentOptions: json.RawMessage(`{"codex":{"model":"gpt-5.5"}}`),
+		Skills:       json.RawMessage(`[{"name":"openai-docs","path":"/skills/openai-docs/SKILL.md"}]`),
 		MaxPending:   2,
 	})
 	if err != nil {
@@ -621,6 +623,9 @@ func TestQueuedMessagesSequenceAndLifecycle(t *testing.T) {
 	if len(pending) != 2 || pending[0].Content != "First" || pending[1].Content != "Second" {
 		t.Fatalf("expected FIFO pending messages, got %#v", pending)
 	}
+	if string(pending[0].Skills) != `[{"name":"openai-docs","path":"/skills/openai-docs/SKILL.md"}]` {
+		t.Fatalf("expected queued skills to persist, got %s", pending[0].Skills)
+	}
 
 	claimed, err := store.ClaimNextQueuedMessage(ctx, session.ID)
 	if err != nil {
@@ -628,6 +633,9 @@ func TestQueuedMessagesSequenceAndLifecycle(t *testing.T) {
 	}
 	if claimed.ID != first.ID || claimed.Status != QueuedMessageStatusSending {
 		t.Fatalf("expected first message sending, got %#v", claimed)
+	}
+	if string(claimed.Skills) != string(first.Skills) {
+		t.Fatalf("expected claimed skills %s, got %s", first.Skills, claimed.Skills)
 	}
 
 	pending, err = store.ListQueuedMessages(ctx, session.ID)
@@ -644,6 +652,24 @@ func TestQueuedMessagesSequenceAndLifecycle(t *testing.T) {
 	}
 	if sent.Status != QueuedMessageStatusSent {
 		t.Fatalf("expected sent status, got %#v", sent)
+	}
+}
+
+func TestQueuedMessageAllowsSkillOnlyInput(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, store)
+
+	queued, err := store.EnqueueMessage(ctx, EnqueueMessageParams{
+		SessionID:  session.ID,
+		Skills:     json.RawMessage(`[{"name":"openai-docs","path":"/skills/openai-docs/SKILL.md"}]`),
+		MaxPending: 5,
+	})
+	if err != nil {
+		t.Fatalf("enqueue skill-only message: %v", err)
+	}
+	if queued.Content != "" || len(queued.Skills) == 0 {
+		t.Fatalf("expected skill-only queued message, got %#v", queued)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -747,6 +748,125 @@ func TestAgentOptionsReturnsProviderOptions(t *testing.T) {
 	}
 	if len(response.CollaborationModes) != 1 || response.CollaborationModes[0].Mode != "plan" {
 		t.Fatalf("expected plan collaboration mode, got %#v", response.CollaborationModes)
+	}
+}
+
+func TestSessionSkillsReturnsEnabledCatalogForWorkspace(t *testing.T) {
+	ctx := context.Background()
+	workdir := canonicalPath(t, t.TempDir())
+	agent := newSkillBlockingAgent(agents.SkillCatalog{
+		Skills: []agents.Skill{
+			{
+				Name:             "openai-docs",
+				Description:      "Use official OpenAI documentation.",
+				DisplayName:      "OpenAI Docs",
+				ShortDescription: "Official product guidance",
+				BrandColor:       "#10A37F",
+				Path:             "/skills/user/openai-docs/SKILL.md",
+				Scope:            "user",
+				Enabled:          true,
+			},
+			{
+				Name:        "disabled-skill",
+				Description: "Disabled",
+				Path:        "/skills/disabled/SKILL.md",
+				Scope:       "system",
+				Enabled:     false,
+			},
+		},
+		Errors: []agents.SkillError{{Path: "/broken/SKILL.md", Message: "invalid frontmatter"}},
+	})
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workdir, agent)
+	session := createIntegrationSession(t, ctx, dbStore)
+	t.Cleanup(agent.release)
+
+	rec := get(handler, "/api/sessions/"+session.ID+"/skills?refresh=true")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response agents.SkillCatalog
+	decodeJSON(t, rec, &response)
+	if len(response.Skills) != 1 || response.Skills[0].Name != "openai-docs" || response.Skills[0].DisplayName != "OpenAI Docs" {
+		t.Fatalf("expected enabled skill metadata, got %#v", response.Skills)
+	}
+	if len(response.Errors) != 1 || response.Errors[0].Path != "/broken/SKILL.md" {
+		t.Fatalf("expected discovery errors, got %#v", response.Errors)
+	}
+	select {
+	case query := <-agent.queries:
+		if query.Workdir != workdir || !query.ForceReload {
+			t.Fatalf("expected refreshed query for %q, got %#v", workdir, query)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for skill query")
+	}
+}
+
+func TestMessageSubmissionValidatesAndPassesStructuredSkills(t *testing.T) {
+	ctx := context.Background()
+	workdir := canonicalPath(t, t.TempDir())
+	selected := agents.SkillReference{Name: "openai-docs", Path: "/skills/user/openai-docs/SKILL.md"}
+	agent := newSkillBlockingAgent(agents.SkillCatalog{Skills: []agents.Skill{
+		{Name: selected.Name, Path: selected.Path, Scope: "user", Enabled: true},
+	}})
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workdir, agent)
+	session := createIntegrationSession(t, ctx, dbStore)
+	t.Cleanup(agent.release)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{
+		"skills":[{"name":"openai-docs","path":"/skills/user/openai-docs/SKILL.md"}]
+	}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	select {
+	case input := <-agent.started:
+		if input.Message != "" || !reflect.DeepEqual(input.Skills, []agents.SkillReference{selected}) {
+			t.Fatalf("expected skill-only structured input, got %#v", input)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for agent input")
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	if len(events) == 0 || events[0].Type != "user.message.completed" {
+		t.Fatalf("expected persisted user message first, got %#v", events)
+	}
+	payload := decodeEventPayload(t, events[0])
+	skills, ok := payload["skills"].([]any)
+	if !ok || len(skills) != 1 {
+		t.Fatalf("expected persisted skills payload, got %#v", payload["skills"])
+	}
+
+	agent.release()
+	waitFor(t, func() bool {
+		loaded, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && loaded.Status == store.SessionStatusIdle
+	})
+}
+
+func TestMessageSubmissionRejectsUnadvertisedSkillPath(t *testing.T) {
+	ctx := context.Background()
+	agent := newSkillBlockingAgent(agents.SkillCatalog{Skills: []agents.Skill{
+		{Name: "openai-docs", Path: "/skills/user/openai-docs/SKILL.md", Enabled: true},
+	}})
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+	session := createIntegrationSession(t, ctx, dbStore)
+	t.Cleanup(agent.release)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{
+		"content":"Use the docs",
+		"skills":[{"name":"openai-docs","path":"/tmp/forged/SKILL.md"}]
+	}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, `skill "openai-docs" is not available to this session`)
+
+	if events := listIntegrationEvents(t, ctx, dbStore, session.ID); len(events) != 0 {
+		t.Fatalf("expected rejected skill to persist no events, got %#v", events)
 	}
 }
 
@@ -2568,7 +2688,7 @@ func TestMessageSubmissionRejectsEmptyContent(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
-	assertErrorResponse(t, rec, "content or attachments are required")
+	assertErrorResponse(t, rec, "content, attachments, or skills are required")
 }
 
 func TestWriteAPIsRejectMalformedJSON(t *testing.T) {
@@ -2853,6 +2973,25 @@ type blockingAgent struct {
 	started   chan agents.AgentInput
 	releasec  chan struct{}
 	once      sync.Once
+}
+
+type skillBlockingAgent struct {
+	*blockingAgent
+	catalog agents.SkillCatalog
+	queries chan agents.SkillQuery
+}
+
+func newSkillBlockingAgent(catalog agents.SkillCatalog) *skillBlockingAgent {
+	return &skillBlockingAgent{
+		blockingAgent: newBlockingAgent(),
+		catalog:       catalog,
+		queries:       make(chan agents.SkillQuery, 8),
+	}
+}
+
+func (a *skillBlockingAgent) Skills(_ context.Context, query agents.SkillQuery) (agents.SkillCatalog, error) {
+	a.queries <- query
+	return a.catalog, nil
 }
 
 func newBlockingAgent() *blockingAgent {

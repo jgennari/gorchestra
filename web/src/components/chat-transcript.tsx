@@ -718,6 +718,8 @@ function ChatMessageRow({
             </div>
           ) : null}
 
+          {message.skills.length > 0 ? <MessageSkills skills={message.skills} /> : null}
+
           {message.attachments.length > 0 ? <MessageAttachments attachments={message.attachments} /> : null}
 
           {message.text ? (
@@ -726,7 +728,7 @@ function ChatMessageRow({
               variant={user ? 'inverted' : plan ? 'plan' : 'default'}
               onOpenFilePath={onOpenFilePath}
             />
-          ) : user && message.attachments.length > 0 ? null : (
+          ) : user && (message.attachments.length > 0 || message.skills.length > 0) ? null : (
             <p className="text-muted-foreground">Working...</p>
           )}
         </div>
@@ -760,6 +762,22 @@ function ChatMessageRow({
         ) : null}
       </div>
     </article>
+  )
+}
+
+function MessageSkills({ skills }: { skills: ChatTranscriptMessage['skills'] }) {
+  return (
+    <div className="mb-2 flex flex-wrap gap-1.5" aria-label="Invoked skills">
+      {skills.map((skill) => (
+        <span
+          key={`${skill.name}\u0000${skill.path}`}
+          className="rounded-full border border-current/25 bg-background/15 px-2 py-0.5 font-mono text-[11px] font-medium"
+          title={skill.path}
+        >
+          ${skill.name}
+        </span>
+      ))}
+    </div>
   )
 }
 

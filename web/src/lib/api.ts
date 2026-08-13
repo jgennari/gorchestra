@@ -145,12 +145,39 @@ export type SubmitAgentOptions = {
   pi?: PiSubmitOptions
 }
 
+export type SkillReference = {
+  name: string
+  path: string
+}
+
+export type SkillScope = 'repo' | 'user' | 'admin' | 'system'
+
+export type AgentSkill = SkillReference & {
+  description: string
+  display_name?: string
+  short_description?: string
+  brand_color?: string
+  scope: SkillScope
+  enabled: boolean
+}
+
+export type AgentSkillError = {
+  path: string
+  message: string
+}
+
+export type AgentSkillCatalog = {
+  skills: AgentSkill[]
+  errors: AgentSkillError[]
+}
+
 export type QueuedMessage = {
   id: string
   session_id: string
   seq: number
   content: string
   agent_options?: SubmitAgentOptions
+  skills?: SkillReference[]
   created_at: string
 }
 
@@ -564,6 +591,12 @@ export async function fetchAgentOptions(agentType: AgentType) {
   )
 }
 
+export async function fetchSessionSkills(sessionID: string, refresh = false) {
+  const params = new URLSearchParams()
+  if (refresh) params.set('refresh', 'true')
+  return requestJSON<AgentSkillCatalog>(withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/skills`, params))
+}
+
 export async function listWorkspaceRoots() {
   const data = await requestJSON<WorkspaceRootsResponse>('/api/workspaces/roots')
   return data.roots
@@ -625,12 +658,14 @@ export async function submitMessage(
   agentOptions?: SubmitAgentOptions,
   attachments: MessageAttachment[] = [],
   queue = false,
+  skills: SkillReference[] = [],
 ) {
   const body: {
     content: string
     agent_options?: SubmitAgentOptions
     attachments?: MessageAttachment[]
     queue?: boolean
+    skills?: SkillReference[]
   } = { content }
   if (agentOptions) {
     body.agent_options = agentOptions
@@ -640,6 +675,9 @@ export async function submitMessage(
   }
   if (queue) {
     body.queue = true
+  }
+  if (skills.length > 0) {
+    body.skills = skills
   }
 
   return requestJSON<SubmitMessageResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/messages`, {

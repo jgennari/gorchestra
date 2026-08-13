@@ -85,10 +85,16 @@ type listSessionsResponse struct {
 }
 
 type submitMessageRequest struct {
-	Content      string              `json:"content"`
-	AgentOptions *submitAgentOptions `json:"agent_options,omitempty"`
-	Attachments  []submitAttachment  `json:"attachments,omitempty"`
-	Queue        bool                `json:"queue,omitempty"`
+	Content      string                 `json:"content"`
+	AgentOptions *submitAgentOptions    `json:"agent_options,omitempty"`
+	Attachments  []submitAttachment     `json:"attachments,omitempty"`
+	Skills       []submitSkillReference `json:"skills,omitempty"`
+	Queue        bool                   `json:"queue,omitempty"`
+}
+
+type submitSkillReference struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 type submitAgentOptions struct {
@@ -142,6 +148,7 @@ type queuedMessageResponse struct {
 	Seq          int64  `json:"seq"`
 	Content      string `json:"content"`
 	AgentOptions any    `json:"agent_options"`
+	Skills       any    `json:"skills"`
 	CreatedAt    string `json:"created_at"`
 }
 
@@ -946,8 +953,8 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if content == "" && len(attachments) == 0 {
-		writeError(w, http.StatusBadRequest, "content or attachments are required")
+	if content == "" && len(attachments) == 0 && len(request.Skills) == 0 {
+		writeError(w, http.StatusBadRequest, "content, attachments, or skills are required")
 		return
 	}
 
@@ -965,12 +972,21 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "session is archived")
 		return
 	}
+	skills, err := api.validateSkillReferences(r.Context(), session, request.Skills)
+	if err != nil {
+		if errors.Is(err, agents.ErrUnavailable) {
+			writeError(w, http.StatusServiceUnavailable, "agent unavailable")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if request.Queue || session.Status == store.SessionStatusRunning {
 		if len(attachments) > 0 {
 			writeError(w, http.StatusBadRequest, "queued messages cannot include image attachments")
 			return
 		}
-		queued, ok := api.enqueueSessionMessage(w, r, session, content, request.AgentOptions)
+		queued, ok := api.enqueueSessionMessage(w, r, session, content, request.AgentOptions, skills)
 		if !ok {
 			return
 		}
@@ -1004,11 +1020,12 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		session,
 		content,
 		attachments,
+		skills,
 		agent,
 		metadata,
 		agents.AgentActionMessage,
 		func(ctx context.Context) error {
-			return api.appendUserMessage(ctx, session.ID, content, attachments, eventOptions, "")
+			return api.appendUserMessage(ctx, session.ID, content, attachments, skills, eventOptions, "")
 		},
 		"failed to persist user message",
 	)
@@ -1079,6 +1096,7 @@ func (api API) enqueueSessionMessage(
 	session store.Session,
 	content string,
 	options *submitAgentOptions,
+	skills []agents.SkillReference,
 ) (store.QueuedMessage, bool) {
 	if _, _, err := submitOptionsMetadata(session.AgentType, session.AgentOptions, options); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1089,11 +1107,17 @@ func (api API) enqueueSessionMessage(
 		writeError(w, http.StatusInternalServerError, "failed to encode queued message options")
 		return store.QueuedMessage{}, false
 	}
+	rawSkills, err := json.Marshal(skills)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode queued message skills")
+		return store.QueuedMessage{}, false
+	}
 
 	queued, err := api.store.EnqueueMessage(r.Context(), store.EnqueueMessageParams{
 		SessionID:    session.ID,
 		Content:      content,
 		AgentOptions: rawOptions,
+		Skills:       rawSkills,
 		MaxPending:   maxQueuedMessages,
 	})
 	if err != nil {
@@ -1130,6 +1154,14 @@ func decodeAgentOptions(raw json.RawMessage) any {
 	return agentOptions
 }
 
+func decodeSkillReferences(raw json.RawMessage) []agents.SkillReference {
+	skills := make([]agents.SkillReference, 0)
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &skills)
+	}
+	return skills
+}
+
 func queuedMessageToResponse(message store.QueuedMessage) *queuedMessageResponse {
 	return &queuedMessageResponse{
 		ID:           message.ID,
@@ -1137,6 +1169,7 @@ func queuedMessageToResponse(message store.QueuedMessage) *queuedMessageResponse
 		Seq:          message.Seq,
 		Content:      message.Content,
 		AgentOptions: decodeAgentOptions(message.AgentOptions),
+		Skills:       decodeSkillReferences(message.Skills),
 		CreatedAt:    message.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
@@ -1261,6 +1294,7 @@ func (api API) compactSessionActionHandler(w http.ResponseWriter, r *http.Reques
 		session,
 		"",
 		nil,
+		nil,
 		agent,
 		metadata,
 		agents.AgentActionCompact,
@@ -1285,6 +1319,7 @@ func (api API) startSessionRun(
 	session store.Session,
 	message string,
 	attachments []agents.Attachment,
+	skills []agents.SkillReference,
 	agent agents.Agent,
 	metadata map[string]any,
 	action agents.AgentAction,
@@ -1337,7 +1372,7 @@ func (api API) startSessionRun(
 	}
 
 	go func() {
-		completed := api.runAgent(runCtx, updatedSession, message, attachments, agent, metadata, action)
+		completed := api.runAgent(runCtx, updatedSession, message, attachments, skills, agent, metadata, action)
 		cleanup()
 		if completed {
 			api.startQueuedMessageRun(context.Background(), session.ID)
@@ -1389,6 +1424,7 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		release()
 		return false
 	}
+	skills := decodeSkillReferences(queued.Skills)
 
 	agent, ok := api.agents.Get(session.AgentType)
 	if !ok {
@@ -1413,7 +1449,7 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		return false
 	}
 
-	if err := api.appendUserMessage(ctx, session.ID, queued.Content, nil, eventOptions, queued.ID); err != nil {
+	if err := api.appendUserMessage(ctx, session.ID, queued.Content, nil, skills, eventOptions, queued.ID); err != nil {
 		cleanup()
 		log.Printf("failed to append queued user message: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
 		release()
@@ -1446,7 +1482,7 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 	}
 
 	go func() {
-		completed := api.runAgent(runCtx, updatedSession, queued.Content, nil, agent, metadata, agents.AgentActionMessage)
+		completed := api.runAgent(runCtx, updatedSession, queued.Content, nil, skills, agent, metadata, agents.AgentActionMessage)
 		cleanup()
 		if completed {
 			api.startQueuedMessageRun(context.Background(), session.ID)
@@ -1569,12 +1605,16 @@ func (api API) appendUserMessage(
 	sessionID string,
 	content string,
 	attachments []agents.Attachment,
+	skills []agents.SkillReference,
 	agentOptions map[string]any,
 	queueItemID string,
 ) error {
 	payloadValue := map[string]any{"text": content}
 	if len(attachments) > 0 {
 		payloadValue["attachments"] = attachments
+	}
+	if len(skills) > 0 {
+		payloadValue["skills"] = skills
 	}
 	if len(agentOptions) > 0 {
 		payloadValue["agent_options"] = agentOptions
@@ -1603,6 +1643,7 @@ func (api API) appendQueuedMessageQueued(ctx context.Context, message store.Queu
 		"queue_item_id": message.ID,
 		"text":          message.Content,
 		"agent_options": decodeAgentOptions(message.AgentOptions),
+		"skills":        decodeSkillReferences(message.Skills),
 	})
 	if err != nil {
 		return fmt.Errorf("marshal queued message payload: %w", err)
@@ -1715,6 +1756,7 @@ func (api API) runAgent(
 	session store.Session,
 	message string,
 	attachments []agents.Attachment,
+	skills []agents.SkillReference,
 	agent agents.Agent,
 	metadata map[string]any,
 	action agents.AgentAction,
@@ -1751,6 +1793,7 @@ func (api API) runAgent(
 		Context:           api.agentHostingContext(sessionWorkspacePath(session, api.workdir)),
 		Metadata:          metadata,
 		Attachments:       attachments,
+		Skills:            skills,
 		UserInput:         api.runs,
 		Permissions:       api.runs,
 	}, emit)

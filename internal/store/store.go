@@ -693,15 +693,26 @@ func (s *Store) EnqueueMessage(ctx context.Context, params EnqueueMessageParams)
 	if sessionID == "" {
 		return QueuedMessage{}, fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
 	}
-	if content == "" {
-		return QueuedMessage{}, fmt.Errorf("%w: content is required", ErrInvalidArgument)
-	}
 	agentOptions := params.AgentOptions
 	if len(agentOptions) == 0 {
 		agentOptions = json.RawMessage(`{}`)
 	}
 	if !json.Valid(agentOptions) {
 		return QueuedMessage{}, fmt.Errorf("%w: agent_options must be valid JSON", ErrInvalidArgument)
+	}
+	skills := params.Skills
+	if len(skills) == 0 {
+		skills = json.RawMessage(`[]`)
+	}
+	if !json.Valid(skills) {
+		return QueuedMessage{}, fmt.Errorf("%w: skills must be valid JSON", ErrInvalidArgument)
+	}
+	var skillValues []any
+	if err := json.Unmarshal(skills, &skillValues); err != nil {
+		return QueuedMessage{}, fmt.Errorf("%w: skills must be a JSON array", ErrInvalidArgument)
+	}
+	if content == "" && len(skillValues) == 0 {
+		return QueuedMessage{}, fmt.Errorf("%w: content or skills are required", ErrInvalidArgument)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -754,20 +765,22 @@ func (s *Store) EnqueueMessage(ctx context.Context, params EnqueueMessageParams)
 		Status:       QueuedMessageStatusPending,
 		Content:      content,
 		AgentOptions: append(json.RawMessage(nil), agentOptions...),
+		Skills:       append(json.RawMessage(nil), skills...),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
 
 	if _, err := tx.ExecContext(
 		ctx,
-		`INSERT INTO queued_messages (id, session_id, seq, status, content, agent_options_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO queued_messages (id, session_id, seq, status, content, agent_options_json, skills_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		queued.ID,
 		queued.SessionID,
 		queued.Seq,
 		string(queued.Status),
 		queued.Content,
 		string(queued.AgentOptions),
+		string(queued.Skills),
 		formatTime(queued.CreatedAt),
 		formatTime(queued.UpdatedAt),
 	); err != nil {
@@ -788,7 +801,7 @@ func (s *Store) ListQueuedMessages(ctx context.Context, sessionID string) ([]Que
 
 	rows, err := s.db.QueryContext(
 		ctx,
-		`SELECT id, session_id, seq, status, content, agent_options_json, created_at, updated_at
+		`SELECT id, session_id, seq, status, content, agent_options_json, skills_json, created_at, updated_at
 		 FROM queued_messages
 		 WHERE session_id = ? AND status = ?
 		 ORDER BY seq ASC`,
@@ -833,7 +846,7 @@ func (s *Store) ClaimNextQueuedMessage(ctx context.Context, sessionID string) (Q
 
 	row := tx.QueryRowContext(
 		ctx,
-		`SELECT id, session_id, seq, status, content, agent_options_json, created_at, updated_at
+		`SELECT id, session_id, seq, status, content, agent_options_json, skills_json, created_at, updated_at
 		 FROM queued_messages
 		 WHERE session_id = ? AND status = ?
 		 ORDER BY seq ASC
@@ -924,7 +937,7 @@ func (s *Store) updateQueuedMessageStatus(ctx context.Context, params QueueMessa
 func (s *Store) getQueuedMessage(ctx context.Context, sessionID string, messageID string) (QueuedMessage, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT id, session_id, seq, status, content, agent_options_json, created_at, updated_at
+		`SELECT id, session_id, seq, status, content, agent_options_json, skills_json, created_at, updated_at
 		 FROM queued_messages
 		 WHERE session_id = ? AND id = ?`,
 		sessionID,
@@ -1486,6 +1499,7 @@ func scanQueuedMessage(row rowScanner) (QueuedMessage, error) {
 	var message QueuedMessage
 	var status string
 	var agentOptions string
+	var skills string
 	var createdAt string
 	var updatedAt string
 
@@ -1496,6 +1510,7 @@ func scanQueuedMessage(row rowScanner) (QueuedMessage, error) {
 		&status,
 		&message.Content,
 		&agentOptions,
+		&skills,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -1519,12 +1534,20 @@ func scanQueuedMessage(row rowScanner) (QueuedMessage, error) {
 	if !json.Valid([]byte(agentOptions)) {
 		return QueuedMessage{}, fmt.Errorf("scan queued message: invalid agent_options_json")
 	}
+	if skills == "" {
+		skills = "[]"
+	}
+	var skillValues []any
+	if err := json.Unmarshal([]byte(skills), &skillValues); err != nil {
+		return QueuedMessage{}, fmt.Errorf("scan queued message: invalid skills_json")
+	}
 
 	message.Status = QueuedMessageStatus(status)
 	if !isValidQueuedMessageStatus(message.Status) {
 		return QueuedMessage{}, fmt.Errorf("scan queued message: unsupported status %s", status)
 	}
 	message.AgentOptions = json.RawMessage(agentOptions)
+	message.Skills = json.RawMessage(skills)
 	message.CreatedAt = parsedCreatedAt
 	message.UpdatedAt = parsedUpdatedAt
 

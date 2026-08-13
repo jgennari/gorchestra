@@ -308,6 +308,109 @@ test('codex options remain editable while a run is active', async () => {
   })
 })
 
+test('codex skill browser discovers metadata and submits a structured skill reference', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn(async () => undefined)
+  vi.stubGlobal('fetch', codexSkillFetchMock())
+
+  render(
+    <PromptComposer
+      sessionID="sess_1"
+      agentType="codex"
+      disabled={false}
+      disabledReason=""
+      onSubmit={onSubmit}
+    />,
+  )
+
+  expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5.5')
+  await user.click(screen.getByRole('button', { name: 'Skills' }))
+  const browser = screen.getByRole('dialog', { name: 'Available skills' })
+  expect(within(browser).getByText('Official product guidance')).toBeInTheDocument()
+  expect(within(browser).getByText('user')).toBeInTheDocument()
+
+  await user.type(within(browser).getByLabelText('Search skills'), 'openai')
+  await user.click(within(browser).getByText('OpenAI Docs'))
+
+  expect(screen.getByRole('button', { name: 'Remove skill openai-docs' })).toBeInTheDocument()
+  await user.type(screen.getByLabelText('Prompt'), 'Use the official docs{enter}')
+
+  await waitFor(() => {
+    expect(onSubmit).toHaveBeenCalledWith(
+      'Use the official docs',
+      {
+        codex: {
+          model: 'gpt-5.5',
+          reasoning_effort: 'medium',
+          fast_mode: false,
+          planning_mode: false,
+          service_tier: undefined,
+        },
+      },
+      undefined,
+      false,
+      [{ name: 'openai-docs', path: '/skills/user/openai-docs/SKILL.md' }],
+    )
+  })
+})
+
+test('dollar typeahead selects a skill and allows a skill-only submission', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn(async () => undefined)
+  vi.stubGlobal('fetch', codexSkillFetchMock())
+
+  render(
+    <PromptComposer
+      sessionID="sess_1"
+      agentType="codex"
+      disabled={false}
+      disabledReason=""
+      onSubmit={onSubmit}
+    />,
+  )
+
+  expect(await screen.findByRole('button', { name: 'Model' })).toBeEnabled()
+  const prompt = screen.getByLabelText('Prompt')
+  await user.type(prompt, '$open')
+  expect(await screen.findByRole('option', { name: /OpenAI Docs/ })).toHaveAttribute('aria-selected', 'true')
+
+  await user.keyboard('{Enter}')
+  expect(prompt).toHaveValue('')
+  expect(screen.getByRole('button', { name: 'Remove skill openai-docs' })).toBeInTheDocument()
+
+  await user.keyboard('{Enter}')
+  await waitFor(() => {
+    expect(onSubmit).toHaveBeenCalledWith(
+      '',
+      expect.objectContaining({ codex: expect.objectContaining({ model: 'gpt-5.5' }) }),
+      undefined,
+      false,
+      [{ name: 'openai-docs', path: '/skills/user/openai-docs/SKILL.md' }],
+    )
+  })
+})
+
+test('an unmatched dollar token remains ordinary prompt text', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn(async () => undefined)
+  vi.stubGlobal('fetch', codexSkillFetchMock())
+
+  render(
+    <PromptComposer
+      sessionID="sess_1"
+      agentType="codex"
+      disabled={false}
+      disabledReason=""
+      onSubmit={onSubmit}
+    />,
+  )
+
+  expect(await screen.findByRole('button', { name: 'Model' })).toBeEnabled()
+  await user.type(screen.getByLabelText('Prompt'), '$not-a-skill{enter}')
+
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('$not-a-skill', expect.any(Object)))
+})
+
 test('draft messages persist per session', async () => {
   const user = userEvent.setup()
   vi.stubGlobal('fetch', queueFetchMock([]))
@@ -793,6 +896,45 @@ function piOptionsResponse() {
     ],
     collaboration_modes: [],
   }
+}
+
+function codexSkillFetchMock() {
+  return vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/agents/codex/options') {
+      return jsonResponse(codexOptionsResponse())
+    }
+    if (path === '/api/sessions/sess_1/skills') {
+      return jsonResponse({
+        skills: [
+          {
+            name: 'openai-docs',
+            description: 'Use official OpenAI documentation.',
+            display_name: 'OpenAI Docs',
+            short_description: 'Official product guidance',
+            brand_color: '#10A37F',
+            path: '/skills/user/openai-docs/SKILL.md',
+            scope: 'user',
+            enabled: true,
+          },
+          {
+            name: 'repo-release',
+            description: 'Prepare a repository release.',
+            display_name: 'Repository Release',
+            short_description: 'Release this repository',
+            path: '/repo/.agents/skills/repo-release/SKILL.md',
+            scope: 'repo',
+            enabled: true,
+          },
+        ],
+        errors: [],
+      })
+    }
+    if (path === '/api/sessions/sess_1/queued-messages') {
+      return jsonResponse({ messages: [] })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
 }
 
 function queuedMessage(id: string, content: string, seq = 1) {

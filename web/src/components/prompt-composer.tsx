@@ -1,8 +1,21 @@
-import { ChevronDown, ClipboardList, Paperclip, Send, SlidersHorizontal, Square, X, Zap } from 'lucide-react'
+import {
+  BookOpen,
+  ChevronDown,
+  ClipboardList,
+  Paperclip,
+  RefreshCw,
+  Search,
+  Send,
+  SlidersHorizontal,
+  Square,
+  X,
+  Zap,
+} from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
   type ChangeEvent,
+  type CSSProperties,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -17,8 +30,11 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   type AgentEvent,
   fetchAgentOptions,
+  fetchSessionSkills,
   fetchQueuedMessages,
   type AgentType,
+  type AgentSkill,
+  type AgentSkillError,
   type CodexAgentOptions,
   type CodexModelOption,
   type CodexServiceTierOption,
@@ -26,6 +42,7 @@ import {
   type OpenCodeAgentOptions,
   type PiAgentOptions,
   type QueuedMessage,
+  type SkillReference,
   removeQueuedMessage as deleteQueuedMessage,
   type SubmitAgentOptions,
 } from '@/lib/api'
@@ -60,6 +77,7 @@ type Props = {
     agentOptions?: SubmitAgentOptions,
     attachments?: MessageAttachment[],
     queue?: boolean,
+    skills?: SkillReference[],
   ) => Promise<void>
   onCancel?: () => Promise<void>
   onError?: (message: string) => void
@@ -91,6 +109,7 @@ type PiSelection = {
 
 type ComposerStorageValue = {
   draft?: string
+  selectedSkills?: SkillReference[]
   codexSelection?: Partial<CodexSelection>
   claudeSelection?: Partial<ClaudeSelection>
   opencodeSelection?: Partial<OpenCodeSelection>
@@ -99,6 +118,12 @@ type ComposerStorageValue = {
 
 type ComposerAttachment = MessageAttachment & {
   id: string
+}
+
+type SkillTypeahead = {
+  start: number
+  end: number
+  query: string
 }
 
 export function PromptComposer({
@@ -117,6 +142,15 @@ export function PromptComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [content, setContent] = useState(() => loadDraft(sessionID))
+  const [selectedSkills, setSelectedSkills] = useState<SkillReference[]>(() => loadSelectedSkills(sessionID))
+  const [skills, setSkills] = useState<AgentSkill[]>([])
+  const [skillErrors, setSkillErrors] = useState<AgentSkillError[]>([])
+  const [skillsLoading, setSkillsLoading] = useState(false)
+  const [skillsError, setSkillsError] = useState('')
+  const [skillsOpen, setSkillsOpen] = useState(false)
+  const [skillSearch, setSkillSearch] = useState('')
+  const [skillTypeahead, setSkillTypeahead] = useState<SkillTypeahead | null>(null)
+  const [skillHighlight, setSkillHighlight] = useState(0)
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [dragActive, setDragActive] = useState(false)
@@ -137,10 +171,14 @@ export function PromptComposer({
   const [piSelection, setPiSelection] = useState<PiSelection>(() => loadPiSelection(sessionID))
   const [closeSettingsSignal, setCloseSettingsSignal] = useState(0)
   const hasAttachments = attachments.length > 0
-  const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments)
+  const hasSelectedSkills = selectedSkills.length > 0
+  const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments || hasSelectedSkills)
   const queueBlockedByAttachments = hasAttachments
   const canQueue =
-    !submitting && content.trim().length > 0 && !queueBlockedByAttachments && queuedMessages.length < maxQueuedMessages
+    !submitting &&
+    (content.trim().length > 0 || hasSelectedSkills) &&
+    !queueBlockedByAttachments &&
+    queuedMessages.length < maxQueuedMessages
   const canCancel = disabled && Boolean(onCancel)
   const inputDisabled = submitting
   const promptPlaceholder =
@@ -163,6 +201,12 @@ export function PromptComposer({
   const piControlsDisabled = submitting || piOptionsLoading || !piOptions
   const codexPlanAvailable = Boolean(codexOptions?.collaboration_modes.some((mode) => mode.mode === 'plan'))
   const openCodePlanAvailable = opencodeOptions?.collaboration_modes.some((mode) => mode.mode === 'plan') ?? false
+  const sortedSkills = useMemo(() => sortSkills(skills), [skills])
+  const browsedSkills = useMemo(() => filterSkills(sortedSkills, skillSearch), [skillSearch, sortedSkills])
+  const suggestedSkills = useMemo(
+    () => (skillTypeahead ? filterSkills(sortedSkills, skillTypeahead.query).slice(0, 8) : []),
+    [skillTypeahead, sortedSkills],
+  )
 
   useLayoutEffect(() => {
     resizePromptTextarea(textareaRef.current)
@@ -194,6 +238,50 @@ export function PromptComposer({
       cancelled = true
     }
   }, [agentType])
+
+  useEffect(() => {
+    if (agentType !== 'codex' || !sessionID) {
+      setSkills([])
+      setSkillErrors([])
+      setSkillsError('')
+      setSkillsOpen(false)
+      setSkillTypeahead(null)
+      return
+    }
+
+    let cancelled = false
+    setSkillsLoading(true)
+    setSkillsError('')
+    void fetchSessionSkills(sessionID)
+      .then((catalog) => {
+        if (cancelled) return
+        const available = Array.isArray(catalog.skills) ? catalog.skills : []
+        setSkills(available)
+        setSkillErrors(Array.isArray(catalog.errors) ? catalog.errors : [])
+        setSelectedSkills((current) => {
+          const next = current.filter((reference) =>
+            available.some((skill) => skillKey(skill) === skillKey(reference)),
+          )
+          if (next.length !== current.length) {
+            window.setTimeout(() => onError?.('One or more draft skills are no longer available.'), 0)
+          }
+          return next
+        })
+      })
+      .catch((loadError) => {
+        if (cancelled) return
+        setSkills([])
+        setSkillErrors([])
+        setSkillsError(loadError instanceof Error ? loadError.message : 'Failed to load skills')
+      })
+      .finally(() => {
+        if (!cancelled) setSkillsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [agentType, sessionID, onError])
 
   useEffect(() => {
     if (agentType !== 'opencode') {
@@ -252,6 +340,10 @@ export function PromptComposer({
   useEffect(() => {
     saveDraft(sessionID, content)
   }, [content, sessionID])
+
+  useEffect(() => {
+    saveSelectedSkills(sessionID, selectedSkills)
+  }, [selectedSkills, sessionID])
 
   useEffect(() => {
     function handleWindowFocus() {
@@ -316,6 +408,18 @@ export function PromptComposer({
 
   async function submitText(contentToSend: string, submitAttachments: MessageAttachment[] = [], queue = false) {
     const submitOptions = currentSubmitOptions()
+    const submitSkills = selectedSkills.map(({ name, path }) => ({ name, path }))
+
+    if (submitSkills.length > 0) {
+      await onSubmit(
+        contentToSend,
+        submitOptions,
+        submitAttachments.length > 0 ? submitAttachments : undefined,
+        queue,
+        submitSkills,
+      )
+      return
+    }
 
     if (queue) {
       await onSubmit(contentToSend, submitOptions, submitAttachments.length > 0 ? submitAttachments : undefined, true)
@@ -362,6 +466,8 @@ export function PromptComposer({
       await submitText(content.trim(), submitAttachments)
       setContent('')
       setAttachments([])
+      setSelectedSkills([])
+      setSkillTypeahead(null)
     } catch (submitError) {
       onError?.(submitError instanceof Error ? submitError.message : 'Failed to submit prompt')
     } finally {
@@ -378,6 +484,28 @@ export function PromptComposer({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (skillTypeahead && suggestedSkills.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setSkillHighlight((current) => (current + 1) % suggestedSkills.length)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setSkillHighlight((current) => (current - 1 + suggestedSkills.length) % suggestedSkills.length)
+        return
+      }
+      if ((event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey) || event.key === 'Tab') {
+        event.preventDefault()
+        selectSkill(suggestedSkills[skillHighlight] ?? suggestedSkills[0], true)
+        return
+      }
+    }
+    if (skillTypeahead && event.key === 'Escape') {
+      event.preventDefault()
+      setSkillTypeahead(null)
+      return
+    }
     if (event.key !== 'Enter') {
       return
     }
@@ -405,6 +533,64 @@ export function PromptComposer({
     onFocus?.()
   }
 
+  function handleContentChange(event: ChangeEvent<HTMLTextAreaElement>) {
+    const nextContent = event.target.value
+    const caret = event.target.selectionStart ?? nextContent.length
+    setContent(nextContent)
+    setSkillTypeahead(agentType === 'codex' ? skillTypeaheadAt(nextContent, caret) : null)
+    setSkillHighlight(0)
+  }
+
+  function selectSkill(skill: AgentSkill, fromTypeahead = false) {
+    setSelectedSkills((current) => {
+      if (current.some((reference) => skillKey(reference) === skillKey(skill))) {
+        return current
+      }
+      return [...current, { name: skill.name, path: skill.path }]
+    })
+
+    if (fromTypeahead && skillTypeahead) {
+      const caret = skillTypeahead.start
+      setContent((current) => current.slice(0, skillTypeahead.start) + current.slice(skillTypeahead.end))
+      window.setTimeout(() => {
+        textareaRef.current?.focus({ preventScroll: true })
+        textareaRef.current?.setSelectionRange(caret, caret)
+      }, 0)
+    }
+    setSkillTypeahead(null)
+    setSkillsOpen(false)
+    setSkillSearch('')
+  }
+
+  function removeSkill(reference: SkillReference) {
+    setSelectedSkills((current) => current.filter((skill) => skillKey(skill) !== skillKey(reference)))
+  }
+
+  async function refreshSkills() {
+    if (!sessionID || agentType !== 'codex' || skillsLoading) {
+      return
+    }
+    setSkillsLoading(true)
+    setSkillsError('')
+    try {
+      const catalog = await fetchSessionSkills(sessionID, true)
+      const available = Array.isArray(catalog.skills) ? catalog.skills : []
+      setSkills(available)
+      setSkillErrors(Array.isArray(catalog.errors) ? catalog.errors : [])
+      const nextSelected = selectedSkills.filter((reference) =>
+        available.some((skill) => skillKey(skill) === skillKey(reference)),
+      )
+      if (nextSelected.length !== selectedSkills.length) {
+        setSelectedSkills(nextSelected)
+        onError?.('One or more draft skills are no longer available.')
+      }
+    } catch (loadError) {
+      setSkillsError(loadError instanceof Error ? loadError.message : 'Failed to load skills')
+    } finally {
+      setSkillsLoading(false)
+    }
+  }
+
   async function handleCancel() {
     if (!onCancel || cancelling) {
       return
@@ -423,7 +609,7 @@ export function PromptComposer({
 
   async function enqueueDraft(forceRestoreFocus = false) {
     const trimmed = content.trim()
-    if (!trimmed) {
+    if (!trimmed && selectedSkills.length === 0) {
       return
     }
     if (queueBlockedByAttachments) {
@@ -443,6 +629,8 @@ export function PromptComposer({
     try {
       await submitText(trimmed, [], true)
       setContent('')
+      setSelectedSkills([])
+      setSkillTypeahead(null)
       if (sessionID) {
         const response = await fetchQueuedMessages(sessionID)
         setQueuedMessages(Array.isArray(response.messages) ? response.messages : [])
@@ -559,6 +747,7 @@ export function PromptComposer({
                 key={message.id}
                 index={index}
                 message={message.content}
+                skills={message.skills ?? []}
                 onRemove={() => void removeQueuedDraft(message.id)}
               />
             ))}
@@ -580,6 +769,16 @@ export function PromptComposer({
           dragActive && 'border-primary/70 bg-primary/5 ring-2 ring-primary/20',
         )}
       >
+        {skillTypeahead ? (
+          <SkillSuggestionList
+            skills={suggestedSkills}
+            loading={skillsLoading}
+            error={skillsError}
+            highlighted={skillHighlight}
+            onHighlight={setSkillHighlight}
+            onSelect={(skill) => selectSkill(skill, true)}
+          />
+        ) : null}
         {attachments.length > 0 ? (
           <div className="mb-2 flex flex-wrap gap-2">
             {attachments.map((attachment) => (
@@ -591,19 +790,52 @@ export function PromptComposer({
             ))}
           </div>
         ) : null}
+        {selectedSkills.length > 0 ? (
+          <div className="mb-1.5 flex flex-wrap gap-1.5" aria-label="Selected skills">
+            {selectedSkills.map((reference) => {
+              const skill = skills.find((candidate) => skillKey(candidate) === skillKey(reference))
+              return (
+                <SelectedSkillChip
+                  key={skillKey(reference)}
+                  reference={reference}
+                  skill={skill}
+                  onRemove={() => removeSkill(reference)}
+                />
+              )
+            })}
+          </div>
+        ) : null}
         <Textarea
           ref={textareaRef}
           aria-label="Prompt"
           placeholder={promptPlaceholder}
           value={content}
-          onChange={(event) => setContent(event.target.value)}
+          onChange={handleContentChange}
           onFocus={handleTextareaFocus}
           onKeyDown={handleKeyDown}
+          aria-autocomplete={skillTypeahead ? 'list' : undefined}
+          aria-controls={skillTypeahead ? 'skill-typeahead-list' : undefined}
+          aria-expanded={skillTypeahead ? true : undefined}
           disabled={inputDisabled}
           rows={1}
           className="h-9 min-h-9 resize-none border-transparent bg-transparent px-1 py-1.5 text-base shadow-none focus-visible:ring-0 sm:py-2 sm:text-sm"
         />
         <div className="mt-2 flex min-h-8 items-center gap-1.5">
+          {agentType === 'codex' && sessionID ? (
+            <SkillBrowser
+              open={skillsOpen}
+              onOpenChange={setSkillsOpen}
+              search={skillSearch}
+              onSearchChange={setSkillSearch}
+              skills={browsedSkills}
+              selected={selectedSkills}
+              loading={skillsLoading}
+              error={skillsError}
+              errors={skillErrors}
+              onSelect={selectSkill}
+              onRefresh={() => void refreshSkills()}
+            />
+          ) : null}
           {codexToolbarVisible ? (
             <>
               <CodexToolbar
@@ -812,13 +1044,256 @@ function ImageAttachmentPreview({ attachment, onRemove }: { attachment: Composer
   )
 }
 
+function SkillBrowser({
+  open,
+  onOpenChange,
+  search,
+  onSearchChange,
+  skills,
+  selected,
+  loading,
+  error,
+  errors,
+  onSelect,
+  onRefresh,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  search: string
+  onSearchChange: (value: string) => void
+  skills: AgentSkill[]
+  selected: SkillReference[]
+  loading: boolean
+  error: string
+  errors: AgentSkillError[]
+  onSelect: (skill: AgentSkill) => void
+  onRefresh: () => void
+}) {
+  const browserRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function handlePointerDown(event: PointerEvent) {
+      if (!browserRef.current?.contains(event.target as Node)) onOpenChange(false)
+    }
+    function handleEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') onOpenChange(false)
+    }
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [onOpenChange, open])
+
+  return (
+    <div ref={browserRef} className="relative">
+      <Button
+        type="button"
+        variant="ghost"
+        aria-label="Skills"
+        aria-expanded={open}
+        onClick={() => onOpenChange(!open)}
+        className={cn(
+          'h-8 gap-1.5 px-2 text-muted-foreground hover:text-foreground',
+          selected.length > 0 && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary',
+        )}
+      >
+        <BookOpen className="size-4" aria-hidden="true" />
+        <span className="hidden sm:inline">Skills</span>
+        {selected.length > 0 ? (
+          <span className="rounded-full bg-primary/15 px-1.5 text-[10px] tabular-nums">{selected.length}</span>
+        ) : null}
+      </Button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label="Available skills"
+          className="absolute bottom-full left-0 z-50 mb-2 w-[min(26rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-border/90 bg-popover text-popover-foreground shadow-xl"
+        >
+          <div className="flex items-center gap-2 border-b border-border/70 p-2">
+            <label className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-border/80 bg-background px-2">
+              <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <input
+                autoFocus
+                aria-label="Search skills"
+                value={search}
+                onChange={(event) => onSearchChange(event.target.value)}
+                className="h-8 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                placeholder="Search skills"
+              />
+            </label>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Refresh skills"
+              disabled={loading}
+              onClick={onRefresh}
+              className="h-8 w-8 shrink-0 text-muted-foreground"
+            >
+              <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} aria-hidden="true" />
+            </Button>
+          </div>
+          <div className="max-h-[min(24rem,55dvh)] overflow-y-auto p-1.5">
+            {loading && skills.length === 0 ? (
+              <p className="px-2 py-6 text-center text-sm text-muted-foreground">Loading skills...</p>
+            ) : error ? (
+              <p role="alert" className="px-2 py-6 text-center text-sm text-destructive">{error}</p>
+            ) : skills.length === 0 ? (
+              <p className="px-2 py-6 text-center text-sm text-muted-foreground">No matching skills.</p>
+            ) : (
+              skills.map((skill) => {
+                const isSelected = selected.some((reference) => skillKey(reference) === skillKey(skill))
+                return (
+                  <button
+                    key={skillKey(skill)}
+                    type="button"
+                    disabled={isSelected}
+                    onClick={() => onSelect(skill)}
+                    className="flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-55"
+                  >
+                    <SkillAccent skill={skill} />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium">{skillDisplayName(skill)}</span>
+                        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          {skill.scope}
+                        </span>
+                      </span>
+                      <span className="mt-0.5 block line-clamp-2 text-xs leading-4 text-muted-foreground">
+                        {skill.short_description || skill.description}
+                      </span>
+                      {skill.display_name && skill.display_name !== skill.name ? (
+                        <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground/80">${skill.name}</span>
+                      ) : null}
+                    </span>
+                    {isSelected ? <span className="pt-0.5 text-[10px] font-medium text-primary">Selected</span> : null}
+                  </button>
+                )
+              })
+            )}
+          </div>
+          {errors.length > 0 ? (
+            <p className="border-t border-border/70 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300" title={errors.map((item) => `${item.path}: ${item.message}`).join('\n')}>
+              {errors.length} skill {errors.length === 1 ? 'entry could' : 'entries could'} not be loaded.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function SkillSuggestionList({
+  skills,
+  loading,
+  error,
+  highlighted,
+  onHighlight,
+  onSelect,
+}: {
+  skills: AgentSkill[]
+  loading: boolean
+  error: string
+  highlighted: number
+  onHighlight: (index: number) => void
+  onSelect: (skill: AgentSkill) => void
+}) {
+  return (
+    <div
+      id="skill-typeahead-list"
+      role="listbox"
+      aria-label="Skill suggestions"
+      className="absolute inset-x-2 bottom-full z-50 mb-2 max-h-72 overflow-y-auto rounded-lg border border-border/90 bg-popover p-1.5 text-popover-foreground shadow-xl"
+    >
+      {loading && skills.length === 0 ? (
+        <p className="px-3 py-3 text-sm text-muted-foreground">Loading skills...</p>
+      ) : error ? (
+        <p role="alert" className="px-3 py-3 text-sm text-destructive">{error}</p>
+      ) : skills.length === 0 ? (
+        <p className="px-3 py-3 text-sm text-muted-foreground">No matching skills.</p>
+      ) : (
+        skills.map((skill, index) => (
+          <button
+            key={skillKey(skill)}
+            type="button"
+            role="option"
+            aria-selected={index === highlighted}
+            onMouseEnter={() => onHighlight(index)}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => onSelect(skill)}
+            className={cn(
+              'flex w-full items-start gap-2 rounded-md px-2 py-2 text-left',
+              index === highlighted && 'bg-accent',
+            )}
+          >
+            <SkillAccent skill={skill} />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2">
+                <span className="truncate text-sm font-medium">{skillDisplayName(skill)}</span>
+                <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">{skill.scope}</span>
+              </span>
+              <span className="block truncate text-xs text-muted-foreground">{skill.short_description || skill.description}</span>
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground">${skill.name}</span>
+          </button>
+        ))
+      )}
+    </div>
+  )
+}
+
+function SelectedSkillChip({
+  reference,
+  skill,
+  onRemove,
+}: {
+  reference: SkillReference
+  skill?: AgentSkill
+  onRemove: () => void
+}) {
+  const color = validSkillColor(skill?.brand_color)
+  const style = color ? ({ borderColor: color } satisfies CSSProperties) : undefined
+  return (
+    <span
+      className="inline-flex h-7 max-w-full items-center gap-1 rounded-full border border-primary/35 bg-primary/10 pl-2 pr-1 text-xs font-medium text-primary"
+      style={style}
+    >
+      <span className="truncate">${skill?.name || reference.name}</span>
+      <button
+        type="button"
+        aria-label={`Remove skill ${reference.name}`}
+        onClick={onRemove}
+        className="inline-flex size-5 shrink-0 items-center justify-center rounded-full hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <X className="size-3" aria-hidden="true" />
+      </button>
+    </span>
+  )
+}
+
+function SkillAccent({ skill }: { skill: AgentSkill }) {
+  const color = validSkillColor(skill.brand_color)
+  return (
+    <span
+      className="mt-1 size-2 shrink-0 rounded-full bg-primary/55"
+      style={color ? ({ backgroundColor: color } satisfies CSSProperties) : undefined}
+      aria-hidden="true"
+    />
+  )
+}
+
 function QueuedMessageRow({
   index,
   message,
+  skills,
   onRemove,
 }: {
   index: number
   message: string
+  skills: SkillReference[]
   onRemove: () => void
 }) {
   return (
@@ -829,7 +1304,21 @@ function QueuedMessageRow({
       )}
     >
       <span className="pt-0.5 text-xs font-semibold tabular-nums text-muted-foreground/75">{index + 1}</span>
-      <p className="min-w-0 flex-1 truncate">{message}</p>
+      <div className="min-w-0 flex-1">
+        {skills.length > 0 ? (
+          <div className="mb-1 flex flex-wrap gap-1">
+            {skills.map((skill) => (
+              <span
+                key={skillKey(skill)}
+                className="rounded-full border border-border/70 bg-background/70 px-2 py-0.5 text-[10px] font-medium"
+              >
+                ${skill.name}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {message ? <p className="truncate">{message}</p> : null}
+      </div>
       <Button
         type="button"
         variant="ghost"
@@ -2006,6 +2495,96 @@ function saveDraft(sessionID: string | undefined, draft: string) {
     ...loadComposerStorage(sessionID),
     draft,
   })
+}
+
+function loadSelectedSkills(sessionID: string | undefined): SkillReference[] {
+  const stored = loadComposerStorage(sessionID).selectedSkills
+  if (!Array.isArray(stored)) return []
+  return stored.flatMap((reference) => {
+    if (
+      !reference ||
+      typeof reference !== 'object' ||
+      typeof reference.name !== 'string' ||
+      typeof reference.path !== 'string' ||
+      !reference.name.trim() ||
+      !reference.path.trim()
+    ) {
+      return []
+    }
+    return [{ name: reference.name.trim(), path: reference.path.trim() }]
+  })
+}
+
+function saveSelectedSkills(sessionID: string | undefined, selectedSkills: SkillReference[]) {
+  saveComposerStorage(sessionID, {
+    ...loadComposerStorage(sessionID),
+    selectedSkills,
+  })
+}
+
+function skillKey(reference: SkillReference) {
+  return `${reference.name}\u0000${reference.path}`
+}
+
+function skillDisplayName(skill: AgentSkill) {
+  return skill.display_name || skill.name
+}
+
+function scopeRank(scope: AgentSkill['scope']) {
+  switch (scope) {
+    case 'repo':
+      return 0
+    case 'user':
+      return 1
+    case 'admin':
+      return 2
+    case 'system':
+      return 3
+  }
+}
+
+function sortSkills(skills: AgentSkill[]) {
+  return [...skills].sort((left, right) => {
+    const scopeDifference = scopeRank(left.scope) - scopeRank(right.scope)
+    if (scopeDifference !== 0) return scopeDifference
+    return skillDisplayName(left).localeCompare(skillDisplayName(right)) || left.path.localeCompare(right.path)
+  })
+}
+
+function filterSkills(skills: AgentSkill[], query: string) {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return skills
+  return skills
+    .map((skill) => ({ skill, score: skillMatchScore(skill, normalized) }))
+    .filter((candidate) => candidate.score < 100)
+    .sort((left, right) => {
+      const scopeDifference = scopeRank(left.skill.scope) - scopeRank(right.skill.scope)
+      return scopeDifference || left.score - right.score || skillDisplayName(left.skill).localeCompare(skillDisplayName(right.skill))
+    })
+    .map(({ skill }) => skill)
+}
+
+function skillMatchScore(skill: AgentSkill, query: string) {
+  const name = skill.name.toLowerCase()
+  const displayName = skillDisplayName(skill).toLowerCase()
+  if (name === query || displayName === query) return 0
+  if (name.startsWith(query)) return 1
+  if (displayName.startsWith(query)) return 2
+  if (name.includes(query) || displayName.includes(query)) return 3
+  const description = `${skill.short_description || ''} ${skill.description}`.toLowerCase()
+  return description.includes(query) ? 4 : 100
+}
+
+function skillTypeaheadAt(content: string, caret: number): SkillTypeahead | null {
+  const prefix = content.slice(0, caret)
+  const match = prefix.match(/(?:^|\s)\$([A-Za-z0-9:_-]*)$/)
+  if (!match) return null
+  const query = match[1] ?? ''
+  return { start: caret - query.length - 1, end: caret, query }
+}
+
+function validSkillColor(value: string | undefined) {
+  return value && /^#[0-9a-f]{6}$/i.test(value) ? value : ''
 }
 
 function loadCodexSelection(sessionID: string | undefined): CodexSelection {

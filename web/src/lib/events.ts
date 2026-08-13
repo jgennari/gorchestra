@@ -1,4 +1,4 @@
-import type { AgentEvent, PermissionRequest, SessionStatus, UserInputQuestion } from '@/lib/api'
+import type { AgentEvent, PermissionRequest, SessionStatus, SkillReference, UserInputQuestion } from '@/lib/api'
 
 export const knownEventTypes = [
   'user.message.completed',
@@ -100,6 +100,7 @@ export type ChatTranscriptMessage = {
   variant: 'default' | 'plan'
   text: string
   attachments: ChatTranscriptAttachment[]
+  skills: SkillReference[]
   status: string
   createdAt: string
   tools: ChatTranscriptTool[]
@@ -490,7 +491,12 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
     if (item.kind === 'debug' || item.kind === 'action' || item.kind === 'error') {
       return true
     }
-    return item.message.text.trim() || item.message.tools.length > 0
+    return (
+      item.message.text.trim() ||
+      item.message.tools.length > 0 ||
+      item.message.attachments.length > 0 ||
+      item.message.skills.length > 0
+    )
   })
 }
 
@@ -1346,6 +1352,7 @@ function chatMessageFromGroup(role: ChatTranscriptMessage['role'], group: EventG
     variant: messageVariant(role, group.kind),
     text: group.text,
     attachments: chatAttachmentsFromGroup(group),
+    skills: chatSkillsFromGroup(group),
     status: group.status,
     createdAt: group.events[0]?.created_at ?? '',
     tools: [],
@@ -1432,6 +1439,18 @@ function chatAttachmentsFromGroup(group: EventGroup): ChatTranscriptAttachment[]
       return []
     }
     return [{ name, mediaType, dataURL, sourceURL, sizeBytes }]
+  })
+}
+
+function chatSkillsFromGroup(group: EventGroup): SkillReference[] {
+  if (group.kind !== 'user-message') return []
+  const payload = group.events[0]?.payload
+  if (!isRecord(payload) || !Array.isArray(payload.skills)) return []
+  return payload.skills.flatMap((skill): SkillReference[] => {
+    if (!isRecord(skill) || typeof skill.name !== 'string' || typeof skill.path !== 'string') return []
+    const name = skill.name.trim()
+    const path = skill.path.trim()
+    return name && path ? [{ name, path }] : []
   })
 }
 

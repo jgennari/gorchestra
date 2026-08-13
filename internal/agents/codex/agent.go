@@ -217,6 +217,31 @@ func (a *Agent) Options(ctx context.Context) (agents.Options, error) {
 	return cloneOptions(options), nil
 }
 
+func (a *Agent) Skills(ctx context.Context, query agents.SkillQuery) (agents.SkillCatalog, error) {
+	if err := ctx.Err(); err != nil {
+		return agents.SkillCatalog{}, err
+	}
+	if err := a.Available(); err != nil {
+		return agents.SkillCatalog{}, err
+	}
+
+	workdir, err := a.workdirForRun(query.Workdir)
+	if err != nil {
+		return agents.SkillCatalog{}, err
+	}
+
+	probe, err := a.startProbe(workdir)
+	if err != nil {
+		return agents.SkillCatalog{}, err
+	}
+	defer probe.stop()
+
+	if err := probe.initialize(ctx); err != nil {
+		return agents.SkillCatalog{}, err
+	}
+	return probe.listSkills(ctx, workdir, query.ForceReload)
+}
+
 func (a *Agent) loadOptions(ctx context.Context) (agents.Options, error) {
 	if err := a.Available(); err != nil {
 		return agents.Options{}, err
@@ -227,28 +252,9 @@ func (a *Agent) loadOptions(ctx context.Context) (agents.Options, error) {
 		return agents.Options{}, err
 	}
 
-	cmd := a.command(workdir)
-	stdin, err := cmd.StdinPipe()
+	probe, err := a.startProbe(workdir)
 	if err != nil {
-		return agents.Options{}, fmt.Errorf("create codex options stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return agents.Options{}, fmt.Errorf("create codex options stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return agents.Options{}, fmt.Errorf("create codex options stderr pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return agents.Options{}, fmt.Errorf("start codex options app-server: %w", err)
-	}
-
-	probe := &appServerProbe{
-		rpc:            newRPCClient(stdin),
-		incoming:       readAppServer(stdout, stderr),
-		process:        waitProcess(cmd),
-		interruptGrace: a.interruptGrace,
+		return agents.Options{}, err
 	}
 	defer probe.stop()
 
@@ -266,6 +272,32 @@ func (a *Agent) loadOptions(ctx context.Context) (agents.Options, error) {
 	}
 
 	return normalizeOptions(models, modes), nil
+}
+
+func (a *Agent) startProbe(workdir string) (*appServerProbe, error) {
+	cmd := a.command(workdir)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("create codex probe stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("create codex probe stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("create codex probe stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start codex probe app-server: %w", err)
+	}
+
+	return &appServerProbe{
+		rpc:            newRPCClient(stdin),
+		incoming:       readAppServer(stdout, stderr),
+		process:        waitProcess(cmd),
+		interruptGrace: a.interruptGrace,
+	}, nil
 }
 
 func cloneOptions(options agents.Options) agents.Options {
@@ -329,6 +361,7 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 		normalizer:        newNormalizer(),
 		options:           runOptionsFromMetadata(input.Metadata),
 		attachments:       input.Attachments,
+		skills:            append([]agents.SkillReference(nil), input.Skills...),
 		sessionID:         input.SessionID,
 		providerSessionID: strings.TrimSpace(input.ProviderSessionID),
 		action:            agentAction(input.Action),
@@ -463,6 +496,37 @@ type codexCollaborationMode struct {
 	ReasoningEffort string `json:"reasoning_effort"`
 }
 
+type codexSkillsListResponse struct {
+	Data []codexSkillsListEntry `json:"data"`
+}
+
+type codexSkillsListEntry struct {
+	CWD    string            `json:"cwd"`
+	Skills []codexSkill      `json:"skills"`
+	Errors []codexSkillError `json:"errors"`
+}
+
+type codexSkill struct {
+	Name             string              `json:"name"`
+	Description      string              `json:"description"`
+	ShortDescription string              `json:"shortDescription"`
+	Interface        codexSkillInterface `json:"interface"`
+	Path             string              `json:"path"`
+	Scope            string              `json:"scope"`
+	Enabled          bool                `json:"enabled"`
+}
+
+type codexSkillInterface struct {
+	DisplayName      string `json:"displayName"`
+	ShortDescription string `json:"shortDescription"`
+	BrandColor       string `json:"brandColor"`
+}
+
+type codexSkillError struct {
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
 func (p *appServerProbe) initialize(ctx context.Context) error {
 	id, err := p.rpc.sendRequest("initialize", map[string]any{
 		"clientInfo": map[string]any{
@@ -529,6 +593,51 @@ func (p *appServerProbe) listCollaborationModes(ctx context.Context) ([]codexCol
 		return nil, fmt.Errorf("decode codex collaborationMode/list response: %w", err)
 	}
 	return response.Data, nil
+}
+
+func (p *appServerProbe) listSkills(ctx context.Context, workdir string, forceReload bool) (agents.SkillCatalog, error) {
+	result, err := p.request(ctx, "skills/list", map[string]any{
+		"cwds":        []string{workdir},
+		"forceReload": forceReload,
+	})
+	if err != nil {
+		return agents.SkillCatalog{}, err
+	}
+
+	var response codexSkillsListResponse
+	if err := json.Unmarshal(result, &response); err != nil {
+		return agents.SkillCatalog{}, fmt.Errorf("decode codex skills/list response: %w", err)
+	}
+
+	catalog := agents.SkillCatalog{
+		Skills: make([]agents.Skill, 0),
+		Errors: make([]agents.SkillError, 0),
+	}
+	for _, entry := range response.Data {
+		if entry.CWD != "" && filepath.Clean(entry.CWD) != filepath.Clean(workdir) {
+			continue
+		}
+		for _, skill := range entry.Skills {
+			shortDescription := skill.Interface.ShortDescription
+			if shortDescription == "" {
+				shortDescription = skill.ShortDescription
+			}
+			catalog.Skills = append(catalog.Skills, agents.Skill{
+				Name:             skill.Name,
+				Description:      skill.Description,
+				DisplayName:      skill.Interface.DisplayName,
+				ShortDescription: shortDescription,
+				BrandColor:       skill.Interface.BrandColor,
+				Path:             skill.Path,
+				Scope:            skill.Scope,
+				Enabled:          skill.Enabled,
+			})
+		}
+		for _, skillErr := range entry.Errors {
+			catalog.Errors = append(catalog.Errors, agents.SkillError{Path: skillErr.Path, Message: skillErr.Message})
+		}
+	}
+	return catalog, nil
 }
 
 func (p *appServerProbe) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
@@ -654,6 +763,7 @@ type appServerRun struct {
 	normalizer        *normalizer
 	options           codexRunOptions
 	attachments       []agents.Attachment
+	skills            []agents.SkillReference
 	sessionID         string
 	providerSessionID string
 	action            agents.AgentAction
@@ -845,7 +955,7 @@ func (r *appServerRun) startTurn(ctx context.Context, message string, workdir st
 	threadID := r.getThreadID()
 	params := map[string]any{
 		"threadId":              threadID,
-		"input":                 userInputItems(message, r.attachments),
+		"input":                 userInputItems(message, r.attachments, r.skills),
 		"cwd":                   workdir,
 		"runtimeWorkspaceRoots": []string{workdir},
 		"approvalPolicy":        r.approvalPolicy(),
@@ -951,8 +1061,20 @@ func (r *appServerRun) networkAccess() bool {
 	return r.agent.networkAccess
 }
 
-func userInputItems(message string, attachments []agents.Attachment) []map[string]any {
-	items := make([]map[string]any, 0, 1+len(attachments))
+func userInputItems(message string, attachments []agents.Attachment, skills []agents.SkillReference) []map[string]any {
+	items := make([]map[string]any, 0, 1+len(attachments)+len(skills))
+	for _, skill := range skills {
+		name := strings.TrimSpace(skill.Name)
+		path := strings.TrimSpace(skill.Path)
+		if name == "" || path == "" {
+			continue
+		}
+		items = append(items, map[string]any{
+			"type": "skill",
+			"name": name,
+			"path": path,
+		})
+	}
 	if strings.TrimSpace(message) != "" {
 		items = append(items, map[string]any{
 			"type":          "text",

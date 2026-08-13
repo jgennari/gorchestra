@@ -94,6 +94,7 @@ type QueuedMessage struct {
 	Status       QueuedMessageStatus
 	Content      string
 	AgentOptions json.RawMessage
+	Skills       json.RawMessage
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -225,6 +226,7 @@ type EnqueueMessageParams struct {
 	SessionID    string
 	Content      string
 	AgentOptions json.RawMessage
+	Skills       json.RawMessage
 	MaxPending   int
 }
 

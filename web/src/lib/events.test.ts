@@ -630,6 +630,24 @@ test('chat transcript uses event attachment URLs instead of inline image data', 
   ])
 })
 
+test('chat transcript retains skill-only user messages as structured invocations', () => {
+  const transcript = buildChatTranscript([
+    event(8, 'user.message.completed', {
+      text: '',
+      skills: [
+        { name: 'openai-docs', path: '/skills/user/openai-docs/SKILL.md' },
+        { name: '', path: '/skills/invalid/SKILL.md' },
+      ],
+    }),
+  ])
+
+  expect(transcript).toHaveLength(1)
+  expect(transcript[0]).toMatchObject({ role: 'user', text: '' })
+  expect(transcript[0].skills).toEqual([
+    { name: 'openai-docs', path: '/skills/user/openai-docs/SKILL.md' },
+  ])
+})
+
 test('chat transcript merges claude completion with prior deltas missing message id', () => {
   const transcript = buildChatTranscript([
     event(1, 'user.message.completed', { text: 'Hello' }),

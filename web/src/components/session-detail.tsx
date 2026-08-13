@@ -5,6 +5,7 @@ import type {
   MessageAttachment,
   Session,
   SessionAgentOptions,
+  SkillReference,
   PermissionPolicy,
   SubmitAgentOptions,
   UserInputAnswers,
@@ -52,6 +53,7 @@ type Props = {
     agentOptions?: SubmitAgentOptions,
     attachments?: MessageAttachment[],
     queue?: boolean,
+    skills?: SkillReference[],
   ) => Promise<void>
   onAnswerUserInput: (requestID: string, answers: UserInputAnswers) => Promise<void>
   onResolvePermission?: (requestID: string, optionID: string) => Promise<void>

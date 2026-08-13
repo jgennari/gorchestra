@@ -510,6 +510,47 @@ func TestAgentOptionsCacheExpires(t *testing.T) {
 	}
 }
 
+func TestAgentSkillsListsWorkspaceCatalogAndMetadata(t *testing.T) {
+	workdir := t.TempDir()
+	agent := fakeAppServerAgent(t, "skills")
+
+	catalog, err := agent.Skills(context.Background(), agents.SkillQuery{
+		Workdir:     workdir,
+		ForceReload: true,
+	})
+	if err != nil {
+		t.Fatalf("list skills: %v", err)
+	}
+
+	wantSkills := []agents.Skill{
+		{
+			Name:             "openai-docs",
+			Description:      "Use official OpenAI documentation.",
+			DisplayName:      "OpenAI Docs",
+			ShortDescription: "Official product guidance",
+			BrandColor:       "#10A37F",
+			Path:             "/skills/user/openai-docs/SKILL.md",
+			Scope:            "user",
+			Enabled:          true,
+		},
+		{
+			Name:             "openai-docs",
+			Description:      "Repository-specific OpenAI workflow.",
+			ShortDescription: "Repository workflow",
+			Path:             "/workspace/.agents/skills/openai-docs/SKILL.md",
+			Scope:            "repo",
+			Enabled:          false,
+		},
+	}
+	if !reflect.DeepEqual(catalog.Skills, wantSkills) {
+		t.Fatalf("unexpected skill catalog: %#v", catalog.Skills)
+	}
+	wantErrors := []agents.SkillError{{Path: "/broken/SKILL.md", Message: "invalid frontmatter"}}
+	if !reflect.DeepEqual(catalog.Errors, wantErrors) {
+		t.Fatalf("unexpected skill errors: %#v", catalog.Errors)
+	}
+}
+
 func TestStartTurnAppliesRunOptions(t *testing.T) {
 	var written bytes.Buffer
 	incoming := make(chan incomingMessage, 1)
@@ -527,6 +568,9 @@ func TestStartTurnAppliesRunOptions(t *testing.T) {
 			return nil
 		},
 		normalizer: newNormalizer(),
+		skills: []agents.SkillReference{
+			{Name: "openai-docs", Path: "/skills/openai-docs/SKILL.md"},
+		},
 		options: codexRunOptions{
 			Model:           "gpt-5.5",
 			ReasoningEffort: "xhigh",
@@ -558,6 +602,18 @@ func TestStartTurnAppliesRunOptions(t *testing.T) {
 	}
 	if request.Params["serviceTier"] != "priority" {
 		t.Fatalf("expected service tier override, got %#v", request.Params["serviceTier"])
+	}
+	input, ok := request.Params["input"].([]any)
+	if !ok || len(input) != 2 {
+		t.Fatalf("expected skill and text input items, got %#v", request.Params["input"])
+	}
+	skill, ok := input[0].(map[string]any)
+	if !ok || skill["type"] != "skill" || skill["name"] != "openai-docs" || skill["path"] != "/skills/openai-docs/SKILL.md" {
+		t.Fatalf("expected structured skill input first, got %#v", input[0])
+	}
+	text, ok := input[1].(map[string]any)
+	if !ok || text["type"] != "text" || text["text"] != "Hello" {
+		t.Fatalf("expected text input second, got %#v", input[1])
 	}
 	sandboxPolicy, ok := request.Params["sandboxPolicy"].(map[string]any)
 	if !ok {
@@ -1154,6 +1210,50 @@ func runFakeAppServer(mode string) {
 				"data": []map[string]any{
 					{"name": "Plan", "mode": "plan", "model": nil, "reasoning_effort": "medium"},
 					{"name": "Default", "mode": "default", "model": nil, "reasoning_effort": nil},
+				},
+			})
+		case "skills/list":
+			var params struct {
+				CWDs        []string `json:"cwds"`
+				ForceReload bool     `json:"forceReload"`
+			}
+			if err := json.Unmarshal(request.Params, &params); err != nil || len(params.CWDs) != 1 {
+				os.Exit(12)
+			}
+			if mode == "skills" && !params.ForceReload {
+				os.Exit(13)
+			}
+			fakeRespond(request.ID, map[string]any{
+				"data": []map[string]any{
+					{
+						"cwd": params.CWDs[0],
+						"skills": []map[string]any{
+							{
+								"name":             "openai-docs",
+								"description":      "Use official OpenAI documentation.",
+								"shortDescription": "Fallback description",
+								"interface": map[string]any{
+									"displayName":      "OpenAI Docs",
+									"shortDescription": "Official product guidance",
+									"brandColor":       "#10A37F",
+								},
+								"path":    "/skills/user/openai-docs/SKILL.md",
+								"scope":   "user",
+								"enabled": true,
+							},
+							{
+								"name":             "openai-docs",
+								"description":      "Repository-specific OpenAI workflow.",
+								"shortDescription": "Repository workflow",
+								"path":             "/workspace/.agents/skills/openai-docs/SKILL.md",
+								"scope":            "repo",
+								"enabled":          false,
+							},
+						},
+						"errors": []map[string]any{
+							{"path": "/broken/SKILL.md", "message": "invalid frontmatter"},
+						},
+					},
 				},
 			})
 		case "thread/start":

@@ -18,6 +18,7 @@ import type {
   Session,
   SessionAgentOptions,
   SessionStatus,
+  SkillReference,
   SubmitAgentOptions,
   UserInputAnswers,
   WorkspaceFileContent,
@@ -751,11 +752,12 @@ function App() {
     agentOptions?: SubmitAgentOptions,
     attachments: MessageAttachment[] = [],
     queue = false,
+    skills: SkillReference[] = [],
   ) {
     if (!selectedSessionID) {
       throw new Error('Select a session first.')
     }
-    const response = await submitMessage(selectedSessionID, content, agentOptions, attachments, queue)
+    const response = await submitMessage(selectedSessionID, content, agentOptions, attachments, queue, skills)
     setSessions((current) =>
       current.map((session) => {
         if (session.id !== selectedSessionID) {

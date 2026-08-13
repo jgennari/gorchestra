@@ -8,6 +8,7 @@ import {
   eventStreamURL,
   fetchAgentOptions,
   fetchQueuedMessages,
+  fetchSessionSkills,
   getHostStatus,
   getSessionFileContent,
   isAgentType,
@@ -484,6 +485,45 @@ test('submit message can request server queueing', async () => {
 
   expect(response.accepted_as).toBe('queued')
   expect(response.queued_message?.content).toBe('Next')
+})
+
+test('session skills and structured submission use the skill API contract', async () => {
+  const skill = {
+    name: 'openai-docs',
+    description: 'Use official OpenAI documentation.',
+    display_name: 'OpenAI Docs',
+    short_description: 'Official product guidance',
+    brand_color: '#10A37F',
+    path: '/skills/user/openai-docs/SKILL.md',
+    scope: 'user' as const,
+    enabled: true,
+  }
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions/sess_1/skills?refresh=true') {
+      expect(init?.method).toBeUndefined()
+      return jsonResponse({ skills: [skill], errors: [] })
+    }
+    if (String(url) === '/api/sessions/sess_1/messages') {
+      expect(init?.method).toBe('POST')
+      expect(init?.body).toBe(
+        JSON.stringify({
+          content: 'Use the docs',
+          skills: [{ name: skill.name, path: skill.path }],
+        }),
+      )
+      return jsonResponse({ session_id: 'sess_1', status: 'running' })
+    }
+    throw new Error(`unexpected URL ${String(url)}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const catalog = await fetchSessionSkills('sess_1', true)
+  const response = await submitMessage('sess_1', 'Use the docs', undefined, [], false, [
+    { name: skill.name, path: skill.path },
+  ])
+
+  expect(catalog.skills).toEqual([skill])
+  expect(response.status).toBe('running')
 })
 
 test('queued message helpers use session queue endpoints', async () => {
