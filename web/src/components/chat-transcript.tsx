@@ -734,7 +734,7 @@ function ChatMessageRow({
         {message.tools.length > 0 ? (
           <div
             className={cn(
-              'mt-2 space-y-1 border-l pl-3',
+              'mt-2 border-l pl-3',
               plan ? 'border-amber-300/70 dark:border-amber-400/35' : 'border-border/80',
             )}
           >
@@ -1126,7 +1126,7 @@ function ToolCallRow({
     <div className="text-xs">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1 rounded py-0.5 text-left font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="relative z-10 flex h-5 w-full min-w-0 touch-manipulation items-center gap-1 rounded py-0.5 text-left font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-expanded={output ? outputOpen : undefined}
         aria-label={`${outputOpen ? 'Collapse' : 'Expand'} ${name}`}
         onClick={() => {
@@ -1136,14 +1136,17 @@ function ToolCallRow({
         }}
       >
         {outputOpen ? (
-          <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+          <ChevronDown className="pointer-events-none size-3 shrink-0 text-muted-foreground" />
         ) : (
-          <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
+          <ChevronRight className="pointer-events-none size-3 shrink-0 text-muted-foreground" />
         )}
         {statusDotClassName ? (
-          <span className={cn('mr-0.5 size-2 shrink-0 rounded-full', statusDotClassName)} aria-hidden="true" />
+          <span
+            className={cn('pointer-events-none mr-0.5 size-2 shrink-0 rounded-full', statusDotClassName)}
+            aria-hidden="true"
+          />
         ) : null}
-        <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
+        <span className="pointer-events-none min-w-0 flex-1 truncate font-medium">{name}</span>
       </button>
       {output ? (
         outputOpen ? (

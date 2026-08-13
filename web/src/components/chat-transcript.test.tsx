@@ -774,6 +774,40 @@ test('groups tool calls under assistant messages with expandable output', async 
   expect(writeText).toHaveBeenCalledWith('go test ./...\nok')
 })
 
+test('expands a running tool call from the chevron, status dot, label, and row', async () => {
+  const user = userEvent.setup()
+
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Checking channels.' }),
+        event(2, 'tool.call.started', 'assistant', 'started', {
+          item_id: 'tool_1',
+          command: 'slackdump list channels',
+        }),
+      ]}
+    />,
+  )
+
+  const row = screen.getByRole('button', { name: /expand slackdump list channels/i })
+  const [chevron, statusDot, label] = Array.from(row.children) as HTMLElement[]
+
+  expect(row).toHaveClass('h-5', 'touch-manipulation')
+  expect(row.parentElement?.parentElement).not.toHaveClass('space-y-1')
+  expect(chevron).toHaveClass('pointer-events-none')
+  expect(statusDot).toHaveClass('pointer-events-none')
+  expect(label).toHaveClass('pointer-events-none')
+
+  await user.click(chevron)
+  expect(row).toHaveAttribute('aria-expanded', 'true')
+  await user.click(statusDot)
+  expect(row).toHaveAttribute('aria-expanded', 'false')
+  await user.click(label)
+  expect(row).toHaveAttribute('aria-expanded', 'true')
+  await user.click(row)
+  expect(row).toHaveAttribute('aria-expanded', 'false')
+})
+
 test('opens file-change diffs in the file editor', async () => {
   const user = userEvent.setup()
   const onOpenFilePath = vi.fn()
