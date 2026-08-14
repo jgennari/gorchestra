@@ -43,6 +43,7 @@ import {
   type PiAgentOptions,
   type QueuedMessage,
   type SkillReference,
+  type SkillScope,
   removeQueuedMessage as deleteQueuedMessage,
   type SubmitAgentOptions,
 } from '@/lib/api'
@@ -141,16 +142,21 @@ export function PromptComposer({
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [content, setContent] = useState(() => loadDraft(sessionID))
+  const [content, setContent] = useState(() =>
+    ensureInlineSkillTokens(loadDraft(sessionID), loadSelectedSkills(sessionID)),
+  )
   const [selectedSkills, setSelectedSkills] = useState<SkillReference[]>(() => loadSelectedSkills(sessionID))
+  const promptSelectionRef = useRef({ start: content.length, end: content.length })
   const [skills, setSkills] = useState<AgentSkill[]>([])
   const [skillErrors, setSkillErrors] = useState<AgentSkillError[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState('')
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [skillSearch, setSkillSearch] = useState('')
+  const [skillScopeFilter, setSkillScopeFilter] = useState<SkillScope | null>(null)
   const [skillTypeahead, setSkillTypeahead] = useState<SkillTypeahead | null>(null)
   const [skillHighlight, setSkillHighlight] = useState(0)
+  const [promptScrollTop, setPromptScrollTop] = useState(0)
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([])
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [dragActive, setDragActive] = useState(false)
@@ -202,7 +208,14 @@ export function PromptComposer({
   const codexPlanAvailable = Boolean(codexOptions?.collaboration_modes.some((mode) => mode.mode === 'plan'))
   const openCodePlanAvailable = opencodeOptions?.collaboration_modes.some((mode) => mode.mode === 'plan') ?? false
   const sortedSkills = useMemo(() => sortSkills(skills), [skills])
-  const browsedSkills = useMemo(() => filterSkills(sortedSkills, skillSearch), [skillSearch, sortedSkills])
+  const skillScopes = useMemo(() => availableSkillScopes(sortedSkills), [sortedSkills])
+  const browsedSkills = useMemo(
+    () => filterSkills(
+      skillScopeFilter ? sortedSkills.filter((skill) => skill.scope === skillScopeFilter) : sortedSkills,
+      skillSearch,
+    ),
+    [skillScopeFilter, skillSearch, sortedSkills],
+  )
   const suggestedSkills = useMemo(
     () => (skillTypeahead ? filterSkills(sortedSkills, skillTypeahead.query).slice(0, 8) : []),
     [skillTypeahead, sortedSkills],
@@ -245,6 +258,7 @@ export function PromptComposer({
       setSkillErrors([])
       setSkillsError('')
       setSkillsOpen(false)
+      setSkillScopeFilter(null)
       setSkillTypeahead(null)
       return
     }
@@ -258,6 +272,9 @@ export function PromptComposer({
         const available = Array.isArray(catalog.skills) ? catalog.skills : []
         setSkills(available)
         setSkillErrors(Array.isArray(catalog.errors) ? catalog.errors : [])
+        setSkillScopeFilter((current) =>
+          current && available.some((skill) => skill.scope === current) ? current : null,
+        )
         setSelectedSkills((current) => {
           const next = current.filter((reference) =>
             available.some((skill) => skillKey(skill) === skillKey(reference)),
@@ -272,6 +289,7 @@ export function PromptComposer({
         if (cancelled) return
         setSkills([])
         setSkillErrors([])
+        setSkillScopeFilter(null)
         setSkillsError(loadError instanceof Error ? loadError.message : 'Failed to load skills')
       })
       .finally(() => {
@@ -537,33 +555,53 @@ export function PromptComposer({
     const nextContent = event.target.value
     const caret = event.target.selectionStart ?? nextContent.length
     setContent(nextContent)
+    promptSelectionRef.current = {
+      start: caret,
+      end: event.target.selectionEnd ?? caret,
+    }
+    setSelectedSkills((current) => inlineSkillReferences(nextContent, sortedSkills, current))
     setSkillTypeahead(agentType === 'codex' ? skillTypeaheadAt(nextContent, caret) : null)
     setSkillHighlight(0)
   }
 
   function selectSkill(skill: AgentSkill, fromTypeahead = false) {
     setSelectedSkills((current) => {
-      if (current.some((reference) => skillKey(reference) === skillKey(skill))) {
+      const sameName = current.filter((reference) => reference.name === skill.name)
+      if (sameName.length === 1 && skillKey(sameName[0]) === skillKey(skill)) {
         return current
       }
-      return [...current, { name: skill.name, path: skill.path }]
+      return [
+        ...current.filter((reference) => reference.name !== skill.name),
+        { name: skill.name, path: skill.path },
+      ]
     })
 
     if (fromTypeahead && skillTypeahead) {
-      const caret = skillTypeahead.start
-      setContent((current) => current.slice(0, skillTypeahead.start) + current.slice(skillTypeahead.end))
-      window.setTimeout(() => {
-        textareaRef.current?.focus({ preventScroll: true })
-        textareaRef.current?.setSelectionRange(caret, caret)
-      }, 0)
+      const insertion = insertInlineSkillToken(content, skill.name, skillTypeahead.start, skillTypeahead.end)
+      setContent(insertion.content)
+      promptSelectionRef.current = { start: insertion.caret, end: insertion.caret }
+      restorePromptSelection(insertion.caret)
+    } else if (!contentHasSkillToken(content, skill.name)) {
+      const insertion = insertInlineSkillToken(
+        content,
+        skill.name,
+        promptSelectionRef.current.start,
+        promptSelectionRef.current.end,
+      )
+      setContent(insertion.content)
+      promptSelectionRef.current = { start: insertion.caret, end: insertion.caret }
+      restorePromptSelection(insertion.caret)
     }
     setSkillTypeahead(null)
     setSkillsOpen(false)
     setSkillSearch('')
   }
 
-  function removeSkill(reference: SkillReference) {
-    setSelectedSkills((current) => current.filter((skill) => skillKey(skill) !== skillKey(reference)))
+  function restorePromptSelection(caret: number) {
+    window.setTimeout(() => {
+      textareaRef.current?.focus({ preventScroll: true })
+      textareaRef.current?.setSelectionRange(caret, caret)
+    }, 0)
   }
 
   async function refreshSkills() {
@@ -577,6 +615,9 @@ export function PromptComposer({
       const available = Array.isArray(catalog.skills) ? catalog.skills : []
       setSkills(available)
       setSkillErrors(Array.isArray(catalog.errors) ? catalog.errors : [])
+      setSkillScopeFilter((current) =>
+        current && available.some((skill) => skill.scope === current) ? current : null,
+      )
       const nextSelected = selectedSkills.filter((reference) =>
         available.some((skill) => skillKey(skill) === skillKey(reference)),
       )
@@ -790,36 +831,38 @@ export function PromptComposer({
             ))}
           </div>
         ) : null}
-        {selectedSkills.length > 0 ? (
-          <div className="mb-1.5 flex flex-wrap gap-1.5" aria-label="Selected skills">
-            {selectedSkills.map((reference) => {
-              const skill = skills.find((candidate) => skillKey(candidate) === skillKey(reference))
-              return (
-                <SelectedSkillChip
-                  key={skillKey(reference)}
-                  reference={reference}
-                  skill={skill}
-                  onRemove={() => removeSkill(reference)}
-                />
-              )
-            })}
-          </div>
-        ) : null}
-        <Textarea
-          ref={textareaRef}
-          aria-label="Prompt"
-          placeholder={promptPlaceholder}
-          value={content}
-          onChange={handleContentChange}
-          onFocus={handleTextareaFocus}
-          onKeyDown={handleKeyDown}
-          aria-autocomplete={skillTypeahead ? 'list' : undefined}
-          aria-controls={skillTypeahead ? 'skill-typeahead-list' : undefined}
-          aria-expanded={skillTypeahead ? true : undefined}
-          disabled={inputDisabled}
-          rows={1}
-          className="h-9 min-h-9 resize-none border-transparent bg-transparent px-1 py-1.5 text-base shadow-none focus-visible:ring-0 sm:py-2 sm:text-sm"
-        />
+        <div className="relative">
+          {selectedSkills.length > 0 ? (
+            <InlineSkillHighlights
+              content={content}
+              selected={selectedSkills}
+              skills={skills}
+              scrollTop={promptScrollTop}
+            />
+          ) : null}
+          <Textarea
+            ref={textareaRef}
+            aria-label="Prompt"
+            placeholder={promptPlaceholder}
+            value={content}
+            onChange={handleContentChange}
+            onSelect={(event) => {
+              promptSelectionRef.current = {
+                start: event.currentTarget.selectionStart ?? content.length,
+                end: event.currentTarget.selectionEnd ?? content.length,
+              }
+            }}
+            onScroll={(event) => setPromptScrollTop(event.currentTarget.scrollTop)}
+            onFocus={handleTextareaFocus}
+            onKeyDown={handleKeyDown}
+            aria-autocomplete={skillTypeahead ? 'list' : undefined}
+            aria-controls={skillTypeahead ? 'skill-typeahead-list' : undefined}
+            aria-expanded={skillTypeahead ? true : undefined}
+            disabled={inputDisabled}
+            rows={1}
+            className="relative z-10 h-9 min-h-9 resize-none border-transparent bg-transparent px-1 py-1.5 text-base shadow-none focus-visible:ring-0 sm:py-2 sm:text-sm"
+          />
+        </div>
         <div className="mt-2 flex min-h-8 items-center gap-1.5">
           {agentType === 'codex' && sessionID ? (
             <SkillBrowser
@@ -828,6 +871,9 @@ export function PromptComposer({
               search={skillSearch}
               onSearchChange={setSkillSearch}
               skills={browsedSkills}
+              scopes={skillScopes}
+              scopeFilter={skillScopeFilter}
+              onScopeFilterChange={setSkillScopeFilter}
               selected={selectedSkills}
               loading={skillsLoading}
               error={skillsError}
@@ -1050,6 +1096,9 @@ function SkillBrowser({
   search,
   onSearchChange,
   skills,
+  scopes,
+  scopeFilter,
+  onScopeFilterChange,
   selected,
   loading,
   error,
@@ -1062,6 +1111,9 @@ function SkillBrowser({
   search: string
   onSearchChange: (value: string) => void
   skills: AgentSkill[]
+  scopes: Array<{ scope: SkillScope; count: number }>
+  scopeFilter: SkillScope | null
+  onScopeFilterChange: (scope: SkillScope | null) => void
   selected: SkillReference[]
   loading: boolean
   error: string
@@ -1135,6 +1187,35 @@ function SkillBrowser({
             >
               <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} aria-hidden="true" />
             </Button>
+          </div>
+          <div
+            aria-label="Filter skills by scope"
+            className="flex items-center gap-1.5 overflow-x-auto border-b border-border/70 px-2 py-1.5"
+          >
+            <button
+              type="button"
+              aria-pressed={scopeFilter === null}
+              onClick={() => onScopeFilterChange(null)}
+              className={skillScopeFilterClassName(scopeFilter === null)}
+            >
+              All
+              <span aria-hidden="true" className="text-[10px] tabular-nums opacity-70">
+                {scopes.reduce((total, scope) => total + scope.count, 0)}
+              </span>
+            </button>
+            {scopes.map(({ scope, count }) => (
+              <button
+                key={scope}
+                type="button"
+                aria-label={`${skillScopeLabel(scope)} skills (${count})`}
+                aria-pressed={scopeFilter === scope}
+                onClick={() => onScopeFilterChange(scope)}
+                className={skillScopeFilterClassName(scopeFilter === scope)}
+              >
+                {skillScopeLabel(scope)}
+                <span aria-hidden="true" className="text-[10px] tabular-nums opacity-70">{count}</span>
+              </button>
+            ))}
           </div>
           <div className="max-h-[min(24rem,55dvh)] overflow-y-auto p-1.5">
             {loading && skills.length === 0 ? (
@@ -1245,35 +1326,6 @@ function SkillSuggestionList({
   )
 }
 
-function SelectedSkillChip({
-  reference,
-  skill,
-  onRemove,
-}: {
-  reference: SkillReference
-  skill?: AgentSkill
-  onRemove: () => void
-}) {
-  const color = validSkillColor(skill?.brand_color)
-  const style = color ? ({ borderColor: color } satisfies CSSProperties) : undefined
-  return (
-    <span
-      className="inline-flex h-7 max-w-full items-center gap-1 rounded-full border border-primary/35 bg-primary/10 pl-2 pr-1 text-xs font-medium text-primary"
-      style={style}
-    >
-      <span className="truncate">${skill?.name || reference.name}</span>
-      <button
-        type="button"
-        aria-label={`Remove skill ${reference.name}`}
-        onClick={onRemove}
-        className="inline-flex size-5 shrink-0 items-center justify-center rounded-full hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <X className="size-3" aria-hidden="true" />
-      </button>
-    </span>
-  )
-}
-
 function SkillAccent({ skill }: { skill: AgentSkill }) {
   const color = validSkillColor(skill.brand_color)
   return (
@@ -1282,6 +1334,56 @@ function SkillAccent({ skill }: { skill: AgentSkill }) {
       style={color ? ({ backgroundColor: color } satisfies CSSProperties) : undefined}
       aria-hidden="true"
     />
+  )
+}
+
+function InlineSkillHighlights({
+  content,
+  selected,
+  skills,
+  scrollTop,
+}: {
+  content: string
+  selected: SkillReference[]
+  skills: AgentSkill[]
+  scrollTop: number
+}) {
+  const segments = inlineSkillHighlightSegments(content, selected, skills)
+  return (
+    <div
+      aria-hidden="true"
+      data-testid="inline-skill-highlights"
+      className="pointer-events-none absolute inset-0 z-0 overflow-hidden rounded-md"
+    >
+      <div
+        className="min-h-full w-full whitespace-pre-wrap break-words border border-transparent px-1 py-1.5 text-base text-transparent sm:py-2 sm:text-sm"
+        style={{ transform: `translateY(-${scrollTop}px)` }}
+      >
+        {segments.map((segment, index) => {
+          if (!segment.reference) return <span key={index}>{segment.text}</span>
+          const color = validSkillColor(segment.skill?.brand_color)
+          return (
+            <span
+              key={index}
+              data-testid="inline-skill-chip"
+              data-skill-name={segment.reference.name}
+              className="-mx-0.5 -my-0.5 rounded-md bg-primary/15 px-0.5 py-0.5 text-transparent ring-1 ring-inset ring-primary/30"
+              style={
+                color
+                  ? {
+                      backgroundColor: `${color}20`,
+                      boxShadow: `inset 0 0 0 1px ${color}66`,
+                    }
+                  : undefined
+              }
+            >
+              {segment.text}
+            </span>
+          )
+        })}
+        {content.endsWith('\n') ? '\u00a0' : null}
+      </div>
+    </div>
   )
 }
 
@@ -2530,7 +2632,29 @@ function skillDisplayName(skill: AgentSkill) {
   return skill.display_name || skill.name
 }
 
-function scopeRank(scope: AgentSkill['scope']) {
+const skillScopeOrder: SkillScope[] = ['repo', 'user', 'admin', 'system']
+
+function availableSkillScopes(skills: AgentSkill[]) {
+  return skillScopeOrder.flatMap((scope) => {
+    const count = skills.filter((skill) => skill.scope === scope).length
+    return count > 0 ? [{ scope, count }] : []
+  })
+}
+
+function skillScopeLabel(scope: SkillScope) {
+  return `${scope.charAt(0).toUpperCase()}${scope.slice(1)}`
+}
+
+function skillScopeFilterClassName(selected: boolean) {
+  return cn(
+    'inline-flex h-7 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    selected
+      ? 'border-primary/30 bg-primary/10 text-primary'
+      : 'border-border/80 bg-background text-muted-foreground hover:bg-accent hover:text-foreground',
+  )
+}
+
+function scopeRank(scope: SkillScope) {
   switch (scope) {
     case 'repo':
       return 0
@@ -2581,6 +2705,81 @@ function skillTypeaheadAt(content: string, caret: number): SkillTypeahead | null
   if (!match) return null
   const query = match[1] ?? ''
   return { start: caret - query.length - 1, end: caret, query }
+}
+
+function insertInlineSkillToken(content: string, name: string, start: number, end: number) {
+  const safeStart = Math.max(0, Math.min(start, content.length))
+  const safeEnd = Math.max(safeStart, Math.min(end, content.length))
+  const before = content.slice(0, safeStart)
+  const after = content.slice(safeEnd)
+  const leadingSpace = before && !/\s$/.test(before) ? ' ' : ''
+  const trailingSpace = !after || !/^\s/.test(after) ? ' ' : ''
+  const token = `$${name}`
+  const inserted = `${leadingSpace}${token}${trailingSpace}`
+  return {
+    content: before + inserted + after,
+    caret: safeStart + inserted.length,
+  }
+}
+
+function ensureInlineSkillTokens(content: string, selected: SkillReference[]) {
+  return selected.reduce((current, skill) => {
+    if (contentHasSkillToken(current, skill.name)) return current
+    const prefix = current && !/\s$/.test(current) ? ' ' : ''
+    return `${current}${prefix}$${skill.name} `
+  }, content)
+}
+
+function inlineSkillReferences(content: string, available: AgentSkill[], current: SkillReference[]) {
+  const byName = new Map<string, SkillReference>()
+  current.forEach((reference) => {
+    if (contentHasSkillToken(content, reference.name) && !byName.has(reference.name)) {
+      byName.set(reference.name, reference)
+    }
+  })
+  sortSkills(available).forEach((skill) => {
+    if (contentHasSkillToken(content, skill.name) && !byName.has(skill.name)) {
+      byName.set(skill.name, { name: skill.name, path: skill.path })
+    }
+  })
+  const next = [...byName.values()]
+  return sameSkillReferences(current, next) ? current : next
+}
+
+function contentHasSkillToken(content: string, name: string) {
+  const escapedName = escapeRegExp(name)
+  return new RegExp(`\\$${escapedName}(?![A-Za-z0-9:_-])`).test(content)
+}
+
+function inlineSkillHighlightSegments(content: string, selected: SkillReference[], skills: AgentSkill[]) {
+  const references = new Map(selected.map((reference) => [reference.name, reference]))
+  const names = [...references.keys()].sort((left, right) => right.length - left.length)
+  if (names.length === 0) return [{ text: content }]
+
+  const pattern = new RegExp(`\\$(${names.map(escapeRegExp).join('|')})(?![A-Za-z0-9:_-])`, 'g')
+  const segments: Array<{ text: string; reference?: SkillReference; skill?: AgentSkill }> = []
+  let cursor = 0
+  for (const match of content.matchAll(pattern)) {
+    const start = match.index ?? 0
+    if (start > cursor) segments.push({ text: content.slice(cursor, start) })
+    const reference = references.get(match[1])
+    segments.push({
+      text: match[0],
+      reference,
+      skill: reference ? skills.find((skill) => skillKey(skill) === skillKey(reference)) : undefined,
+    })
+    cursor = start + match[0].length
+  }
+  if (cursor < content.length) segments.push({ text: content.slice(cursor) })
+  return segments
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function sameSkillReferences(left: SkillReference[], right: SkillReference[]) {
+  return left.length === right.length && left.every((reference, index) => skillKey(reference) === skillKey(right[index]))
 }
 
 function validSkillColor(value: string | undefined) {

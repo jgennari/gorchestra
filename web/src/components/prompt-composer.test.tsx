@@ -324,6 +324,8 @@ test('codex skill browser discovers metadata and submits a structured skill refe
   )
 
   expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5.5')
+  const prompt = screen.getByLabelText('Prompt')
+  await user.type(prompt, 'Use my ')
   await user.click(screen.getByRole('button', { name: 'Skills' }))
   const browser = screen.getByRole('dialog', { name: 'Available skills' })
   expect(within(browser).getByText('Official product guidance')).toBeInTheDocument()
@@ -332,12 +334,15 @@ test('codex skill browser discovers metadata and submits a structured skill refe
   await user.type(within(browser).getByLabelText('Search skills'), 'openai')
   await user.click(within(browser).getByText('OpenAI Docs'))
 
-  expect(screen.getByRole('button', { name: 'Remove skill openai-docs' })).toBeInTheDocument()
-  await user.type(screen.getByLabelText('Prompt'), 'Use the official docs{enter}')
+  expect(prompt).toHaveValue('Use my $openai-docs ')
+  expect(screen.queryByLabelText('Selected skills')).not.toBeInTheDocument()
+  expect(screen.getByTestId('inline-skill-chip')).toHaveAttribute('data-skill-name', 'openai-docs')
+  expect(screen.getByTestId('inline-skill-chip')).toHaveClass('rounded-md', 'ring-1')
+  await user.type(prompt, 'skill to find the official docs{enter}')
 
   await waitFor(() => {
     expect(onSubmit).toHaveBeenCalledWith(
-      'Use the official docs',
+      'Use my $openai-docs skill to find the official docs',
       {
         codex: {
           model: 'gpt-5.5',
@@ -352,6 +357,44 @@ test('codex skill browser discovers metadata and submits a structured skill refe
       [{ name: 'openai-docs', path: '/skills/user/openai-docs/SKILL.md' }],
     )
   })
+})
+
+test('codex skill browser filters by scope and All restores every skill', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal('fetch', codexSkillFetchMock())
+
+  render(
+    <PromptComposer
+      sessionID="sess_1"
+      agentType="codex"
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+    />,
+  )
+
+  expect(await screen.findByRole('button', { name: 'Model' })).toBeEnabled()
+  await user.click(screen.getByRole('button', { name: 'Skills' }))
+  const browser = screen.getByRole('dialog', { name: 'Available skills' })
+
+  expect(within(browser).getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+  expect(within(browser).getByText('Repository Release')).toBeInTheDocument()
+  expect(within(browser).getByText('OpenAI Docs')).toBeInTheDocument()
+  expect(within(browser).getByText('Image Gen')).toBeInTheDocument()
+
+  await user.click(within(browser).getByRole('button', { name: 'Repo skills (1)' }))
+  expect(within(browser).getByText('Repository Release')).toBeInTheDocument()
+  expect(within(browser).queryByText('OpenAI Docs')).not.toBeInTheDocument()
+  expect(within(browser).queryByText('Image Gen')).not.toBeInTheDocument()
+
+  await user.click(within(browser).getByRole('button', { name: 'System skills (1)' }))
+  expect(within(browser).queryByText('Repository Release')).not.toBeInTheDocument()
+  expect(within(browser).getByText('Image Gen')).toBeInTheDocument()
+
+  await user.click(within(browser).getByRole('button', { name: 'All' }))
+  expect(within(browser).getByText('Repository Release')).toBeInTheDocument()
+  expect(within(browser).getByText('OpenAI Docs')).toBeInTheDocument()
+  expect(within(browser).getByText('Image Gen')).toBeInTheDocument()
 })
 
 test('dollar typeahead selects a skill and allows a skill-only submission', async () => {
@@ -375,19 +418,50 @@ test('dollar typeahead selects a skill and allows a skill-only submission', asyn
   expect(await screen.findByRole('option', { name: /OpenAI Docs/ })).toHaveAttribute('aria-selected', 'true')
 
   await user.keyboard('{Enter}')
-  expect(prompt).toHaveValue('')
-  expect(screen.getByRole('button', { name: 'Remove skill openai-docs' })).toBeInTheDocument()
+  expect(prompt).toHaveValue('$openai-docs ')
+  expect(screen.queryByLabelText('Selected skills')).not.toBeInTheDocument()
+  expect(screen.getByTestId('inline-skill-chip')).toHaveTextContent('$openai-docs')
 
   await user.keyboard('{Enter}')
   await waitFor(() => {
     expect(onSubmit).toHaveBeenCalledWith(
-      '',
+      '$openai-docs',
       expect.objectContaining({ codex: expect.objectContaining({ model: 'gpt-5.5' }) }),
       undefined,
       false,
       [{ name: 'openai-docs', path: '/skills/user/openai-docs/SKILL.md' }],
     )
   })
+})
+
+test('removing an inline skill slug also removes its structured invocation', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn(async () => undefined)
+  vi.stubGlobal('fetch', codexSkillFetchMock())
+
+  render(
+    <PromptComposer
+      sessionID="sess_1"
+      agentType="codex"
+      disabled={false}
+      disabledReason=""
+      onSubmit={onSubmit}
+    />,
+  )
+
+  expect(await screen.findByRole('button', { name: 'Model' })).toBeEnabled()
+  const prompt = screen.getByLabelText('Prompt')
+  await user.type(prompt, '$open{enter}')
+  expect(prompt).toHaveValue('$openai-docs ')
+
+  await user.clear(prompt)
+  expect(screen.queryByTestId('inline-skill-chip')).not.toBeInTheDocument()
+  await user.type(prompt, 'Continue without a skill{enter}')
+
+  await waitFor(() => {
+    expect(onSubmit).toHaveBeenCalledWith('Continue without a skill', expect.any(Object))
+  })
+  expect(onSubmit.mock.calls[0]).toHaveLength(2)
 })
 
 test('an unmatched dollar token remains ordinary prompt text', async () => {
@@ -406,7 +480,10 @@ test('an unmatched dollar token remains ordinary prompt text', async () => {
   )
 
   expect(await screen.findByRole('button', { name: 'Model' })).toBeEnabled()
-  await user.type(screen.getByLabelText('Prompt'), '$not-a-skill{enter}')
+  const prompt = screen.getByLabelText('Prompt')
+  await user.type(prompt, '$not-a-skill')
+  expect(screen.queryByTestId('inline-skill-chip')).not.toBeInTheDocument()
+  await user.keyboard('{Enter}')
 
   await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('$not-a-skill', expect.any(Object)))
 })
@@ -924,6 +1001,15 @@ function codexSkillFetchMock() {
             short_description: 'Release this repository',
             path: '/repo/.agents/skills/repo-release/SKILL.md',
             scope: 'repo',
+            enabled: true,
+          },
+          {
+            name: 'imagegen',
+            description: 'Generate or edit images.',
+            display_name: 'Image Gen',
+            short_description: 'Create visual assets',
+            path: '/skills/system/imagegen/SKILL.md',
+            scope: 'system',
             enabled: true,
           },
         ],
