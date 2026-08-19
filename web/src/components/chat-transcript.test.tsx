@@ -190,6 +190,53 @@ test('uses measured bottom inset height for transcript tail spacer', () => {
   expect(screen.getByTestId('chat-transcript-tail-spacer')).toHaveStyle({ height: '268px' })
 })
 
+test('positions and clears the hatch glow from mouse movement', () => {
+  const { container } = render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })]}
+    />,
+  )
+  const canvas = container.querySelector<HTMLDivElement>('.chat-canvas')
+  expect(canvas).not.toBeNull()
+  if (!canvas) return
+
+  vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+    x: 100,
+    y: 50,
+    left: 100,
+    top: 50,
+    right: 500,
+    bottom: 450,
+    width: 400,
+    height: 400,
+    toJSON: () => ({}),
+  })
+
+  fireEvent.pointerMove(canvas, { clientX: 136, clientY: 92, pointerType: 'mouse' })
+
+  expect(canvas).toHaveStyle({ '--chat-glow-x': '36px', '--chat-glow-y': '42px' })
+  expect(canvas).toHaveAttribute('data-glow-active', 'true')
+
+  fireEvent.pointerLeave(canvas, { pointerType: 'mouse' })
+
+  expect(canvas).not.toHaveAttribute('data-glow-active')
+})
+
+test('does not activate the hatch glow for touch input', () => {
+  const { container } = render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })]}
+    />,
+  )
+  const canvas = container.querySelector<HTMLDivElement>('.chat-canvas')
+  expect(canvas).not.toBeNull()
+  if (!canvas) return
+
+  fireEvent.pointerMove(canvas, { clientX: 20, clientY: 20, pointerType: 'touch' })
+
+  expect(canvas).not.toHaveAttribute('data-glow-active')
+})
+
 test('renders thinking activity status where the transcript tail indicator appears', () => {
   render(<ChatTranscript activityStatus={{ kind: 'thinking' }} events={[]} />)
 

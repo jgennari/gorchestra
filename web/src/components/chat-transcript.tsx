@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type TouchEvent,
   type WheelEvent,
@@ -314,8 +315,27 @@ export function ChatTranscript({
     scheduleTailAlignment(true)
   }
 
+  function updateChatGlow(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return
+
+    const bounds = event.currentTarget.getBoundingClientRect()
+    event.currentTarget.style.setProperty('--chat-glow-x', `${event.clientX - bounds.left}px`)
+    event.currentTarget.style.setProperty('--chat-glow-y', `${event.clientY - bounds.top}px`)
+    event.currentTarget.dataset.glowActive = 'true'
+  }
+
+  function hideChatGlow(event: ReactPointerEvent<HTMLDivElement>) {
+    delete event.currentTarget.dataset.glowActive
+  }
+
   return (
-    <div className="chat-canvas relative h-full min-h-0 overflow-hidden">
+    <div
+      className="chat-canvas relative h-full min-h-0 overflow-hidden"
+      onPointerEnter={updateChatGlow}
+      onPointerMove={updateChatGlow}
+      onPointerLeave={hideChatGlow}
+      onPointerCancel={hideChatGlow}
+    >
       <Virtuoso
           scrollerRef={(element) => {
             scrollerElementRef.current = element instanceof HTMLElement ? element : null

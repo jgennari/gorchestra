@@ -294,18 +294,69 @@
 }
 
 .chat-canvas {
+  --chat-glow-x: 50%;
+  --chat-glow-y: 50%;
+
+  isolation: isolate;
   background:
     linear-gradient(hsl(var(--border) / 0.2) 1px, transparent 1px),
     linear-gradient(90deg, hsl(var(--border) / 0.16) 1px, transparent 1px),
     linear-gradient(180deg, hsl(var(--background) / 0.56), hsl(var(--surface) / 0.42));
   background-size:
-    28px 28px,
-    28px 28px,
+    24px 24px,
+    24px 24px,
     100% 100%;
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .chat-canvas::before {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    background:
+      linear-gradient(hsl(var(--glow) / 0.58) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--glow) / 0.54) 1px, transparent 1px),
+      linear-gradient(hsl(var(--glow) / 0.14) 3px, transparent 3px),
+      linear-gradient(90deg, hsl(var(--glow) / 0.12) 3px, transparent 3px);
+    background-size: 24px 24px;
+    content: '';
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 240ms ease-out;
+    -webkit-mask-image: radial-gradient(
+      circle 70px at var(--chat-glow-x) var(--chat-glow-y),
+      rgb(0 0 0 / 0.76) 0%,
+      rgb(0 0 0 / 0.54) 28%,
+      rgb(0 0 0 / 0.24) 58%,
+      rgb(0 0 0 / 0.07) 82%,
+      transparent 100%
+    );
+    mask-image: radial-gradient(
+      circle 70px at var(--chat-glow-x) var(--chat-glow-y),
+      rgb(0 0 0 / 0.76) 0%,
+      rgb(0 0 0 / 0.54) 28%,
+      rgb(0 0 0 / 0.24) 58%,
+      rgb(0 0 0 / 0.07) 82%,
+      transparent 100%
+    );
+    will-change: opacity;
+  }
+
+  .chat-canvas[data-glow-active='true']::before {
+    opacity: 1;
+  }
+}
+
 .chat-scroll-area {
+  position: relative;
+  z-index: 1;
   overscroll-behavior-y: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-canvas::before {
+    transition: none;
+  }
 }
 
 .subtle-scrollbar {
