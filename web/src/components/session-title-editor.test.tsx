@@ -1,16 +1,16 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
-import { SessionTitleEditor } from '@/components/session-title-editor'
+import { SessionRenameForm, SessionTitle } from '@/components/session-title-editor'
 
-test('title editor shows optimistic title while save is pending', async () => {
+test('rename form shows saving state while an update is pending', async () => {
   const user = userEvent.setup()
   const save = deferred<void>()
 
   function Harness() {
     const [title, setTitle] = useState('Old title')
     return (
-      <SessionTitleEditor
+      <SessionRenameForm
         title={title}
         onSave={async (nextTitle) => {
           await save.promise
@@ -22,38 +22,53 @@ test('title editor shows optimistic title while save is pending', async () => {
 
   render(<Harness />)
 
-  await user.click(screen.getByRole('button', { name: /edit session title/i }))
-  const input = screen.getByRole('textbox', { name: 'Session title' })
+  const input = screen.getByRole('textbox', { name: 'Session name' })
   await user.clear(input)
-  await user.type(input, 'New title')
-  await user.click(screen.getByRole('button', { name: /save session title/i }))
+  await user.type(input, '  New title  ')
+  await user.click(screen.getByRole('button', { name: 'Save session name' }))
 
-  expect(screen.getByRole('heading', { name: 'New title' })).toBeInTheDocument()
-  expect(screen.getByText('Saving')).toBeInTheDocument()
+  expect(input).toHaveValue('  New title  ')
+  expect(screen.getByRole('button', { name: 'Save session name' })).toHaveTextContent('Saving')
 
   save.resolve()
 
-  await waitFor(() => expect(screen.queryByText('Saving')).not.toBeInTheDocument())
-  expect(screen.getByRole('heading', { name: 'New title' })).toBeInTheDocument()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Save session name' })).toHaveTextContent('Save'))
+  expect(input).toHaveValue('New title')
 })
 
-test('title editor reverts and shows inline error when save fails', async () => {
+test('rename form submits with Enter and shows inline save errors', async () => {
   const user = userEvent.setup()
   const onSave = vi.fn(async () => {
     throw new Error('write failed')
   })
 
-  render(<SessionTitleEditor title="Old title" onSave={onSave} />)
+  render(<SessionRenameForm title="Old title" onSave={onSave} />)
 
-  await user.click(screen.getByRole('button', { name: /edit session title/i }))
-  const input = screen.getByRole('textbox', { name: 'Session title' })
+  const input = screen.getByRole('textbox', { name: 'Session name' })
   await user.clear(input)
-  await user.type(input, 'New title')
-  await user.click(screen.getByRole('button', { name: /save session title/i }))
+  await user.type(input, 'New title{Enter}')
 
+  expect(onSave).toHaveBeenCalledWith('New title')
   expect(await screen.findByRole('alert')).toHaveTextContent('write failed')
-  expect(screen.getByRole('textbox', { name: 'Session title' })).toHaveValue('New title')
-  expect(screen.queryByRole('heading', { name: 'New title' })).not.toBeInTheDocument()
+  expect(input).toHaveValue('New title')
+})
+
+test('rename form allows clearing the session name', async () => {
+  const user = userEvent.setup()
+  const onSave = vi.fn(async () => undefined)
+  render(<SessionRenameForm title="Old title" onSave={onSave} />)
+
+  await user.clear(screen.getByRole('textbox', { name: 'Session name' }))
+  await user.click(screen.getByRole('button', { name: 'Save session name' }))
+
+  expect(onSave).toHaveBeenCalledWith('')
+})
+
+test('session title renders the empty-title fallback without an edit action', () => {
+  render(<SessionTitle title="" />)
+
+  expect(screen.getByRole('heading', { name: 'Untitled session' })).toBeInTheDocument()
+  expect(screen.queryByRole('button')).not.toBeInTheDocument()
 })
 
 function deferred<T>() {

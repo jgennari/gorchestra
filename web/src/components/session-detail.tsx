@@ -1,4 +1,4 @@
-import { Archive, Check, Copy, Ellipsis, Eraser, FolderCog, Loader2, Minimize2, PanelRightOpen } from 'lucide-react'
+import { Archive, Check, Copy, Eraser, FolderCog, Loader2, Minimize2, PanelRightOpen, Settings } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
@@ -17,7 +17,7 @@ import { ChatTranscript } from '@/components/chat-transcript'
 import { PromptComposer } from '@/components/prompt-composer'
 import { PermissionQueue } from '@/components/permission-queue'
 import { PermissionPolicyControl } from '@/components/permission-policy-control'
-import { SessionTitleEditor } from '@/components/session-title-editor'
+import { SessionRenameForm, SessionTitle } from '@/components/session-title-editor'
 import { UserInputCard } from '@/components/user-input-card'
 import {
   activeRunActivity,
@@ -30,6 +30,7 @@ import {
 } from '@/lib/events'
 import { clipboardCopyErrorMessage, copyText } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
+import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
 
 type Props = {
   session: Session | null
@@ -61,7 +62,6 @@ type Props = {
   onUpdateTitle: (title: string) => Promise<void>
   onUpdateWorkspace: (workspacePath: string) => Promise<void>
   hasUnsavedWorkspaceFile?: boolean
-  onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onOpenFilePath?: (path: string) => Promise<void> | void
   onComposerFocus?: () => void
@@ -101,7 +101,6 @@ export function SessionDetail({
   onUpdateTitle,
   onUpdateWorkspace,
   hasUnsavedWorkspaceFile = false,
-  onTitleEditStateChange,
   onUpdateAgentOptions,
   onOpenFilePath,
   onComposerFocus,
@@ -251,7 +250,6 @@ export function SessionDetail({
             onUpdateTitle={onUpdateTitle}
             onUpdateWorkspace={onUpdateWorkspace}
             hasUnsavedWorkspaceFile={hasUnsavedWorkspaceFile}
-            onTitleEditStateChange={onTitleEditStateChange}
             onUpdateAgentOptions={onUpdateAgentOptions}
             onShowDebugEventsChange={onShowDebugEventsChange}
             headerActions={headerActions}
@@ -276,7 +274,6 @@ export function SessionDetail({
             onUpdateTitle={onUpdateTitle}
             onUpdateWorkspace={onUpdateWorkspace}
             hasUnsavedWorkspaceFile={hasUnsavedWorkspaceFile}
-            onTitleEditStateChange={onTitleEditStateChange}
             onUpdateAgentOptions={onUpdateAgentOptions}
             onShowDebugEventsChange={onShowDebugEventsChange}
             headerActions={headerActions}
@@ -320,7 +317,6 @@ export function ChatSessionHeader({
   onUpdateTitle,
   onUpdateWorkspace,
   hasUnsavedWorkspaceFile,
-  onTitleEditStateChange,
   onUpdateAgentOptions,
   onShowDebugEventsChange,
   headerActions,
@@ -333,7 +329,6 @@ export function ChatSessionHeader({
   onUpdateTitle: (title: string) => Promise<void>
   onUpdateWorkspace: (workspacePath: string) => Promise<void>
   hasUnsavedWorkspaceFile?: boolean
-  onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onShowDebugEventsChange: (showDebugEvents: boolean) => void
   headerActions?: ReactNode
@@ -349,24 +344,20 @@ export function ChatSessionHeader({
         )}
       >
         {leadingAction ? <div className="shrink-0">{leadingAction}</div> : null}
-        <div className="min-w-0 flex-1">
-          <SessionTitleEditor
-            key={`desktop-${session.id}`}
-            title={session.title}
-            onSave={onUpdateTitle}
-            onEditStateChange={onTitleEditStateChange}
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <SessionTitle title={session.title} />
+          <SessionSettingsMenu
+            session={session}
+            showDebugEvents={showDebugEvents}
+            onUpdateTitle={onUpdateTitle}
+            onUpdateAgentOptions={onUpdateAgentOptions}
+            onUpdateWorkspace={onUpdateWorkspace}
+            hasUnsavedWorkspaceFile={hasUnsavedWorkspaceFile}
+            onShowDebugEventsChange={onShowDebugEventsChange}
+            mobileSessionActions={mobileSessionActions}
           />
         </div>
         {headerActions}
-        <SessionDetailsMenu
-          session={session}
-          showDebugEvents={showDebugEvents}
-          onUpdateAgentOptions={onUpdateAgentOptions}
-          onUpdateWorkspace={onUpdateWorkspace}
-          hasUnsavedWorkspaceFile={hasUnsavedWorkspaceFile}
-          onShowDebugEventsChange={onShowDebugEventsChange}
-          mobileSessionActions={mobileSessionActions}
-        />
       </div>
       {errorMessage ? (
         <div
@@ -380,9 +371,10 @@ export function ChatSessionHeader({
   )
 }
 
-function SessionDetailsMenu({
+function SessionSettingsMenu({
   session,
   showDebugEvents,
+  onUpdateTitle,
   onUpdateAgentOptions,
   onUpdateWorkspace,
   hasUnsavedWorkspaceFile,
@@ -391,6 +383,7 @@ function SessionDetailsMenu({
 }: {
   session: Session
   showDebugEvents: boolean
+  onUpdateTitle: (title: string) => Promise<void>
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onUpdateWorkspace: (workspacePath: string) => Promise<void>
   hasUnsavedWorkspaceFile?: boolean
@@ -399,6 +392,7 @@ function SessionDetailsMenu({
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
+  const { triggerRef, popoverStyle } = useAnchoredPopover(open)
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [copiedField, setCopiedField] = useState<'session' | 'workspace' | null>(null)
   const [copyFailed, setCopyFailed] = useState(false)
@@ -469,11 +463,12 @@ function SessionDetailsMenu({
   return (
     <div ref={menuRef} className="relative shrink-0">
       <Button
+        ref={triggerRef}
         type="button"
         variant="ghost"
         size="icon"
         className="h-8 w-8 text-muted-foreground hover:bg-background/50 hover:text-foreground"
-        aria-label="Session details"
+        aria-label="Session settings"
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => {
@@ -481,15 +476,19 @@ function SessionDetailsMenu({
           setOpen((value) => !value)
         }}
       >
-        <Ellipsis aria-hidden="true" />
+        <Settings aria-hidden="true" />
       </Button>
       {open ? (
         <div
           role="dialog"
-          aria-label="Session details"
-          className="absolute right-0 top-full z-50 mt-2 w-96 max-w-[calc(100vw-2rem)] rounded-lg border border-border/80 bg-popover p-3 text-popover-foreground shadow-lg"
+          aria-label="Session settings"
+          style={popoverStyle}
+          className="z-50 overflow-y-auto rounded-lg border border-border/80 bg-popover p-3 text-popover-foreground shadow-lg"
         >
           <div className="space-y-3">
+            <div className="border-b border-border/70 pb-3">
+              <SessionRenameForm title={session.title} onSave={onUpdateTitle} />
+            </div>
             <CopyableDetailBox
               label="Session key"
               value={session.id}

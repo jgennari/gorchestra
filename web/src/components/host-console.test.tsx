@@ -145,20 +145,51 @@ test('mobile console actions include session actions', async () => {
   const mobileHeader = screen.getByRole('button', { name: 'Open sessions' }).closest('.mobile-floating-header-shell')
   expect(mobileHeader).not.toBeNull()
 
-  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Console actions' }))
+  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Session settings' }))
   await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Workspace details' }))
 
-  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Console actions' }))
+  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Session settings' }))
   await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Clear context' }))
 
-  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Console actions' }))
+  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Session settings' }))
   await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Compact context' }))
 
-  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Console actions' }))
+  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Session settings' }))
   await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Archive session' }))
 
   expect(onOpenWorkspaceDetails).toHaveBeenCalledOnce()
   expect(onClear).toHaveBeenCalledOnce()
   expect(onCompact).toHaveBeenCalledOnce()
   expect(onToggleArchive).toHaveBeenCalledOnce()
+})
+
+test('console settings gear follows the title and can rename the session', async () => {
+  const user = userEvent.setup()
+  const onUpdateTitle = vi.fn(async () => undefined)
+
+  render(
+    <HostConsole
+      session={baseSession}
+      resolvedTheme="dark"
+      mobileLeadingAction={<button type="button">Open sessions</button>}
+      onUpdateTitle={onUpdateTitle}
+      onUpdateWorkspace={async () => undefined}
+    />,
+  )
+
+  const mobileHeader = screen.getByRole('button', { name: 'Open sessions' }).closest('.mobile-floating-header-shell')
+  expect(mobileHeader).not.toBeNull()
+  const header = mobileHeader as HTMLElement
+  const title = within(header).getByRole('heading', { name: 'Inspect repo' })
+  const settings = within(header).getByRole('button', { name: 'Session settings' })
+  expect(title.nextElementSibling).toContainElement(settings)
+  expect(settings.querySelector('.lucide-settings')).not.toBeNull()
+
+  await user.click(settings)
+  const input = within(header).getByRole('textbox', { name: 'Session name' })
+  await user.clear(input)
+  await user.type(input, 'Console chat')
+  await user.click(within(header).getByRole('button', { name: 'Save session name' }))
+
+  expect(onUpdateTitle).toHaveBeenCalledWith('Console chat')
 })

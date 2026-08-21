@@ -1,131 +1,77 @@
-import { Check, Pencil, X } from 'lucide-react'
-import { useEffect, useId, useState, type FormEvent } from 'react'
-import { Badge } from '@/components/ui/badge'
+import { Loader2 } from 'lucide-react'
+import { useId, useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
-type Props = {
+type SessionTitleProps = {
   title: string
-  onSave: (title: string) => Promise<void>
-  onEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
 }
 
-export function SessionTitleEditor({ title, onSave, onEditStateChange }: Props) {
-  const editorID = useId()
+export function SessionTitle({ title }: SessionTitleProps) {
+  return (
+    <h2 className="min-w-0 truncate text-base font-semibold tracking-tight" title={title || undefined}>
+      {title || 'Untitled session'}
+    </h2>
+  )
+}
+
+type SessionRenameFormProps = {
+  title: string
+  onSave: (title: string) => Promise<void>
+}
+
+export function SessionRenameForm({ title, onSave }: SessionRenameFormProps) {
   const inputID = useId()
-  const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(title)
   const [saving, setSaving] = useState(false)
-  const [pendingTitle, setPendingTitle] = useState<string | null>(null)
   const [error, setError] = useState('')
-  const displayTitle = pendingTitle ?? title
-  const dirty = draft !== title
+  const nextTitle = draft.trim()
+  const dirty = nextTitle !== title
 
-  useEffect(() => {
-    if (!editing && !saving) {
-      setDraft(title)
-    }
-  }, [editing, saving, title])
-
-  useEffect(() => {
-    onEditStateChange?.({ editorID, editing, dirty: editing && dirty })
-    return () => {
-      onEditStateChange?.({ editorID, editing: false, dirty: false })
-    }
-  }, [dirty, editing, editorID, onEditStateChange])
-
-  async function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const nextTitle = draft.trim()
+    if (!dirty || saving) return
 
     setSaving(true)
-    setEditing(false)
-    setPendingTitle(nextTitle)
     setError('')
-
     try {
       await onSave(nextTitle)
-      setPendingTitle(null)
+      setDraft(nextTitle)
     } catch (saveError) {
-      setPendingTitle(null)
-      setEditing(true)
-      setError(saveError instanceof Error ? saveError.message : 'Failed to update title')
+      setError(saveError instanceof Error ? saveError.message : 'Failed to update session name')
     } finally {
       setSaving(false)
     }
   }
 
-  if (editing) {
-    return (
-      <form onSubmit={(event) => void handleSubmit(event)} className="min-w-0">
-        <label htmlFor={inputID} className="sr-only">
-          Session title
-        </label>
-        <div className="flex min-w-0 items-center gap-2">
-          <Input
-            id={inputID}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            autoFocus
-            aria-invalid={error ? 'true' : undefined}
-            className="h-8 min-w-0 max-w-xl bg-background/70"
-          />
-          <Button type="submit" size="icon" aria-label="Save session title" disabled={saving}>
-            <Check />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="Cancel title edit"
-            disabled={saving}
-            onClick={() => {
-              setDraft(title)
-              setEditing(false)
-              setError('')
-            }}
-          >
-            <X />
-          </Button>
-        </div>
-        {error ? (
-          <p role="alert" className="mt-1 text-sm text-destructive">
-            {error}
-          </p>
-        ) : null}
-      </form>
-    )
-  }
-
   return (
-    <TooltipProvider>
-      <div className="min-w-0">
-        <div className="flex min-w-0 items-center gap-2">
-          <h2 className="truncate text-base font-semibold tracking-tight">{displayTitle || 'Untitled session'}</h2>
-          {saving ? <Badge variant="outline">Saving</Badge> : null}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label="Edit session title"
-                disabled={saving}
-                onClick={() => {
-                  setDraft(title)
-                  setEditing(true)
-                  setError('')
-                }}
-                className="h-8 w-8"
-              >
-                <Pencil />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Edit title</TooltipContent>
-          </Tooltip>
-        </div>
+    <form onSubmit={(event) => void handleSubmit(event)} className="space-y-2">
+      <label htmlFor={inputID} className="text-xs font-medium text-muted-foreground">
+        Session name
+      </label>
+      <div className="flex items-center gap-2">
+        <Input
+          id={inputID}
+          value={draft}
+          autoFocus
+          onChange={(event) => {
+            setDraft(event.target.value)
+            setError('')
+          }}
+          aria-invalid={error ? 'true' : undefined}
+          disabled={saving}
+          className="h-8 min-w-0 bg-background/70"
+        />
+        <Button type="submit" size="sm" disabled={!dirty || saving} aria-label="Save session name">
+          {saving ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
+          {saving ? 'Saving' : 'Save'}
+        </Button>
       </div>
-    </TooltipProvider>
+      {error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </form>
   )
 }

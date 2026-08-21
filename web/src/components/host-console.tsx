@@ -1,13 +1,14 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { Archive, Ellipsis, Eraser, FolderCog, Loader2, Minimize2, PanelRightOpen, RefreshCw, Square, Terminal } from 'lucide-react'
+import { Archive, Eraser, FolderCog, Loader2, Minimize2, PanelRightOpen, RefreshCw, Settings, Square, Terminal } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { consoleWebSocketURL, getConsoleStatus, killConsole, type ConsoleStatus } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { ChangeWorkspaceDialog } from '@/components/change-workspace-dialog'
-import { SessionTitleEditor } from '@/components/session-title-editor'
+import { SessionRenameForm, SessionTitle } from '@/components/session-title-editor'
+import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
 import { cn } from '@/lib/utils'
 
 type ConsoleMessage = {
@@ -25,7 +26,6 @@ export function HostConsole({
   mobileLeadingAction,
   onUpdateTitle,
   onUpdateWorkspace,
-  onTitleEditStateChange,
   onClear,
   onCompact,
   onToggleArchive,
@@ -41,7 +41,6 @@ export function HostConsole({
   mobileLeadingAction?: ReactNode
   onUpdateTitle: (title: string) => Promise<void>
   onUpdateWorkspace: (workspacePath: string) => Promise<void>
-  onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   onClear?: () => Promise<void>
   onCompact?: () => Promise<void>
   onToggleArchive?: () => Promise<void>
@@ -267,7 +266,6 @@ export function HostConsole({
           onStop={() => void killConsole(sessionID)}
           onUpdateTitle={onUpdateTitle}
           onUpdateWorkspace={onUpdateWorkspace}
-          onTitleEditStateChange={onTitleEditStateChange}
           mobileSessionActions={{
             session,
             onClear,
@@ -291,7 +289,6 @@ export function HostConsole({
           onStop={() => void killConsole(sessionID)}
           onUpdateTitle={onUpdateTitle}
           onUpdateWorkspace={onUpdateWorkspace}
-          onTitleEditStateChange={onTitleEditStateChange}
           mobileSessionActions={null}
           className="command-chat-header pointer-events-auto rounded-xl border border-border/90 px-3 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
         />
@@ -321,7 +318,6 @@ function ConsoleHeader({
   onStop,
   onUpdateTitle,
   onUpdateWorkspace,
-  onTitleEditStateChange,
   mobileSessionActions,
   className,
 }: {
@@ -334,33 +330,26 @@ function ConsoleHeader({
   onStop: () => void
   onUpdateTitle: (title: string) => Promise<void>
   onUpdateWorkspace: (workspacePath: string) => Promise<void>
-  onTitleEditStateChange?: (state: { editorID: string; editing: boolean; dirty: boolean }) => void
   mobileSessionActions?: MobileSessionActions | null
   className?: string
 }) {
   return (
     <div className={cn('flex min-h-14 shrink-0 items-center justify-between gap-3 py-2', className)}>
       {leadingAction ? <div className="shrink-0">{leadingAction}</div> : null}
-      <div className="min-w-0 flex-1">
-        <SessionTitleEditor
-          key={`console-${session.id}`}
-          title={session.title}
-          onSave={onUpdateTitle}
-          onEditStateChange={onTitleEditStateChange}
-        />
-      </div>
-      <div className="flex shrink-0 items-center gap-3">
-        {headerActions}
+      <div className="flex min-w-0 flex-1 items-center gap-1">
+        <SessionTitle title={session.title} />
         <ConsoleMenu
           session={session}
           workspacePath={workspacePath}
           restarting={restarting}
           onRestart={onRestart}
           onStop={onStop}
+          onUpdateTitle={onUpdateTitle}
           onUpdateWorkspace={onUpdateWorkspace}
           mobileSessionActions={mobileSessionActions}
         />
       </div>
+      <div className="flex shrink-0 items-center gap-3">{headerActions}</div>
     </div>
   )
 }
@@ -371,6 +360,7 @@ function ConsoleMenu({
   restarting,
   onRestart,
   onStop,
+  onUpdateTitle,
   onUpdateWorkspace,
   mobileSessionActions,
 }: {
@@ -379,11 +369,13 @@ function ConsoleMenu({
   restarting: boolean
   onRestart: () => void
   onStop: () => void
+  onUpdateTitle: (title: string) => Promise<void>
   onUpdateWorkspace: (workspacePath: string) => Promise<void>
   mobileSessionActions?: MobileSessionActions | null
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
+  const { triggerRef, popoverStyle } = useAnchoredPopover(open)
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const mobileActionPending =
     mobileSessionActions?.clearPending || mobileSessionActions?.compactPending || mobileSessionActions?.archivePending
@@ -425,19 +417,29 @@ function ConsoleMenu({
   return (
     <div ref={menuRef} className="relative shrink-0">
       <Button
+        ref={triggerRef}
         type="button"
         size="icon"
         variant="ghost"
         className="h-8 w-8 text-muted-foreground hover:bg-background/50 hover:text-foreground"
-        aria-label="Console actions"
+        aria-label="Session settings"
+        aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <Ellipsis />
+        <Settings aria-hidden="true" />
       </Button>
       {open ? (
-        <div className="absolute right-0 top-full z-50 mt-2 min-w-64 rounded-lg border border-border/80 bg-popover p-3 text-sm text-popover-foreground shadow-lg">
-          <div className="border-b px-2 pb-2">
+        <div
+          role="dialog"
+          aria-label="Session settings"
+          style={popoverStyle}
+          className="z-50 overflow-y-auto rounded-lg border border-border/80 bg-popover p-3 text-sm text-popover-foreground shadow-lg"
+        >
+          <div className="border-b border-border/70 px-2 pb-3">
+            <SessionRenameForm title={session.title} onSave={onUpdateTitle} />
+          </div>
+          <div className="border-b px-2 pb-2 pt-3">
             <p className="text-xs font-semibold uppercase text-muted-foreground">Workspace</p>
             <p className="mt-1 truncate text-xs text-muted-foreground" title={workspacePath}>
               {workspacePath || 'Unavailable'}

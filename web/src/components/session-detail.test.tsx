@@ -210,6 +210,18 @@ test('session detail uses matching floating headers on mobile and desktop', () =
   expect(screen.queryByText(/Last event:/)).not.toBeInTheDocument()
 })
 
+test('session settings gear immediately follows the title without a rename button', () => {
+  renderDetail()
+
+  const header = desktopFloatingHeader()
+  const title = within(header).getByRole('heading', { name: 'Inspect repo' })
+  const settings = within(header).getByRole('button', { name: 'Session settings' })
+
+  expect(title.nextElementSibling).toContainElement(settings)
+  expect(settings.querySelector('.lucide-settings')).not.toBeNull()
+  expect(within(header).queryByRole('button', { name: 'Edit session title' })).not.toBeInTheDocument()
+})
+
 test('composer stack floats over the transcript while reserving tail inset', () => {
   renderDetail()
 
@@ -239,16 +251,16 @@ test('mobile session details menu exposes right-rail session actions', async () 
 
   const mobileHeader = screen.getByTestId('mobile-floating-session-header')
 
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Session settings' }))
   await user.click(within(mobileHeader).getByRole('button', { name: 'Workspace details' }))
 
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Session settings' }))
   await user.click(within(mobileHeader).getByRole('button', { name: 'Clear context' }))
 
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Session settings' }))
   await user.click(within(mobileHeader).getByRole('button', { name: 'Compact context' }))
 
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Session settings' }))
   await user.click(within(mobileHeader).getByRole('button', { name: 'Archive session' }))
 
   expect(onOpenWorkspaceDetails).toHaveBeenCalledOnce()
@@ -268,8 +280,8 @@ test('desktop session details menu does not duplicate right-rail actions', async
   })
 
   const desktopHeader = desktopFloatingHeader()
-  await user.click(within(desktopHeader).getByRole('button', { name: 'Session details' }))
-  const dialog = within(desktopHeader).getByRole('dialog', { name: 'Session details' })
+  await user.click(within(desktopHeader).getByRole('button', { name: 'Session settings' }))
+  const dialog = within(desktopHeader).getByRole('dialog', { name: 'Session settings' })
 
   expect(within(dialog).queryByRole('button', { name: 'Clear context' })).not.toBeInTheDocument()
   expect(within(dialog).queryByRole('button', { name: 'Compact context' })).not.toBeInTheDocument()
@@ -277,7 +289,7 @@ test('desktop session details menu does not duplicate right-rail actions', async
   expect(within(dialog).queryByRole('button', { name: 'Workspace details' })).not.toBeInTheDocument()
 })
 
-test('floating chat header shows session details and copies the session key', async () => {
+test('floating chat header shows session settings and copies the session key', async () => {
   const user = userEvent.setup()
   const writeText = vi.fn(async () => undefined)
   Object.defineProperty(navigator, 'clipboard', {
@@ -289,9 +301,9 @@ test('floating chat header shows session details and copies the session key', as
 
   expect(screen.queryByText('sess_1')).not.toBeInTheDocument()
 
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
 
-  const popover = screen.getByRole('dialog', { name: 'Session details' })
+  const popover = screen.getByRole('dialog', { name: 'Session settings' })
   expect(within(popover).getByText('Session key')).toBeInTheDocument()
   expect(within(popover).getByText('sess_1')).toBeInTheDocument()
   expect(within(popover).getByText('Workspace path')).toBeInTheDocument()
@@ -303,6 +315,30 @@ test('floating chat header shows session details and copies the session key', as
   expect(writeText).toHaveBeenCalledWith('sess_1')
   expect(writeText).toHaveBeenCalledWith('/repo')
   expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
+})
+
+test('session settings renames the session and discards an unsaved draft when closed', async () => {
+  const user = userEvent.setup()
+  const onUpdateTitle = vi.fn(async () => undefined)
+  renderDetail({ onUpdateTitle })
+
+  const header = desktopFloatingHeader()
+  await user.click(within(header).getByRole('button', { name: 'Session settings' }))
+  const popover = within(header).getByRole('dialog', { name: 'Session settings' })
+  const input = within(popover).getByRole('textbox', { name: 'Session name' })
+  await user.clear(input)
+  await user.type(input, '  Renamed chat  {Enter}')
+
+  expect(onUpdateTitle).toHaveBeenCalledWith('Renamed chat')
+  expect(within(header).getByRole('dialog', { name: 'Session settings' })).toBeInTheDocument()
+
+  await user.clear(input)
+  await user.type(input, 'Unsaved name')
+  await user.keyboard('{Escape}')
+  expect(within(header).queryByRole('dialog', { name: 'Session settings' })).not.toBeInTheDocument()
+
+  await user.click(within(header).getByRole('button', { name: 'Session settings' }))
+  expect(within(header).getByRole('textbox', { name: 'Session name' })).toHaveValue('Inspect repo')
 })
 
 test('session details reports when clipboard access and fallback both fail', async () => {
@@ -317,8 +353,8 @@ test('session details reports when clipboard access and fallback both fail', asy
   })
 
   renderDetail()
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
-  const popover = screen.getByRole('dialog', { name: 'Session details' })
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
+  const popover = screen.getByRole('dialog', { name: 'Session settings' })
   await user.click(within(popover).getByRole('button', { name: 'Copy session key' }))
 
   expect(await within(popover).findByRole('alert')).toHaveTextContent('Select the text and copy it manually.')
@@ -337,7 +373,7 @@ test('floating chat header updates the codex permission policy', async () => {
     onUpdateAgentOptions,
   })
 
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
   const askControl = within(desktopFloatingHeader()).getByRole('radio', { name: 'Ask' })
 
   expect(askControl).toHaveAttribute('aria-checked', 'false')
@@ -360,7 +396,7 @@ test('floating chat header updates the claude permission policy', async () => {
     onUpdateAgentOptions,
   })
 
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
   const askControl = within(desktopFloatingHeader()).getByRole('radio', { name: 'Ask' })
 
   expect(askControl).toHaveAttribute('aria-checked', 'false')
@@ -375,7 +411,7 @@ test('floating chat header hides permission policy for fake sessions', async () 
 
   renderDetail()
 
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
 
   expect(screen.queryByRole('radiogroup', { name: /permission policy/i })).not.toBeInTheDocument()
 })
@@ -400,7 +436,7 @@ test('session details menu toggles debug events', async () => {
   expect(screen.getByText('No messages yet. Submit a prompt to start the chat.')).toBeInTheDocument()
   expect(screen.queryByRole('tab', { name: 'Debug' })).not.toBeInTheDocument()
 
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session details' }))
+  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
   const debug = within(desktopFloatingHeader()).getByRole('switch', { name: 'Debug' })
 
   expect(debug).toHaveAttribute('aria-checked', 'true')

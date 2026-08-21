@@ -286,7 +286,7 @@ test('mobile session menu opens workspace details in a floating dialog', async (
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
   const mobileHeader = screen.getByTestId('mobile-floating-session-header')
 
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Session details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Session settings' }))
   await user.click(within(mobileHeader).getByRole('button', { name: 'Workspace details' }))
 
   const dialog = await screen.findByRole('dialog', { name: 'Workspace details' })
@@ -306,7 +306,7 @@ test('header files view opens workspace files inline', async () => {
   await user.click(screen.getAllByRole('button', { name: 'Show files' })[0])
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/files'))
   const filesHeader = screen.getByTestId('floating-files-header')
-  expect(within(filesHeader).getByRole('button', { name: 'Session details' })).toBeInTheDocument()
+  expect(within(filesHeader).getByRole('button', { name: 'Session settings' })).toBeInTheDocument()
   expect(screen.getByText('No file selected').closest('.host-console-frame')).toBeTruthy()
 
   await user.click((await screen.findAllByRole('button', { name: /main\.go/i }))[0])
@@ -325,7 +325,7 @@ test('header hosted preview view updates the route and shows host status', async
 
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/host'))
   expect(await screen.findByText('No host recipe found')).toBeInTheDocument()
-  expect(within(screen.getByTestId('floating-host-header')).getByRole('button', { name: 'Session details' })).toBeInTheDocument()
+  expect(within(screen.getByTestId('floating-host-header')).getByRole('button', { name: 'Session settings' })).toBeInTheDocument()
   expect(
     screen
       .getAllByRole('button', { name: 'Show hosted preview' })
@@ -709,34 +709,24 @@ test('session route restores cached transcript before network session loading fi
   })
 })
 
-test('switching sessions during a title edit requires confirmation', async () => {
+test('switching sessions discards an unsaved settings rename', async () => {
   const user = userEvent.setup()
 
   render(<App />)
 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
-  await user.click(screen.getAllByRole('button', { name: /edit session title/i })[0])
+  const header = screen.getByTestId('floating-session-header')
+  await user.click(within(header).getByRole('button', { name: 'Session settings' }))
 
-  const input = screen.getByRole('textbox', { name: 'Session title' })
+  const input = within(header).getByRole('textbox', { name: 'Session name' })
   await user.clear(input)
   await user.type(input, 'Renamed session')
   expect(input).toHaveValue('Renamed session')
 
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
 
-  const dialog = await screen.findByRole('dialog', { name: 'Discard title edit?' })
-  expect(window.location.pathname).toBe('/sessions/inspect-repo')
-
-  await user.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
-  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard title edit?' })).not.toBeInTheDocument())
-  expect(window.location.pathname).toBe('/sessions/inspect-repo')
-  expect(screen.getByRole('textbox', { name: 'Session title' })).toHaveValue('Renamed session')
-
-  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
-  const confirmDialog = await screen.findByRole('dialog', { name: 'Discard title edit?' })
-  await user.click(within(confirmDialog).getByRole('button', { name: 'Discard and switch' }))
-
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
+  expect(screen.queryByRole('dialog', { name: 'Session settings' })).not.toBeInTheDocument()
   expect(
     screen
       .getAllByRole('button', { name: /Write docs/ })
