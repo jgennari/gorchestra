@@ -1,5 +1,5 @@
 import Editor from '@monaco-editor/react'
-import { Code2, Eye, FileText, Folder, Loader2, RefreshCw, Save, Search, Upload, X } from 'lucide-react'
+import { Code2, Download, ExternalLink, Eye, FileText, Folder, Loader2, RefreshCw, Save, Search, Upload, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -14,6 +14,7 @@ import {
   getSessionFileContent,
   listSessionFiles,
   searchSessionFiles,
+  sessionFileRawURL,
   updateSessionFileContent,
   uploadSessionFiles,
 } from '@/lib/api'
@@ -402,13 +403,19 @@ export function WorkspaceFileContentView({
   onClose?: () => void
   closeButtonClassName?: string
 }) {
-  const markdown = file.encoding !== 'binary' && isMarkdownFile(file)
-  const editable = file.encoding === 'utf-8' && !file.truncated
+  const previewKind = file.preview_kind ?? 'none'
+  const mediaPreviewable = previewKind !== 'none'
+  const markdown = !mediaPreviewable && file.encoding !== 'binary' && isMarkdownFile(file)
+  const editable = !mediaPreviewable && file.encoding === 'utf-8' && !file.truncated
+  const textPreviewTruncated = file.encoding !== 'binary' && file.truncated
   const displayPath = file.path || file.name
+  const rawURL = sessionID ? sessionFileRawURL(sessionID, file.path) : ''
+  const downloadURL = sessionID ? sessionFileRawURL(sessionID, file.path, true) : ''
   const [mode, setMode] = useState<FileViewMode>(markdown ? 'preview' : 'edit')
   const [draft, setDraft] = useState(file.content)
   const [saveState, setSaveState] = useState<FileSaveState>('clean')
   const [saveError, setSaveError] = useState('')
+  const [mediaError, setMediaError] = useState(false)
   const saveResetTimerRef = useRef<number | null>(null)
   const dirty = draft !== file.content
 
@@ -431,7 +438,8 @@ export function WorkspaceFileContentView({
     setDraft(file.content)
     setSaveState('clean')
     setSaveError('')
-  }, [clearSaveResetTimer, file.content, file.path, file.name, markdown])
+    setMediaError(false)
+  }, [clearSaveResetTimer, file.content, file.modified_at, file.path, file.name, file.preview_kind, markdown])
 
   useEffect(() => clearSaveResetTimer, [clearSaveResetTimer])
 
@@ -475,6 +483,22 @@ export function WorkspaceFileContentView({
           </h2>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {mediaPreviewable && rawURL ? (
+            <Button asChild size="sm" variant="outline">
+              <a href={rawURL} target="_blank" rel="noreferrer" aria-label={`Open ${file.name} in new tab`}>
+                <ExternalLink className="size-3.5" aria-hidden="true" />
+                <span className="hidden xl:inline">Open</span>
+              </a>
+            </Button>
+          ) : null}
+          {downloadURL ? (
+            <Button asChild size="sm" variant="outline">
+              <a href={downloadURL} download={file.name} aria-label={`Download ${file.name}`}>
+                <Download className="size-3.5" aria-hidden="true" />
+                <span className="hidden xl:inline">Download</span>
+              </a>
+            </Button>
+          ) : null}
           {markdown && editable ? (
             <div className="flex items-center rounded-md border border-border/70 bg-background/60 p-0.5">
               <Button
@@ -529,9 +553,15 @@ export function WorkspaceFileContentView({
       </header>
 
       <div className={cn('min-h-0 flex-1 p-4', editable && mode === 'edit' ? 'overflow-hidden' : 'overflow-auto')}>
-        {file.encoding === 'binary' ? (
+        {mediaPreviewable && rawURL ? (
+          mediaError ? (
+            <MediaPreviewFallback file={file} />
+          ) : (
+            <WorkspaceMediaPreview file={file} src={rawURL} onError={() => setMediaError(true)} />
+          )
+        ) : file.encoding === 'binary' ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            Binary preview unavailable
+            No inline preview is available for this file type.
           </div>
         ) : markdown ? (
           mode === 'preview' ? (
@@ -548,13 +578,86 @@ export function WorkspaceFileContentView({
         )}
       </div>
 
-      {file.truncated || saveState !== 'clean' ? (
+      {textPreviewTruncated || saveState !== 'clean' ? (
         <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border/70 px-4 py-2 text-xs text-muted-foreground">
-          <span>{file.truncated ? 'Preview truncated' : saveStatusText(saveState)}</span>
+          <span>{textPreviewTruncated ? 'Preview truncated' : saveStatusText(saveState)}</span>
           {saveError ? <span className="text-destructive">{saveError}</span> : null}
         </footer>
       ) : null}
     </section>
+  )
+}
+
+function WorkspaceMediaPreview({
+  file,
+  src,
+  onError,
+}: {
+  file: WorkspaceFileContent
+  src: string
+  onError: () => void
+}) {
+  switch (file.preview_kind) {
+    case 'image':
+      return (
+        <div className="flex h-full min-h-[12rem] items-center justify-center overflow-auto rounded-md bg-surface-muted/50 p-2">
+          <img src={src} alt={file.name} className="max-h-full max-w-full object-contain" onError={onError} />
+        </div>
+      )
+    case 'audio':
+      return (
+        <div className="flex h-full min-h-[12rem] items-center justify-center rounded-md bg-surface-muted/50 p-6">
+          <audio
+            src={src}
+            controls
+            preload="metadata"
+            className="w-full max-w-2xl"
+            aria-label={`Preview ${file.name}`}
+            onError={onError}
+          >
+            Your browser cannot play this audio file.
+          </audio>
+        </div>
+      )
+    case 'video':
+      return (
+        <div className="flex h-full min-h-[12rem] items-center justify-center overflow-hidden rounded-md bg-black/90 p-2">
+          <video
+            src={src}
+            controls
+            preload="metadata"
+            className="max-h-full max-w-full"
+            aria-label={`Preview ${file.name}`}
+            onError={onError}
+          >
+            Your browser cannot play this video file.
+          </video>
+        </div>
+      )
+    case 'pdf':
+      return (
+        <iframe
+          src={src}
+          title={`Preview ${file.name}`}
+          aria-label={`Preview ${file.name}`}
+          className="h-full min-h-[28rem] w-full rounded-md border-0 bg-white"
+          onError={onError}
+        />
+      )
+    default:
+      return <MediaPreviewFallback file={file} />
+  }
+}
+
+function MediaPreviewFallback({ file }: { file: WorkspaceFileContent }) {
+  return (
+    <div role="status" className="flex h-full min-h-[12rem] flex-col items-center justify-center gap-2 text-center">
+      <FileText className="size-8 text-muted-foreground" aria-hidden="true" />
+      <p className="text-sm font-medium">Preview unavailable in this browser</p>
+      <p className="max-w-sm text-xs text-muted-foreground">
+        Open the file in a new tab or download it to view {file.media_type || 'this file type'}.
+      </p>
+    </div>
   )
 }
 

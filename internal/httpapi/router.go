@@ -236,6 +236,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Post("/api/sessions/{sessionId}/files/upload", api.uploadSessionFilesHandler)
 		r.Get("/api/sessions/{sessionId}/files/content", api.sessionFileContentHandler)
 		r.Put("/api/sessions/{sessionId}/files/content", api.updateSessionFileContentHandler)
+		r.Get("/api/sessions/{sessionId}/files/raw", api.sessionFileRawHandler)
 		r.Get("/api/sessions/{sessionId}/files/search", api.sessionFileSearchHandler)
 		r.Get("/api/sessions/{sessionId}/skills", api.sessionSkillsHandler)
 		r.Post("/api/sessions/{sessionId}/messages", api.submitMessageHandler)

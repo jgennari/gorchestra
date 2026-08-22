@@ -254,6 +254,8 @@ export type WorkspaceFileContent = {
   modified_at: string
   content: string
   encoding: 'utf-8' | 'binary'
+  media_type: string
+  preview_kind: 'image' | 'audio' | 'video' | 'pdf' | 'none'
   truncated: boolean
   git_status?: string
 }
@@ -639,6 +641,12 @@ export async function getSessionFileContent(sessionID: string, path: string) {
   return requestJSON<WorkspaceFileContent>(
     withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files/content`, params),
   )
+}
+
+export function sessionFileRawURL(sessionID: string, path: string, download = false) {
+  const params = new URLSearchParams({ path })
+  if (download) params.set('download', '1')
+  return withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files/raw`, params)
 }
 
 export async function updateSessionFileContent(sessionID: string, path: string, content: string) {

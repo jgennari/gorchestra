@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -220,6 +221,121 @@ func TestSessionFileAPIsListSearchAndReadWorkspaceFiles(t *testing.T) {
 		t.Fatalf("expected binary update status %d, got %d with body %s", http.StatusBadRequest, binaryUpdateRec.Code, binaryUpdateRec.Body.String())
 	}
 	assertErrorResponse(t, binaryUpdateRec, "file must be UTF-8 text")
+}
+
+func TestSessionFileRawStreamsMediaAndDownloads(t *testing.T) {
+	ctx := context.Background()
+	workspace := canonicalPath(t, t.TempDir())
+	imageData := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{0x00, 0x01, 0x02, 0x03}, maxFilePreviewBytes/2)...)
+	heicData := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c'}
+	files := map[string][]byte{
+		"image.png":  imageData,
+		"photo.heic": heicData,
+		"notes.txt":  []byte("download me"),
+		"vector.svg": []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`),
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(workspace, name), content, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Raw files",
+		AgentType:     "fake",
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	contentRec := get(handler, "/api/sessions/"+session.ID+"/files/content?path=photo.heic")
+	if contentRec.Code != http.StatusOK {
+		t.Fatalf("expected HEIC content status %d, got %d with body %s", http.StatusOK, contentRec.Code, contentRec.Body.String())
+	}
+	var content workspaceFileContentResponse
+	decodeJSON(t, contentRec, &content)
+	if content.Encoding != "binary" || content.MediaType != "image/heic" || content.PreviewKind != "image" {
+		t.Fatalf("expected HEIC image metadata, got %#v", content)
+	}
+
+	imageRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path=image.png")
+	if imageRec.Code != http.StatusOK {
+		t.Fatalf("expected image status %d, got %d with body %s", http.StatusOK, imageRec.Code, imageRec.Body.String())
+	}
+	if !bytes.Equal(imageRec.Body.Bytes(), imageData) {
+		t.Fatalf("expected full image response of %d bytes, got %d", len(imageData), imageRec.Body.Len())
+	}
+	if got := imageRec.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("expected image/png content type, got %q", got)
+	}
+	if got := imageRec.Header().Get("Content-Disposition"); got != `inline; filename=image.png` {
+		t.Fatalf("expected inline image disposition, got %q", got)
+	}
+	if got := imageRec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("expected nosniff header, got %q", got)
+	}
+
+	rangeReq := httptest.NewRequest(http.MethodGet, "/api/sessions/"+session.ID+"/files/raw?path=image.png", nil)
+	rangeReq.Header.Set("Range", "bytes=8-11")
+	rangeRec := httptest.NewRecorder()
+	handler.ServeHTTP(rangeRec, rangeReq)
+	if rangeRec.Code != http.StatusPartialContent || !bytes.Equal(rangeRec.Body.Bytes(), imageData[8:12]) {
+		t.Fatalf("expected byte range %v, got status %d and %v", imageData[8:12], rangeRec.Code, rangeRec.Body.Bytes())
+	}
+	if got := rangeRec.Header().Get("Content-Range"); got != fmt.Sprintf("bytes 8-11/%d", len(imageData)) {
+		t.Fatalf("unexpected content range %q", got)
+	}
+
+	downloadRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path=notes.txt&download=1")
+	if downloadRec.Code != http.StatusOK || downloadRec.Body.String() != "download me" {
+		t.Fatalf("expected text download, got status %d and body %q", downloadRec.Code, downloadRec.Body.String())
+	}
+	if got := downloadRec.Header().Get("Content-Disposition"); got != `attachment; filename=notes.txt` {
+		t.Fatalf("expected attachment disposition, got %q", got)
+	}
+
+	svgRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path=vector.svg")
+	if got := svgRec.Header().Get("Content-Disposition"); got != `attachment; filename=vector.svg` {
+		t.Fatalf("expected active image content to download, got %q", got)
+	}
+}
+
+func TestSessionFileRawRejectsUnsafePathsAndDirectories(t *testing.T) {
+	ctx := context.Background()
+	workspace := canonicalPath(t, t.TempDir())
+	outside := canonicalPath(t, t.TempDir())
+	if err := os.Mkdir(filepath.Join(workspace, "directory"), 0o755); err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.bin"), []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.bin"), filepath.Join(workspace, "outside.bin")); err != nil {
+		t.Fatalf("create outside symlink: %v", err)
+	}
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Raw file security",
+		AgentType:     "fake",
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	traversalRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path="+url.QueryEscape("../secret.bin"))
+	if traversalRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected traversal status %d, got %d", http.StatusBadRequest, traversalRec.Code)
+	}
+	directoryRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path=directory")
+	if directoryRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected directory status %d, got %d", http.StatusBadRequest, directoryRec.Code)
+	}
+	symlinkRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path=outside.bin")
+	if symlinkRec.Code != http.StatusForbidden {
+		t.Fatalf("expected outside symlink status %d, got %d", http.StatusForbidden, symlinkRec.Code)
+	}
 }
 
 func TestSessionFileUploadWritesFilesToSelectedDirectory(t *testing.T) {

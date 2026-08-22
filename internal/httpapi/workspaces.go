@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -77,14 +78,16 @@ type workspaceEntryResponse struct {
 }
 
 type workspaceFileContentResponse struct {
-	Name       string `json:"name"`
-	Path       string `json:"path"`
-	SizeBytes  int64  `json:"size_bytes"`
-	ModifiedAt string `json:"modified_at"`
-	Content    string `json:"content"`
-	Encoding   string `json:"encoding"`
-	Truncated  bool   `json:"truncated"`
-	GitStatus  string `json:"git_status,omitempty"`
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	SizeBytes   int64  `json:"size_bytes"`
+	ModifiedAt  string `json:"modified_at"`
+	Content     string `json:"content"`
+	Encoding    string `json:"encoding"`
+	MediaType   string `json:"media_type"`
+	PreviewKind string `json:"preview_kind"`
+	Truncated   bool   `json:"truncated"`
+	GitStatus   string `json:"git_status,omitempty"`
 }
 
 type updateWorkspaceFileContentRequest struct {
@@ -262,6 +265,67 @@ func (api API) sessionFileContentHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, content)
+}
+
+func (api API) sessionFileRawHandler(w http.ResponseWriter, r *http.Request) {
+	_, workspacePath, ok := api.sessionWorkspace(w, r)
+	if !ok {
+		return
+	}
+	relativePath, err := cleanRelativePath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if relativePath == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	filePath, err := api.workspaces.childPath(workspacePath, relativePath)
+	if err != nil {
+		writeWorkspacePathError(w, err)
+		return
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		writeWorkspacePathError(w, fmt.Errorf("read file: %w", err))
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		writeWorkspacePathError(w, fmt.Errorf("inspect file: %w", err))
+		return
+	}
+	if !info.Mode().IsRegular() {
+		writeWorkspacePathError(w, errors.New("path must be a regular file"))
+		return
+	}
+
+	prefix := make([]byte, 512)
+	readBytes, readErr := file.Read(prefix)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		writeWorkspacePathError(w, fmt.Errorf("read file: %w", readErr))
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		writeWorkspacePathError(w, fmt.Errorf("read file: %w", err))
+		return
+	}
+
+	mediaType, previewKind := workspaceFileMedia(info.Name(), prefix[:readBytes])
+	disposition := "inline"
+	if r.URL.Query().Get("download") == "1" || previewKind == "none" {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{
+		"filename": sanitizeAttachmentFilename(info.Name()),
+	}))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
 }
 
 func (api API) uploadSessionFilesHandler(w http.ResponseWriter, r *http.Request) {
@@ -625,6 +689,7 @@ func readWorkspaceFile(rootPath string, filePath string) (workspaceFileContentRe
 		Truncated:  truncated,
 		GitStatus:  gitStatusForPath(gitStatusesForWorkspace(rootPath), filepath.ToSlash(relative), false),
 	}
+	response.MediaType, response.PreviewKind = workspaceFileMedia(info.Name(), data)
 	if isBinaryPreview(data) {
 		response.Encoding = "binary"
 		return response, nil
@@ -754,6 +819,68 @@ func isBinaryPreview(data []byte) bool {
 		}
 	}
 	return false
+}
+
+func workspaceFileMedia(name string, data []byte) (string, string) {
+	extension := strings.ToLower(filepath.Ext(name))
+	mediaType := map[string]string{
+		".aac":   "audio/aac",
+		".avif":  "image/avif",
+		".bmp":   "image/bmp",
+		".flac":  "audio/flac",
+		".gif":   "image/gif",
+		".heic":  "image/heic",
+		".heics": "image/heic-sequence",
+		".heif":  "image/heif",
+		".heifs": "image/heif-sequence",
+		".ico":   "image/x-icon",
+		".jpeg":  "image/jpeg",
+		".jpg":   "image/jpeg",
+		".m4a":   "audio/mp4",
+		".m4v":   "video/mp4",
+		".mov":   "video/quicktime",
+		".mp3":   "audio/mpeg",
+		".mp4":   "video/mp4",
+		".mpeg":  "video/mpeg",
+		".mpg":   "video/mpeg",
+		".oga":   "audio/ogg",
+		".ogg":   "audio/ogg",
+		".ogv":   "video/ogg",
+		".opus":  "audio/ogg",
+		".pdf":   "application/pdf",
+		".png":   "image/png",
+		".tif":   "image/tiff",
+		".tiff":  "image/tiff",
+		".wav":   "audio/wav",
+		".weba":  "audio/webm",
+		".webm":  "video/webm",
+		".webp":  "image/webp",
+	}[extension]
+	if mediaType == "" {
+		mediaType = mime.TypeByExtension(extension)
+	}
+	if mediaType == "" {
+		mediaType = http.DetectContentType(data)
+	}
+	if parsed, _, err := mime.ParseMediaType(mediaType); err == nil {
+		mediaType = strings.ToLower(parsed)
+	}
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+
+	previewKind := "none"
+	switch {
+	case mediaType == "application/pdf":
+		previewKind = "pdf"
+	case strings.HasPrefix(mediaType, "image/") && mediaType != "image/svg+xml":
+		previewKind = "image"
+	case strings.HasPrefix(mediaType, "audio/"):
+		previewKind = "audio"
+	case strings.HasPrefix(mediaType, "video/"):
+		previewKind = "video"
+	}
+	return mediaType, previewKind
 }
 
 func searchWorkspace(rootPath string, startPath string, query string) ([]workspaceSearchResultResponse, error) {

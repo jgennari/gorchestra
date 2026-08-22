@@ -25,6 +25,7 @@ import {
   restoreSession,
   searchSessionFiles,
   sessionActivityStreamURL,
+  sessionFileRawURL,
   removeQueuedMessage,
   restartHost,
   startHost,
@@ -376,6 +377,12 @@ test('workspace helpers build the expected URLs', async () => {
   const content = await getSessionFileContent('sess_1', 'src/main.go')
 
   expect(content.content).toBe('package main\n')
+  expect(sessionFileRawURL('sess_1', 'src/image one.png')).toBe(
+    '/api/sessions/sess_1/files/raw?path=src%2Fimage+one.png',
+  )
+  expect(sessionFileRawURL('sess_1', 'src/image one.png', true)).toBe(
+    '/api/sessions/sess_1/files/raw?path=src%2Fimage+one.png&download=1',
+  )
 })
 
 test('workspace file content update helper writes content', async () => {
