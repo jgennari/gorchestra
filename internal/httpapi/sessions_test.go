@@ -229,10 +229,13 @@ func TestSessionFileRawStreamsMediaAndDownloads(t *testing.T) {
 	imageData := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{0x00, 0x01, 0x02, 0x03}, maxFilePreviewBytes/2)...)
 	heicData := []byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c'}
 	files := map[string][]byte{
-		"image.png":  imageData,
-		"photo.heic": heicData,
-		"notes.txt":  []byte("download me"),
-		"vector.svg": []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`),
+		"component.ts": []byte("export const answer: number = 42\n"),
+		"image.png":    imageData,
+		"page.html":    {0xff, 0xfe, '<', 0x00, 'h', 0x00, 't', 0x00, 'm', 0x00, 'l', 0x00, '>'},
+		"photo.heic":   heicData,
+		"segment.ts":   {0x47, 0xff, 0x00, 0x10},
+		"notes.txt":    []byte("download me"),
+		"vector.svg":   []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`),
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(workspace, name), content, 0o644); err != nil {
@@ -257,6 +260,24 @@ func TestSessionFileRawStreamsMediaAndDownloads(t *testing.T) {
 	decodeJSON(t, contentRec, &content)
 	if content.Encoding != "binary" || content.MediaType != "image/heic" || content.PreviewKind != "image" {
 		t.Fatalf("expected HEIC image metadata, got %#v", content)
+	}
+	typeScriptRec := get(handler, "/api/sessions/"+session.ID+"/files/content?path=component.ts")
+	if typeScriptRec.Code != http.StatusOK {
+		t.Fatalf("expected TypeScript content status %d, got %d with body %s", http.StatusOK, typeScriptRec.Code, typeScriptRec.Body.String())
+	}
+	var typeScriptContent workspaceFileContentResponse
+	decodeJSON(t, typeScriptRec, &typeScriptContent)
+	if typeScriptContent.Encoding != "utf-8" || typeScriptContent.MediaType != "text/typescript" || typeScriptContent.PreviewKind != "none" {
+		t.Fatalf("expected TypeScript text metadata, got %#v", typeScriptContent)
+	}
+	transportStreamRec := get(handler, "/api/sessions/"+session.ID+"/files/content?path=segment.ts")
+	if transportStreamRec.Code != http.StatusOK {
+		t.Fatalf("expected transport stream content status %d, got %d with body %s", http.StatusOK, transportStreamRec.Code, transportStreamRec.Body.String())
+	}
+	var transportStreamContent workspaceFileContentResponse
+	decodeJSON(t, transportStreamRec, &transportStreamContent)
+	if transportStreamContent.Encoding != "binary" || transportStreamContent.MediaType != "video/mp2t" || transportStreamContent.PreviewKind != "video" {
+		t.Fatalf("expected MPEG transport stream metadata, got %#v", transportStreamContent)
 	}
 
 	imageRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path=image.png")
@@ -294,10 +315,31 @@ func TestSessionFileRawStreamsMediaAndDownloads(t *testing.T) {
 	if got := downloadRec.Header().Get("Content-Disposition"); got != `attachment; filename=notes.txt` {
 		t.Fatalf("expected attachment disposition, got %q", got)
 	}
+	rawTextRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path=notes.txt&raw=1")
+	if rawTextRec.Code != http.StatusOK || rawTextRec.Body.String() != "download me" {
+		t.Fatalf("expected raw text response, got status %d and body %q", rawTextRec.Code, rawTextRec.Body.String())
+	}
+	if got := rawTextRec.Header().Get("Content-Disposition"); got != `inline; filename=notes.txt` {
+		t.Fatalf("expected inline raw text disposition, got %q", got)
+	}
+	if got := rawTextRec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("expected inert raw text content type, got %q", got)
+	}
 
 	svgRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path=vector.svg")
 	if got := svgRec.Header().Get("Content-Disposition"); got != `attachment; filename=vector.svg` {
 		t.Fatalf("expected active image content to download, got %q", got)
+	}
+	rawSVGRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path=vector.svg&raw=1")
+	if got := rawSVGRec.Header().Get("Content-Disposition"); got != `inline; filename=vector.svg` {
+		t.Fatalf("expected raw SVG to open inline, got %q", got)
+	}
+	if got := rawSVGRec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("expected raw SVG to use inert text content type, got %q", got)
+	}
+	rawHTMLRec := get(handler, "/api/sessions/"+session.ID+"/files/raw?path=page.html&raw=1")
+	if got := rawHTMLRec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("expected raw binary-encoded HTML to use inert text content type, got %q", got)
 	}
 }
 

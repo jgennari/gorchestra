@@ -380,8 +380,11 @@ test('workspace helpers build the expected URLs', async () => {
   expect(sessionFileRawURL('sess_1', 'src/image one.png')).toBe(
     '/api/sessions/sess_1/files/raw?path=src%2Fimage+one.png',
   )
-  expect(sessionFileRawURL('sess_1', 'src/image one.png', true)).toBe(
+  expect(sessionFileRawURL('sess_1', 'src/image one.png', { download: true })).toBe(
     '/api/sessions/sess_1/files/raw?path=src%2Fimage+one.png&download=1',
+  )
+  expect(sessionFileRawURL('sess_1', 'src/image one.png', { raw: true })).toBe(
+    '/api/sessions/sess_1/files/raw?path=src%2Fimage+one.png&raw=1',
   )
 })
 

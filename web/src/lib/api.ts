@@ -643,9 +643,14 @@ export async function getSessionFileContent(sessionID: string, path: string) {
   )
 }
 
-export function sessionFileRawURL(sessionID: string, path: string, download = false) {
+export function sessionFileRawURL(
+  sessionID: string,
+  path: string,
+  options: { download?: boolean; raw?: boolean } = {},
+) {
   const params = new URLSearchParams({ path })
-  if (download) params.set('download', '1')
+  if (options.download) params.set('download', '1')
+  if (options.raw) params.set('raw', '1')
   return withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files/raw`, params)
 }
 

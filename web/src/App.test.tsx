@@ -1219,19 +1219,28 @@ test('file browser opens the inline files view', async () => {
   await user.click(await screen.findByRole('button', { name: /main\.go/i }))
 
   const fileViewer = await screen.findByRole('region', { name: 'File viewer: main.go' })
+  const filesFrame = fileViewer.closest('.host-console-frame')
+  const fileSearch = filesFrame?.querySelector<HTMLInputElement>('input[aria-label="Search files and contents"]')
+  const fileBrowser = fileSearch?.closest('section')
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/files/main.go'))
   expect(fileViewer).toBeInTheDocument()
   expect(fileViewer.closest('.mobile-file-viewer-panel')).toBeTruthy()
   expect(within(fileViewer).getAllByText('main.go')).toHaveLength(1)
   expect(within(fileViewer).getByLabelText('File editor')).toHaveValue('package main\n')
+  expect(fileBrowser).toHaveClass('hidden')
+  expect(fileSearch).toBeInTheDocument()
   expect(screen.getAllByRole('button', { name: 'Show files' }).some((button) => button.getAttribute('aria-pressed') === 'true')).toBe(
     true,
   )
 
-  await user.click(within(fileViewer).getByRole('button', { name: 'Close file viewer' }))
+  const closeButton = within(fileViewer).getByRole('button', { name: 'Close file viewer' })
+  expect(closeButton).not.toHaveClass('lg:hidden')
+  await user.click(closeButton)
 
   await waitFor(() => expect(screen.queryByRole('region', { name: 'File viewer: main.go' })).not.toBeInTheDocument())
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/files'))
+  expect(filesFrame?.querySelector('input[aria-label="Search files and contents"]')).toBe(fileSearch)
+  expect(fileBrowser).not.toHaveClass('hidden')
   expect(screen.getByText('No file selected')).toBeInTheDocument()
 })
 

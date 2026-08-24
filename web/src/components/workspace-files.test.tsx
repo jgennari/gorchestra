@@ -103,7 +103,11 @@ test('previews images and exposes open and download actions', () => {
     'src',
     '/api/sessions/session-1/files/raw?path=assets%2Fimage+one.png',
   )
-  expect(screen.getByRole('link', { name: 'Open image one.png in new tab' })).toHaveAttribute('target', '_blank')
+  expect(screen.getByRole('link', { name: 'Open raw image one.png in new tab' })).toHaveAttribute('target', '_blank')
+  expect(screen.getByRole('link', { name: 'Open raw image one.png in new tab' })).toHaveAttribute(
+    'href',
+    '/api/sessions/session-1/files/raw?path=assets%2Fimage+one.png&raw=1',
+  )
   expect(screen.getByRole('link', { name: 'Download image one.png' })).toHaveAttribute(
     'href',
     '/api/sessions/session-1/files/raw?path=assets%2Fimage+one.png&download=1',
@@ -130,15 +134,18 @@ test('shows a browser fallback when an image cannot be decoded', () => {
   fireEvent.error(screen.getByRole('img', { name: 'photo.heic' }))
 
   expect(screen.getByRole('status')).toHaveTextContent('Preview unavailable in this browser')
-  expect(screen.getByRole('link', { name: 'Open photo.heic in new tab' })).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Open raw photo.heic in new tab' })).toBeInTheDocument()
   expect(screen.getByRole('link', { name: 'Download photo.heic' })).toBeInTheDocument()
 })
 
-test('offers downloads without inline actions for unsupported binary and text files', () => {
+test('offers raw and download actions for unsupported binary and text files', () => {
   const view = renderWorkspaceFile(binaryFile({ preview_kind: 'none' }))
 
   expect(screen.getByText('No inline preview is available for this file type.')).toBeInTheDocument()
-  expect(screen.queryByRole('link', { name: /open .* in new tab/i })).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Open raw archive.bin in new tab' })).toHaveAttribute(
+    'href',
+    '/api/sessions/session-1/files/raw?path=archive.bin&raw=1',
+  )
   expect(screen.getByRole('link', { name: 'Download archive.bin' })).toBeInTheDocument()
 
   view.rerender(
@@ -148,6 +155,10 @@ test('offers downloads without inline actions for unsupported binary and text fi
       resolvedTheme="dark"
       onFileSaved={() => undefined}
     />,
+  )
+  expect(screen.getByRole('link', { name: 'Open raw README.md in new tab' })).toHaveAttribute(
+    'href',
+    '/api/sessions/session-1/files/raw?path=README.md&raw=1',
   )
   expect(screen.getByRole('link', { name: 'Download README.md' })).toBeInTheDocument()
 })

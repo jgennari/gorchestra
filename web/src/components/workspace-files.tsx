@@ -47,14 +47,19 @@ export function WorkspaceFilesView({
 }) {
   return (
     <section className="relative flex h-full min-h-0 w-full flex-col bg-transparent">
-      <div className="host-console-frame relative grid min-h-0 flex-1 grid-cols-1 gap-3 p-2 lg:grid-cols-[minmax(15rem,20rem)_minmax(0,1fr)] lg:px-3 lg:pb-3">
+      <div
+        className={cn(
+          'host-console-frame relative grid min-h-0 flex-1 grid-cols-1 gap-3 p-2 lg:px-3 lg:pb-3',
+          selectedFile ? 'lg:grid-cols-1' : 'lg:grid-cols-[minmax(15rem,20rem)_minmax(0,1fr)]',
+        )}
+      >
         <WorkspaceFileBrowser
           session={session}
           resolvingSessionID={resolvingSessionID}
           refreshKey={refreshKey}
           onOpenFile={onOpenFile}
           selectedFilePath={selectedFile?.path ?? null}
-          className="min-h-0"
+          className={cn('min-h-0', selectedFile && 'hidden')}
         />
         <section
           className={cn(
@@ -72,7 +77,6 @@ export function WorkspaceFilesView({
               onFileSaved={onFileSaved}
               onDirtyChange={onDirtyChange}
               onClose={onCloseFile}
-              closeButtonClassName="lg:hidden"
             />
           ) : (
             <div className="flex h-full min-h-[20rem] flex-col items-center justify-center p-8 text-center">
@@ -393,7 +397,6 @@ export function WorkspaceFileContentView({
   onFileSaved,
   onDirtyChange,
   onClose,
-  closeButtonClassName,
 }: {
   sessionID: string
   file: WorkspaceFileContent
@@ -401,7 +404,6 @@ export function WorkspaceFileContentView({
   onFileSaved: (file: WorkspaceFileContent) => void
   onDirtyChange?: (dirty: boolean) => void
   onClose?: () => void
-  closeButtonClassName?: string
 }) {
   const previewKind = file.preview_kind ?? 'none'
   const mediaPreviewable = previewKind !== 'none'
@@ -409,8 +411,9 @@ export function WorkspaceFileContentView({
   const editable = !mediaPreviewable && file.encoding === 'utf-8' && !file.truncated
   const textPreviewTruncated = file.encoding !== 'binary' && file.truncated
   const displayPath = file.path || file.name
-  const rawURL = sessionID ? sessionFileRawURL(sessionID, file.path) : ''
-  const downloadURL = sessionID ? sessionFileRawURL(sessionID, file.path, true) : ''
+  const previewURL = sessionID ? sessionFileRawURL(sessionID, file.path) : ''
+  const rawURL = sessionID ? sessionFileRawURL(sessionID, file.path, { raw: true }) : ''
+  const downloadURL = sessionID ? sessionFileRawURL(sessionID, file.path, { download: true }) : ''
   const [mode, setMode] = useState<FileViewMode>(markdown ? 'preview' : 'edit')
   const [draft, setDraft] = useState(file.content)
   const [saveState, setSaveState] = useState<FileSaveState>('clean')
@@ -483,11 +486,17 @@ export function WorkspaceFileContentView({
           </h2>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {mediaPreviewable && rawURL ? (
+          {rawURL ? (
             <Button asChild size="sm" variant="outline">
-              <a href={rawURL} target="_blank" rel="noreferrer" aria-label={`Open ${file.name} in new tab`}>
+              <a
+                href={rawURL}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Open raw ${file.name} in new tab`}
+                title="Open raw file in new tab"
+              >
                 <ExternalLink className="size-3.5" aria-hidden="true" />
-                <span className="hidden xl:inline">Open</span>
+                Raw
               </a>
             </Button>
           ) : null}
@@ -539,10 +548,7 @@ export function WorkspaceFileContentView({
           {onClose ? (
             <button
               type="button"
-              className={cn(
-                'inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                closeButtonClassName,
-              )}
+              className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Close file viewer"
               onClick={onClose}
             >
@@ -553,11 +559,11 @@ export function WorkspaceFileContentView({
       </header>
 
       <div className={cn('min-h-0 flex-1 p-4', editable && mode === 'edit' ? 'overflow-hidden' : 'overflow-auto')}>
-        {mediaPreviewable && rawURL ? (
+        {mediaPreviewable && previewURL ? (
           mediaError ? (
             <MediaPreviewFallback file={file} />
           ) : (
-            <WorkspaceMediaPreview file={file} src={rawURL} onError={() => setMediaError(true)} />
+            <WorkspaceMediaPreview file={file} src={previewURL} onError={() => setMediaError(true)} />
           )
         ) : file.encoding === 'binary' ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">

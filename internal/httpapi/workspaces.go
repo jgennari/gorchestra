@@ -315,8 +315,12 @@ func (api API) sessionFileRawHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mediaType, previewKind := workspaceFileMedia(info.Name(), prefix[:readBytes])
+	raw := r.URL.Query().Get("raw") == "1"
+	if raw && previewKind == "none" && shouldServeWorkspaceRawAsText(mediaType, prefix[:readBytes]) {
+		mediaType = "text/plain; charset=utf-8"
+	}
 	disposition := "inline"
-	if r.URL.Query().Get("download") == "1" || previewKind == "none" {
+	if r.URL.Query().Get("download") == "1" || (!raw && previewKind == "none") {
 		disposition = "attachment"
 	}
 	w.Header().Set("Content-Type", mediaType)
@@ -823,6 +827,12 @@ func isBinaryPreview(data []byte) bool {
 
 func workspaceFileMedia(name string, data []byte) (string, string) {
 	extension := strings.ToLower(filepath.Ext(name))
+	if extension == ".ts" {
+		if !isBinaryPreview(data) {
+			return "text/typescript", "none"
+		}
+		return "video/mp2t", "video"
+	}
 	mediaType := map[string]string{
 		".aac":   "audio/aac",
 		".avif":  "image/avif",
@@ -851,6 +861,9 @@ func workspaceFileMedia(name string, data []byte) (string, string) {
 		".png":   "image/png",
 		".tif":   "image/tiff",
 		".tiff":  "image/tiff",
+		".cts":   "text/typescript",
+		".mts":   "text/typescript",
+		".tsx":   "text/typescript",
 		".wav":   "audio/wav",
 		".weba":  "audio/webm",
 		".webm":  "video/webm",
@@ -881,6 +894,18 @@ func workspaceFileMedia(name string, data []byte) (string, string) {
 		previewKind = "video"
 	}
 	return mediaType, previewKind
+}
+
+func shouldServeWorkspaceRawAsText(mediaType string, data []byte) bool {
+	if strings.HasPrefix(mediaType, "text/") || strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml") {
+		return true
+	}
+	switch mediaType {
+	case "application/javascript", "application/json", "application/x-javascript", "application/xhtml+xml", "application/xml", "image/svg+xml":
+		return true
+	default:
+		return !isBinaryPreview(data)
+	}
 }
 
 func searchWorkspace(rootPath string, startPath string, query string) ([]workspaceSearchResultResponse, error) {
