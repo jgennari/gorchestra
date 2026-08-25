@@ -197,6 +197,99 @@ func TestCommandFixtureNormalizesToolEvents(t *testing.T) {
 	}
 }
 
+func TestMCPToolCallNormalizesArgumentsAndStructuredOutput(t *testing.T) {
+	normalizer := newNormalizer()
+	started := normalizer.normalize("item/started", json.RawMessage(`{
+		"threadId":"thread_1",
+		"turnId":"turn_1",
+		"item":{
+			"type":"mcpToolCall",
+			"id":"tool_1",
+			"server":"life",
+			"tool":"exec_command",
+			"status":"inProgress",
+			"arguments":{"command":"go test ./...","cwd":"/repo"}
+		}
+	}`))
+	if len(started) != 1 {
+		t.Fatalf("expected one started event, got %#v", started)
+	}
+	startedPayload := started[0].Event.Payload.(map[string]any)
+	if startedPayload["command"] != "go test ./..." || startedPayload["cwd"] != "/repo" {
+		t.Fatalf("expected canonical command arguments, got %#v", startedPayload)
+	}
+	if startedPayload["raw_input"] == nil {
+		t.Fatalf("expected preserved raw input, got %#v", startedPayload)
+	}
+
+	completed := normalizer.normalize("item/completed", json.RawMessage(`{
+		"threadId":"thread_1",
+		"turnId":"turn_1",
+		"item":{
+			"type":"mcpToolCall",
+			"id":"tool_1",
+			"server":"life",
+			"tool":"exec_command",
+			"status":"completed",
+			"arguments":{"command":"go test ./...","cwd":"/repo"},
+			"result":{
+				"content":[{"type":"text","text":"{\"output\":\"ok\\n\"}"}],
+				"structuredContent":{"status":"completed","output":"ok\n"}
+			}
+		}
+	}`))
+	if len(completed) != 1 {
+		t.Fatalf("expected one completed event, got %#v", completed)
+	}
+	completedPayload := completed[0].Event.Payload.(map[string]any)
+	if completedPayload["output"] != "ok\n" || completedPayload["aggregated_output"] != "ok\n" {
+		t.Fatalf("expected canonical structured output, got %#v", completedPayload)
+	}
+	if completedPayload["result"] == nil {
+		t.Fatalf("expected original result to remain available, got %#v", completedPayload)
+	}
+}
+
+func TestMCPToolCallNormalizesTextStructuredAndErrorResults(t *testing.T) {
+	tests := []struct {
+		name   string
+		result any
+		want   string
+	}{
+		{
+			name: "content blocks",
+			result: map[string]any{
+				"content": []any{
+					map[string]any{"type": "text", "text": "first"},
+					map[string]any{"type": "resource", "resource": map[string]any{"text": "second"}},
+				},
+			},
+			want: "first\nsecond",
+		},
+		{
+			name:   "arbitrary structured content",
+			result: map[string]any{"structuredContent": map[string]any{"items": []any{"one", "two"}}},
+			want:   "{\n  \"items\": [\n    \"one\",\n    \"two\"\n  ]\n}",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := toolResultText(test.result); got != test.want {
+				t.Fatalf("expected %q, got %q", test.want, got)
+			}
+		})
+	}
+
+	payload := map[string]any{}
+	canonicalizeToolItem(payload, map[string]any{
+		"error": map[string]any{"message": "tool unavailable", "code": float64(-32000)},
+	})
+	if payload["error"] != "tool unavailable" || payload["raw_error"] == nil {
+		t.Fatalf("expected canonical and raw error payloads, got %#v", payload)
+	}
+}
+
 func TestPlanFixtureNormalizesPlanEvents(t *testing.T) {
 	events := normalizeFixture(t, "plan.jsonl")
 	assertAgentEventTypes(t, events, []string{

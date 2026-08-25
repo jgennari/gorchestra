@@ -141,6 +141,7 @@ func (n *normalizer) normalizeItemLifecycle(method string, params json.RawMessag
 			return []normalizedEvent{{Event: event("agent.thinking.started", "assistant", "started", payload)}}
 		case "commandExecution", "mcpToolCall", "dynamicToolCall", "webSearch", "collabAgentToolCall":
 			copyItemFields(payload, item)
+			canonicalizeToolItem(payload, item)
 			return []normalizedEvent{{Event: event("tool.call.started", "assistant", "started", payload)}}
 		case "fileChange":
 			copyItemFields(payload, item)
@@ -163,6 +164,7 @@ func (n *normalizer) normalizeItemLifecycle(method string, params json.RawMessag
 		payload["text"] = stringFromMap(item, "text")
 		return []normalizedEvent{{Event: event("agent.plan.completed", "assistant", "completed", payload)}}
 	case "commandExecution", "mcpToolCall", "dynamicToolCall", "webSearch", "collabAgentToolCall":
+		canonicalizeToolItem(payload, item)
 		return []normalizedEvent{{Event: event("tool.call.completed", "assistant", eventStatusFromItem(item), payload)}}
 	case "fileChange":
 		payload["paths"] = changePaths(item["changes"])
@@ -320,6 +322,101 @@ func copyItemFields(payload map[string]any, item map[string]any) {
 			payload[snake(key)] = value
 		}
 	}
+}
+
+func canonicalizeToolItem(payload map[string]any, item map[string]any) {
+	if arguments, ok := item["arguments"].(map[string]any); ok {
+		payload["raw_input"] = arguments
+		for _, key := range []string{"command", "cwd", "query", "path", "file", "filePath", "file_path"} {
+			if _, exists := payload[snake(key)]; exists {
+				continue
+			}
+			if value, exists := arguments[key]; exists && value != nil {
+				payload[snake(key)] = value
+			}
+		}
+	}
+
+	if result, exists := item["result"]; exists && result != nil {
+		if output := toolResultText(result); output != "" {
+			payload["output"] = output
+			payload["aggregated_output"] = output
+		}
+	}
+
+	if rawError, exists := item["error"]; exists && rawError != nil {
+		if message := toolErrorMessage(rawError); message != "" {
+			payload["raw_error"] = rawError
+			payload["error"] = message
+		}
+	}
+}
+
+func toolResultText(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	result, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	if structured, ok := result["structuredContent"].(map[string]any); ok {
+		if output, ok := structured["output"].(string); ok && output != "" {
+			return output
+		}
+	}
+
+	parts := make([]string, 0)
+	if content, ok := result["content"].([]any); ok {
+		for _, rawBlock := range content {
+			block, ok := rawBlock.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch stringFromMap(block, "type") {
+			case "text":
+				if text := stringFromMap(block, "text"); text != "" {
+					parts = append(parts, text)
+				}
+			case "resource":
+				if resource, ok := block["resource"].(map[string]any); ok {
+					if text := stringFromMap(resource, "text"); text != "" {
+						parts = append(parts, text)
+					}
+				}
+			}
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
+	}
+
+	structured, exists := result["structuredContent"]
+	if !exists || structured == nil {
+		return ""
+	}
+	encoded, err := json.MarshalIndent(structured, "", "  ")
+	if err != nil || string(encoded) == "{}" || string(encoded) == "null" {
+		return ""
+	}
+	return string(encoded)
+}
+
+func toolErrorMessage(value any) string {
+	if message, ok := value.(string); ok {
+		return message
+	}
+	errorObject, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"message", "error", "details"} {
+		if message, ok := errorObject[key].(string); ok && message != "" {
+			return message
+		}
+	}
+	return ""
 }
 
 func eventStatusFromItem(item map[string]any) string {

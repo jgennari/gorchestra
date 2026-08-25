@@ -915,6 +915,137 @@ test('shows codex command aggregated output in expandable tool output', async ()
   expect(screen.getByText(/ls -la\s+total 56\s+README\.md\s+web/)).toBeInTheDocument()
 })
 
+test('expands historical nested MCP tool output', async () => {
+  const user = userEvent.setup()
+
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Running tests.' }),
+        event(2, 'tool.call.started', 'assistant', 'started', {
+          item_id: 'tool_1',
+          item_type: 'mcpToolCall',
+          server: 'life',
+          tool: 'exec_command',
+          arguments: { command: 'go test ./...', cwd: '/repo' },
+        }),
+        event(3, 'tool.call.completed', 'assistant', 'completed', {
+          item_id: 'tool_1',
+          item_type: 'mcpToolCall',
+          server: 'life',
+          tool: 'exec_command',
+          arguments: { command: 'go test ./...', cwd: '/repo' },
+          result: {
+            content: [{ type: 'text', text: '{"output":"ok\\n"}' }],
+            structuredContent: { output: 'ok\n' },
+          },
+        }),
+      ]}
+    />,
+  )
+
+  const row = screen.getByRole('button', { name: /expand go test/i })
+  await user.click(row)
+
+  expect(row).toHaveAttribute('aria-expanded', 'true')
+  expect(screen.getByText(/go test \.\/\.\.\.\s+ok/)).toBeInTheDocument()
+})
+
+test('renders MCP media and resource result blocks', async () => {
+  const user = userEvent.setup()
+
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Fetching artifacts.' }),
+        event(2, 'tool.call.completed', 'assistant', 'completed', {
+          item_id: 'tool_1',
+          item_type: 'mcpToolCall',
+          tool: 'fetch_artifacts',
+          result: {
+            content: [
+              { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+              { type: 'audio', data: 'YXVkaW8=', mimeType: 'audio/wav' },
+              {
+                type: 'resource',
+                resource: { uri: 'mcp://files/report.pdf', blob: 'cGRm', mimeType: 'application/pdf' },
+              },
+              {
+                type: 'resource_link',
+                name: 'Reference',
+                uri: 'https://example.com/reference',
+                description: 'Supporting source',
+                mimeType: 'text/html',
+              },
+            ],
+          },
+        }),
+      ]}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: /expand fetch_artifacts/i }))
+
+  expect(screen.getByRole('button', { name: 'Preview image result' }).querySelector('img')).toHaveAttribute(
+    'src',
+    '/api/sessions/sess_1/events/2/tool-content/0',
+  )
+  expect(document.querySelector('audio')).toHaveAttribute('src', '/api/sessions/sess_1/events/2/tool-content/1')
+  expect(screen.getByRole('link', { name: /report\.pdf/i })).toHaveAttribute(
+    'href',
+    '/api/sessions/sess_1/events/2/tool-content/2',
+  )
+  expect(screen.getByRole('link', { name: /Reference/i })).toHaveAttribute('href', 'https://example.com/reference')
+  expect(screen.getByRole('link', { name: /Reference/i })).toHaveAttribute('target', '_blank')
+})
+
+test('does not show an expand affordance for a tool with no details', () => {
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Waiting.' }),
+        event(2, 'tool.call.completed', 'assistant', 'completed', {
+          item_id: 'tool_1',
+          item_type: 'collabAgentToolCall',
+          tool: 'wait',
+        }),
+      ]}
+    />,
+  )
+
+  const row = screen.getByRole('button', { name: 'wait' })
+  expect(row).toBeDisabled()
+  expect(row).not.toHaveAttribute('aria-expanded')
+  expect(row.querySelector('svg')).not.toBeInTheDocument()
+})
+
+test('expands nested MCP error messages as failed tool output', async () => {
+  const user = userEvent.setup()
+
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Trying a tool.' }),
+        event(2, 'tool.call.started', 'assistant', 'started', {
+          item_id: 'tool_1',
+          item_type: 'mcpToolCall',
+          tool: 'unavailable_tool',
+        }),
+        event(3, 'tool.call.completed', 'assistant', 'failed', {
+          item_id: 'tool_1',
+          item_type: 'mcpToolCall',
+          tool: 'unavailable_tool',
+          error: { message: 'Tool unavailable', code: -32000 },
+        }),
+      ]}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: /expand unavailable_tool/i }))
+
+  expect(screen.getByText('Tool unavailable')).toHaveClass('text-destructive')
+})
+
 test('shows web search query details in expandable tool output', async () => {
   const user = userEvent.setup()
 

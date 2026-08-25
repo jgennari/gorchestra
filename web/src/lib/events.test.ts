@@ -893,6 +893,105 @@ test('chat transcript includes codex command aggregated output in tool details',
   })
 })
 
+test('chat transcript reads historical nested MCP arguments and results', () => {
+  const transcript = buildChatTranscript([
+    event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Running tests.' }),
+    event(2, 'tool.call.started', {
+      item_id: 'tool_1',
+      item_type: 'mcpToolCall',
+      server: 'life',
+      tool: 'exec_command',
+      arguments: { command: 'go test ./...', cwd: '/repo' },
+    }),
+    event(3, 'tool.call.completed', {
+      item_id: 'tool_1',
+      item_type: 'mcpToolCall',
+      server: 'life',
+      tool: 'exec_command',
+      arguments: { command: 'go test ./...', cwd: '/repo' },
+      result: {
+        content: [{ type: 'text', text: '{"output":"ok\\n"}' }],
+        structuredContent: { status: 'completed', output: 'ok\n' },
+      },
+    }),
+  ])
+
+  expect(transcript[0].tools[0]).toMatchObject({
+    label: 'Tool: go test ./...',
+    status: 'completed',
+    text: 'go test ./...\nok\n',
+    error: '',
+    content: [],
+  })
+})
+
+test('chat transcript preserves MCP media, resources, structured data, and nested errors', () => {
+  const completed = buildChatTranscript([
+    event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Fetching artifacts.' }),
+    event(2, 'tool.call.completed', {
+      item_id: 'tool_1',
+      item_type: 'mcpToolCall',
+      tool: 'fetch_artifacts',
+      result: {
+        content: [
+          { type: 'image', data: '', mimeType: 'image/png', _gorchestra_truncated: true },
+          { type: 'audio', data: 'YXVkaW8=', mimeType: 'audio/wav' },
+          {
+            type: 'resource',
+            resource: { uri: 'mcp://files/report.pdf', blob: 'cGRm', mimeType: 'application/pdf' },
+          },
+          {
+            type: 'resource_link',
+            name: 'Reference',
+            uri: 'https://example.com/reference',
+            description: 'Supporting source',
+            mimeType: 'text/html',
+          },
+        ],
+        structuredContent: { items: ['one', 'two'] },
+      },
+    }),
+  ])
+
+  expect(completed[0].tools[0]).toMatchObject({
+    text: '{\n  "items": [\n    "one",\n    "two"\n  ]\n}',
+    content: [
+      {
+        kind: 'image',
+        mediaType: 'image/png',
+        sourceURL: '/api/sessions/sess_test/events/2/tool-content/0',
+      },
+      {
+        kind: 'audio',
+        mediaType: 'audio/wav',
+        sourceURL: '/api/sessions/sess_test/events/2/tool-content/1',
+      },
+      {
+        kind: 'resource',
+        name: 'report.pdf',
+        mediaType: 'application/pdf',
+        sourceURL: '/api/sessions/sess_test/events/2/tool-content/2',
+      },
+      {
+        kind: 'resource-link',
+        name: 'Reference',
+        uri: 'https://example.com/reference',
+      },
+    ],
+  })
+
+  const failed = buildChatTranscript([
+    event(3, 'agent.message.completed', { item_id: 'msg_2', text: 'Trying a tool.' }),
+    failedEvent(4, 'tool.call.completed', {
+      item_id: 'tool_2',
+      item_type: 'mcpToolCall',
+      tool: 'unavailable_tool',
+      error: { message: 'Tool unavailable', code: -32000 },
+    }),
+  ])
+  expect(failed[0].tools[0]).toMatchObject({ status: 'failed', error: 'Tool unavailable' })
+})
+
 test('chat transcript labels file changes as edits and shows emitted patches', () => {
   const transcript = buildChatTranscript([
     event(1, 'agent.message.completed', { item_id: 'msg_1', text: 'Updating tests.' }),

@@ -258,6 +258,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Post("/api/sessions/{sessionId}/notification-attention/clear", api.clearSessionNotificationAttentionHandler)
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
 		r.Get("/api/sessions/{sessionId}/events/{seq}/attachments/{attachmentIndex}", api.eventAttachmentHandler)
+		r.Get("/api/sessions/{sessionId}/events/{seq}/tool-content/{contentIndex}", api.eventToolContentHandler)
 	}
 	if api.store != nil && api.hosting != nil {
 		r.Get("/api/sessions/{sessionId}/host", api.hostStatusHandler)
@@ -463,6 +464,51 @@ func (api API) eventAttachmentHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", attachment.MediaType)
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", sanitizeAttachmentFilename(attachment.Name)))
+	_, _ = w.Write(data)
+}
+
+func (api API) eventToolContentHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	if !api.sessionExists(w, r, sessionID) {
+		return
+	}
+
+	seq, err := strconv.ParseInt(chi.URLParam(r, "seq"), 10, 64)
+	if err != nil || seq <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid event sequence")
+		return
+	}
+	contentIndex, err := strconv.Atoi(chi.URLParam(r, "contentIndex"))
+	if err != nil || contentIndex < 0 {
+		writeError(w, http.StatusBadRequest, "invalid tool content index")
+		return
+	}
+
+	event, err := api.store.GetEvent(r.Context(), sessionID, seq)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "event not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load event")
+		return
+	}
+
+	content, ok := eventToolContent(event, contentIndex)
+	if !ok {
+		writeError(w, http.StatusNotFound, "tool content not found")
+		return
+	}
+	data, err := decodeToolContentData(content.Data, content.MediaType)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tool content data")
+		return
+	}
+
+	w.Header().Set("Content-Type", content.MediaType)
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", sanitizeAttachmentFilename(content.Name)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(data)
 }
 
@@ -1081,8 +1127,9 @@ func truncatePayloadValue(value any) (any, bool) {
 	case map[string]any:
 		next := make(map[string]any, len(typed)+1)
 		changed := false
+		contentType, _ := typed["type"].(string)
 		for key, child := range typed {
-			if key == "data_url" {
+			if key == "data_url" || key == "blob" || (key == "data" && (contentType == "image" || contentType == "audio")) {
 				if text, ok := child.(string); ok && text != "" {
 					next[key] = ""
 					changed = true
@@ -1151,6 +1198,85 @@ func eventImageAttachment(event store.Event, attachmentIndex int) (submitAttachm
 		return submitAttachment{}, false
 	}
 	return attachment, true
+}
+
+type storedToolContent struct {
+	Name      string
+	MediaType string
+	Data      string
+}
+
+func eventToolContent(event store.Event, contentIndex int) (storedToolContent, bool) {
+	if event.Type != "tool.call.completed" || contentIndex < 0 {
+		return storedToolContent{}, false
+	}
+
+	var payload struct {
+		Result struct {
+			Content []struct {
+				Type     string `json:"type"`
+				Data     string `json:"data"`
+				MimeType string `json:"mimeType"`
+				Resource *struct {
+					URI      string `json:"uri"`
+					Blob     string `json:"blob"`
+					MimeType string `json:"mimeType"`
+				} `json:"resource"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil || contentIndex >= len(payload.Result.Content) {
+		return storedToolContent{}, false
+	}
+
+	block := payload.Result.Content[contentIndex]
+	switch block.Type {
+	case "image":
+		if !strings.HasPrefix(block.MimeType, "image/") || strings.TrimSpace(block.Data) == "" {
+			return storedToolContent{}, false
+		}
+		return storedToolContent{Name: "tool-image", MediaType: block.MimeType, Data: block.Data}, true
+	case "audio":
+		if !strings.HasPrefix(block.MimeType, "audio/") || strings.TrimSpace(block.Data) == "" {
+			return storedToolContent{}, false
+		}
+		return storedToolContent{Name: "tool-audio", MediaType: block.MimeType, Data: block.Data}, true
+	case "resource":
+		if block.Resource == nil || strings.TrimSpace(block.Resource.Blob) == "" {
+			return storedToolContent{}, false
+		}
+		mediaType := strings.TrimSpace(block.Resource.MimeType)
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		name := path.Base(strings.TrimSpace(strings.Split(block.Resource.URI, "?")[0]))
+		if name == "." || name == "/" || name == "" {
+			name = "tool-resource"
+		}
+		return storedToolContent{Name: name, MediaType: mediaType, Data: block.Resource.Blob}, true
+	default:
+		return storedToolContent{}, false
+	}
+}
+
+func decodeToolContentData(encoded string, mediaType string) ([]byte, error) {
+	encoded = strings.TrimSpace(encoded)
+	if strings.HasPrefix(encoded, "data:") {
+		header, payload, ok := strings.Cut(encoded, ",")
+		if !ok || !strings.Contains(header, ";base64") {
+			return nil, fmt.Errorf("invalid data url")
+		}
+		encodedMediaType := strings.TrimPrefix(strings.TrimSuffix(header, ";base64"), "data:")
+		if encodedMediaType != mediaType {
+			return nil, fmt.Errorf("media type mismatch")
+		}
+		encoded = payload
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func decodeImageDataURL(dataURL string, mediaType string) ([]byte, error) {

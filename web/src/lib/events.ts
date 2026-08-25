@@ -80,9 +80,19 @@ export type ChatTranscriptTool = {
   status: string
   text: string
   error: string
+  content: ChatTranscriptToolContent[]
   paths: string[]
   startSeq: number
   endSeq: number
+}
+
+export type ChatTranscriptToolContent = {
+  kind: 'image' | 'audio' | 'resource' | 'resource-link'
+  name: string
+  mediaType: string
+  sourceURL: string
+  uri: string
+  description: string
 }
 
 export type ChatTranscriptAttachment = {
@@ -788,6 +798,18 @@ export function payloadText(payload: unknown) {
     if (typeof value === 'string') {
       return value
     }
+
+    const resultText = nestedToolResultText(payload.result)
+    if (resultText) {
+      return resultText
+    }
+
+    if (isRecord(payload.arguments)) {
+      const command = payloadString(payload.arguments, ['command'])
+      if (command) {
+        return command
+      }
+    }
   }
   return ''
 }
@@ -797,7 +819,13 @@ export function payloadError(payload: unknown) {
     return ''
   }
   const value = payload.error ?? payload.message
-  return typeof value === 'string' ? value : ''
+  if (typeof value === 'string') {
+    return value
+  }
+  if (!isRecord(value)) {
+    return ''
+  }
+  return payloadString(value, ['message', 'error', 'details'])
 }
 
 export function shouldRefreshWorkspaceFilesForEvent(event: AgentEvent) {
@@ -1201,7 +1229,6 @@ function appendToGroup(group: EventGroup, event: AgentEvent) {
 }
 
 function groupKind(event: AgentEvent): EventGroupKind {
-  if (isErrorEvent(event.type, event.status)) return 'error'
   if (isActionBreakEvent(event)) return 'action-break'
   if (event.type === 'user.message.completed') return 'user-message'
   if (isClaudeToolOnlyAssistantEvent(event)) return 'unknown'
@@ -1210,6 +1237,7 @@ function groupKind(event: AgentEvent): EventGroupKind {
   if (event.type.startsWith('agent.thinking')) return 'thinking'
   if (event.type.startsWith('tool.call')) return 'tool-call'
   if (event.type.startsWith('file.change')) return 'file-change'
+  if (isErrorEvent(event.type, event.status)) return 'error'
   if (event.type === 'agent.log.delta') return 'log'
   if (isTerminalEvent(event.type)) return 'terminal'
   return 'unknown'
@@ -1516,13 +1544,15 @@ function mergeAssistantMessage(message: ChatTranscriptMessage, group: EventGroup
 }
 
 function chatToolFromGroup(group: EventGroup): ChatTranscriptTool {
+  const text = chatToolText(group)
   return {
     id: group.id,
     kind: group.kind as ChatTranscriptTool['kind'],
     label: cleanToolLabel(group.label),
     status: group.status,
-    text: chatToolText(group),
-    error: group.error,
+    text,
+    error: group.error || (group.status === 'failed' ? text : ''),
+    content: chatToolContentFromGroup(group),
     paths: group.paths,
     startSeq: group.startSeq,
     endSeq: group.endSeq,
@@ -1550,6 +1580,104 @@ function chatToolText(group: EventGroup) {
     return lines.join('\n')
   }
   return group.paths.join('\n')
+}
+
+function chatToolContentFromGroup(group: EventGroup): ChatTranscriptToolContent[] {
+  const content: ChatTranscriptToolContent[] = []
+  const seen = new Set<string>()
+
+  for (const event of group.events) {
+    if (!isRecord(event.payload) || !isRecord(event.payload.result) || !Array.isArray(event.payload.result.content)) {
+      continue
+    }
+    event.payload.result.content.forEach((rawBlock, contentIndex) => {
+      const block = toolContentBlock(rawBlock, event, contentIndex)
+      if (!block) {
+        return
+      }
+      const key = [block.kind, block.sourceURL, block.uri, block.name].join('\u0000')
+      if (seen.has(key)) {
+        return
+      }
+      seen.add(key)
+      content.push(block)
+    })
+  }
+
+  return content
+}
+
+function toolContentBlock(
+  value: unknown,
+  event: AgentEvent,
+  contentIndex: number,
+): ChatTranscriptToolContent | null {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const type = payloadString(value, ['type'])
+  if (type === 'image' || type === 'audio') {
+    const mediaType = payloadString(value, ['mimeType', 'mime_type'])
+    const hasData = typeof value.data === 'string'
+    if (!mediaType || !hasData) {
+      return null
+    }
+    return {
+      kind: type,
+      name: `${type} result`,
+      mediaType,
+      sourceURL: toolContentSourceURL(event, contentIndex),
+      uri: '',
+      description: '',
+    }
+  }
+
+  if (type === 'resource') {
+    const resource = isRecord(value.resource) ? value.resource : null
+    if (!resource) {
+      return null
+    }
+    const uri = payloadString(resource, ['uri'])
+    const mediaType = payloadString(resource, ['mimeType', 'mime_type'])
+    const hasBlob = typeof resource.blob === 'string'
+    if (!uri && !mediaType && !hasBlob) {
+      return null
+    }
+    return {
+      kind: 'resource',
+      name: resourceName(resource, uri || 'Embedded resource'),
+      mediaType,
+      sourceURL: hasBlob ? toolContentSourceURL(event, contentIndex) : '',
+      uri,
+      description: '',
+    }
+  }
+
+  if (type === 'resource_link' || type === 'resourceLink') {
+    const uri = payloadString(value, ['uri'])
+    if (!uri) {
+      return null
+    }
+    return {
+      kind: 'resource-link',
+      name: resourceName(value, uri),
+      mediaType: payloadString(value, ['mimeType', 'mime_type']),
+      sourceURL: '',
+      uri,
+      description: payloadString(value, ['description']),
+    }
+  }
+
+  return null
+}
+
+function toolContentSourceURL(event: AgentEvent, contentIndex: number) {
+  return `/api/sessions/${encodeURIComponent(event.session_id)}/events/${event.seq}/tool-content/${contentIndex}`
+}
+
+function resourceName(payload: Record<string, unknown>, fallback: string) {
+  return payloadString(payload, ['title', 'name']) || basename(fallback) || fallback
 }
 
 function fileChangeLabel(group: EventGroup) {
@@ -1685,6 +1813,12 @@ function toolLabelFromPayload(payload: unknown) {
     return cleanShellCommand(command)
   }
 
+  const input = toolInputFromPayload(payload)
+  const inputCommand = input ? payloadString(input, ['command']) : ''
+  if (inputCommand) {
+    return cleanShellCommand(inputCommand)
+  }
+
   const query = toolQueryFromPayload(payload)
   if (query) {
     return query
@@ -1700,7 +1834,7 @@ function toolLabelFromPayload(payload: unknown) {
 }
 
 function structuredToolLabelFromPayload(payload: Record<string, unknown>) {
-  const rawInput = isRecord(payload.raw_input) ? payload.raw_input : null
+  const rawInput = toolInputFromPayload(payload)
   const kind = payloadString(payload, ['kind', 'tool', 'name'])
   const title = payloadString(payload, ['title'])
   const kindKey = toolKindKey(kind || title)
@@ -1767,7 +1901,7 @@ function isGenericToolTitle(value: string, kindKey: string) {
 }
 
 function firstToolPath(payload: Record<string, unknown>) {
-  const rawInput = isRecord(payload.raw_input) ? payload.raw_input : null
+  const rawInput = toolInputFromPayload(payload)
   const rawOutput = isRecord(payload.raw_output) ? payload.raw_output : null
   const rawOutputMetadata = rawOutput && isRecord(rawOutput.metadata) ? rawOutput.metadata : null
   const rawOutputDisplay = rawOutputMetadata && isRecord(rawOutputMetadata.display) ? rawOutputMetadata.display : null
@@ -1779,6 +1913,13 @@ function firstToolPath(payload: Record<string, unknown>) {
     (rawOutputDisplay ? payloadString(rawOutputDisplay, ['path', 'file', 'file_path', 'filePath']) : '') ||
     (rawOutputMetadata ? payloadString(rawOutputMetadata, ['path', 'file', 'file_path', 'filePath']) : '')
   )
+}
+
+function toolInputFromPayload(payload: Record<string, unknown>) {
+  if (isRecord(payload.raw_input)) {
+    return payload.raw_input
+  }
+  return isRecord(payload.arguments) ? payload.arguments : null
 }
 
 function firstLocationPath(value: unknown) {
@@ -1824,6 +1965,49 @@ function toolTextLines(payload: unknown) {
   return []
 }
 
+function nestedToolResultText(value: unknown) {
+  if (typeof value === 'string') {
+    return value
+  }
+  if (!isRecord(value)) {
+    return ''
+  }
+
+  if (isRecord(value.structuredContent)) {
+    const output = payloadLiteralString(value.structuredContent, ['output'])
+    if (output) {
+      return output
+    }
+  }
+
+  if (Array.isArray(value.content)) {
+    const parts = value.content.flatMap((rawBlock): string[] => {
+      if (!isRecord(rawBlock)) {
+        return []
+      }
+      const type = payloadString(rawBlock, ['type'])
+      if (type === 'text') {
+        const text = payloadLiteralString(rawBlock, ['text'])
+        return text ? [text] : []
+      }
+      if (type === 'resource' && isRecord(rawBlock.resource)) {
+        const text = payloadLiteralString(rawBlock.resource, ['text'])
+        return text ? [text] : []
+      }
+      return []
+    })
+    if (parts.length > 0) {
+      return parts.join('\n')
+    }
+  }
+
+  if (value.structuredContent !== undefined && value.structuredContent !== null) {
+    const structured = JSON.stringify(value.structuredContent, null, 2)
+    return structured === '{}' || structured === 'null' ? '' : structured
+  }
+  return ''
+}
+
 function toolQueryFromPayload(payload: unknown) {
   if (!isRecord(payload)) {
     return ''
@@ -1833,7 +2017,13 @@ function toolQueryFromPayload(payload: unknown) {
     return direct
   }
   if (isRecord(payload.action)) {
-    return payloadString(payload.action, ['query'])
+    const query = payloadString(payload.action, ['query'])
+    if (query) {
+      return query
+    }
+  }
+  if (isRecord(payload.arguments)) {
+    return payloadString(payload.arguments, ['query'])
   }
   return ''
 }
@@ -1842,7 +2032,11 @@ function toolQueriesFromPayload(payload: unknown) {
   if (!isRecord(payload)) {
     return []
   }
-  const values = isRecord(payload.action) ? payload.action.queries : payload.queries
+  const values = isRecord(payload.action)
+    ? payload.action.queries
+    : isRecord(payload.arguments)
+      ? payload.arguments.queries
+      : payload.queries
   if (!Array.isArray(values)) {
     return []
   }

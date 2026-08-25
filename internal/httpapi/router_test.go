@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -770,6 +771,97 @@ func TestEventAttachmentServesOriginalImageDataWhenHistoryIsTruncated(t *testing
 	}
 	if !bytes.Equal(image.Body.Bytes(), imageData) {
 		t.Fatalf("expected original image bytes, got %d bytes", image.Body.Len())
+	}
+}
+
+func TestEventToolContentServesBinaryResultBlocks(t *testing.T) {
+	tests := []struct {
+		name      string
+		block     map[string]any
+		mediaType string
+		data      []byte
+	}{
+		{
+			name:      "image",
+			block:     map[string]any{"type": "image", "mimeType": "image/png"},
+			mediaType: "image/png",
+			data:      bytes.Repeat([]byte{0x89, 0x50, 0x4e, 0x47}, maxEventPayloadStringLen/4),
+		},
+		{
+			name:      "audio",
+			block:     map[string]any{"type": "audio", "mimeType": "audio/wav"},
+			mediaType: "audio/wav",
+			data:      []byte("RIFFaudio"),
+		},
+		{
+			name: "embedded resource",
+			block: map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":      "mcp://files/report.pdf",
+					"mimeType": "application/pdf",
+				},
+			},
+			mediaType: "application/pdf",
+			data:      []byte("%PDF-result"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			block := maps.Clone(test.block)
+			if test.name == "embedded resource" {
+				resource := maps.Clone(block["resource"].(map[string]any))
+				resource["blob"] = base64.StdEncoding.EncodeToString(test.data)
+				block["resource"] = resource
+			} else {
+				block["data"] = base64.StdEncoding.EncodeToString(test.data)
+			}
+
+			store := newFakeHTTPStore()
+			store.addSession(testSessionID)
+			store.setEvents(
+				testSessionID,
+				testEventWithPayload(1, "tool.call.completed", map[string]any{
+					"result": map[string]any{"content": []any{block}},
+				}),
+			)
+
+			response := httptest.NewRecorder()
+			NewRouter(Dependencies{Store: store}).ServeHTTP(
+				response,
+				httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events/1/tool-content/0", nil),
+			)
+			if response.Code != http.StatusOK {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, response.Code, response.Body.String())
+			}
+			if got := response.Header().Get("Content-Type"); got != test.mediaType {
+				t.Fatalf("expected %q content type, got %q", test.mediaType, got)
+			}
+			if !bytes.Equal(response.Body.Bytes(), test.data) {
+				t.Fatalf("expected original content, got %q", response.Body.Bytes())
+			}
+
+			if test.name == "image" {
+				history := httptest.NewRecorder()
+				NewRouter(Dependencies{Store: store}).ServeHTTP(
+					history,
+					httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?after_seq=0&limit=10", nil),
+				)
+				var historyResponse eventHistoryResponse
+				decodeJSON(t, history, &historyResponse)
+				var historyPayload map[string]any
+				if err := json.Unmarshal(historyResponse.Events[0].Payload, &historyPayload); err != nil {
+					t.Fatalf("expected history payload: %v", err)
+				}
+				result := historyPayload["result"].(map[string]any)
+				content := result["content"].([]any)
+				historyBlock := content[0].(map[string]any)
+				if historyBlock["data"] != "" || historyBlock["_gorchestra_truncated"] != true {
+					t.Fatalf("expected binary history data to be omitted, got %#v", historyBlock)
+				}
+			}
+		})
 	}
 }
 

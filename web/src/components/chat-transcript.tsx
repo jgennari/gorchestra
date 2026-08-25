@@ -26,6 +26,7 @@ import type {
   ChatTranscriptAttachment,
   ChatTranscriptMessage,
   ChatTranscriptTool,
+  ChatTranscriptToolContent,
 } from '@/lib/events'
 import { buildChatTimeline } from '@/lib/events'
 import { clipboardCopyErrorMessage, copyText } from '@/lib/clipboard'
@@ -1154,6 +1155,7 @@ function ToolCallRow({
   onOpenFilePath?: (path: string) => Promise<void> | void
 }) {
   const output = tool.error || tool.text
+  const hasDetails = Boolean(output || tool.content.length > 0)
   const [outputOpen, setOutputOpen] = useState(false)
   const name = tool.label.replace(/^Tool:\s*/, '')
   const statusDotClassName = toolStatusDotClassName(tool)
@@ -1164,19 +1166,24 @@ function ToolCallRow({
     <div className="text-xs">
       <button
         type="button"
-        className="relative z-10 flex h-5 w-full min-w-0 touch-manipulation items-center gap-1 rounded py-0.5 text-left font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        aria-expanded={output ? outputOpen : undefined}
-        aria-label={`${outputOpen ? 'Collapse' : 'Expand'} ${name}`}
+        className="relative z-10 flex h-5 w-full min-w-0 touch-manipulation items-center gap-1 rounded py-0.5 text-left font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+        aria-expanded={hasDetails ? outputOpen : undefined}
+        aria-label={hasDetails ? `${outputOpen ? 'Collapse' : 'Expand'} ${name}` : name}
+        disabled={!hasDetails}
         onClick={() => {
-          if (output) {
+          if (hasDetails) {
             setOutputOpen((current) => !current)
           }
         }}
       >
-        {outputOpen ? (
-          <ChevronDown className="pointer-events-none size-3 shrink-0 text-muted-foreground" />
+        {hasDetails ? (
+          outputOpen ? (
+            <ChevronDown className="pointer-events-none size-3 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="pointer-events-none size-3 shrink-0 text-muted-foreground" />
+          )
         ) : (
-          <ChevronRight className="pointer-events-none size-3 shrink-0 text-muted-foreground" />
+          <span className="pointer-events-none size-3 shrink-0" aria-hidden="true" />
         )}
         {statusDotClassName ? (
           <span
@@ -1186,22 +1193,108 @@ function ToolCallRow({
         ) : null}
         <span className="pointer-events-none min-w-0 flex-1 truncate font-medium">{name}</span>
       </button>
-      {output ? (
+      {hasDetails ? (
         outputOpen ? (
           <div className="relative ml-5 mt-1">
-            <FloatingCopyButton label="Copy tool output" value={output} />
+            {output ? <FloatingCopyButton label="Copy tool output" value={output} /> : null}
             {showFileEditorAction ? <FloatingOpenFileButton path={filePath} onOpenFilePath={onOpenFilePath} /> : null}
-            <ToolOutput
-              output={output}
-              error={Boolean(tool.error)}
-              diff={tool.kind === 'file-change'}
-              actionPadding={showFileEditorAction}
-            />
+            {output ? (
+              <ToolOutput
+                output={output}
+                error={Boolean(tool.error)}
+                diff={tool.kind === 'file-change'}
+                actionPadding={showFileEditorAction}
+              />
+            ) : null}
+            {tool.content.length > 0 ? (
+              <ToolResultContent content={tool.content} className={output ? 'mt-2' : ''} />
+            ) : null}
           </div>
         ) : null
       ) : null}
     </div>
   )
+}
+
+function ToolResultContent({ content, className }: { content: ChatTranscriptToolContent[]; className?: string }) {
+  return (
+    <div className={cn('flex flex-wrap gap-2', className)}>
+      {content.map((item, index) => {
+        if (item.kind === 'image') {
+          return (
+            <ImageAttachmentPreview
+              key={`${item.kind}-${item.sourceURL}-${index}`}
+              attachment={{
+                name: item.name,
+                mediaType: item.mediaType,
+                dataURL: '',
+                sourceURL: item.sourceURL,
+                sizeBytes: 0,
+              }}
+            />
+          )
+        }
+        if (item.kind === 'audio') {
+          return (
+            <div
+              key={`${item.kind}-${item.sourceURL}-${index}`}
+              className="min-w-0 max-w-full rounded border border-border/60 bg-surface-muted/70 p-2"
+            >
+              <p className="mb-1 truncate font-medium text-muted-foreground">{item.name}</p>
+              <audio controls preload="none" src={item.sourceURL} className="h-8 max-w-full" />
+            </div>
+          )
+        }
+        return <ToolResourceLink key={`${item.kind}-${item.uri}-${item.sourceURL}-${index}`} content={item} />
+      })}
+    </div>
+  )
+}
+
+function ToolResourceLink({ content }: { content: ChatTranscriptToolContent }) {
+  const externalURL = safeExternalURL(content.uri)
+  const href = content.sourceURL || externalURL
+  const download = content.sourceURL ? content.name : undefined
+  const body = (
+    <>
+      <span className="block truncate font-medium text-foreground">{content.name}</span>
+      {content.description ? <span className="block text-muted-foreground">{content.description}</span> : null}
+      {content.mediaType || content.uri ? (
+        <span className="block truncate font-mono text-[11px] text-muted-foreground/75">
+          {[content.mediaType, content.uri].filter(Boolean).join(' · ')}
+        </span>
+      ) : null}
+    </>
+  )
+  const className =
+    'min-w-0 max-w-full rounded border border-border/60 bg-surface-muted/70 px-3 py-2 text-left transition-colors'
+
+  if (!href) {
+    return <div className={className}>{body}</div>
+  }
+  return (
+    <a
+      href={href}
+      download={download}
+      target={externalURL && !content.sourceURL ? '_blank' : undefined}
+      rel={externalURL && !content.sourceURL ? 'noreferrer' : undefined}
+      className={cn(className, 'hover:border-border hover:bg-surface-muted')}
+    >
+      {body}
+    </a>
+  )
+}
+
+function safeExternalURL(value: string) {
+  if (!value) {
+    return ''
+  }
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? value : ''
+  } catch {
+    return ''
+  }
 }
 
 function FloatingOpenFileButton({
