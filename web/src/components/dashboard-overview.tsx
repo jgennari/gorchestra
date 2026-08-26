@@ -139,7 +139,7 @@ export function DashboardOverview({ refreshKey = 0, onOpenSession, onOpenSession
 
   return (
     <div className="h-full overflow-y-auto bg-background">
-      <div className="mx-auto w-full max-w-[1480px] px-4 pb-12 pt-4 sm:px-6 lg:px-8 lg:pt-7">
+      <div className="dashboard-overview-content mx-auto w-full max-w-[1480px] px-4 pb-12 sm:px-6 lg:px-8">
         <header className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-2.5">
             <Button

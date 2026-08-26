@@ -56,6 +56,10 @@
   top: max(env(safe-area-inset-top, 0px), 2rem);
 }
 
+.dashboard-overview-content {
+  padding-top: calc(max(env(safe-area-inset-top, 0px), 2rem) + 1rem);
+}
+
 .host-console {
   background: #f8fafc;
 }
@@ -82,6 +86,10 @@
     padding-top: 0.375rem;
   }
 
+  .dashboard-overview-content {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 1rem);
+  }
+
   .session-bottom-safe-area {
     padding-bottom: max(calc(env(safe-area-inset-bottom, 0px) - 0.5rem), 0.25rem);
   }
@@ -102,6 +110,10 @@
 @media (min-width: 1024px) {
   .app-shell {
     top: 0;
+  }
+
+  .dashboard-overview-content {
+    padding-top: 1.75rem;
   }
 
   .host-console-frame {

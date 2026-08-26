@@ -23,6 +23,9 @@ test('dashboard renders reliable metrics, coverage, outcomes, and the run ledger
   )
 
   expect(await screen.findByRole('heading', { name: 'Your work at a glance' })).toBeInTheDocument()
+  const openSessions = screen.getByRole('button', { name: 'Open sessions' })
+  expect(openSessions.closest('.dashboard-overview-content')).not.toBeNull()
+  expect(openSessions.querySelectorAll('svg path')).toHaveLength(3)
   expect((await screen.findAllByText('75%')).length).toBeGreaterThan(0)
   expect(screen.getByText(new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(12_345))).toBeInTheDocument()
   expect(screen.getByText('$1.25')).toBeInTheDocument()
