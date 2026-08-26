@@ -45,7 +45,7 @@ const firstSession = session('sess_1', 'Inspect repo', '2026-06-12T16:02:00Z')
 const secondSession = session('sess_2', 'Write docs', '2026-06-12T16:01:00Z')
 
 beforeEach(() => {
-  window.history.replaceState({}, '', '/')
+  window.history.replaceState({}, '', '/sessions/sess_1')
   window.localStorage.clear()
   clearSessionEventCacheForTest()
   clearNotificationAttentionCacheForTest()
@@ -167,11 +167,12 @@ afterEach(() => {
 
 test('selecting a session updates the browser route', async () => {
   const user = userEvent.setup()
+  window.history.replaceState({}, '', '/')
 
   render(<App />)
 
-  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo'))
+  expect(await screen.findByRole('heading', { name: 'Your work at a glance' })).toBeInTheDocument()
+  expect(window.location.pathname).toBe('/')
 
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
 
@@ -453,37 +454,14 @@ test('session route shows loading instead of no selection while sessions load', 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
 })
 
-test('cold start shows loading instead of no selection while default session is chosen', async () => {
-  let resolveSessions: (() => void) | undefined
-  const fetch = vi.fn(async (url: RequestInfo | URL) => {
-    const path = String(url)
-    if (path === '/api/health') {
-      return jsonResponse({ status: 'ok' })
-    }
-    if (path === '/api/sessions?limit=50') {
-      await new Promise<void>((resolve) => {
-        resolveSessions = resolve
-      })
-      return jsonResponse({ sessions: [firstSession, secondSession] })
-    }
-    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
-      return jsonResponse({ events: [] })
-    }
-    throw new Error(`unexpected URL ${path}`)
-  })
-  vi.stubGlobal('fetch', fetch)
+test('cold start keeps the root route on Overview while sessions load', async () => {
+  window.history.replaceState({}, '', '/')
 
   render(<App />)
 
-  expect(screen.getByText('Loading session...')).toBeInTheDocument()
-  expect(screen.queryByText('No session selected')).not.toBeInTheDocument()
-
-  await act(async () => {
-    resolveSessions?.()
-    await Promise.resolve()
-  })
-
+  expect(await screen.findByRole('heading', { name: 'Your work at a glance' })).toBeInTheDocument()
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  expect(window.location.pathname).toBe('/')
 })
 
 test('cached session route renders the session shell while history loads', async () => {
@@ -495,6 +473,12 @@ test('cached session route renders the session shell while history loads', async
     const path = String(url)
     if (path === '/api/health') {
       return jsonResponse({ status: 'ok' })
+    }
+    if (path.startsWith('/api/dashboard/runs?')) {
+      return jsonResponse({ runs: [], total: 0 })
+    }
+    if (path.startsWith('/api/dashboard?')) {
+      return jsonResponse(emptyDashboardResponse())
     }
     if (path === '/api/sessions?limit=50') {
       await new Promise<void>((resolve) => {
@@ -1588,6 +1572,44 @@ function fetchMock({
     }
     throw new Error(`unexpected URL ${path}`)
   })
+}
+
+function emptyDashboardResponse() {
+  return {
+    generated_at: '2026-06-12T16:03:00Z',
+    range: '30d',
+    range_start: '2026-05-14T00:00:00Z',
+    range_end: '2026-06-13T00:00:00Z',
+    time_zone: 'UTC',
+    bucket: 'day',
+    summary: {
+      runs: 0,
+      completed_runs: 0,
+      failed_runs: 0,
+      cancelled_runs: 0,
+      running_runs: 0,
+      unknown_runs: 0,
+      active_now: 0,
+      success_rate: null,
+      agent_runtime_ms: 0,
+      tool_calls: 0,
+      files_changed: 0,
+      input_requests: 0,
+      permission_requests: 0,
+      workspaces: 0,
+      agents: 0,
+    },
+    activity: [],
+    workspaces: [],
+    agents: [],
+    usage: { tokens: 0, token_runs: 0, cost_runs: 0, eligible_runs: 0, costs: [] },
+    outcomes: [
+      { kind: 'commit', count: 0, passed: 0, failed: 0, reported: false },
+      { kind: 'pull_request', count: 0, passed: 0, failed: 0, reported: false },
+      { kind: 'test', count: 0, passed: 0, failed: 0, reported: false },
+      { kind: 'delegation', count: 0, passed: 0, failed: 0, reported: false },
+    ],
+  }
 }
 
 class FakeEventSource {

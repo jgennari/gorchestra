@@ -22,6 +22,134 @@ export type Session = {
   archived_at: string | null
 }
 
+export type DashboardRange = '7d' | '30d' | '90d' | 'all'
+export type DashboardRunStatus = 'completed' | 'failed' | 'cancelled' | 'running' | 'unknown'
+export type DashboardRunKind = 'message' | 'compact' | 'unknown'
+export type DashboardOutcomeKind = 'commit' | 'pull_request' | 'test' | 'delegation'
+
+export type DashboardSummary = {
+  runs: number
+  completed_runs: number
+  failed_runs: number
+  cancelled_runs: number
+  running_runs: number
+  unknown_runs: number
+  active_now: number
+  success_rate: number | null
+  agent_runtime_ms: number
+  tool_calls: number
+  files_changed: number
+  input_requests: number
+  permission_requests: number
+  workspaces: number
+  agents: number
+}
+
+export type DashboardActivityBucket = {
+  start: string
+  end: string
+  completed: number
+  failed: number
+  cancelled: number
+  running: number
+  unknown: number
+}
+
+export type DashboardBreakdown = {
+  key: string
+  label: string
+  runs: number
+  completed_runs: number
+  failed_runs: number
+  cancelled_runs: number
+  running_runs: number
+  success_rate: number | null
+  agent_runtime_ms: number
+}
+
+export type DashboardOutcome = {
+  kind: DashboardOutcomeKind
+  count: number
+  passed: number
+  failed: number
+  reported: boolean
+}
+
+export type DashboardData = {
+  generated_at: string
+  range: DashboardRange
+  range_start: string
+  range_end: string
+  time_zone: string
+  bucket: 'day' | 'week' | 'month'
+  summary: DashboardSummary
+  activity: DashboardActivityBucket[]
+  workspaces: DashboardBreakdown[]
+  agents: DashboardBreakdown[]
+  usage: {
+    tokens: number
+    token_runs: number
+    cost_runs: number
+    eligible_runs: number
+    costs: Array<{ amount: number; currency: string; runs: number }>
+  }
+  outcomes: DashboardOutcome[]
+}
+
+export type DashboardRunOutcomeCounts = {
+  commits: number
+  pull_requests: number
+  tests: number
+  tests_passed: number
+  tests_failed: number
+  delegations: number
+}
+
+export type DashboardRun = {
+  id: string
+  session_id: string
+  session_title: string
+  kind: DashboardRunKind
+  agent_type: string
+  workspace_path: string
+  status: DashboardRunStatus
+  start_seq: number
+  terminal_seq?: number
+  started_at: string
+  completed_at?: string
+  duration_ms: number
+  summary: string
+  error: string
+  tool_count: number
+  file_count: number
+  input_request_count: number
+  permission_request_count: number
+  token_count: number
+  has_token_usage: boolean
+  cost_amount: number
+  cost_currency: string
+  has_cost_usage: boolean
+  archived: boolean
+  outcomes: DashboardRunOutcomeCounts
+}
+
+export type DashboardRunPage = {
+  runs: DashboardRun[]
+  next_cursor?: string
+  total: number
+}
+
+export type DashboardRunFilters = {
+  status?: DashboardRunStatus
+  kind?: DashboardRunKind | 'all'
+  agent?: string
+  workspace?: string
+  outcome?: DashboardOutcomeKind
+  sort?: 'recent' | 'duration'
+  bucket_start?: string
+  bucket_end?: string
+}
+
 export type SessionAgentOptions = {
   codex?: {
     run_dangerously?: boolean
@@ -516,8 +644,38 @@ export async function listSessions(options: ListSessionsOptions | number = {}) {
   return data.sessions
 }
 
+export async function getDashboard(range: DashboardRange = '30d') {
+  const params = new URLSearchParams({
+    range,
+    time_zone: dashboardTimeZone(),
+  })
+  return requestJSON<DashboardData>(`/api/dashboard?${params.toString()}`)
+}
+
+export async function listDashboardRuns(
+  range: DashboardRange = '30d',
+  filters: DashboardRunFilters = {},
+  cursor = '',
+  limit = 25,
+) {
+  const params = new URLSearchParams({
+    range,
+    time_zone: dashboardTimeZone(),
+    limit: String(limit),
+  })
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params.set(key, value)
+  }
+  if (cursor) params.set('cursor', cursor)
+  return requestJSON<DashboardRunPage>(`/api/dashboard/runs?${params.toString()}`)
+}
+
 export async function getSession(sessionID: string) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`)
+}
+
+function dashboardTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 }
 
 export async function clearSessionNotificationAttention(sessionID: string) {

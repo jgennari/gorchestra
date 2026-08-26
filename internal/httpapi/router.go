@@ -74,6 +74,11 @@ type Store interface {
 	ClearNotificationAttention(ctx context.Context, sessionID string) error
 }
 
+type DashboardStore interface {
+	Dashboard(context.Context, store.DashboardParams) (store.DashboardData, error)
+	ListDashboardRuns(context.Context, store.DashboardRunListParams) (store.DashboardRunPage, error)
+}
+
 type EventService interface {
 	Append(ctx context.Context, params eventservice.AppendParams) (store.Event, error)
 	Subscribe(sessionID string) (<-chan store.Event, func())
@@ -157,6 +162,7 @@ type API struct {
 	executable    string
 	hosting       HostingManager
 	hostStore     HostRuntimeStore
+	dashboard     DashboardStore
 }
 
 var _ RunManager = (*runcontrol.Manager)(nil)
@@ -216,6 +222,9 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.executable = deps[0].Executable
 		api.hosting = deps[0].Hosting
 		api.hostStore = deps[0].HostStore
+		if dashboard, ok := deps[0].Store.(DashboardStore); ok {
+			api.dashboard = dashboard
+		}
 	}
 	if api.console == nil {
 		api.console = console.NewManager()
@@ -259,6 +268,10 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
 		r.Get("/api/sessions/{sessionId}/events/{seq}/attachments/{attachmentIndex}", api.eventAttachmentHandler)
 		r.Get("/api/sessions/{sessionId}/events/{seq}/tool-content/{contentIndex}", api.eventToolContentHandler)
+	}
+	if api.dashboard != nil {
+		r.Get("/api/dashboard", api.dashboardHandler)
+		r.Get("/api/dashboard/runs", api.dashboardRunsHandler)
 	}
 	if api.store != nil && api.hosting != nil {
 		r.Get("/api/sessions/{sessionId}/host", api.hostStatusHandler)

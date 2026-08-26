@@ -1326,6 +1326,11 @@ func (api API) startSessionRun(
 	appendBeforeRun func(context.Context) error,
 	appendErrorMessage string,
 ) (store.Session, bool) {
+	runID, err := store.NewRunID()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create run")
+		return store.Session{}, false
+	}
 	runCtx, cleanup, err := api.runs.Register(context.Background(), session.ID)
 	if err != nil {
 		if errors.Is(err, runcontrol.ErrRunAlreadyActive) {
@@ -1365,14 +1370,20 @@ func (api API) startSessionRun(
 		writeError(w, http.StatusInternalServerError, "failed to mark session running")
 		return store.Session{}, false
 	}
-	if err := api.appendSessionStatusUpdated(r.Context(), updatedSession); err != nil {
+	if err := api.appendSessionStatusUpdated(r.Context(), updatedSession, map[string]any{
+		"run_id":         runID,
+		"run_kind":       string(action),
+		"agent_type":     session.AgentType,
+		"workspace_path": sessionWorkspacePath(session, api.workdir),
+		"agent_options":  metadata,
+	}); err != nil {
 		cleanup()
 		writeError(w, http.StatusInternalServerError, "failed to emit session status")
 		return store.Session{}, false
 	}
 
 	go func() {
-		completed := api.runAgent(runCtx, updatedSession, message, attachments, skills, agent, metadata, action)
+		completed := api.runAgent(runCtx, updatedSession, message, attachments, skills, agent, metadata, action, runID)
 		cleanup()
 		if completed {
 			api.startQueuedMessageRun(context.Background(), session.ID)
@@ -1448,6 +1459,13 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		release()
 		return false
 	}
+	runID, err := store.NewRunID()
+	if err != nil {
+		cleanup()
+		log.Printf("failed to create queued message run: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
+		release()
+		return false
+	}
 
 	if err := api.appendUserMessage(ctx, session.ID, queued.Content, nil, skills, eventOptions, queued.ID); err != nil {
 		cleanup()
@@ -1465,7 +1483,13 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		release()
 		return false
 	}
-	if err := api.appendSessionStatusUpdated(ctx, updatedSession); err != nil {
+	if err := api.appendSessionStatusUpdated(ctx, updatedSession, map[string]any{
+		"run_id":         runID,
+		"run_kind":       string(agents.AgentActionMessage),
+		"agent_type":     session.AgentType,
+		"workspace_path": sessionWorkspacePath(session, api.workdir),
+		"agent_options":  metadata,
+	}); err != nil {
 		cleanup()
 		log.Printf("failed to emit queued session status: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
 		release()
@@ -1482,7 +1506,7 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 	}
 
 	go func() {
-		completed := api.runAgent(runCtx, updatedSession, queued.Content, nil, skills, agent, metadata, agents.AgentActionMessage)
+		completed := api.runAgent(runCtx, updatedSession, queued.Content, nil, skills, agent, metadata, agents.AgentActionMessage, runID)
 		cleanup()
 		if completed {
 			api.startQueuedMessageRun(context.Background(), session.ID)
@@ -1760,6 +1784,7 @@ func (api API) runAgent(
 	agent agents.Agent,
 	metadata map[string]any,
 	action agents.AgentAction,
+	runID string,
 ) bool {
 	terminalEventEmitted := false
 	emit := func(ctx context.Context, event agents.AgentEvent) error {
@@ -1774,7 +1799,7 @@ func (api API) runAgent(
 		}
 		session = updatedSession
 
-		if err := api.appendAgentEvent(ctx, session.ID, event); err != nil {
+		if err := api.appendAgentEvent(ctx, session.ID, event, runID); err != nil {
 			return err
 		}
 		if terminalEvent {
@@ -1789,7 +1814,7 @@ func (api API) runAgent(
 		Action:            action,
 		Message:           message,
 		Workdir:           sessionWorkspacePath(session, api.workdir),
-		Environment:       api.agentRuntimeEnvironment(session.ID),
+		Environment:       api.agentRuntimeEnvironment(session.ID, runID),
 		Context:           api.agentHostingContext(sessionWorkspacePath(session, api.workdir)),
 		Metadata:          metadata,
 		Attachments:       attachments,
@@ -1799,7 +1824,7 @@ func (api API) runAgent(
 	}, emit)
 	if errors.Is(err, context.Canceled) {
 		if !terminalEventEmitted {
-			if appendErr := api.appendAgentRunCancelled(context.Background(), session.ID, agent.Type()); appendErr != nil {
+			if appendErr := api.appendAgentRunCancelled(context.Background(), session.ID, agent.Type(), runID); appendErr != nil {
 				log.Printf("failed to append agent.run.cancelled: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), appendErr)
 			} else {
 				terminalEventEmitted = true
@@ -1817,7 +1842,7 @@ func (api API) runAgent(
 		log.Printf("agent run failed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), err)
 
 		if !terminalEventEmitted {
-			if appendErr := api.appendAgentRunFailed(context.Background(), session.ID, agent.Type(), err); appendErr != nil {
+			if appendErr := api.appendAgentRunFailed(context.Background(), session.ID, agent.Type(), err, runID); appendErr != nil {
 				log.Printf("failed to append agent.run.failed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), appendErr)
 			} else {
 				terminalEventEmitted = true
@@ -1833,7 +1858,7 @@ func (api API) runAgent(
 	}
 
 	if !terminalEventEmitted {
-		if appendErr := api.appendAgentRunCompleted(context.Background(), session.ID, agent.Type()); appendErr != nil {
+		if appendErr := api.appendAgentRunCompleted(context.Background(), session.ID, agent.Type(), runID); appendErr != nil {
 			log.Printf("failed to append agent.run.completed: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), appendErr)
 			if _, updateErr := api.updateSessionStatus(context.Background(), store.UpdateSessionStatusParams{
 				ID:     session.ID,
@@ -1855,9 +1880,12 @@ func (api API) runAgent(
 	return true
 }
 
-func (api API) agentRuntimeEnvironment(sessionID string) map[string]string {
+func (api API) agentRuntimeEnvironment(sessionID string, runIDs ...string) map[string]string {
 	environment := map[string]string{
 		"GORCHESTRA_SESSION_ID": sessionID,
+	}
+	if len(runIDs) > 0 && strings.TrimSpace(runIDs[0]) != "" {
+		environment["GORCHESTRA_RUN_ID"] = strings.TrimSpace(runIDs[0])
 	}
 	if strings.TrimSpace(api.agentAPIURL) != "" {
 		environment["GORCHESTRA_API_URL"] = strings.TrimRight(api.agentAPIURL, "/")
@@ -1967,7 +1995,7 @@ func (api API) updateSessionStatus(ctx context.Context, params store.UpdateSessi
 	return session, nil
 }
 
-func (api API) appendAgentEvent(ctx context.Context, sessionID string, event agents.AgentEvent) error {
+func (api API) appendAgentEvent(ctx context.Context, sessionID string, event agents.AgentEvent, runIDs ...string) error {
 	eventType := strings.TrimSpace(event.Type)
 	if eventType == "" {
 		return fmt.Errorf("agent event type is required")
@@ -1982,6 +2010,16 @@ func (api API) appendAgentEvent(ctx context.Context, sessionID string, event age
 	if err != nil {
 		return fmt.Errorf("marshal agent event payload: %w", err)
 	}
+	if len(runIDs) > 0 && strings.TrimSpace(runIDs[0]) != "" {
+		var payloadValue map[string]any
+		if err := json.Unmarshal(payload, &payloadValue); err == nil && payloadValue != nil {
+			payloadValue["run_id"] = strings.TrimSpace(runIDs[0])
+			payload, err = json.Marshal(payloadValue)
+			if err != nil {
+				return fmt.Errorf("marshal run-linked agent event payload: %w", err)
+			}
+		}
+	}
 
 	_, err = api.events.Append(ctx, eventservice.AppendParams{
 		SessionID: sessionID,
@@ -1993,7 +2031,7 @@ func (api API) appendAgentEvent(ctx context.Context, sessionID string, event age
 	return err
 }
 
-func (api API) appendSessionStatusUpdated(ctx context.Context, session store.Session) error {
+func (api API) appendSessionStatusUpdated(ctx context.Context, session store.Session, metadata ...map[string]any) error {
 	payload := map[string]any{
 		"status":     string(session.Status),
 		"updated_at": session.UpdatedAt.UTC().Format(time.RFC3339Nano),
@@ -2002,6 +2040,11 @@ func (api API) appendSessionStatusUpdated(ctx context.Context, session store.Ses
 		payload["completed_at"] = session.CompletedAt.UTC().Format(time.RFC3339Nano)
 	} else {
 		payload["completed_at"] = nil
+	}
+	if len(metadata) > 0 {
+		for key, value := range metadata[0] {
+			payload[key] = value
+		}
 	}
 
 	encoded, err := json.Marshal(payload)
@@ -2030,7 +2073,7 @@ func eventStatusForSessionStatus(status store.SessionStatus) store.EventStatus {
 	}
 }
 
-func (api API) appendAgentRunFailed(ctx context.Context, sessionID string, agentType string, runErr error) error {
+func (api API) appendAgentRunFailed(ctx context.Context, sessionID string, agentType string, runErr error, runIDs ...string) error {
 	return api.appendAgentEvent(ctx, sessionID, agents.AgentEvent{
 		Type:   "agent.run.failed",
 		Role:   "assistant",
@@ -2039,10 +2082,10 @@ func (api API) appendAgentRunFailed(ctx context.Context, sessionID string, agent
 			"agent_type": agentType,
 			"error":      runErr.Error(),
 		},
-	})
+	}, runIDs...)
 }
 
-func (api API) appendAgentRunCompleted(ctx context.Context, sessionID string, agentType string) error {
+func (api API) appendAgentRunCompleted(ctx context.Context, sessionID string, agentType string, runIDs ...string) error {
 	return api.appendAgentEvent(ctx, sessionID, agents.AgentEvent{
 		Type:   "agent.run.completed",
 		Role:   "assistant",
@@ -2050,10 +2093,10 @@ func (api API) appendAgentRunCompleted(ctx context.Context, sessionID string, ag
 		Payload: map[string]any{
 			"agent_type": agentType,
 		},
-	})
+	}, runIDs...)
 }
 
-func (api API) appendAgentRunCancelled(ctx context.Context, sessionID string, agentType string) error {
+func (api API) appendAgentRunCancelled(ctx context.Context, sessionID string, agentType string, runIDs ...string) error {
 	return api.appendAgentEvent(ctx, sessionID, agents.AgentEvent{
 		Type:   "agent.run.cancelled",
 		Role:   "assistant",
@@ -2061,7 +2104,7 @@ func (api API) appendAgentRunCancelled(ctx context.Context, sessionID string, ag
 		Payload: map[string]any{
 			"agent_type": agentType,
 		},
-	})
+	}, runIDs...)
 }
 
 func (api API) failRunningSessionWithoutActiveRun(ctx context.Context, session store.Session) (store.Session, bool) {

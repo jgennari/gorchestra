@@ -64,6 +64,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AppMenu } from '@/components/app-menu'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
+import { DashboardOverview } from '@/components/dashboard-overview'
 import { HostConsole } from '@/components/host-console'
 import { HostPreview } from '@/components/host-preview'
 import { NotificationsDialog } from '@/components/notifications-dialog'
@@ -159,13 +160,16 @@ function App() {
   const [workspaceFileDirty, setWorkspaceFileDirty] = useState(false)
   const [fileRefreshKey, setFileRefreshKey] = useState(0)
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
+  const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0)
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
   const [notificationAttentionRestored, setNotificationAttentionRestored] = useState(false)
   const [sessionSearchQuery, setSessionSearchQuery] = useState('')
   const [sessionListFilters, setSessionListFilters] = useState<SessionListFilters>(defaultSessionListFilters)
   const [appView, setAppView] = useState<AppView>(() => selectedSessionRouteFromLocation().view)
+  const [overviewSelected, setOverviewSelected] = useState(() => !isSessionLocation())
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
+  const overviewSelectedRef = useRef(overviewSelected)
   const appViewRef = useRef<AppView>(appView)
   const openWorkspaceFileRef = useRef<WorkspaceFileContent | null>(openWorkspaceFile)
   const sessionsRef = useRef<Session[]>(initialSessionState.sessions)
@@ -281,7 +285,7 @@ function App() {
     void writePersistentCachedSession(session)
     setSessions((current) => {
       let next: Session[]
-      if (session.archived_at && !sessionListFilters.includeArchived) {
+      if (session.archived_at && !sessionListFilters.includeArchived && session.id !== selectedSessionIDRef.current) {
         next = current.filter((item) => item.id !== session.id)
       } else {
         next = sortSessions([session, ...current.filter((item) => item.id !== session.id)])
@@ -292,12 +296,22 @@ function App() {
   }, [sessionListFilters.includeArchived])
 
   const selectSession = useCallback((sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
+    const nextOverviewSelected = sessionID === null
+    overviewSelectedRef.current = nextOverviewSelected
+    setOverviewSelected(nextOverviewSelected)
     selectedSessionIDRef.current = sessionID
     setSelectedSessionID(sessionID)
     if (historyMode !== 'none') {
       writeSelectedSessionRoute(sessionID, historyMode, appViewRef.current, sessionsRef.current)
     }
   }, [])
+
+  const selectOverview = useCallback((historyMode: SessionRouteHistoryMode = 'push') => {
+    appViewRef.current = 'session'
+    setAppView('session')
+    selectSession(null, historyMode)
+    setMobileListOpen(false)
+  }, [selectSession])
 
   const selectAppView = useCallback(
     (view: AppView, historyMode: Exclude<SessionRouteHistoryMode, 'none'> = 'push', filePath: string | null = null) => {
@@ -397,6 +411,10 @@ function App() {
   }, [selectedSessionID])
 
   useEffect(() => {
+    overviewSelectedRef.current = overviewSelected
+  }, [overviewSelected])
+
+  useEffect(() => {
     appViewRef.current = appView
   }, [appView])
 
@@ -416,6 +434,10 @@ function App() {
   useEffect(() => {
     function handlePopState() {
       const route = selectedSessionRouteFromLocation()
+      if (!isSessionLocation()) {
+        selectOverview('none')
+        return
+      }
       appViewRef.current = route.view
       setAppView(route.view)
       requestSessionSelection(resolveSessionRouteSessionID(route, sessionsRef.current), 'none')
@@ -423,7 +445,7 @@ function App() {
 
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
-  }, [requestSessionSelection])
+  }, [requestSessionSelection, selectOverview])
 
   useEffect(() => {
     setShowDebugEvents(loadSessionDebugPreference(selectedSessionID))
@@ -483,7 +505,7 @@ function App() {
         !cachedSession ||
         selectedSessionIDRef.current !== sessionID ||
         sessionsRef.current.some((session) => session.id === sessionID) ||
-        (cachedSession.archived_at && !sessionListFilters.includeArchived)
+        (cachedSession.archived_at && !sessionListFilters.includeArchived && cachedSession.id !== selectedSessionIDRef.current)
       ) {
         return
       }
@@ -562,6 +584,7 @@ function App() {
           void refreshSession(event.session_id)
         }, 250)
       }
+      setDashboardRefreshKey((value) => value + 1)
     },
     [applySessionActivityEvent, markSessionUnseenAfter, playSessionStopSound, refreshSession, showSessionStopNotification],
   )
@@ -629,7 +652,9 @@ function App() {
       const routeSelectedID = resolveSessionRouteSessionID(route, mergedSessions)
       const preserveSlugRoute = Boolean(route.sessionSlug && routeSelectedID)
       const nextSelectedID =
-        routeSelectedID && mergedSessions.some((session) => session.id === routeSelectedID)
+        overviewSelectedRef.current && !isSessionLocation()
+          ? null
+          : routeSelectedID && mergedSessions.some((session) => session.id === routeSelectedID)
           ? routeSelectedID
           : !route.sessionSlug && selectedID && mergedSessions.some((session) => session.id === selectedID)
           ? selectedID
@@ -1021,6 +1046,8 @@ function App() {
     filters: sessionListFilters,
     onFiltersChange: setSessionListFilters,
     onSelect: (sessionID: string) => requestSessionSelection(sessionID, 'push'),
+    overviewSelected,
+    onOverview: () => selectOverview('push'),
     onCreate: () => setCreateOpen(true),
     appMenuAction: renderAppMenu(),
   }
@@ -1122,6 +1149,7 @@ function App() {
     : null
   const resolvingSelectedSessionID = selectedSession ? null : (selectedSessionID ?? unresolvedRouteSessionKey)
   const resolvingChatSessionID = selectedSession ? null : (selectedSessionID ?? unresolvedRouteSessionKey)
+  const isOverview = overviewSelected && selectedSessionID === null
 
   return (
     <main className="app-shell">
@@ -1129,18 +1157,27 @@ function App() {
         {list}
       </div>
 
-      <PaneResizeHandle
-        label="Resize sessions pane"
-        value={paneWidths.left}
-        min={paneLimits.leftMin}
-        max={paneLimits.leftMax}
-        onPointerDown={(event) => beginPaneResize('left', event)}
-        onKeyDown={(event) => handlePaneResizeKey('left', event)}
-      />
+      {!isOverview ? (
+        <PaneResizeHandle
+          label="Resize sessions pane"
+          value={paneWidths.left}
+          min={paneLimits.leftMin}
+          max={paneLimits.leftMax}
+          onPointerDown={(event) => beginPaneResize('left', event)}
+          onKeyDown={(event) => handlePaneResizeKey('left', event)}
+        />
+      ) : null}
 
       <section className="command-workspace flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="relative min-h-0 flex-1 overflow-hidden">
-          {appView === 'console' ? (
+          {isOverview ? (
+            <DashboardOverview
+              refreshKey={dashboardRefreshKey}
+              onOpenSession={(sessionID) => requestSessionSelection(sessionID, 'push')}
+              onOpenSessions={() => setMobileListOpen(true)}
+              onCreate={() => setCreateOpen(true)}
+            />
+          ) : appView === 'console' ? (
             <HostConsole
               session={selectedSession}
               resolvingSessionID={resolvingSelectedSessionID}
@@ -1414,16 +1451,18 @@ function App() {
         </div>
       </section>
 
-      <PaneResizeHandle
-        label="Resize details pane"
-        value={paneWidths.right}
-        min={paneLimits.rightMin}
-        max={paneLimits.rightMax}
-        onPointerDown={(event) => beginPaneResize('right', event)}
-        onKeyDown={(event) => handlePaneResizeKey('right', event)}
-      />
+      {!isOverview ? (
+        <PaneResizeHandle
+          label="Resize details pane"
+          value={paneWidths.right}
+          min={paneLimits.rightMin}
+          max={paneLimits.rightMax}
+          onPointerDown={(event) => beginPaneResize('right', event)}
+          onKeyDown={(event) => handlePaneResizeKey('right', event)}
+        />
+      ) : null}
 
-      <div className="hidden min-h-0 shrink-0 lg:flex" style={paneWidthStyle(paneWidths.right)}>
+      <div className={cn('min-h-0 shrink-0', isOverview ? 'hidden' : 'hidden lg:flex')} style={paneWidthStyle(paneWidths.right)}>
         <RunHealthRail
           session={selectedSession}
           resolvingSessionID={resolvingSelectedSessionID}
@@ -2324,6 +2363,10 @@ function selectedSessionRouteFromLocation() {
     return { sessionID: null, sessionSlug: null, view: 'session' as const, filePath: null }
   }
   return sessionRouteFromPathname(window.location.pathname)
+}
+
+function isSessionLocation() {
+  return typeof window !== 'undefined' && window.location.pathname.startsWith('/sessions/')
 }
 
 function resolveSessionRouteSessionID(route: SessionRoute, sessions: Session[]) {

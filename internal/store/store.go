@@ -61,6 +61,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := store.syncDashboardProjection(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	return store, nil
 }
@@ -603,6 +607,10 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 		formatTime(event.CreatedAt),
 	); err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
+	}
+
+	if err := projectDashboardEvent(ctx, tx, event); err != nil {
+		return Event{}, err
 	}
 
 	if err := tx.Commit(); err != nil {

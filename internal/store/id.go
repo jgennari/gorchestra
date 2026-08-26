@@ -30,3 +30,7 @@ func newPrefixedUUID(prefix string) (string, error) {
 func NewEventID() (string, error) {
 	return newPrefixedUUID("evt_")
 }
+
+func NewRunID() (string, error) {
+	return newPrefixedUUID("run_")
+}

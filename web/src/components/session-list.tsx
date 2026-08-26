@@ -1,4 +1,4 @@
-import { Archive, ListFilter, LoaderCircle, Plus, Search } from 'lucide-react'
+import { Archive, LayoutDashboard, ListFilter, LoaderCircle, Plus, Search } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -25,6 +25,8 @@ type Props = {
   filters: SessionListFilters
   onFiltersChange: (filters: SessionListFilters) => void
   onSelect: (sessionID: string) => void
+  overviewSelected?: boolean
+  onOverview?: () => void
   onCreate: () => void
   appMenuAction?: ReactNode
   variant?: 'full' | 'embedded'
@@ -40,6 +42,8 @@ export function SessionList({
   filters,
   onFiltersChange,
   onSelect,
+  overviewSelected = false,
+  onOverview,
   onCreate,
   appMenuAction,
   variant = 'full',
@@ -95,7 +99,9 @@ export function SessionList({
     >
       {showHeader ? (
         <div className="flex items-center justify-between gap-3 border-b border-border/70 p-4">
-          <img src="/icon.svg" alt="Gorchestra" className="sidebar-logo-mark h-9 w-9 shrink-0" />
+          <button type="button" aria-label="Open overview" onClick={onOverview} className="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <img src="/icon.svg" alt="Gorchestra" className="sidebar-logo-mark h-9 w-9 shrink-0" />
+          </button>
           <div className="flex shrink-0 items-center gap-2">
             {appMenuAction}
             <Button aria-label="Create session" size="icon" onClick={onCreate} className="shadow-sm">
@@ -104,6 +110,21 @@ export function SessionList({
           </div>
         </div>
       ) : null}
+
+      <div className="border-b border-border/70 p-2.5">
+        <button
+          type="button"
+          onClick={onOverview}
+          aria-current={overviewSelected ? 'page' : undefined}
+          className={cn(
+            'flex w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left text-sm font-medium transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+            overviewSelected && 'border-primary/30 bg-background/80 shadow-sm',
+          )}
+        >
+          <LayoutDashboard className="size-4 text-muted-foreground" />
+          Overview
+        </button>
+      </div>
 
       <div className="border-b border-border/70 p-3">
         <div ref={filtersRef} className="relative flex items-center gap-2">
