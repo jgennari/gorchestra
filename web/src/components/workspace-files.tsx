@@ -1,5 +1,18 @@
 import Editor from '@monaco-editor/react'
-import { Code2, Download, ExternalLink, Eye, FileText, Folder, Loader2, RefreshCw, Save, Search, Upload, X } from 'lucide-react'
+import {
+  Code2,
+  Download,
+  ExternalLink,
+  Eye,
+  FileText,
+  Folder,
+  Loader2,
+  RefreshCw,
+  Save,
+  Search,
+  Upload,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -34,6 +47,7 @@ export function WorkspaceFilesView({
   onFileSaved,
   onCloseFile,
   onDirtyChange,
+  focusedLine = 0,
 }: {
   session: Session | null
   resolvingSessionID?: string | null
@@ -44,6 +58,7 @@ export function WorkspaceFilesView({
   onFileSaved: (file: WorkspaceFileContent) => void
   onCloseFile: () => void
   onDirtyChange?: (dirty: boolean) => void
+  focusedLine?: number
 }) {
   return (
     <section className="relative flex h-full min-h-0 w-full flex-col bg-transparent">
@@ -77,6 +92,7 @@ export function WorkspaceFilesView({
               onFileSaved={onFileSaved}
               onDirtyChange={onDirtyChange}
               onClose={onCloseFile}
+              focusedLine={focusedLine}
             />
           ) : (
             <div className="flex h-full min-h-[20rem] flex-col items-center justify-center p-8 text-center">
@@ -349,7 +365,11 @@ export function WorkspaceFileBrowser({
             {!isAtWorkspaceRoot ? (
               <>
                 <FileNavigationButton label="." tone="root" onClick={() => navigateToDirectory('')} />
-                <FileNavigationButton label=".." tone="parent" onClick={() => navigateToDirectory(parentPath(currentPath))} />
+                <FileNavigationButton
+                  label=".."
+                  tone="parent"
+                  onClick={() => navigateToDirectory(parentPath(currentPath))}
+                />
               </>
             ) : null}
             {displayEntries.map((entry) => {
@@ -397,6 +417,7 @@ export function WorkspaceFileContentView({
   onFileSaved,
   onDirtyChange,
   onClose,
+  focusedLine = 0,
 }: {
   sessionID: string
   file: WorkspaceFileContent
@@ -404,6 +425,7 @@ export function WorkspaceFileContentView({
   onFileSaved: (file: WorkspaceFileContent) => void
   onDirtyChange?: (dirty: boolean) => void
   onClose?: () => void
+  focusedLine?: number
 }) {
   const previewKind = file.preview_kind ?? 'none'
   const mediaPreviewable = previewKind !== 'none'
@@ -414,7 +436,7 @@ export function WorkspaceFileContentView({
   const previewURL = sessionID ? sessionFileRawURL(sessionID, file.path) : ''
   const rawURL = sessionID ? sessionFileRawURL(sessionID, file.path, { raw: true }) : ''
   const downloadURL = sessionID ? sessionFileRawURL(sessionID, file.path, { download: true }) : ''
-  const [mode, setMode] = useState<FileViewMode>(markdown ? 'preview' : 'edit')
+  const [mode, setMode] = useState<FileViewMode>(markdown && focusedLine <= 0 ? 'preview' : 'edit')
   const [draft, setDraft] = useState(file.content)
   const [saveState, setSaveState] = useState<FileSaveState>('clean')
   const [saveError, setSaveError] = useState('')
@@ -437,12 +459,21 @@ export function WorkspaceFileContentView({
 
   useEffect(() => {
     clearSaveResetTimer()
-    setMode(markdown ? 'preview' : 'edit')
+    setMode(markdown && focusedLine <= 0 ? 'preview' : 'edit')
     setDraft(file.content)
     setSaveState('clean')
     setSaveError('')
     setMediaError(false)
-  }, [clearSaveResetTimer, file.content, file.modified_at, file.path, file.name, file.preview_kind, markdown])
+  }, [
+    clearSaveResetTimer,
+    file.content,
+    file.modified_at,
+    file.path,
+    file.name,
+    file.preview_kind,
+    focusedLine,
+    markdown,
+  ])
 
   useEffect(() => clearSaveResetTimer, [clearSaveResetTimer])
 
@@ -573,10 +604,24 @@ export function WorkspaceFileContentView({
           mode === 'preview' ? (
             <MarkdownFilePreview content={draft} resolvedTheme={resolvedTheme} />
           ) : (
-            <WorkspaceFileEditor file={file} value={draft} resolvedTheme={resolvedTheme} onChange={handleDraftChange} />
+            <WorkspaceFileEditor
+              key={`${file.path}:${focusedLine}`}
+              file={file}
+              value={draft}
+              resolvedTheme={resolvedTheme}
+              onChange={handleDraftChange}
+              focusedLine={focusedLine}
+            />
           )
         ) : editable ? (
-          <WorkspaceFileEditor file={file} value={draft} resolvedTheme={resolvedTheme} onChange={handleDraftChange} />
+          <WorkspaceFileEditor
+            key={`${file.path}:${focusedLine}`}
+            file={file}
+            value={draft}
+            resolvedTheme={resolvedTheme}
+            onChange={handleDraftChange}
+            focusedLine={focusedLine}
+          />
         ) : (
           <pre className="min-h-full overflow-auto rounded-md bg-surface-muted/80 p-4 text-xs leading-relaxed text-foreground">
             <code>{file.content}</code>
@@ -766,11 +811,13 @@ function WorkspaceFileEditor({
   value,
   resolvedTheme,
   onChange,
+  focusedLine = 0,
 }: {
   file: WorkspaceFileContent
   value: string
   resolvedTheme: 'light' | 'dark'
   onChange: (value: string | undefined) => void
+  focusedLine?: number
 }) {
   return (
     <div className="h-full min-h-[320px] overflow-hidden rounded-md border border-border/70 bg-background">
@@ -781,6 +828,13 @@ function WorkspaceFileEditor({
         theme={resolvedTheme === 'dark' ? 'vs-dark' : 'light'}
         value={value}
         onChange={onChange}
+        onMount={(editor) => {
+          if (focusedLine <= 0) return
+          const line = Math.min(focusedLine, editor.getModel()?.getLineCount() ?? focusedLine)
+          editor.setPosition({ lineNumber: line, column: 1 })
+          editor.revealLineInCenter(line)
+          editor.focus()
+        }}
         options={{
           automaticLayout: true,
           fontSize: 13,
@@ -854,9 +908,7 @@ function MarkdownPreviewCode({
 }
 
 type MermaidRenderState =
-  | { status: 'loading' }
-  | { status: 'rendered'; svg: string }
-  | { status: 'error'; message: string }
+  { status: 'loading' } | { status: 'rendered'; svg: string } | { status: 'error'; message: string }
 
 let mermaidRenderCounter = 0
 let mermaidRenderQueue = Promise.resolve()

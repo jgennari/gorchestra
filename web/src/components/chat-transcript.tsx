@@ -1,4 +1,15 @@
-import { Brain, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Copy, Download, FileText, Loader2 } from 'lucide-react'
+import {
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  ClipboardList,
+  Copy,
+  Download,
+  FileText,
+  Loader2,
+} from 'lucide-react'
 import {
   isValidElement,
   useCallback,
@@ -15,7 +26,7 @@ import {
   type WheelEvent,
 } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Virtuoso } from 'react-virtuoso'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import remarkGfm from 'remark-gfm'
 import type { AgentEvent } from '@/lib/api'
 import type {
@@ -55,12 +66,18 @@ type Props = {
   onJumpToLatest?: () => Promise<void> | void
   onFollowingTailChange?: (following: boolean) => void
   onOpenFilePath?: (path: string) => Promise<void> | void
+  focusSeq?: number
 }
 
 type VirtualTimelineItem =
   | { kind: 'older-control'; id: string }
   | { kind: 'newer-control'; id: string }
-  | { kind: 'timeline'; id: string; item: ChatTimelineItem; timelineIndex: number }
+  | {
+      kind: 'timeline'
+      id: string
+      item: ChatTimelineItem
+      timelineIndex: number
+    }
   | { kind: 'activity'; id: string; status: ChatActivityStatus }
   | { kind: 'spacer'; id: string; height: number }
 
@@ -88,6 +105,7 @@ export function ChatTranscript({
   onJumpToLatest,
   onFollowingTailChange,
   onOpenFilePath,
+  focusSeq = 0,
 }: Props) {
   const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
   const scrollerElementRef = useRef<HTMLElement | null>(null)
@@ -100,6 +118,7 @@ export function ChatTranscript({
   const lastTouchYRef = useRef<number | null>(null)
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
   const followingTailRef = useRef(true)
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   useLayoutEffect(() => {
     followingTailRef.current = !autoScrollPaused && !hasNewerEvents
@@ -180,10 +199,7 @@ export function ChatTranscript({
 
   function handleScrollKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     const movingTowardOlder =
-      event.key === 'ArrowUp' ||
-      event.key === 'PageUp' ||
-      event.key === 'Home' ||
-      (event.key === ' ' && event.shiftKey)
+      event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home' || (event.key === ' ' && event.shiftKey)
     if (scrollIntentKeys.has(event.key) && (!atBottomRef.current || movingTowardOlder)) {
       markUserScrollIntent()
     }
@@ -215,10 +231,9 @@ export function ChatTranscript({
     userScrollIntentRef.current = true
     setAutoScrollPaused(true)
     onFollowingTailChange?.(false)
-    return Promise.resolve(onLoadOlderEvents())
-      .finally(() => {
-        autoLoadOlderRef.current = false
-      })
+    return Promise.resolve(onLoadOlderEvents()).finally(() => {
+      autoLoadOlderRef.current = false
+    })
   }
 
   function requestNewerEvents() {
@@ -242,7 +257,15 @@ export function ChatTranscript({
     if (activityStatus && !hasNewerEvents) items.push({ kind: 'activity', id: 'activity', status: activityStatus })
     items.push({ kind: 'spacer', id: 'tail-spacer', height: tailSpacerHeight })
     return items
-  }, [activityStatus, hasNewerEvents, hasOlderEvents, loadingNewerEvents, loadingOlderEvents, tailSpacerHeight, timeline])
+  }, [
+    activityStatus,
+    hasNewerEvents,
+    hasOlderEvents,
+    loadingNewerEvents,
+    loadingOlderEvents,
+    tailSpacerHeight,
+    timeline,
+  ])
   const virtualItemIDs = virtualItems.map((item) => item.id)
   const timelineItemIDs = virtualItems.filter((item) => item.kind === 'timeline').map((item) => item.id)
   const virtualItemIDsKey = virtualItemIDs.join('\0')
@@ -256,7 +279,9 @@ export function ChatTranscript({
   if (virtualIndexState.itemIDsKey !== virtualItemIDsKey) {
     const anchorID = virtualIndexState.timelineItemIDs.find((id) => virtualItemIDs.includes(id))
     firstItemIndex = anchorID
-      ? virtualIndexState.firstItemIndex + virtualIndexState.itemIDs.indexOf(anchorID) - virtualItemIDs.indexOf(anchorID)
+      ? virtualIndexState.firstItemIndex +
+        virtualIndexState.itemIDs.indexOf(anchorID) -
+        virtualItemIDs.indexOf(anchorID)
       : 1_000_000
     setVirtualIndexState({
       itemIDsKey: virtualItemIDsKey,
@@ -265,6 +290,25 @@ export function ChatTranscript({
       firstItemIndex,
     })
   }
+
+  const focusedVirtualIndex =
+    focusSeq > 0
+      ? virtualItems.findIndex((entry) => entry.kind === 'timeline' && timelineItemContainsSeq(entry.item, focusSeq))
+      : -1
+
+  useEffect(() => {
+    if (focusedVirtualIndex < 0) return
+    setAutoScrollPaused(true)
+    userScrollIntentRef.current = true
+    onFollowingTailChange?.(false)
+    const frame = window.requestAnimationFrame(() => {
+      virtuosoRef.current?.scrollToIndex({
+        index: firstItemIndex + focusedVirtualIndex,
+        align: 'center',
+      })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [firstItemIndex, focusSeq, focusedVirtualIndex, onFollowingTailChange])
 
   useEffect(() => {
     scheduleTailAlignment()
@@ -338,35 +382,42 @@ export function ChatTranscript({
       onPointerCancel={hideChatGlow}
     >
       <Virtuoso
-          scrollerRef={(element) => {
-            scrollerElementRef.current = element instanceof HTMLElement ? element : null
-          }}
-          className="chat-scroll-area subtle-scrollbar h-full min-h-0"
-          data={virtualItems}
-          computeItemKey={(_, item) => item.id}
-          firstItemIndex={firstItemIndex}
-          initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-          atBottomThreshold={AUTO_SCROLL_BOTTOM_THRESHOLD_PX}
-          atBottomStateChange={handleAtBottomChange}
-          increaseViewportBy={{ top: 600, bottom: 800 }}
-          overscan={200}
-          startReached={() => void requestOlderEvents()}
-          endReached={() => {
-            if (userScrollIntentRef.current) void requestNewerEvents()
-          }}
-          onWheel={handleWheel}
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          onTouchEnd={handleTouchEnd}
-          onKeyDown={handleScrollKeyDown}
-          role="log"
-          aria-label="Chat messages"
-          aria-live="polite"
-          aria-relevant="additions text"
-          itemContent={(_, virtualItem) => {
+        ref={virtuosoRef}
+        scrollerRef={(element) => {
+          scrollerElementRef.current = element instanceof HTMLElement ? element : null
+        }}
+        className="chat-scroll-area subtle-scrollbar h-full min-h-0"
+        data={virtualItems}
+        computeItemKey={(_, item) => item.id}
+        firstItemIndex={firstItemIndex}
+        initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
+        atBottomThreshold={AUTO_SCROLL_BOTTOM_THRESHOLD_PX}
+        atBottomStateChange={handleAtBottomChange}
+        increaseViewportBy={{ top: 600, bottom: 800 }}
+        overscan={200}
+        startReached={() => void requestOlderEvents()}
+        endReached={() => {
+          if (userScrollIntentRef.current) void requestNewerEvents()
+        }}
+        onWheel={handleWheel}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onKeyDown={handleScrollKeyDown}
+        role="log"
+        aria-label="Chat messages"
+        aria-live="polite"
+        aria-relevant="additions text"
+        itemContent={(_, virtualItem) => {
           if (virtualItem.kind === 'older-control') {
             return (
-              <div className={cn('px-4 pb-3', topInset === 'sessionHeader' && 'lg:pt-24', topInset === 'sessionHeaderAlert' && 'lg:pt-36')}>
+              <div
+                className={cn(
+                  'px-4 pb-3',
+                  topInset === 'sessionHeader' && 'lg:pt-24',
+                  topInset === 'sessionHeaderAlert' && 'lg:pt-36',
+                )}
+              >
                 <LoadOlderEventsButton loading={loadingOlderEvents} onLoad={() => requestOlderEvents(true)} />
               </div>
             )
@@ -379,35 +430,49 @@ export function ChatTranscript({
             )
           }
           if (virtualItem.kind === 'activity') {
-            return <div className="px-4 pt-3"><ActivityIndicatorRow status={virtualItem.status} /></div>
+            return (
+              <div className="px-4 pt-3">
+                <ActivityIndicatorRow status={virtualItem.status} />
+              </div>
+            )
           }
           if (virtualItem.kind === 'spacer') {
-            return <div data-testid="chat-transcript-tail-spacer" aria-hidden="true" style={{ height: `${virtualItem.height}px` }} />
+            return (
+              <div
+                data-testid="chat-transcript-tail-spacer"
+                aria-hidden="true"
+                style={{ height: `${virtualItem.height}px` }}
+              />
+            )
           }
           const { item, timelineIndex } = virtualItem
           return (
             <div
               className={cn(
                 'px-4',
+                timelineItemContainsSeq(item, focusSeq) && 'rounded-xl bg-primary/8 py-2 ring-2 ring-primary/45',
                 timelineIndex === 0 && !hasOlderEvents && topInset === 'sessionHeader' && 'lg:pt-24',
                 timelineIndex === 0 && !hasOlderEvents && topInset === 'sessionHeaderAlert' && 'lg:pt-36',
-                timelineRowSpacing(item, timeline[timelineIndex - 1], timelineIndex > 0 || hasOlderEvents || loadingOlderEvents),
+                timelineRowSpacing(
+                  item,
+                  timeline[timelineIndex - 1],
+                  timelineIndex > 0 || hasOlderEvents || loadingOlderEvents,
+                ),
               )}
             >
               <ChatTimelineRow
                 item={item}
+                focusSeq={focusSeq}
                 collapseExtraTools={item.kind === 'message' && timelineIndex < latestMessageIndex}
                 onOpenFilePath={onOpenFilePath}
               />
             </div>
           )
-          }}
+        }}
       />
       {autoScrollPaused || hasNewerEvents ? (
         <div
-          className={cn(
-            'pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4',
-          )}
+          className={cn('pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4')}
           style={{ bottom: `${jumpButtonBottom}px` }}
         >
           <button
@@ -524,6 +589,10 @@ function timelineRowSpacing(item: ChatTimelineItem, previous: ChatTimelineItem |
   return 'mt-5'
 }
 
+function timelineItemContainsSeq(item: ChatTimelineItem, seq: number) {
+  return seq > 0 && seq >= item.startSeq && seq <= item.endSeq
+}
+
 function LoadOlderEventsButton({ loading, onLoad }: { loading: boolean; onLoad?: () => Promise<void> | void }) {
   return (
     <div className="flex justify-center">
@@ -570,10 +639,12 @@ function ChatTimelineRow({
   item,
   collapseExtraTools,
   onOpenFilePath,
+  focusSeq,
 }: {
   item: ChatTimelineItem
   collapseExtraTools: boolean
   onOpenFilePath?: (path: string) => Promise<void> | void
+  focusSeq: number
 }) {
   if (item.kind === 'action') {
     return <ActionBreakRow action={item.action} />
@@ -589,17 +660,14 @@ function ChatTimelineRow({
       message={item.message}
       collapseExtraTools={collapseExtraTools}
       onOpenFilePath={onOpenFilePath}
+      focusSeq={focusSeq}
     />
   )
 }
 
 function ActionBreakRow({ action }: { action: ChatActionBreak }) {
   return (
-    <div
-      className="py-1"
-      role="separator"
-      aria-label={action.label}
-    >
+    <div className="py-1" role="separator" aria-label={action.label}>
       <div className="flex items-center gap-3">
         <div className="h-px flex-1 bg-border/70" aria-hidden="true" />
         <span className="rounded-full border border-border/70 bg-background/85 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground shadow-sm">
@@ -608,7 +676,10 @@ function ActionBreakRow({ action }: { action: ChatActionBreak }) {
         <div className="h-px flex-1 bg-border/70" aria-hidden="true" />
       </div>
       {action.detail ? (
-        <p className="mx-auto mt-1 max-w-[min(42rem,calc(100%-2rem))] truncate text-center font-mono text-[10px] text-muted-foreground" title={action.detail}>
+        <p
+          className="mx-auto mt-1 max-w-[min(42rem,calc(100%-2rem))] truncate text-center font-mono text-[10px] text-muted-foreground"
+          title={action.detail}
+        >
           {action.detail}
         </p>
       ) : null}
@@ -620,10 +691,12 @@ function ChatMessageRow({
   message,
   collapseExtraTools,
   onOpenFilePath,
+  focusSeq,
 }: {
   message: ChatTranscriptMessage
   collapseExtraTools: boolean
   onOpenFilePath?: (path: string) => Promise<void> | void
+  focusSeq: number
 }) {
   const user = message.role === 'user'
   const plan = message.variant === 'plan'
@@ -637,6 +710,11 @@ function ChatMessageRow({
   const hasHiddenTools = message.tools.length > visibleTools.length
   const timestamp = formatMessageTimestamp(message.createdAt)
   const showMessageCopy = Boolean(message.text && !message.streaming)
+  const focusedTool = message.tools.find((tool) => focusSeq >= tool.startSeq && focusSeq <= tool.endSeq)
+
+  useEffect(() => {
+    if (focusedTool) setShowAllTools(true)
+  }, [focusedTool])
 
   useEffect(() => {
     return () => {
@@ -697,11 +775,18 @@ function ChatMessageRow({
                 transform: showMessageRail ? 'translateY(0)' : 'translateY(1.25rem)',
               }}
             >
-              <time className="text-[11px] font-normal tabular-nums text-muted-foreground/80" dateTime={message.createdAt}>
+              <time
+                className="text-[11px] font-normal tabular-nums text-muted-foreground/80"
+                dateTime={message.createdAt}
+              >
                 {timestamp}
               </time>
               {messageCopyFailed ? (
-                <span role="alert" title={clipboardCopyErrorMessage} className="pointer-events-auto whitespace-nowrap text-[11px] font-medium text-destructive">
+                <span
+                  role="alert"
+                  title={clipboardCopyErrorMessage}
+                  className="pointer-events-auto whitespace-nowrap text-[11px] font-medium text-destructive"
+                >
                   Copy failed
                 </span>
               ) : null}
@@ -762,7 +847,12 @@ function ChatMessageRow({
             )}
           >
             {visibleTools.map((tool) => (
-              <ToolCallRow key={tool.id} tool={tool} onOpenFilePath={onOpenFilePath} />
+              <ToolCallRow
+                key={tool.id}
+                tool={tool}
+                onOpenFilePath={onOpenFilePath}
+                focused={tool.id === focusedTool?.id}
+              />
             ))}
             {shouldCollapseTools ? (
               <button
@@ -840,7 +930,11 @@ function ImageAttachmentPreview({ attachment }: { attachment: ChatTranscriptAtta
           </a>
         </div>
         <div className="flex min-h-0 max-h-[calc(100dvh-9rem)] items-center justify-center overflow-auto rounded-md border border-border/70 bg-black/90">
-          <img src={attachment.sourceURL} alt={attachment.name} className="max-h-[calc(100dvh-10rem)] max-w-full object-contain" />
+          <img
+            src={attachment.sourceURL}
+            alt={attachment.name}
+            className="max-h-[calc(100dvh-10rem)] max-w-full object-contain"
+          />
         </div>
       </DialogContent>
     </Dialog>
@@ -1015,7 +1109,12 @@ function markdownFilePathFromHref(href: string | undefined) {
     // Keep the original href if it is not valid URI-encoded text.
   }
 
-  value = value.split('#')[0]?.split('?')[0]?.replaceAll('\\', '/').replace(/:\d+(?::\d+)?$/, '') ?? ''
+  value =
+    value
+      .split('#')[0]
+      ?.split('?')[0]
+      ?.replaceAll('\\', '/')
+      .replace(/:\d+(?::\d+)?$/, '') ?? ''
   if (!value || value.endsWith('/')) {
     return ''
   }
@@ -1150,9 +1249,11 @@ function childrenToString(children: ReactNode): string {
 function ToolCallRow({
   tool,
   onOpenFilePath,
+  focused = false,
 }: {
   tool: ChatTranscriptTool
   onOpenFilePath?: (path: string) => Promise<void> | void
+  focused?: boolean
 }) {
   const output = tool.error || tool.text
   const hasDetails = Boolean(output || tool.content.length > 0)
@@ -1162,8 +1263,15 @@ function ToolCallRow({
   const filePath = tool.kind === 'file-change' ? (tool.paths[0] ?? '') : ''
   const showFileEditorAction = Boolean(onOpenFilePath && filePath && output && !tool.error && looksLikeDiff(output))
 
+  useEffect(() => {
+    if (focused && hasDetails) setOutputOpen(true)
+  }, [focused, hasDetails])
+
   return (
-    <div className="text-xs">
+    <div
+      className={cn('rounded text-xs', focused && 'bg-primary/10 ring-2 ring-primary/45')}
+      data-search-focused={focused || undefined}
+    >
       <button
         type="button"
         className="relative z-10 flex h-5 w-full min-w-0 touch-manipulation items-center gap-1 rounded py-0.5 text-left font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"

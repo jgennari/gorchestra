@@ -65,6 +65,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := store.syncSearchProjection(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	return store, nil
 }
@@ -610,6 +614,9 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 	}
 
 	if err := projectDashboardEvent(ctx, tx, event); err != nil {
+		return Event{}, err
+	}
+	if err := projectSearchEvent(ctx, tx, event); err != nil {
 		return Event{}, err
 	}
 

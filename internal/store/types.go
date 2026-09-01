@@ -87,6 +87,19 @@ type EventListFilter struct {
 	IncludeDebug bool
 }
 
+type SearchResult struct {
+	Kind          string
+	SessionID     string
+	SessionTitle  string
+	WorkspacePath string
+	EventSeq      int64
+	Title         string
+	Snippet       string
+	CreatedAt     time.Time
+	ArchivedAt    *time.Time
+	Rank          float64
+}
+
 type QueuedMessage struct {
 	ID           string
 	SessionID    string

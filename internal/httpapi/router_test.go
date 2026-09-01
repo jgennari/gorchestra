@@ -1017,6 +1017,8 @@ func TestEventHistoryAfterSeqReturnsNextCompleteTurnsWithHardLimit(t *testing.T)
 		testEvent(6, "agent.message.completed"),
 		testEvent(7, "user.message.completed"),
 		testEvent(8, "agent.message.completed"),
+		testEvent(9, "user.message.completed"),
+		testEvent(10, "agent.message.completed"),
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?after_seq=2&turns=2&limit=3", nil)
@@ -1037,6 +1039,38 @@ func TestEventHistoryAfterSeqReturnsNextCompleteTurnsWithHardLimit(t *testing.T)
 	call := store.lastListCall(t)
 	if call.mode != "after_turns" || call.afterSeq != 2 || call.turns != 2 || call.limit != 3 {
 		t.Fatalf("expected bounded forward turn call, got %#v", call)
+	}
+}
+
+func TestEventHistoryAroundSeqReturnsTargetWithNeighboringTurns(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEvent(1, "user.message.completed"),
+		testEvent(2, "agent.message.completed"),
+		testEvent(3, "user.message.completed"),
+		testEvent(4, "tool.call.started"),
+		testEvent(5, "tool.call.completed"),
+		testEvent(6, "agent.message.completed"),
+		testEvent(7, "user.message.completed"),
+		testEvent(8, "agent.message.completed"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?around_seq=4&turns=1", nil)
+	rec := httptest.NewRecorder()
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+	if got := eventSeqs(response.Events); !reflect.DeepEqual(got, []int64{3, 4, 5, 6, 7, 8}) {
+		t.Fatalf("expected target turn window, got %v", got)
+	}
+	if !response.Page.HasOlder {
+		t.Fatalf("expected older continuation, got %#v", response.Page)
 	}
 }
 

@@ -4,6 +4,7 @@ import {
   defaultEventTurnPageSize,
   eventStreamURL,
   listEventTurnsAfter,
+  listEventTurnsAround,
   listEventTurnsBefore,
   listRecentEventTurns,
 } from '@/lib/api'
@@ -29,6 +30,7 @@ type Options = {
   reconnectDelayMs?: number
   refreshKey?: number
   includeDebugEvents?: boolean
+  targetSeq?: number
 }
 
 type SessionEventCacheEntry = {
@@ -84,6 +86,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const reconnectDelayMs = options.reconnectDelayMs ?? 1000
   const refreshKey = options.refreshKey ?? 0
   const includeDebugEvents = options.includeDebugEvents ?? false
+  const targetSeq = options.targetSeq ?? 0
 
   const setHasNewerEvents = useCallback((value: boolean) => {
     hasNewerEventsRef.current = value
@@ -97,8 +100,10 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   useEffect(() => {
     const sameSessionRefresh =
       selectedSessionIDRef.current === sessionID &&
-      loadedSessionIDRef.current === sessionID && loadedIncludeDebugEventsRef.current === includeDebugEvents
-    const cachedSession = sessionID && !sameSessionRefresh ? readCachedSessionEvents(sessionID, includeDebugEvents) : null
+      loadedSessionIDRef.current === sessionID &&
+      loadedIncludeDebugEventsRef.current === includeDebugEvents
+    const cachedSession =
+      sessionID && !sameSessionRefresh ? readCachedSessionEvents(sessionID, includeDebugEvents) : null
     if (selectedSessionIDRef.current !== sessionID) selectionEpochRef.current += 1
     const selectionEpoch = selectionEpochRef.current
     selectedSessionIDRef.current = sessionID
@@ -212,7 +217,11 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     function connect(afterSeq: number) {
       if (closed) return
       closeSource()
-      source = new EventSource(eventStreamURL(activeSessionID, afterSeq, { includeDebug: activeIncludeDebugEvents }))
+      source = new EventSource(
+        eventStreamURL(activeSessionID, afterSeq, {
+          includeDebug: activeIncludeDebugEvents,
+        }),
+      )
       source.onopen = () => {
         if (!closed) {
           setStreamState('connected')
@@ -293,6 +302,49 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       }
     }
 
+    async function loadTarget() {
+      setStreamState('loading')
+      followingTailRef.current = false
+      try {
+        const [history, tail] = await Promise.all([
+          listEventTurnsAround(activeSessionID, targetSeq, 2, {
+            includeDebug: activeIncludeDebugEvents,
+          }),
+          listRecentEventTurns(activeSessionID, defaultEventTurnPageSize, {
+            includeDebug: activeIncludeDebugEvents,
+          }),
+        ])
+        if (closed) return
+
+        const visible = boundEventWindow(appendEvents([], history.events), 'latest', residentEventWindowPolicy)
+        const boundedLive = boundEventWindow(appendEvents([], tail.events), 'latest', liveEventWindowPolicy)
+        liveEventsRef.current = boundedLive.events
+        setLiveEvents(boundedLive.events)
+        setEvents(visible.events)
+        oldestSeqRef.current = firstSeq(visible.events)
+        newestSeqRef.current = lastSeq(visible.events)
+        lastSeqRef.current = Math.max(lastSeqRef.current, lastSeq(tail.events), newestSeqRef.current)
+        setHasOlderEvents((history.page?.has_older ?? oldestSeqRef.current > 1) || visible.trimmedStart)
+        setHasNewerEvents((history.page?.has_newer ?? false) || visible.trimmedEnd)
+        loadedSessionIDRef.current = activeSessionID
+        loadedIncludeDebugEventsRef.current = activeIncludeDebugEvents
+        writeCachedSessionEvents(
+          activeSessionID,
+          boundedLive.events,
+          (tail.page?.has_older ?? firstSeq(tail.events) > 1) || boundedLive.trimmedStart,
+          false,
+          activeIncludeDebugEvents,
+          lastSeqRef.current,
+          true,
+        )
+        connect(lastSeqRef.current)
+      } catch (loadError) {
+        if (closed) return
+        setError(loadError instanceof Error ? loadError.message : 'Failed to load the selected event')
+        setStreamState('disconnected')
+      }
+    }
+
     async function hydratePersistentCacheOrLoad() {
       setStreamState('loading')
       const persistentSession = await readPersistentCachedSessionEvents(activeSessionID, activeIncludeDebugEvents)
@@ -313,7 +365,9 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       await loadTail(false)
     }
 
-    if (sameSessionRefresh || cachedSession) {
+    if (targetSeq > 0) {
+      void loadTarget()
+    } else if (sameSessionRefresh || cachedSession) {
       void loadTail(sameSessionRefresh)
     } else {
       void hydratePersistentCacheOrLoad()
@@ -326,7 +380,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       if (activeSessionIDRef.current === activeSessionID) activeSessionIDRef.current = null
       setStreamState('disconnected')
     }
-  }, [includeDebugEvents, reconnectDelayMs, refreshKey, sessionID, setHasNewerEvents])
+  }, [includeDebugEvents, reconnectDelayMs, refreshKey, sessionID, setHasNewerEvents, targetSeq])
 
   const loadOlderEvents = useCallback(async () => {
     if (!sessionID || loadingOlderEventsRef.current) return
@@ -425,16 +479,13 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     setHasNewerEvents(false)
   }, [includeDebugEvents, sessionID, setHasNewerEvents])
 
-  const setFollowingTail = useCallback(
-    (following: boolean) => {
-      if (!following) {
-        followingTailRef.current = false
-      } else if (!hasNewerEventsRef.current) {
-        followingTailRef.current = true
-      }
-    },
-    [],
-  )
+  const setFollowingTail = useCallback((following: boolean) => {
+    if (!following) {
+      followingTailRef.current = false
+    } else if (!hasNewerEventsRef.current) {
+      followingTailRef.current = true
+    }
+  }, [])
 
   return {
     events,

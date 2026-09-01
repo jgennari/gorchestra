@@ -1,9 +1,8 @@
-import { useState, type ComponentProps } from 'react'
+import type { ComponentProps } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session } from '@/lib/api'
 import { SessionList } from '@/components/session-list'
-import { defaultSessionListFilters } from '@/components/session-list-filters'
 
 const sessions: Session[] = [
   {
@@ -47,33 +46,27 @@ const sessions: Session[] = [
   },
 ]
 
-test('session list filters sessions with client side search', async () => {
+test('session list exposes spotlight search without the old filter controls', async () => {
   const user = userEvent.setup()
+  const onSearch = vi.fn()
 
-  render(<SessionListHarness />)
+  render(<SessionListHarness onSearch={onSearch} />)
 
-  expect(screen.queryByRole('tab', { name: 'All' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('tab', { name: 'Running' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('tab', { name: 'Failed' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('textbox', { name: 'Search sessions' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Session filters' })).not.toBeInTheDocument()
   expect(screen.getByText('Running work')).toBeInTheDocument()
   expect(screen.getByText('Documentation pass')).toBeInTheDocument()
   expect(screen.queryByText('Archived notes')).not.toBeInTheDocument()
 
-  await user.type(screen.getByRole('textbox', { name: 'Search sessions' }), 'failed')
-
-  expect(screen.queryByText('Running work')).not.toBeInTheDocument()
-  expect(screen.getByText('Documentation pass')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Search' }))
+  expect(onSearch).toHaveBeenCalledOnce()
 })
 
 test('session rows are keyboard selectable', async () => {
   const user = userEvent.setup()
   const onSelect = vi.fn()
 
-  render(
-    <SessionListHarness
-      onSelect={onSelect}
-    />,
-  )
+  render(<SessionListHarness onSelect={onSelect} />)
 
   screen.getByRole('button', { name: /running work/i }).focus()
   await user.keyboard('{Enter}')
@@ -82,9 +75,7 @@ test('session rows are keyboard selectable', async () => {
 })
 
 test('session rows show status as a dot indicator', () => {
-  render(
-    <SessionListHarness />,
-  )
+  render(<SessionListHarness />)
 
   expect(screen.getByRole('img', { name: 'Session status: running' })).toHaveClass(
     'animate-pulse',
@@ -94,11 +85,7 @@ test('session rows show status as a dot indicator', () => {
 })
 
 test('selected session row still shows the session status indicator', () => {
-  render(
-    <SessionListHarness
-      selectedSessionID="sess_running"
-    />,
-  )
+  render(<SessionListHarness selectedSessionID="sess_running" />)
 
   expect(screen.getByRole('img', { name: 'Session status: running' })).toHaveClass(
     'animate-pulse',
@@ -107,11 +94,7 @@ test('selected session row still shows the session status indicator', () => {
 })
 
 test('session rows show pending input with a pulsing yellow indicator', () => {
-  render(
-    <SessionListHarness
-      sessions={[{ ...sessions[0], pending_input: true }]}
-    />,
-  )
+  render(<SessionListHarness sessions={[{ ...sessions[0], pending_input: true }]} />)
 
   expect(screen.getByRole('img', { name: 'Session pending user input' })).toHaveClass(
     'animate-pulse',
@@ -156,78 +139,20 @@ test('embedded session list hides desktop header controls', () => {
   expect(screen.queryByRole('heading', { name: 'Sessions' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Create session' })).not.toBeInTheDocument()
-  expect(screen.getByRole('textbox', { name: 'Search sessions' })).toBeInTheDocument()
-})
-
-test('session list filters by status and attention', async () => {
-  const user = userEvent.setup()
-
-  render(
-    <SessionListHarness
-      sessions={[
-        { ...sessions[0], pending_input: true },
-        sessions[1],
-      ]}
-    />,
-  )
-
-  await user.click(screen.getByRole('button', { name: 'Session filters' }))
-  await user.click(screen.getByRole('button', { name: 'Needs input' }))
-
-  expect(screen.getByText('Running work')).toBeInTheDocument()
-  expect(screen.queryByText('Documentation pass')).not.toBeInTheDocument()
-
-  await user.click(screen.getByLabelText('Attention only'))
-
-  expect(screen.getByText('Running work')).toBeInTheDocument()
-})
-
-test('session list can show archived sessions', async () => {
-  const user = userEvent.setup()
-
-  render(<SessionListHarness />)
-
-  expect(screen.queryByText('Archived notes')).not.toBeInTheDocument()
-
-  await user.click(screen.getByRole('button', { name: 'Session filters' }))
-  await user.click(screen.getByLabelText('Show archived'))
-
-  expect(screen.getByText('Archived notes')).toBeInTheDocument()
-  expect(screen.getByText('Archived')).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: /archived notes archived/i })).toHaveClass('border-dashed')
-  expect(screen.getByText('Archived notes')).toHaveClass('line-through')
+  expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument()
 })
 
 function baseProps() {
   return {
-    sessions,
+    sessions: sessions.filter((session) => !session.archived_at),
     selectedSessionID: null,
     lastSeenSeqBySession: {},
-    query: '',
-    filters: defaultSessionListFilters,
-    onQueryChange: () => undefined,
-    onFiltersChange: () => undefined,
     onSelect: () => undefined,
+    onSearch: () => undefined,
     onCreate: () => undefined,
   }
 }
 
-function SessionListHarness({
-  query = '',
-  filters = defaultSessionListFilters,
-  ...props
-}: Partial<ComponentProps<typeof SessionList>>) {
-  const [currentQuery, setCurrentQuery] = useState(query)
-  const [currentFilters, setCurrentFilters] = useState(filters)
-
-  return (
-    <SessionList
-      {...baseProps()}
-      {...props}
-      query={currentQuery}
-      filters={currentFilters}
-      onQueryChange={setCurrentQuery}
-      onFiltersChange={setCurrentFilters}
-    />
-  )
+function SessionListHarness(props: Partial<ComponentProps<typeof SessionList>>) {
+  return <SessionList {...baseProps()} {...props} />
 }

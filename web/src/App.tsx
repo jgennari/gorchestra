@@ -19,6 +19,7 @@ import type {
   SessionAgentOptions,
   SessionStatus,
   SkillReference,
+  SpotlightSearchResult,
   SubmitAgentOptions,
   UserInputAnswers,
   WorkspaceFileContent,
@@ -61,7 +62,14 @@ import { usePushNotifications } from '@/hooks/use-push-notifications'
 import { useReleaseUpdate } from '@/hooks/use-release-update'
 import { useTheme } from '@/hooks/use-theme'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { AppMenu } from '@/components/app-menu'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { DashboardOverview } from '@/components/dashboard-overview'
@@ -73,7 +81,7 @@ import { ChatSessionHeader, SessionDetail } from '@/components/session-detail'
 import { SessionList } from '@/components/session-list'
 import { SessionSchedules } from '@/components/session-schedules'
 import { RepositorySkills } from '@/components/repository-skills'
-import { defaultSessionListFilters, type SessionListFilters } from '@/components/session-list-filters'
+import { SpotlightSearch } from '@/components/spotlight-search'
 import { WorkspaceFilesView } from '@/components/workspace-files'
 import { hasSessionAttention, latestSessionSeq, sessionAttention } from '@/lib/session-attention'
 import {
@@ -166,8 +174,9 @@ function App() {
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
   const [notificationAttentionRestored, setNotificationAttentionRestored] = useState(false)
-  const [sessionSearchQuery, setSessionSearchQuery] = useState('')
-  const [sessionListFilters, setSessionListFilters] = useState<SessionListFilters>(defaultSessionListFilters)
+  const [spotlightOpen, setSpotlightOpen] = useState(false)
+  const [focusedEventSeq, setFocusedEventSeq] = useState(() => eventSequenceFromLocation())
+  const [focusedFileLine, setFocusedFileLine] = useState(() => fileLineFromLocation())
   const [appView, setAppView] = useState<AppView>(() => selectedSessionRouteFromLocation().view)
   const [userSkillsSelected, setUserSkillsSelected] = useState(() => isUserSkillsLocation())
   const [overviewSelected, setOverviewSelected] = useState(() => !isSessionLocation() && !isUserSkillsLocation())
@@ -275,7 +284,9 @@ function App() {
           if (!current.some((session) => session.id === updatedSession.id)) {
             return current
           }
-          const next = sortSessions(current.map((session) => (session.id === updatedSession.id ? updatedSession : session)))
+          const next = sortSessions(
+            current.map((session) => (session.id === updatedSession.id ? updatedSession : session)),
+          )
           sessionsRef.current = next
           void writePersistentCachedSession(updatedSession)
           return next
@@ -288,7 +299,7 @@ function App() {
     void writePersistentCachedSession(session)
     setSessions((current) => {
       let next: Session[]
-      if (session.archived_at && !sessionListFilters.includeArchived && session.id !== selectedSessionIDRef.current) {
+      if (session.archived_at && session.id !== selectedSessionIDRef.current) {
         next = current.filter((item) => item.id !== session.id)
       } else {
         next = sortSessions([session, ...current.filter((item) => item.id !== session.id)])
@@ -296,7 +307,7 @@ function App() {
       sessionsRef.current = next
       return next
     })
-  }, [sessionListFilters.includeArchived])
+  }, [])
 
   const selectSession = useCallback((sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
     const nextOverviewSelected = sessionID === null
@@ -306,16 +317,21 @@ function App() {
     selectedSessionIDRef.current = sessionID
     setSelectedSessionID(sessionID)
     if (historyMode !== 'none') {
+      setFocusedEventSeq(0)
+      setFocusedFileLine(0)
       writeSelectedSessionRoute(sessionID, historyMode, appViewRef.current, sessionsRef.current)
     }
   }, [])
 
-  const selectOverview = useCallback((historyMode: SessionRouteHistoryMode = 'push') => {
-    appViewRef.current = 'session'
-    setAppView('session')
-    selectSession(null, historyMode)
-    setMobileListOpen(false)
-  }, [selectSession])
+  const selectOverview = useCallback(
+    (historyMode: SessionRouteHistoryMode = 'push') => {
+      appViewRef.current = 'session'
+      setAppView('session')
+      selectSession(null, historyMode)
+      setMobileListOpen(false)
+    },
+    [selectSession],
+  )
 
   const selectUserSkills = useCallback((historyMode: SessionRouteHistoryMode = 'push') => {
     appViewRef.current = 'session'
@@ -335,6 +351,8 @@ function App() {
     (view: AppView, historyMode: Exclude<SessionRouteHistoryMode, 'none'> = 'push', filePath: string | null = null) => {
       appViewRef.current = view
       setAppView(view)
+      setFocusedEventSeq(0)
+      setFocusedFileLine(0)
       writeSelectedSessionRoute(
         selectedSessionIDRef.current,
         historyMode,
@@ -452,6 +470,8 @@ function App() {
   useEffect(() => {
     function handlePopState() {
       const route = selectedSessionRouteFromLocation()
+      setFocusedEventSeq(eventSequenceFromLocation())
+      setFocusedFileLine(fileLineFromLocation())
       if (isUserSkillsLocation()) {
         selectUserSkills('none')
         return
@@ -468,6 +488,16 @@ function App() {
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
   }, [requestSessionSelection, selectOverview, selectUserSkills])
+
+  useEffect(() => {
+    function handleSearchShortcut(event: globalThis.KeyboardEvent) {
+      if (event.key.toLowerCase() !== 'k' || (!event.metaKey && !event.ctrlKey)) return
+      event.preventDefault()
+      setSpotlightOpen(true)
+    }
+    window.addEventListener('keydown', handleSearchShortcut)
+    return () => window.removeEventListener('keydown', handleSearchShortcut)
+  }, [])
 
   useEffect(() => {
     setShowDebugEvents(loadSessionDebugPreference(selectedSessionID))
@@ -527,7 +557,7 @@ function App() {
         !cachedSession ||
         selectedSessionIDRef.current !== sessionID ||
         sessionsRef.current.some((session) => session.id === sessionID) ||
-        (cachedSession.archived_at && !sessionListFilters.includeArchived && cachedSession.id !== selectedSessionIDRef.current)
+        (cachedSession.archived_at && cachedSession.id !== selectedSessionIDRef.current)
       ) {
         return
       }
@@ -537,27 +567,24 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [applySession, selectedSession, selectedSessionID, sessionListFilters.includeArchived])
+  }, [applySession, selectedSession, selectedSessionID])
 
-  const applySessionActivityEvent = useCallback(
-    (event: AgentEvent) => {
-      const status = statusFromEvent(event)
-      setSessions((current) => {
-        const next = sortSessions(
-          current.map((session) => {
-            if (session.id !== event.session_id) {
-              return session
-            }
-            const updatedSession = applySessionEvent(session, event, status)
-            void writePersistentCachedSession(updatedSession)
-            return updatedSession
-          }),
-        )
-        return next
-      })
-    },
-    [],
-  )
+  const applySessionActivityEvent = useCallback((event: AgentEvent) => {
+    const status = statusFromEvent(event)
+    setSessions((current) => {
+      const next = sortSessions(
+        current.map((session) => {
+          if (session.id !== event.session_id) {
+            return session
+          }
+          const updatedSession = applySessionEvent(session, event, status)
+          void writePersistentCachedSession(updatedSession)
+          return updatedSession
+        }),
+      )
+      return next
+    })
+  }, [])
 
   const handleSessionEvent = useCallback(
     (event: AgentEvent) => {
@@ -608,7 +635,13 @@ function App() {
       }
       setDashboardRefreshKey((value) => value + 1)
     },
-    [applySessionActivityEvent, markSessionUnseenAfter, playSessionStopSound, refreshSession, showSessionStopNotification],
+    [
+      applySessionActivityEvent,
+      markSessionUnseenAfter,
+      playSessionStopSound,
+      refreshSession,
+      showSessionStopNotification,
+    ],
   )
 
   const {
@@ -628,6 +661,7 @@ function App() {
     onEvent: handleSessionEvent,
     refreshKey: eventRefreshKey,
     includeDebugEvents: showDebugEvents,
+    targetSeq: focusedEventSeq,
   })
 
   useEffect(() => {
@@ -653,59 +687,58 @@ function App() {
     selectedSessionID,
   ])
 
-  const loadSessions = useCallback(async (options: { showLoading?: boolean } = {}) => {
-    const showLoading = options.showLoading ?? sessionsRef.current.length === 0
-    if (showLoading) {
-      setLoadingSessions(true)
-      setError('')
-    } else {
-      setRefreshingSessions(true)
-    }
-    try {
-      const nextSessions = await listSessions({ include_archived: sessionListFilters.includeArchived })
-      const selectedID = selectedSessionIDRef.current
-      const mergedSessions = await includeSelectedSession(
-        nextSessions,
-        selectedID,
-        sessionListFilters.includeArchived,
-      )
-      void writePersistentCachedSessions(mergedSessions)
-      const route = selectedSessionRouteFromLocation()
-      const routeSelectedID = resolveSessionRouteSessionID(route, mergedSessions)
-      const preserveSlugRoute = Boolean(route.sessionSlug && routeSelectedID)
-      const nextSelectedID =
-        overviewSelectedRef.current && !isSessionLocation()
-          ? null
-          : routeSelectedID && mergedSessions.some((session) => session.id === routeSelectedID)
-          ? routeSelectedID
-          : !route.sessionSlug && selectedID && mergedSessions.some((session) => session.id === selectedID)
-          ? selectedID
-          : (nextSessions[0]?.id ?? mergedSessions[0]?.id ?? null)
+  const loadSessions = useCallback(
+    async (options: { showLoading?: boolean } = {}) => {
+      const showLoading = options.showLoading ?? sessionsRef.current.length === 0
+      if (showLoading) {
+        setLoadingSessions(true)
+        setError('')
+      } else {
+        setRefreshingSessions(true)
+      }
+      try {
+        const nextSessions = await listSessions()
+        const selectedID = selectedSessionIDRef.current
+        const mergedSessions = await includeSelectedSession(nextSessions, selectedID)
+        void writePersistentCachedSessions(mergedSessions)
+        const route = selectedSessionRouteFromLocation()
+        const routeSelectedID = resolveSessionRouteSessionID(route, mergedSessions)
+        const preserveSlugRoute = Boolean(route.sessionSlug && routeSelectedID)
+        const nextSelectedID =
+          overviewSelectedRef.current && !isSessionLocation()
+            ? null
+            : routeSelectedID && mergedSessions.some((session) => session.id === routeSelectedID)
+              ? routeSelectedID
+              : !route.sessionSlug && selectedID && mergedSessions.some((session) => session.id === selectedID)
+                ? selectedID
+                : (nextSessions[0]?.id ?? mergedSessions[0]?.id ?? null)
 
-      const sortedSessions = sortSessions(mergedSessions)
-      sessionsRef.current = sortedSessions
-      setSessions(sortedSessions)
-      if (isUserSkillsLocation()) {
-        selectedSessionIDRef.current = null
-        setSelectedSessionID(null)
-        overviewSelectedRef.current = false
-        setOverviewSelected(false)
-        setUserSkillsSelected(true)
-      } else {
-        selectSession(nextSelectedID, preserveSlugRoute ? 'none' : 'replace')
+        const sortedSessions = sortSessions(mergedSessions)
+        sessionsRef.current = sortedSessions
+        setSessions(sortedSessions)
+        if (isUserSkillsLocation()) {
+          selectedSessionIDRef.current = null
+          setSelectedSessionID(null)
+          overviewSelectedRef.current = false
+          setOverviewSelected(false)
+          setUserSkillsSelected(true)
+        } else {
+          selectSession(nextSelectedID, preserveSlugRoute ? 'none' : 'replace')
+        }
+      } catch (loadError) {
+        if (showLoading) {
+          setError(messageFromError(loadError))
+        }
+      } finally {
+        if (showLoading) {
+          setLoadingSessions(false)
+        } else {
+          setRefreshingSessions(false)
+        }
       }
-    } catch (loadError) {
-      if (showLoading) {
-        setError(messageFromError(loadError))
-      }
-    } finally {
-      if (showLoading) {
-        setLoadingSessions(false)
-      } else {
-        setRefreshingSessions(false)
-      }
-    }
-  }, [selectSession, sessionListFilters.includeArchived])
+    },
+    [selectSession],
+  )
 
   useEffect(() => {
     let closed = false
@@ -895,9 +928,7 @@ function App() {
     const sessionID = confirmArchiveSessionID
     const targetSession = sessions.find((session) => session.id === sessionID) ?? null
     const restoring = Boolean(targetSession?.archived_at)
-    const nextSelectedID = sessionListFilters.includeArchived
-      ? selectedSessionID
-      : nextSessionIDAfterArchive(sessions, sessionID, selectedSessionID)
+    const nextSelectedID = nextSessionIDAfterArchive(sessions, sessionID, selectedSessionID)
     setArchivingSessionID(sessionID)
     setError('')
     try {
@@ -1000,6 +1031,45 @@ function App() {
     writeSelectedSessionRoute(selectedSessionIDRef.current, 'push', 'files', sessionsRef.current)
   }, [])
 
+  async function handleSpotlightResult(result: SpotlightSearchResult) {
+    setError('')
+    try {
+      const session =
+        sessionsRef.current.find((item) => item.id === result.session_id) ?? (await getSession(result.session_id))
+      selectedSessionIDRef.current = session.id
+      applySession(session)
+      selectSession(session.id, 'none')
+      setMobileListOpen(false)
+      setOverviewSelected(false)
+      setUserSkillsSelected(false)
+      setWorkspaceFileDirty(false)
+
+      if ((result.kind === 'file' || result.kind === 'agent_instruction') && result.path) {
+        const file = await getSessionFileContent(session.id, result.path)
+        appViewRef.current = 'files'
+        setAppView('files')
+        setOpenWorkspaceFile(file)
+        setFocusedEventSeq(0)
+        setFocusedFileLine(result.line_number ?? 0)
+        writeSpotlightResultRoute(session, 'files', result.path, {
+          line: result.line_number,
+        })
+        return
+      }
+
+      appViewRef.current = 'session'
+      setAppView('session')
+      setOpenWorkspaceFile(null)
+      setFocusedFileLine(0)
+      setFocusedEventSeq(result.event_seq ?? 0)
+      writeSpotlightResultRoute(session, 'session', null, {
+        eventSeq: result.event_seq,
+      })
+    } catch (searchResultError) {
+      setError(messageFromError(searchResultError))
+    }
+  }
+
   function beginPaneResize(side: PaneSide, event: ReactPointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) {
       return
@@ -1071,15 +1141,15 @@ function App() {
     selectedSessionID,
     lastSeenSeqBySession: effectiveLastSeenSeqBySession,
     loading: loadingSessions || refreshingSessions,
-    query: sessionSearchQuery,
-    onQueryChange: setSessionSearchQuery,
-    filters: sessionListFilters,
-    onFiltersChange: setSessionListFilters,
     onSelect: (sessionID: string) => requestSessionSelection(sessionID, 'push'),
     overviewSelected,
     onOverview: () => selectOverview('push'),
     userSkillsSelected,
     onUserSkills: () => selectUserSkills('push'),
+    onSearch: () => {
+      setMobileListOpen(false)
+      setSpotlightOpen(true)
+    },
     onCreate: () => setCreateOpen(true),
     appMenuAction: renderAppMenu(),
   }
@@ -1093,8 +1163,7 @@ function App() {
   const confirmArchiveSession = confirmArchiveSessionID
     ? (sessions.find((session) => session.id === confirmArchiveSessionID) ?? null)
     : null
-  const confirmArchivePending =
-    confirmArchiveSessionID !== null && archivingSessionID === confirmArchiveSessionID
+  const confirmArchivePending = confirmArchiveSessionID !== null && archivingSessionID === confirmArchiveSessionID
   const viewOffsetClassName =
     appView === 'console'
       ? 'translate-x-8'
@@ -1106,7 +1175,7 @@ function App() {
             ? 'translate-x-32'
             : appView === 'host'
               ? 'translate-x-40'
-          : 'translate-x-0'
+              : 'translate-x-0'
   const viewToggle = (
     <div className="relative grid shrink-0 grid-cols-6 rounded-md bg-muted p-1 shadow-inner">
       <span
@@ -1221,16 +1290,36 @@ function App() {
           onUpdateAgentOptions={handleUpdateAgentOptions}
           showDebugEvents={showDebugEvents}
           onShowDebugEventsChange={handleShowDebugEventsChange}
-          onClear={() => { requestSessionAction('clear'); return Promise.resolve() }}
-          onCompact={() => { requestSessionAction('compact'); return Promise.resolve() }}
-          onToggleArchive={() => { requestArchiveSession(); return Promise.resolve() }}
+          onClear={() => {
+            requestSessionAction('clear')
+            return Promise.resolve()
+          }}
+          onCompact={() => {
+            requestSessionAction('compact')
+            return Promise.resolve()
+          }}
+          onToggleArchive={() => {
+            requestArchiveSession()
+            return Promise.resolve()
+          }}
           onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
-          clearPending={selectedSession ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear' : false}
-          compactPending={selectedSession ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact' : false}
+          clearPending={
+            selectedSession
+              ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+              : false
+          }
+          compactPending={
+            selectedSession
+              ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+              : false
+          }
           archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
         />
       </div>
-      <div data-testid="floating-skills-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
+      <div
+        data-testid="floating-skills-header"
+        className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block"
+      >
         <FilesWorkspaceHeader
           session={selectedSession}
           resolvingSessionID={selectedSession ? null : selectedSessionID}
@@ -1243,12 +1332,29 @@ function App() {
           onUpdateAgentOptions={handleUpdateAgentOptions}
           showDebugEvents={showDebugEvents}
           onShowDebugEventsChange={handleShowDebugEventsChange}
-          onClear={() => { requestSessionAction('clear'); return Promise.resolve() }}
-          onCompact={() => { requestSessionAction('compact'); return Promise.resolve() }}
-          onToggleArchive={() => { requestArchiveSession(); return Promise.resolve() }}
+          onClear={() => {
+            requestSessionAction('clear')
+            return Promise.resolve()
+          }}
+          onCompact={() => {
+            requestSessionAction('compact')
+            return Promise.resolve()
+          }}
+          onToggleArchive={() => {
+            requestArchiveSession()
+            return Promise.resolve()
+          }}
           onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
-          clearPending={selectedSession ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear' : false}
-          compactPending={selectedSession ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact' : false}
+          clearPending={
+            selectedSession
+              ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+              : false
+          }
+          compactPending={
+            selectedSession
+              ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+              : false
+          }
           archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
         />
       </div>
@@ -1327,18 +1433,23 @@ function App() {
                   onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'clear'
                       : false
                   }
                   compactPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'compact'
                       : false
                   }
                   archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
                 />
               </div>
-              <div data-testid="floating-schedules-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
+              <div
+                data-testid="floating-schedules-header"
+                className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block"
+              >
                 <FilesWorkspaceHeader
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
@@ -1366,12 +1477,14 @@ function App() {
                   onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'clear'
                       : false
                   }
                   compactPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'compact'
                       : false
                   }
                   archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
@@ -1460,18 +1573,23 @@ function App() {
                   onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'clear'
                       : false
                   }
                   compactPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'compact'
                       : false
                   }
                   archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
                 />
               </div>
-              <div data-testid="floating-host-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
+              <div
+                data-testid="floating-host-header"
+                className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block"
+              >
                 <FilesWorkspaceHeader
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
@@ -1499,12 +1617,14 @@ function App() {
                   onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'clear'
                       : false
                   }
                   compactPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'compact'
                       : false
                   }
                   archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
@@ -1545,18 +1665,23 @@ function App() {
                   onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'clear'
                       : false
                   }
                   compactPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'compact'
                       : false
                   }
                   archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
                 />
               </div>
-              <div data-testid="floating-files-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
+              <div
+                data-testid="floating-files-header"
+                className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block"
+              >
                 <FilesWorkspaceHeader
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
@@ -1583,12 +1708,14 @@ function App() {
                   onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'clear'
                       : false
                   }
                   compactPending={
                     selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      ? pendingSessionAction?.sessionID === selectedSession.id &&
+                        pendingSessionAction.action === 'compact'
                       : false
                   }
                   archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
@@ -1604,6 +1731,7 @@ function App() {
                 onFileSaved={setOpenWorkspaceFile}
                 onCloseFile={handleCloseWorkspaceFile}
                 onDirtyChange={setWorkspaceFileDirty}
+                focusedLine={focusedFileLine}
               />
             </>
           ) : (
@@ -1635,6 +1763,7 @@ function App() {
               onOpenFilePath={handleOpenWorkspacePath}
               onComposerFocus={handleComposerFocus}
               onErrorMessageChange={setError}
+              focusedEventSeq={focusedEventSeq}
               onClear={() => {
                 requestSessionAction('clear')
                 return Promise.resolve()
@@ -1677,7 +1806,10 @@ function App() {
         />
       ) : null}
 
-      <div className={cn('min-h-0 shrink-0', isGlobalView ? 'hidden' : 'hidden lg:flex')} style={paneWidthStyle(paneWidths.right)}>
+      <div
+        className={cn('min-h-0 shrink-0', isGlobalView ? 'hidden' : 'hidden lg:flex')}
+        style={paneWidthStyle(paneWidths.right)}
+      >
         <RunHealthRail
           session={selectedSession}
           resolvingSessionID={resolvingSelectedSessionID}
@@ -1726,6 +1858,12 @@ function App() {
           }
         }}
         onConfirm={() => void handleConfirmSessionAction()}
+      />
+      <SpotlightSearch
+        open={spotlightOpen}
+        sessionID={selectedSessionID}
+        onOpenChange={setSpotlightOpen}
+        onSelect={(result) => void handleSpotlightResult(result)}
       />
       <ArchiveSessionConfirmDialog
         session={confirmArchiveSession}
@@ -2060,7 +2198,12 @@ function ArchiveSessionConfirmDialog({
             <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="button" variant={isArchived ? 'default' : 'destructive'} disabled={pending} onClick={onConfirm}>
+            <Button
+              type="button"
+              variant={isArchived ? 'default' : 'destructive'}
+              disabled={pending}
+              onClick={onConfirm}
+            >
               {pending ? (isArchived ? 'Restoring' : 'Archiving') : isArchived ? 'Restore' : 'Archive'}
             </Button>
           </div>
@@ -2121,20 +2264,13 @@ function PaneResizeHandle({
   )
 }
 
-async function includeSelectedSession(
-  sessions: Session[],
-  selectedSessionID: string | null,
-  includeArchived: boolean,
-) {
+async function includeSelectedSession(sessions: Session[], selectedSessionID: string | null) {
   if (!selectedSessionID || sessions.some((session) => session.id === selectedSessionID)) {
     return sessions
   }
 
   try {
     const selectedSession = await getSession(selectedSessionID)
-    if (selectedSession.archived_at && !includeArchived) {
-      return sessions
-    }
     return [selectedSession, ...sessions]
   } catch {
     return sessions
@@ -2186,7 +2322,8 @@ function applySessionEvent(session: Session, event: AgentEvent, status: SessionS
 
 function pendingPermissionCountFromEvent(current: number, event: AgentEvent) {
   if (event.type === 'agent.permission.requested') return current + 1
-  if (event.type === 'agent.permission.resolved' || event.type === 'agent.permission.cancelled') return Math.max(0, current - 1)
+  if (event.type === 'agent.permission.resolved' || event.type === 'agent.permission.cancelled')
+    return Math.max(0, current - 1)
   if (isTerminalEvent(event.type)) return 0
   return current
 }
@@ -2347,7 +2484,10 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function workspaceRelativeFilePath(path: string, workspacePath: string) {
-  const filePath = path.trim().replaceAll('\\', '/').replace(/:\d+(?::\d+)?$/, '')
+  const filePath = path
+    .trim()
+    .replaceAll('\\', '/')
+    .replace(/:\d+(?::\d+)?$/, '')
   if (!filePath) {
     throw new Error('File path is unavailable.')
   }
@@ -2474,7 +2614,10 @@ function mergeNotificationAttentionSeqs(
   return merged
 }
 
-function notificationAttentionFromLocation(): { sessionID: string; seq: number } | null {
+function notificationAttentionFromLocation(): {
+  sessionID: string
+  seq: number
+} | null {
   if (typeof window === 'undefined') {
     return null
   }
@@ -2549,7 +2692,7 @@ function round2(value: number) {
 function loadInitialSessionStateFromLocation(): InitialSessionState {
   const route = selectedSessionRouteFromLocation()
   const cachedSession = cachedSessionForRoute(route)
-  if (cachedSession && !cachedSession.archived_at) {
+  if (cachedSession) {
     return {
       sessions: [cachedSession],
       selectedSessionID: cachedSession.id,
@@ -2575,9 +2718,28 @@ function cachedSessionForRoute(route: SessionRoute) {
 
 function selectedSessionRouteFromLocation() {
   if (typeof window === 'undefined') {
-    return { sessionID: null, sessionSlug: null, view: 'session' as const, filePath: null }
+    return {
+      sessionID: null,
+      sessionSlug: null,
+      view: 'session' as const,
+      filePath: null,
+    }
   }
   return sessionRouteFromPathname(window.location.pathname)
+}
+
+function eventSequenceFromLocation() {
+  return positiveLocationSearchNumber('event_seq')
+}
+
+function fileLineFromLocation() {
+  return positiveLocationSearchNumber('line')
+}
+
+function positiveLocationSearchNumber(name: string) {
+  if (typeof window === 'undefined') return 0
+  const value = Number.parseInt(new URLSearchParams(window.location.search).get(name) ?? '', 10)
+  return Number.isSafeInteger(value) && value > 0 ? value : 0
 }
 
 function isSessionLocation() {
@@ -2612,13 +2774,12 @@ function writeSelectedSessionRoute(
   const currentRoute = selectedSessionRouteFromLocation()
   const routeSession = sessionID ? sessions.find((session) => session.id === sessionID) : null
   const currentRouteSessionID = resolveSessionRouteSessionID(currentRoute, sessions)
-  const path =
-    routeSession
-      ? sessionSlugPath(sessionTitleSlug(routeSession.title), view, filePath)
-      : currentRoute.sessionSlug && currentRouteSessionID === sessionID
-        ? sessionSlugPath(currentRoute.sessionSlug, view, filePath)
-        : sessionPath(sessionID, view, filePath)
-  if (window.location.pathname === path) {
+  const path = routeSession
+    ? sessionSlugPath(sessionTitleSlug(routeSession.title), view, filePath)
+    : currentRoute.sessionSlug && currentRouteSessionID === sessionID
+      ? sessionSlugPath(currentRoute.sessionSlug, view, filePath)
+      : sessionPath(sessionID, view, filePath)
+  if (window.location.pathname === path && window.location.search === '') {
     return
   }
 
@@ -2627,6 +2788,22 @@ function writeSelectedSessionRoute(
     return
   }
   window.history.pushState({}, '', path)
+}
+
+function writeSpotlightResultRoute(
+  session: Session,
+  view: AppView,
+  filePath: string | null,
+  target: { eventSeq?: number; line?: number },
+) {
+  if (typeof window === 'undefined') return
+  const path = sessionSlugPath(sessionTitleSlug(session.title), view, filePath)
+  const params = new URLSearchParams()
+  if (target.eventSeq && target.eventSeq > 0) params.set('event_seq', String(target.eventSeq))
+  if (target.line && target.line > 0) params.set('line', String(target.line))
+  const url = params.size > 0 ? `${path}?${params}` : path
+  if (`${window.location.pathname}${window.location.search}` === url) return
+  window.history.pushState({}, '', url)
 }
 
 export default App

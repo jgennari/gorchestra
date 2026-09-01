@@ -19,12 +19,13 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
 
 type DialogContentProps = React.ComponentProps<typeof DialogPrimitive.Content> & {
   showClose?: boolean
+  overlayClassName?: string
 }
 
-function DialogContent({ className, children, showClose = true, ...props }: DialogContentProps) {
+function DialogContent({ className, children, showClose = true, overlayClassName, ...props }: DialogContentProps) {
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay className={overlayClassName} />
       <DialogPrimitive.Content
         className={cn(
           'fixed left-1/2 top-1/2 z-50 grid w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border bg-background p-6 shadow-lg',

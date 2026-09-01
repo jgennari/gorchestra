@@ -103,6 +103,31 @@ export type Session = {
   archived_at: string | null
 }
 
+export type SpotlightSearchResultKind =
+  'session' | 'user_message' | 'agent_message' | 'tool_call' | 'agent_instruction' | 'file'
+
+export type SpotlightSearchResult = {
+  id: string
+  kind: SpotlightSearchResultKind
+  scope: 'global' | 'local'
+  title: string
+  snippet?: string
+  session_id: string
+  session_title: string
+  workspace_path?: string
+  event_seq?: number
+  path?: string
+  line_number?: number
+  created_at?: string
+  archived?: boolean
+}
+
+export type SpotlightSearchResponse = {
+  query: string
+  results: SpotlightSearchResult[]
+  local_error?: string
+}
+
 export type DashboardRange = '7d' | '30d' | '90d' | 'all'
 export type DashboardRunStatus = 'completed' | 'failed' | 'cancelled' | 'running' | 'unknown'
 export type DashboardRunKind = 'message' | 'compact' | 'unknown'
@@ -755,6 +780,12 @@ export async function getSession(sessionID: string) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`)
 }
 
+export async function searchSpotlight(query: string, sessionID?: string | null, signal?: AbortSignal) {
+  const params = new URLSearchParams({ q: query })
+  if (sessionID) params.set('session_id', sessionID)
+  return requestJSON<SpotlightSearchResponse>(withQuery('/api/search', params), { signal })
+}
+
 function dashboardTimeZone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 }
@@ -1037,7 +1068,10 @@ export async function deleteRepositorySkill(sessionID: string, name: string) {
 export async function repairRepositorySkillClaudeBridge(sessionID: string, name: string, replaceConflict = false) {
   return requestJSON<RepositorySkillBridgeRepair>(
     `/api/sessions/${encodeURIComponent(sessionID)}/repository-skills/${encodeURIComponent(name)}/claude-bridge`,
-    { method: 'POST', ...(replaceConflict ? { body: JSON.stringify({ replace_conflict: true }) } : {}) },
+    {
+      method: 'POST',
+      ...(replaceConflict ? { body: JSON.stringify({ replace_conflict: true }) } : {}),
+    },
   )
 }
 
@@ -1057,30 +1091,36 @@ export async function getUserSkill(name: string) {
 }
 
 export async function createUserSkill(input: RepositorySkillInput) {
-  return requestJSON<RepositorySkill>('/api/user-skills', { method: 'POST', body: JSON.stringify(input) })
+  return requestJSON<RepositorySkill>('/api/user-skills', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export async function updateUserSkill(currentName: string, input: RepositorySkillInput) {
   return requestJSON<RepositorySkill>(`/api/user-skills/${encodeURIComponent(currentName)}`, {
-    method: 'PATCH', body: JSON.stringify(input),
+    method: 'PATCH',
+    body: JSON.stringify(input),
   })
 }
 
 export async function deleteUserSkill(name: string) {
-  return requestNoContent(`/api/user-skills/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  return requestNoContent(`/api/user-skills/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
 }
 
 export async function repairUserSkillClaudeBridge(name: string, replaceConflict = false) {
-  return requestJSON<RepositorySkillBridgeRepair>(
-    `/api/user-skills/${encodeURIComponent(name)}/claude-bridge`,
-    { method: 'POST', ...(replaceConflict ? { body: JSON.stringify({ replace_conflict: true }) } : {}) },
-  )
+  return requestJSON<RepositorySkillBridgeRepair>(`/api/user-skills/${encodeURIComponent(name)}/claude-bridge`, {
+    method: 'POST',
+    ...(replaceConflict ? { body: JSON.stringify({ replace_conflict: true }) } : {}),
+  })
 }
 
 export async function repairUserSkillClaudeBridges() {
-  return requestJSON<{ skills: RepositorySkill[]; repaired: number }>(
-    '/api/user-skills/repair-claude-bridges', { method: 'POST' },
-  )
+  return requestJSON<{ skills: RepositorySkill[]; repaired: number }>('/api/user-skills/repair-claude-bridges', {
+    method: 'POST',
+  })
 }
 
 export async function cancelSession(sessionID: string) {
@@ -1103,10 +1143,15 @@ export async function resolvePermission(sessionID: string, requestID: string, op
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), 15_000)
   try {
-    return await requestJSON<{ session_id: string; request_id: string; status: string }>(
-      `/api/sessions/${encodeURIComponent(sessionID)}/permissions/${encodeURIComponent(requestID)}/resolve`,
-      { method: 'POST', body: JSON.stringify({ option_id: optionID }), signal: controller.signal },
-    )
+    return await requestJSON<{
+      session_id: string
+      request_id: string
+      status: string
+    }>(`/api/sessions/${encodeURIComponent(sessionID)}/permissions/${encodeURIComponent(requestID)}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ option_id: optionID }),
+      signal: controller.signal,
+    })
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error('The permission response timed out. Try again or stop the run.', { cause: error })
@@ -1194,9 +1239,17 @@ export async function listEventTurnsAfter(
   options: EventListOptions = {},
 ) {
   const params = eventListParams({ after_seq: String(afterSeq), turns: String(turns) }, options)
-  return requestJSON<EventHistoryResponse>(
-    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params),
-  )
+  return requestJSON<EventHistoryResponse>(withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params))
+}
+
+export async function listEventTurnsAround(
+  sessionID: string,
+  aroundSeq: number,
+  turns = defaultEventTurnPageSize,
+  options: EventListOptions = {},
+) {
+  const params = eventListParams({ around_seq: String(aroundSeq), turns: String(turns) }, options)
+  return requestJSON<EventHistoryResponse>(withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events`, params))
 }
 
 export function eventStreamURL(sessionID: string, afterSeq: number, options: EventListOptions = {}) {
@@ -1281,9 +1334,7 @@ export async function listHostLogs(sessionID: string, options: HostLogOptions = 
   if (options.afterSeq !== undefined) params.set('after_seq', String(options.afterSeq))
   if (options.limit !== undefined) params.set('limit', String(options.limit))
   if (options.service) params.set('service', options.service)
-  return requestJSON<HostLogsResponse>(
-    withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/host/logs`, params),
-  )
+  return requestJSON<HostLogsResponse>(withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/host/logs`, params))
 }
 
 export function hostLogStreamURL(sessionID: string, afterSeq = 0, service?: string) {

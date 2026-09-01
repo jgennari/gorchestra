@@ -75,6 +75,7 @@ type Props = {
   archivePending?: boolean
   headerActions?: ReactNode
   mobileLeadingAction?: ReactNode
+  focusedEventSeq?: number
 }
 
 export function SessionDetail({
@@ -114,6 +115,7 @@ export function SessionDetail({
   archivePending = false,
   headerActions,
   mobileLeadingAction,
+  focusedEventSeq = 0,
 }: Props) {
   const bottomInsetRef = useRef<HTMLDivElement>(null)
   const [bottomInsetHeight, setBottomInsetHeight] = useState(176)
@@ -238,6 +240,7 @@ export function SessionDetail({
           onJumpToLatest={onJumpToLatest}
           onFollowingTailChange={onFollowingTailChange}
           onOpenFilePath={onOpenFilePath}
+          focusSeq={focusedEventSeq}
         />
         <div
           data-testid="mobile-floating-session-header"
@@ -266,7 +269,10 @@ export function SessionDetail({
             }}
           />
         </div>
-        <div data-testid="floating-session-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
+        <div
+          data-testid="floating-session-header"
+          className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block"
+        >
           <ChatSessionHeader
             session={session}
             errorMessage={errorMessage}
@@ -281,7 +287,10 @@ export function SessionDetail({
           />
         </div>
       </div>
-      <div ref={bottomInsetRef} className="session-bottom-safe-area pointer-events-none absolute inset-x-0 bottom-0 z-20">
+      <div
+        ref={bottomInsetRef}
+        className="session-bottom-safe-area pointer-events-none absolute inset-x-0 bottom-0 z-20"
+      >
         <div data-testid="session-bottom-stack" className="pointer-events-auto relative">
           <PermissionQueue requests={permissionRequests} onResolve={onResolvePermission} />
           <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
@@ -449,15 +458,16 @@ function SessionSettingsMenu({
 
   async function handlePermissionPolicyChange(policy: PermissionPolicy) {
     if (policy === permissionPolicy) return
-    if (policy === 'bypass' && !window.confirm('Bypass sandbox and permission checks for future runs in this session?')) return
-	setSavingPermissionPolicy(true)
-	try {
-	  if (session.agent_type === 'claude') await onUpdateAgentOptions({ claude: { permission_policy: policy } })
-	  if (session.agent_type === 'codex') await onUpdateAgentOptions({ codex: { permission_policy: policy } })
-	  if (session.agent_type === 'opencode') await onUpdateAgentOptions({ opencode: { permission_policy: policy } })
-	} finally {
-	  setSavingPermissionPolicy(false)
-	}
+    if (policy === 'bypass' && !window.confirm('Bypass sandbox and permission checks for future runs in this session?'))
+      return
+    setSavingPermissionPolicy(true)
+    try {
+      if (session.agent_type === 'claude') await onUpdateAgentOptions({ claude: { permission_policy: policy } })
+      if (session.agent_type === 'codex') await onUpdateAgentOptions({ codex: { permission_policy: policy } })
+      if (session.agent_type === 'opencode') await onUpdateAgentOptions({ opencode: { permission_policy: policy } })
+    } finally {
+      setSavingPermissionPolicy(false)
+    }
   }
 
   return (
@@ -522,12 +532,22 @@ function SessionSettingsMenu({
               }
             />
             {copyFailed ? (
-              <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+              <p
+                role="alert"
+                className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
+              >
                 {clipboardCopyErrorMessage}
               </p>
             ) : null}
             {session.agent_type === 'codex' || session.agent_type === 'claude' || session.agent_type === 'opencode' ? (
-              <div className="space-y-2"><p className="text-xs font-medium text-muted-foreground">Permissions</p><PermissionPolicyControl value={permissionPolicy} disabled={savingPermissionPolicy || session.status === 'running'} onChange={(value) => void handlePermissionPolicyChange(value)} /></div>
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">Permissions</p>
+                <PermissionPolicyControl
+                  value={permissionPolicy}
+                  disabled={savingPermissionPolicy || session.status === 'running'}
+                  onChange={(value) => void handlePermissionPolicyChange(value)}
+                />
+              </div>
             ) : null}
             {mobileSessionActions ? (
               <div className="space-y-1 lg:hidden">
@@ -622,9 +642,17 @@ function SessionSettingsMenu({
 }
 
 function effectivePermissionPolicy(session: Session): PermissionPolicy {
-  const options = session.agent_type === 'codex' ? session.agent_options?.codex : session.agent_type === 'claude' ? session.agent_options?.claude : session.agent_type === 'opencode' ? session.agent_options?.opencode : undefined
+  const options =
+    session.agent_type === 'codex'
+      ? session.agent_options?.codex
+      : session.agent_type === 'claude'
+        ? session.agent_options?.claude
+        : session.agent_type === 'opencode'
+          ? session.agent_options?.opencode
+          : undefined
   if (options?.permission_policy) return options.permission_policy
-  if ('run_dangerously' in (options ?? {}) && (options as { run_dangerously?: boolean }).run_dangerously) return 'bypass'
+  if ('run_dangerously' in (options ?? {}) && (options as { run_dangerously?: boolean }).run_dangerously)
+    return 'bypass'
   return 'deny'
 }
 

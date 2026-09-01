@@ -762,92 +762,17 @@ test('switching sessions discards an unsaved settings rename', async () => {
   ).toBe(true)
 })
 
-test('archived filter reloads sessions including archived chats', async () => {
+test('search button opens global spotlight search', async () => {
   const user = userEvent.setup()
-  const archivedSession: Session = {
-    ...session('sess_3', 'Archived chat', '2026-06-12T16:00:30Z'),
-    agent_type: 'claude',
-    archived_at: '2026-06-12T16:05:00Z',
-  }
-  const fetch = fetchMock({ sessions: [firstSession, secondSession, archivedSession] })
+  const fetch = fetchMock()
   vi.stubGlobal('fetch', fetch)
 
   render(<App />)
 
-  await waitFor(() =>
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions?limit=50',
-      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
-    ),
-  )
-  expect(screen.queryByText('Archived chat')).not.toBeInTheDocument()
-
-  await user.click(screen.getAllByRole('button', { name: 'Session filters' })[0])
-  await user.click(screen.getByLabelText('Show archived'))
-
-  await waitFor(() =>
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions?limit=50&include_archived=true',
-      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
-    ),
-  )
-  expect(await screen.findByText('Archived chat')).toBeInTheDocument()
-})
-
-test('filter refreshes sessions in the background without showing a workspace loading bar', async () => {
-  const user = userEvent.setup()
-  const archivedSession: Session = {
-    ...session('sess_3', 'Archived chat', '2026-06-12T16:00:30Z'),
-    archived_at: '2026-06-12T16:05:00Z',
-  }
-  let resolveArchivedList: (() => void) | undefined
-  const fetch = vi.fn(async (url: RequestInfo | URL) => {
-    const path = String(url)
-    if (path === '/api/health') {
-      return jsonResponse({ status: 'ok' })
-    }
-    if (path === '/api/sessions?limit=50') {
-      return jsonResponse({ sessions: [firstSession, secondSession] })
-    }
-    if (path === '/api/sessions?limit=50&include_archived=true') {
-      await new Promise<void>((resolve) => {
-        resolveArchivedList = resolve
-      })
-      return jsonResponse({ sessions: [firstSession, secondSession, archivedSession] })
-    }
-    if (path === '/api/sessions/sess_1') {
-      return jsonResponse(firstSession)
-    }
-    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
-      return jsonResponse({ events: [] })
-    }
-    if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
-      return jsonResponse({ events: [] })
-    }
-    throw new Error(`unexpected URL ${path}`)
-  })
-  vi.stubGlobal('fetch', fetch)
-
-  render(<App />)
-
-  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
-
-  await user.click(screen.getAllByRole('button', { name: 'Session filters' })[0])
-  await user.click(screen.getByLabelText('Show archived'))
-
-  await waitFor(() =>
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions?limit=50&include_archived=true',
-      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
-    ),
-  )
-  expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0)
-  expect(screen.queryByText('Loading sessions...')).not.toBeInTheDocument()
-
-  await act(async () => {
-    resolveArchivedList?.()
-    await Promise.resolve()
-  })
+  await user.click(await screen.findByRole('button', { name: 'Search' }))
+  await user.type(screen.getByRole('textbox', { name: 'Search Gorchestra' }), 'Inspect')
+  expect(await screen.findByRole('option', { name: /Inspect repo/ })).toBeInTheDocument()
+  expect(fetch).toHaveBeenCalledWith('/api/search?q=Inspect&session_id=sess_1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
 })
 
 test('initial session load fetches the recent event window and streams after the tail', async () => {
@@ -1436,9 +1361,9 @@ test('archived session uses restore confirmation', async () => {
 
   render(<App />)
 
-  await user.click(await screen.findAllByRole('button', { name: 'Session filters' }).then((buttons) => buttons[0]))
-  await user.click(screen.getByLabelText('Show archived'))
-  await user.click(screen.getAllByRole('button', { name: /Archived chat archived/i })[0])
+  await user.click(await screen.findByRole('button', { name: 'Search' }))
+  await user.type(screen.getByRole('textbox', { name: 'Search Gorchestra' }), 'Archived')
+  await user.click(await screen.findByRole('option', { name: /Archived chat/ }))
   await user.click(await screen.findByRole('button', { name: 'Restore selected session' }))
 
   const dialog = await screen.findByRole('dialog', { name: 'Restore session?' })
@@ -1487,6 +1412,25 @@ function fetchMock({
     }
     if (path === '/api/sessions?limit=50&include_archived=true') {
       return jsonResponse({ sessions })
+    }
+    if (path.startsWith('/api/search?')) {
+      const requestURL = new URL(path, 'http://localhost')
+      const query = requestURL.searchParams.get('q')?.toLowerCase() ?? ''
+      return jsonResponse({
+        query,
+        results: sessions
+          .filter((session) => session.title.toLowerCase().includes(query))
+          .map((session) => ({
+            id: `session:${session.id}:0`,
+            kind: 'session',
+            scope: 'global',
+            title: session.title,
+            session_id: session.id,
+            session_title: session.title,
+            workspace_path: session.workspace_path,
+            archived: Boolean(session.archived_at),
+          })),
+      })
     }
     const sessionMatch = path.match(/^\/api\/sessions\/([^/?]+)$/)
     if (sessionMatch) {
@@ -1538,6 +1482,9 @@ function fetchMock({
       return jsonResponse({ events: recentEvents })
     }
     if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
+      return jsonResponse({ events: [] })
+    }
+    if (/^\/api\/sessions\/[^/]+\/events\?tail=true&turns=2$/.test(path)) {
       return jsonResponse({ events: [] })
     }
     const consoleMatch = path.match(/^\/api\/sessions\/([^/?]+)\/console$/)

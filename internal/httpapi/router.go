@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -80,6 +81,10 @@ type Store interface {
 type DashboardStore interface {
 	Dashboard(context.Context, store.DashboardParams) (store.DashboardData, error)
 	ListDashboardRuns(context.Context, store.DashboardRunListParams) (store.DashboardRunPage, error)
+}
+
+type SearchStore interface {
+	Search(context.Context, string, int) ([]store.SearchResult, error)
 }
 
 type EventService interface {
@@ -168,6 +173,7 @@ type API struct {
 	hosting          HostingManager
 	hostStore        HostRuntimeStore
 	dashboard        DashboardStore
+	search           SearchStore
 	schedules        *scheduler.Service
 	repositorySkills *reposkills.Manager
 	userHome         string
@@ -234,6 +240,9 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.userHome = strings.TrimSpace(deps[0].UserHome)
 		if dashboard, ok := deps[0].Store.(DashboardStore); ok {
 			api.dashboard = dashboard
+		}
+		if search, ok := deps[0].Store.(SearchStore); ok {
+			api.search = search
 		}
 	}
 	if api.console == nil {
@@ -309,6 +318,9 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
 		r.Get("/api/sessions/{sessionId}/events/{seq}/attachments/{attachmentIndex}", api.eventAttachmentHandler)
 		r.Get("/api/sessions/{sessionId}/events/{seq}/tool-content/{contentIndex}", api.eventToolContentHandler)
+	}
+	if api.search != nil {
+		r.Get("/api/search", api.searchHandler)
 	}
 	if api.dashboard != nil {
 		r.Get("/api/dashboard", api.dashboardHandler)
@@ -588,6 +600,7 @@ func (api API) listHistoryEvents(
 	query := r.URL.Query()
 	rawAfterSeq := query.Get("after_seq")
 	rawBeforeSeq := query.Get("before_seq")
+	rawAroundSeq := query.Get("around_seq")
 	rawTail := query.Get("tail")
 
 	tail := false
@@ -606,14 +619,49 @@ func (api API) listHistoryEvents(
 	if rawBeforeSeq != "" {
 		cursorCount++
 	}
+	if rawAroundSeq != "" {
+		cursorCount++
+	}
 	if tail {
 		cursorCount++
 	}
 	if cursorCount > 1 {
 		return eventHistoryResult{}, fmt.Errorf("%w: use only one event history cursor", errInvalidEventHistoryCursor)
 	}
-	if turns > 0 && !tail && rawBeforeSeq == "" && rawAfterSeq == "" {
-		return eventHistoryResult{}, fmt.Errorf("%w: turns requires tail=true, before_seq, or after_seq", errInvalidEventHistoryCursor)
+	if turns > 0 && !tail && rawBeforeSeq == "" && rawAfterSeq == "" && rawAroundSeq == "" {
+		return eventHistoryResult{}, fmt.Errorf("%w: turns requires tail=true, before_seq, after_seq, or around_seq", errInvalidEventHistoryCursor)
+	}
+
+	if rawAroundSeq != "" {
+		aroundSeq, err := parseNonNegativeInt64(rawAroundSeq, "around_seq")
+		if err != nil || aroundSeq <= 0 {
+			if err == nil {
+				err = errors.New("around_seq must be greater than zero")
+			}
+			return eventHistoryResult{}, fmt.Errorf("%w: %s", errInvalidEventHistoryCursor, err.Error())
+		}
+		windowTurns := turns
+		if windowTurns <= 0 {
+			windowTurns = 2
+		}
+		older, err := api.store.ListEventTurnsBeforePageFiltered(r.Context(), sessionID, aroundSeq+1, windowTurns, limit, filter)
+		if err != nil {
+			return eventHistoryResult{}, err
+		}
+		newer, err := api.store.ListEventTurnsAfterFiltered(r.Context(), sessionID, aroundSeq, windowTurns, limit, filter)
+		if err != nil {
+			return eventHistoryResult{}, err
+		}
+		bySeq := make(map[int64]store.Event, len(older)+len(newer))
+		for _, event := range append(older, newer...) {
+			bySeq[event.Seq] = event
+		}
+		events := make([]store.Event, 0, len(bySeq))
+		for _, event := range bySeq {
+			events = append(events, event)
+		}
+		sort.Slice(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
+		return eventHistoryResult{Events: events}, nil
 	}
 
 	if tail {
