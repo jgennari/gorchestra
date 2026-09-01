@@ -162,6 +162,7 @@ function App() {
   const [loadingSessions, setLoadingSessions] = useState(!initialSessionState.seededCachedSession)
   const [refreshingSessions, setRefreshingSessions] = useState(false)
   const [error, setError] = useState('')
+  const [erroredSessionIDs, setErroredSessionIDs] = useState<ReadonlySet<string>>(() => new Set())
   const [showDebugEvents, setShowDebugEvents] = useState(false)
   const [archivingSessionID, setArchivingSessionID] = useState<string | null>(null)
   const [confirmArchiveSessionID, setConfirmArchiveSessionID] = useState<string | null>(null)
@@ -573,6 +574,9 @@ function App() {
 
   const applySessionActivityEvent = useCallback((event: AgentEvent) => {
     const status = statusFromEvent(event)
+    if (status && status !== 'failed') {
+      setErroredSessionIDs((current) => removeSetValue(current, event.session_id))
+    }
     setSessions((current) => {
       const next = sortSessions(
         current.map((session) => {
@@ -665,6 +669,18 @@ function App() {
     includeDebugEvents: showDebugEvents,
     targetSeq: focusedEventSeq,
   })
+
+  useEffect(() => {
+    if (error) {
+      setErroredSessionIDs((current) => addSetValue(current, selectedSessionIDRef.current))
+    }
+  }, [error])
+
+  useEffect(() => {
+    if (streamError) {
+      setErroredSessionIDs((current) => addSetValue(current, selectedSessionIDRef.current))
+    }
+  }, [streamError])
 
   useEffect(() => {
     selectedEventsRef.current = liveEvents
@@ -840,7 +856,6 @@ function App() {
         return updatedSession
       }),
     )
-    setEventRefreshKey((value) => value + 1)
   }
 
   async function handleCancel() {
@@ -1138,9 +1153,15 @@ function App() {
     />
   )
 
+  const chatErrorMessage = error || streamError
+  const visibleErrorSessionIDs = new Set(erroredSessionIDs)
+  if (selectedSession && chatErrorMessage) {
+    visibleErrorSessionIDs.add(selectedSession.id)
+  }
   const sessionListProps = {
     sessions,
     selectedSessionID,
+    errorSessionIDs: visibleErrorSessionIDs,
     lastSeenSeqBySession: effectiveLastSeenSeqBySession,
     loading: loadingSessions || refreshingSessions,
     onSelect: (sessionID: string) => requestSessionSelection(sessionID, 'push'),
@@ -1702,7 +1723,7 @@ function App() {
               onLoadNewerEvents={loadNewerEvents}
               onJumpToLatest={jumpToLatest}
               onFollowingTailChange={setFollowingTail}
-              errorMessage={error || streamError}
+              errorMessage={chatErrorMessage}
               showDebugEvents={showDebugEvents}
               onSubmitPrompt={handleSubmitPrompt}
               onAnswerUserInput={handleAnswerUserInput}
@@ -2307,6 +2328,22 @@ async function includeSelectedSession(sessions: Session[], selectedSessionID: st
   } catch {
     return sessions
   }
+}
+
+function addSetValue(current: ReadonlySet<string>, value: string | null) {
+  if (!value || current.has(value)) {
+    return current
+  }
+  return new Set([...current, value])
+}
+
+function removeSetValue(current: ReadonlySet<string>, value: string) {
+  if (!current.has(value)) {
+    return current
+  }
+  const next = new Set(current)
+  next.delete(value)
+  return next
 }
 
 function applySessionEvent(session: Session, event: AgentEvent, status: SessionStatus | null) {

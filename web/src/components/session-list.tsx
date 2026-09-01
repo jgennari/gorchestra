@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 type Props = {
   sessions: Session[]
   selectedSessionID: string | null
+  errorSessionIDs?: ReadonlySet<string>
   lastSeenSeqBySession?: Record<string, number>
   loading?: boolean
   onSelect: (sessionID: string) => void
@@ -27,6 +28,7 @@ type Props = {
 export function SessionList({
   sessions,
   selectedSessionID,
+  errorSessionIDs = new Set(),
   lastSeenSeqBySession = {},
   loading = false,
   onSelect,
@@ -130,7 +132,11 @@ export function SessionList({
                     'border-dashed border-border/80 bg-surface-muted/65 text-muted-foreground hover:border-border hover:bg-surface-muted/80',
                 )}
               >
-                <StatusBadge status={session.status} attention={sessionAttention(session, lastSeenSeqBySession)} />
+                <StatusBadge
+                  status={session.status}
+                  attention={sessionAttention(session, lastSeenSeqBySession)}
+                  hasError={errorSessionIDs.has(session.id)}
+                />
                 <span
                   className={cn(
                     'min-w-0 truncate text-sm font-medium',

@@ -36,7 +36,7 @@ export function NotificationsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg gap-4 border-border/90 p-5">
+      <DialogContent className="max-w-lg gap-4 p-5">
         <DialogHeader>
           <DialogTitle>Notifications</DialogTitle>
           <DialogDescription>{message}</DialogDescription>

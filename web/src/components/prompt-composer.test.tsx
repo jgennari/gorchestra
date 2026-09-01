@@ -24,6 +24,26 @@ test('enter submits the prompt and clears the input', async () => {
   await waitFor(() => expect(prompt).toHaveFocus())
 })
 
+test('clears the submitted draft before the submit request resolves', async () => {
+  let resolveSubmit: () => void = () => undefined
+  const onSubmit = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveSubmit = resolve
+      }),
+  )
+  render(<PromptComposer disabled={false} disabledReason="" onSubmit={onSubmit} />)
+
+  const prompt = screen.getByLabelText('Prompt')
+  fireEvent.change(prompt, { target: { value: 'A tall submitted draft' } })
+  fireEvent.keyDown(prompt, { key: 'Enter' })
+
+  expect(onSubmit).toHaveBeenCalledWith('A tall submitted draft')
+  expect(prompt).toHaveValue('')
+
+  await act(async () => resolveSubmit())
+})
+
 test('submit errors are reported to the parent instead of rendering under the composer', async () => {
   const user = userEvent.setup()
   const onError = vi.fn()
@@ -42,6 +62,7 @@ test('submit errors are reported to the parent instead of rendering under the co
   await user.type(screen.getByLabelText('Prompt'), 'Hello agent{enter}')
 
   await waitFor(() => expect(onError).toHaveBeenCalledWith('HTTP 502'))
+  expect(screen.getByLabelText('Prompt')).toHaveValue('Hello agent')
   expect(screen.queryByText('HTTP 502')).not.toBeInTheDocument()
 })
 
@@ -251,7 +272,13 @@ test('codex composer exposes compact mobile options', async () => {
   expect(screen.queryByRole('button', { name: 'Debug' })).not.toBeInTheDocument()
 
   const optionsButton = screen.getByRole('button', { name: 'Composer options', hidden: true })
-  expect(optionsButton.parentElement).toHaveClass('sm:hidden')
+  expect(optionsButton.parentElement).toHaveClass('composer-mobile-options')
+  expect(screen.getByLabelText('Prompt').closest('form')).toHaveClass('prompt-composer-shell')
+  expect(screen.getByRole('button', { name: 'Model' }).parentElement?.parentElement).toHaveClass(
+    'composer-desktop-options',
+    'flex-nowrap',
+  )
+  expect(screen.getByText('Queue')).toHaveClass('composer-wide-label')
 
   fireEvent.click(optionsButton)
 

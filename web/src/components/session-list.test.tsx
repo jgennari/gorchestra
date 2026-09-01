@@ -93,6 +93,19 @@ test('selected session row still shows the session status indicator', () => {
   )
 })
 
+test('session row keeps a red dot for a transient chat error when it is not selected', () => {
+  render(
+    <SessionListHarness
+      selectedSessionID="sess_failed"
+      errorSessionIDs={new Set(['sess_running'])}
+    />,
+  )
+
+  const status = screen.getByRole('img', { name: 'Session has an error' })
+  expect(status).toHaveClass('bg-destructive')
+  expect(status).not.toHaveClass('animate-pulse', 'bg-[hsl(var(--success))]')
+})
+
 test('session rows show pending input with a pulsing yellow indicator', () => {
   render(<SessionListHarness sessions={[{ ...sessions[0], pending_input: true }]} />)
 

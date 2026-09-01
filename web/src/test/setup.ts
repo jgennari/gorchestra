@@ -15,7 +15,9 @@ vi.mock('react-virtuoso', async () => {
     'aria-relevant'?: string
     computeItemKey?: (index: number, item: unknown) => React.Key
     itemContent?: (index: number, item: unknown) => React.ReactNode
-    followOutput?: (atBottom: boolean) => false | 'auto' | 'smooth'
+    followOutput?: boolean | 'auto' | 'smooth' | ((atBottom: boolean) => false | 'auto' | 'smooth')
+    components?: { Footer?: React.ComponentType<{ context: unknown }> }
+    context?: unknown
     atBottomStateChange?: (atBottom: boolean) => void
     startReached?: (index: number) => void
     endReached?: (index: number) => void
@@ -25,6 +27,10 @@ vi.mock('react-virtuoso', async () => {
     onTouchMove?: React.TouchEventHandler<HTMLDivElement>
     onTouchEnd?: React.TouchEventHandler<HTMLDivElement>
     onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>
+    onScroll?: React.UIEventHandler<HTMLDivElement>
+    onPointerDown?: React.PointerEventHandler<HTMLDivElement>
+    onPointerUp?: React.PointerEventHandler<HTMLDivElement>
+    onPointerCancel?: React.PointerEventHandler<HTMLDivElement>
   }
 
   const Virtuoso = React.forwardRef(function MockVirtuoso(props: MockVirtuosoProps, forwardedRef) {
@@ -32,6 +38,7 @@ vi.mock('react-virtuoso', async () => {
     const reportScroller = props.scrollerRef
     const scrollerRef = React.useRef<HTMLDivElement>(null)
     const previousDataRef = React.useRef(data)
+    const previousContextRef = React.useRef(props.context)
 
     React.useImperativeHandle(forwardedRef, () => {
       const scrollToBottom = () => {
@@ -55,14 +62,17 @@ vi.mock('react-virtuoso', async () => {
 
     React.useLayoutEffect(() => {
       const element = scrollerRef.current
-      if (element && previousDataRef.current !== data) {
+      if (element && (previousDataRef.current !== data || previousContextRef.current !== props.context)) {
         const gap = element.scrollHeight - element.scrollTop - element.clientHeight
         const atBottom = gap <= (props.atBottomThreshold ?? 0)
-        if (previousDataRef.current.length !== data.length && props.followOutput?.(atBottom)) {
+        const followOutput =
+          typeof props.followOutput === 'function' ? props.followOutput(atBottom) : props.followOutput
+        if (followOutput) {
           element.scrollTop = element.scrollHeight
         }
       }
       previousDataRef.current = data
+      previousContextRef.current = props.context
     }, [data, props])
 
     return React.createElement(
@@ -81,6 +91,9 @@ vi.mock('react-virtuoso', async () => {
         onTouchMove: props.onTouchMove,
         onTouchEnd: props.onTouchEnd,
         onKeyDown: props.onKeyDown,
+        onPointerDown: props.onPointerDown,
+        onPointerUp: props.onPointerUp,
+        onPointerCancel: props.onPointerCancel,
         onScroll: (event: React.UIEvent<HTMLDivElement>) => {
           const element = event.currentTarget
           const gap = element.scrollHeight - element.scrollTop - element.clientHeight
@@ -88,6 +101,7 @@ vi.mock('react-virtuoso', async () => {
           props.atBottomStateChange?.(atBottom)
           if (element.scrollTop <= 160) props.startReached?.(0)
           if (atBottom) props.endReached?.(Math.max(0, data.length - 1))
+          props.onScroll?.(event)
         },
       },
       React.createElement(
@@ -101,6 +115,9 @@ vi.mock('react-virtuoso', async () => {
           ),
         ),
       ),
+      props.components?.Footer
+        ? React.createElement(props.components.Footer, { context: props.context })
+        : null,
     )
   })
 

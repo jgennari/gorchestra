@@ -814,14 +814,10 @@ test('initial session load fetches the recent event window and streams after the
   )
 })
 
-test('successful prompt submit reloads persisted events when the live stream is stale', async () => {
+test('successful prompt submit relies on the existing live stream without refreshing history', async () => {
   const user = userEvent.setup()
   const fetch = fetchMock({
     events: [event(40, 'agent.message.completed', { text: 'Previous answer' })],
-    submittedEvents: [
-      event(40, 'agent.message.completed', { text: 'Previous answer' }),
-      event(41, 'user.message.completed', { text: 'Fresh prompt' }),
-    ],
   })
   vi.stubGlobal('fetch', fetch)
 
@@ -834,6 +830,7 @@ test('successful prompt submit reloads persisted events when the live stream is 
     ),
   )
   expect(screen.queryByText('Fresh prompt')).not.toBeInTheDocument()
+  const source = await findEventSource('/api/sessions/sess_1/events/stream?after_seq=40')
 
   await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
 
@@ -843,19 +840,17 @@ test('successful prompt submit reloads persisted events when the live stream is 
       expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
-  await waitFor(() =>
-    expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2')).toHaveLength(
-      2,
-    ),
-  )
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2')).toHaveLength(1)
+  act(() => {
+    source.emit(event(41, 'user.message.completed', { text: 'Fresh prompt' }))
+  })
   expect(await screen.findByText('Fresh prompt')).toBeInTheDocument()
-  expect(FakeEventSource.instances.some((source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=41'))
-    .toBe(true)
+  expect(FakeEventSource.instances.filter((source) => source.url.includes('/api/sessions/sess_1/events/stream')))
+    .toHaveLength(1)
 })
 
-test('successful prompt submit keeps the current transcript visible while history refresh is pending', async () => {
+test('successful prompt submit keeps the current transcript visible while awaiting its stream event', async () => {
   const user = userEvent.setup()
-  let resolveRefresh: (() => void) | undefined
   let tailRequests = 0
   const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const path = String(url)
@@ -873,18 +868,7 @@ test('successful prompt submit keeps the current transcript visible while histor
     }
     if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
       tailRequests += 1
-      if (tailRequests === 1) {
-        return jsonResponse({ events: [event(40, 'user.message.completed', { text: 'Previous prompt' })] })
-      }
-      await new Promise<void>((resolve) => {
-        resolveRefresh = resolve
-      })
-      return jsonResponse({
-        events: [
-          event(40, 'user.message.completed', { text: 'Previous prompt' }),
-          event(41, 'user.message.completed', { text: 'Fresh prompt' }),
-        ],
-      })
+      return jsonResponse({ events: [event(40, 'user.message.completed', { text: 'Previous prompt' })] })
     }
     throw new Error(`unexpected URL ${path}`)
   })
@@ -893,19 +877,22 @@ test('successful prompt submit keeps the current transcript visible while histor
   render(<App />)
 
   await waitFor(() => expect(screen.getByText('Previous prompt')).toBeInTheDocument())
+  const source = await findEventSource('/api/sessions/sess_1/events/stream?after_seq=40')
 
   await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
 
-  await waitFor(() => expect(tailRequests).toBe(2))
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    '/api/sessions/sess_1/messages',
+    expect.objectContaining({ method: 'POST' }),
+  ))
+  expect(tailRequests).toBe(1)
   expect(screen.getByText('Previous prompt')).toBeInTheDocument()
   expect(screen.queryByText('Loading chat history...')).not.toBeInTheDocument()
 
-  await act(async () => {
-    resolveRefresh?.()
-    await Promise.resolve()
+  act(() => {
+    source.emit(event(41, 'user.message.completed', { text: 'Fresh prompt' }))
   })
   expect(await screen.findByText('Fresh prompt')).toBeInTheDocument()
-  resolveRefresh?.()
 })
 
 test('switching back to a cached session restores transcript before replaying stream updates', async () => {
@@ -968,7 +955,7 @@ test('switching back to a cached session restores transcript before replaying st
   expect(await screen.findByText('Replayed update')).toBeInTheDocument()
 })
 
-test('jump to latest adopts the live stream before the tail refresh completes', async () => {
+test('reviewing history buffers live events until jumping without reconnecting the stream', async () => {
   const user = userEvent.setup()
   const baseFetch = fetchMock({
     events: [
@@ -977,22 +964,9 @@ test('jump to latest adopts the live stream before the tail refresh completes', 
     ],
   })
   let tailRequests = 0
-  let resolveTailRefresh: (() => void) | undefined
   const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     if (String(url) === '/api/sessions/sess_1/events?tail=true&turns=2') {
       tailRequests += 1
-      if (tailRequests === 2) {
-        await new Promise<void>((resolve) => {
-          resolveTailRefresh = resolve
-        })
-        return jsonResponse({
-          events: [
-            event(39, 'user.message.completed', { text: 'Visible prompt' }),
-            event(40, 'agent.message.completed', { item_id: 'msg_1', text: 'Visible answer' }),
-            event(41, 'agent.message.completed', { item_id: 'msg_2', text: 'Live answer' }),
-          ],
-        })
-      }
     }
     return baseFetch(url, init)
   })
@@ -1015,19 +989,12 @@ test('jump to latest adopts the live stream before the tail refresh completes', 
   })
 
   expect(screen.queryByText('Live answer')).not.toBeInTheDocument()
-  const jumpButton = await screen.findByRole('button', {
-    name: 'Scroll to latest and resume auto-scroll',
-  })
-  await user.click(jumpButton)
-
+  await user.click(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' }))
   expect(await screen.findByText('Live answer')).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
   expect(tailRequests).toBe(2)
-
-  await act(async () => {
-    resolveTailRefresh?.()
-    await Promise.resolve()
-  })
+  expect(FakeEventSource.instances.filter((candidate) => candidate.url.includes('/api/sessions/sess_1/events/stream')))
+    .toHaveLength(1)
 })
 
 test('global activity stream marks another session pending input', async () => {
@@ -1091,8 +1058,7 @@ test('global terminal events mark unselected sessions unseen even when seen stat
   await waitFor(() => expect(faviconPath()).toBe('/favicon-notify.svg'))
 })
 
-test('load older events fetches the previous turn page', async () => {
-  const user = userEvent.setup()
+test('reaching the leading edge fetches the previous turn page', async () => {
   const fetch = fetchMock({
     events: [event(251, 'agent.message.delta', { text: 'Tail' }), event(252, 'agent.message.completed', { text: 'Tail' })],
     olderEvents: [event(249, 'user.message.completed', { text: 'Older prompt' }), event(250, 'agent.message.completed', { text: 'Older answer' })],
@@ -1101,7 +1067,10 @@ test('load older events fetches the previous turn page', async () => {
 
   render(<App />)
 
-  await user.click(await screen.findByRole('button', { name: 'Load older events' }))
+  await screen.findByText('Tail')
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  fireEvent.wheel(log, { deltaY: -100 })
+  fireEvent.scroll(log, { target: { scrollTop: 0 } })
 
   await waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
@@ -1112,8 +1081,7 @@ test('load older events fetches the previous turn page', async () => {
   expect(await screen.findByText('Older prompt')).toBeInTheDocument()
 })
 
-test('load older grows transcript by two turns without refetching loaded turns', async () => {
-  const user = userEvent.setup()
+test('repeated leading-edge reaches grow the transcript without refetching loaded turns', async () => {
   const baseFetch = fetchMock({
     events: [
       event(9, 'user.message.completed', { text: 'Prompt five' }),
@@ -1152,12 +1120,14 @@ test('load older grows transcript by two turns without refetching loaded turns',
 
   await waitFor(() => expect(screen.getByText('Prompt five')).toBeInTheDocument())
   expect(screen.getByText('Prompt six')).toBeInTheDocument()
+  const log = screen.getByRole('log', { name: 'Chat messages' })
 
-  await user.click(screen.getByRole('button', { name: 'Load older events' }))
+  fireEvent.wheel(log, { deltaY: -100 })
+  fireEvent.scroll(log, { target: { scrollTop: 0 } })
   await waitFor(() => expect(screen.getByText('Prompt three')).toBeInTheDocument())
   expect(screen.getByText('Prompt four')).toBeInTheDocument()
 
-  await user.click(screen.getByRole('button', { name: 'Load older events' }))
+  fireEvent.scroll(log, { target: { scrollTop: 0 } })
   await waitFor(() => expect(screen.getByText('Prompt one')).toBeInTheDocument())
   expect(screen.getByText('Prompt two')).toBeInTheDocument()
   expect(screen.getByText('Prompt six')).toBeInTheDocument()
@@ -1176,11 +1146,6 @@ test('loaded older turns remain visible after submitting a new prompt', async ()
       event(6, 'agent.message.completed', { text: 'Answer three' }),
       event(7, 'user.message.completed', { text: 'Prompt four' }),
       event(8, 'agent.message.completed', { text: 'Answer four' }),
-    ],
-    submittedEvents: [
-      event(7, 'user.message.completed', { text: 'Prompt four' }),
-      event(8, 'agent.message.completed', { text: 'Answer four' }),
-      event(9, 'user.message.completed', { text: 'Fresh prompt' }),
     ],
   })
   const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -1201,16 +1166,20 @@ test('loaded older turns remain visible after submitting a new prompt', async ()
   render(<App />)
 
   await waitFor(() => expect(screen.getByText('Prompt three')).toBeInTheDocument())
-  await user.click(screen.getByRole('button', { name: 'Load older events' }))
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  fireEvent.wheel(log, { deltaY: -100 })
+  fireEvent.scroll(log, { target: { scrollTop: 0 } })
   await waitFor(() => expect(screen.getByText('Prompt one')).toBeInTheDocument())
+  const source = await findEventSource('/api/sessions/sess_1/events/stream?after_seq=8')
 
   await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
 
-  await waitFor(() =>
-    expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2')).toHaveLength(
-      2,
-    ),
-  )
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2')).toHaveLength(1)
+  act(() => {
+    source.emit(event(9, 'user.message.completed', { text: 'Fresh prompt' }))
+  })
+  expect(screen.queryByText('Fresh prompt')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' }))
   await waitFor(() => expect(screen.getByText('Fresh prompt')).toBeInTheDocument())
   expect(screen.getByText('Prompt one')).toBeInTheDocument()
   expect(screen.getByText('Prompt two')).toBeInTheDocument()

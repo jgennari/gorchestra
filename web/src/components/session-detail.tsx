@@ -87,7 +87,7 @@ export function SessionDetail({
   focusedEventSeq = 0,
 }: Props) {
   const bottomInsetRef = useRef<HTMLDivElement>(null)
-  const [bottomInsetHeight, setBottomInsetHeight] = useState(176)
+  const [bottomInsetHeight, setBottomInsetHeight] = useState(0)
   const statusEvents = liveEvents ?? events
   const userInputRequest = useMemo(
     () => (session?.status === 'running' ? pendingUserInputRequest(statusEvents) : null),
@@ -195,9 +195,11 @@ export function SessionDetail({
           key={session.id}
           events={events}
           loading={streamState === 'loading'}
-          error=""
-          topInset={errorMessage ? 'sessionHeaderAlert' : 'sessionHeader'}
+          error={errorMessage}
+          topInset="sessionHeader"
           bottomInsetHeight={bottomInsetHeight}
+          pinToLatestOnMount
+          autoScroll={session.status === 'running' && !userInputRequest}
           activityStatus={activityStatus}
           showDebugEvents={showDebugEvents}
           hasOlderEvents={hasOlderEvents}
@@ -217,7 +219,6 @@ export function SessionDetail({
         >
           <ChatSessionHeader
             session={session}
-            errorMessage={errorMessage}
             headerActions={headerActions}
             leadingAction={mobileLeadingAction}
           />
@@ -228,7 +229,6 @@ export function SessionDetail({
         >
           <ChatSessionHeader
             session={session}
-            errorMessage={errorMessage}
             headerActions={headerActions}
           />
         </div>
@@ -237,7 +237,7 @@ export function SessionDetail({
         ref={bottomInsetRef}
         className="session-bottom-safe-area pointer-events-none absolute inset-x-0 bottom-0 z-20"
       >
-        <div data-testid="session-bottom-stack" className="pointer-events-auto relative">
+        <div data-testid="session-bottom-stack" className="pointer-events-auto relative flex flex-col gap-3 pt-3">
           <PermissionQueue requests={permissionRequests} onResolve={onResolvePermission} />
           <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
           <PromptComposer
@@ -267,12 +267,12 @@ function measureBottomStackHeight(element: HTMLElement) {
 
 export function ChatSessionHeader({
   session,
-  errorMessage,
+  errorMessage = '',
   headerActions,
   leadingAction,
 }: {
   session: Session
-  errorMessage: string
+  errorMessage?: string
   headerActions?: ReactNode
   leadingAction?: ReactNode
 }) {

@@ -197,6 +197,38 @@
   -webkit-backdrop-filter: blur(28px) saturate(1.12);
 }
 
+.prompt-composer-shell {
+  container-type: inline-size;
+}
+
+.prompt-composer-shell .composer-desktop-options,
+.prompt-composer-shell .composer-wide-label {
+  display: none;
+}
+
+.prompt-composer-shell .composer-mobile-options,
+.prompt-composer-shell .composer-mobile-plan {
+  display: block;
+}
+
+@container (min-width: 52rem) {
+  .prompt-composer-shell .composer-desktop-options {
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .prompt-composer-shell .composer-mobile-options,
+  .prompt-composer-shell .composer-mobile-plan {
+    display: none;
+  }
+}
+
+@container (min-width: 72rem) {
+  .prompt-composer-shell .composer-wide-label {
+    display: inline;
+  }
+}
+
 .command-chat-header {
   background: linear-gradient(180deg, hsl(var(--surface) / 0.78), hsl(var(--background) / 0.86));
   backdrop-filter: blur(28px) saturate(1.12);

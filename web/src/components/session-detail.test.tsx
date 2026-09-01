@@ -232,14 +232,19 @@ test('composer stack floats over the transcript while reserving tail inset', () 
   expect(screen.getByText('No messages yet. Submit a prompt to start the chat.')).toBeInTheDocument()
 })
 
-test('floating chat header owns session errors', () => {
+test('chat presents session errors as a centered transcript status', () => {
   renderDetail({
     errorMessage: 'HTTP 502',
   })
 
-  const alert = within(desktopFloatingHeader()).getByRole('alert')
+  const transcript = screen.getByRole('log', { name: 'Chat messages' })
+  const alert = within(transcript).getByRole('alert')
+  const header = within(desktopFloatingHeader()).getByText('Inspect repo').closest('.command-chat-header')
+  expect(within(desktopFloatingHeader()).queryByRole('alert')).not.toBeInTheDocument()
+  expect(alert).toHaveTextContent('Chat issue')
   expect(alert).toHaveTextContent('HTTP 502')
-  expect(alert).toHaveClass('command-error-banner', 'text-destructive')
+  expect(alert).toHaveClass('mx-auto', 'justify-center', 'text-center')
+  expect(header).toHaveClass('rounded-xl')
   expect(screen.queryByText(/Failed to load chat history/)).not.toBeInTheDocument()
 })
 

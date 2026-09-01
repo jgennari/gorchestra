@@ -472,21 +472,27 @@ export function PromptComposer({
     }
 
     const restorePromptFocus = forceRestoreFocus || document.activeElement === textareaRef.current
+    const submittedContent = content
+    const submittedAttachments = attachments
+    const submittedSkills = selectedSkills
     setSubmitting(true)
     onError?.('')
+    setContent('')
+    setAttachments([])
+    setSelectedSkills([])
+    setSkillTypeahead(null)
     try {
-      const submitAttachments = attachments.map((attachment) => ({
+      const submitAttachments = submittedAttachments.map((attachment) => ({
         name: attachment.name,
         media_type: attachment.media_type,
         data_url: attachment.data_url,
         size_bytes: attachment.size_bytes,
       }))
-      await submitText(content.trim(), submitAttachments)
-      setContent('')
-      setAttachments([])
-      setSelectedSkills([])
-      setSkillTypeahead(null)
+      await submitText(submittedContent.trim(), submitAttachments)
     } catch (submitError) {
+      setContent(submittedContent)
+      setAttachments(submittedAttachments)
+      setSelectedSkills(submittedSkills)
       onError?.(submitError instanceof Error ? submitError.message : 'Failed to submit prompt')
     } finally {
       setSubmitting(false)
@@ -773,7 +779,7 @@ export function PromptComposer({
   }
 
   return (
-    <form onSubmit={(event) => void handleSubmit(event)} className="relative shrink-0 p-3">
+    <form onSubmit={(event) => void handleSubmit(event)} className="prompt-composer-shell relative shrink-0 px-3 pb-3">
       {queuedMessages.length > 0 ? (
         <div className="pointer-events-auto relative z-0 mx-3 -mb-3 rounded-t-[20px] border border-border/85 border-b-0 bg-surface-muted/75 px-4 pb-4 pt-2 shadow-[0_10px_24px_hsl(var(--foreground)/0.08)] backdrop-blur">
           <div className="flex items-center justify-between gap-3">
@@ -892,7 +898,7 @@ export function PromptComposer({
                 disabled={codexControlsDisabled}
                 onChange={setCodexSelection}
                 closeSettingsSignal={closeSettingsSignal}
-                className="hidden sm:flex"
+                className="composer-desktop-options"
               />
               <MobileCodexOptions
                 options={codexOptions}
@@ -903,7 +909,7 @@ export function PromptComposer({
                 onChange={setCodexSelection}
                 closeSettingsSignal={closeSettingsSignal}
               />
-              <span className="sm:hidden">
+              <span className="composer-mobile-plan">
                 <SwitchControl
                   label="Plan"
                   active={codexSelection.planning_mode && codexPlanAvailable}
@@ -925,7 +931,7 @@ export function PromptComposer({
                 disabled={submitting}
                 onChange={setClaudeSelection}
                 closeSettingsSignal={closeSettingsSignal}
-                className="hidden sm:flex"
+                className="composer-desktop-options"
               />
               <MobileClaudeOptions
                 selection={claudeSelection}
@@ -933,7 +939,7 @@ export function PromptComposer({
                 onChange={setClaudeSelection}
                 closeSettingsSignal={closeSettingsSignal}
               />
-              <span className="sm:hidden">
+              <span className="composer-mobile-plan">
                 <SwitchControl
                   label="Plan"
                   active={claudeSelection.planning_mode}
@@ -953,7 +959,7 @@ export function PromptComposer({
                 disabled={opencodeControlsDisabled}
                 onChange={setOpenCodeSelection}
                 closeSettingsSignal={closeSettingsSignal}
-                className="hidden sm:flex"
+                className="composer-desktop-options"
               />
               <MobileOpenCodeOptions
                 options={opencodeOptions}
@@ -964,7 +970,7 @@ export function PromptComposer({
                 onChange={setOpenCodeSelection}
                 closeSettingsSignal={closeSettingsSignal}
               />
-              <span className="sm:hidden">
+              <span className="composer-mobile-plan">
                 <SwitchControl
                   label="Plan"
                   active={opencodeSelection.planning_mode && openCodePlanAvailable}
@@ -989,7 +995,7 @@ export function PromptComposer({
                 disabled={piControlsDisabled}
                 onChange={setPiSelection}
                 closeSettingsSignal={closeSettingsSignal}
-                className="hidden sm:flex"
+                className="composer-desktop-options"
               />
               <MobilePiOptions
                 options={piOptions}
@@ -1037,7 +1043,7 @@ export function PromptComposer({
               className="h-8 px-2.5 text-sm"
             >
               <ClipboardList />
-              <span className="hidden sm:inline">Queue</span>
+              <span className="composer-wide-label">Queue</span>
             </Button>
             {canCancel ? (
               <Button
@@ -1061,7 +1067,7 @@ export function PromptComposer({
                 className="h-8 px-2.5 text-sm"
               >
                 <Send />
-                <span className="hidden sm:inline">{submitting ? 'Sending' : 'Send'}</span>
+                <span className="composer-wide-label">{submitting ? 'Sending' : 'Send'}</span>
               </Button>
             )}
           </div>
@@ -1153,7 +1159,7 @@ function SkillBrowser({
         )}
       >
         <BookOpen className="size-4" aria-hidden="true" />
-        <span className="hidden sm:inline">Skills</span>
+        <span className="composer-wide-label">Skills</span>
         {selected.length > 0 ? (
           <span className="rounded-full bg-primary/15 px-1.5 text-[10px] tabular-nums">{selected.length}</span>
         ) : null}
@@ -1526,7 +1532,7 @@ function CodexToolbar({
   return (
     <div
       className={cn(
-        'flex min-w-0 flex-wrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
+        'flex min-w-0 flex-nowrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
         className,
       )}
     >
@@ -1642,7 +1648,7 @@ function MobileCodexOptions({
   }, [open])
 
   return (
-    <div ref={menuRef} className="relative sm:hidden">
+    <div ref={menuRef} className="composer-mobile-options relative">
       <Button
         type="button"
         variant="ghost"
@@ -1773,7 +1779,7 @@ function OpenCodeToolbar({
   return (
     <div
       className={cn(
-        'flex min-w-0 flex-wrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
+        'flex min-w-0 flex-nowrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
         className,
       )}
     >
@@ -1861,7 +1867,7 @@ function MobileOpenCodeOptions({
   }, [open])
 
   return (
-    <div ref={menuRef} className="relative sm:hidden">
+    <div ref={menuRef} className="composer-mobile-options relative">
       <Button
         type="button"
         variant="ghost"
@@ -1937,7 +1943,7 @@ function PiToolbar({
   return (
     <div
       className={cn(
-        'flex min-w-0 flex-wrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
+        'flex min-w-0 flex-nowrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
         className,
       )}
     >
@@ -2029,7 +2035,7 @@ function MobilePiOptions({
   }, [open])
 
   return (
-    <div ref={menuRef} className="relative sm:hidden">
+    <div ref={menuRef} className="composer-mobile-options relative">
       <Button
         type="button"
         variant="ghost"
@@ -2109,7 +2115,7 @@ function ClaudeToolbar({
   return (
     <div
       className={cn(
-        'flex min-w-0 flex-wrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
+        'flex min-w-0 flex-nowrap items-center gap-1.5 pl-1.5 text-sm font-medium text-muted-foreground',
         className,
       )}
     >
@@ -2194,7 +2200,7 @@ function MobileClaudeOptions({
   }, [open])
 
   return (
-    <div ref={menuRef} className="relative sm:hidden">
+    <div ref={menuRef} className="composer-mobile-options relative">
       <Button
         type="button"
         variant="ghost"

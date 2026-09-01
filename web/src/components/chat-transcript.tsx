@@ -3,8 +3,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  ChevronUp,
   ClipboardList,
+  CircleAlert,
   Copy,
   Download,
   FileText,
@@ -23,10 +23,11 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type TouchEvent,
+  type UIEvent,
   type WheelEvent,
 } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { Virtuoso } from 'react-virtuoso'
 import remarkGfm from 'remark-gfm'
 import type { AgentEvent } from '@/lib/api'
 import type {
@@ -44,9 +45,11 @@ import { clipboardCopyErrorMessage, copyText } from '@/lib/clipboard'
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
-const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
 const TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX = 10
-const scrollIntentKeys = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])
+const AUTO_SCROLL_SNAP_MIN_PX = 240
+const AUTO_SCROLL_SNAP_VIEWPORT_RATIO = 0.4
+const INITIAL_TAIL_PIN_SETTLE_MS = 200
+const TOUCH_SCROLL_SETTLE_MS = 100
 
 type ChatActivityStatus = { kind: 'thinking' } | { kind: 'working'; since: string }
 
@@ -54,8 +57,10 @@ type Props = {
   events: AgentEvent[]
   loading?: boolean
   error?: string
-  topInset?: 'none' | 'sessionHeader' | 'sessionHeaderAlert'
+  topInset?: 'none' | 'sessionHeader'
   bottomInsetHeight?: number
+  pinToLatestOnMount?: boolean
+  autoScroll?: boolean
   activityStatus?: ChatActivityStatus | null
   showDebugEvents?: boolean
   hasOlderEvents?: boolean
@@ -71,8 +76,6 @@ type Props = {
 }
 
 type VirtualTimelineItem =
-  | { kind: 'older-control'; id: string }
-  | { kind: 'newer-control'; id: string }
   | {
       kind: 'timeline'
       id: string
@@ -80,7 +83,11 @@ type VirtualTimelineItem =
       timelineIndex: number
     }
   | { kind: 'activity'; id: string; status: ChatActivityStatus }
-  | { kind: 'spacer'; id: string; height: number }
+  | { kind: 'error'; id: string; message: string }
+
+type TranscriptContext = {
+  tailClearanceHeight: number
+}
 
 type VirtualIndexState = {
   itemIDsKey: string
@@ -95,6 +102,8 @@ export function ChatTranscript({
   error = '',
   topInset = 'none',
   bottomInsetHeight = 0,
+  pinToLatestOnMount = false,
+  autoScroll = false,
   activityStatus = null,
   showDebugEvents = false,
   hasOlderEvents = false,
@@ -111,35 +120,162 @@ export function ChatTranscript({
   const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
   const scrollerElementRef = useRef<HTMLElement | null>(null)
   const tailAlignmentFrameRef = useRef<number | null>(null)
+  const touchTailSnapFrameRef = useRef<number | null>(null)
   const forceTailAlignmentRef = useRef(false)
+  const autoScrollRef = useRef(autoScroll)
+  const previousAutoScrollRef = useRef(autoScroll)
+  const initiallyFollowingTail = pinToLatestOnMount || !hasNewerEvents
+  const followingTailRef = useRef(initiallyFollowingTail)
+  const initialTailPinPendingRef = useRef(pinToLatestOnMount)
+  const tailPinCanSettleRef = useRef(true)
+  const initialTailPinSettleTimerRef = useRef<number | null>(null)
+  const scrollDirectionRef = useRef<'older' | 'latest' | null>(null)
+  const pointerScrollActiveRef = useRef(false)
+  const touchScrollActiveRef = useRef(false)
+  const touchMomentumActiveRef = useRef(false)
+  const touchScrollSettleTimerRef = useRef<number | null>(null)
+  const touchTailResumePendingRef = useRef(false)
+  const lastObservedScrollTopRef = useRef(0)
+  const lastTouchYRef = useRef<number | null>(null)
+  const resumeAttemptRef = useRef(0)
+  const previousHasNewerEventsRef = useRef(hasNewerEvents)
+  const [followingTail, setFollowingTailState] = useState(initiallyFollowingTail)
+  const [touchTailResumePending, setTouchTailResumePending] = useState(false)
   const autoLoadOlderRef = useRef(false)
   const autoLoadNewerRef = useRef(false)
-  const userScrollIntentRef = useRef(false)
-  const atBottomRef = useRef(true)
-  const lastTouchYRef = useRef<number | null>(null)
-  const [autoScrollPaused, setAutoScrollPaused] = useState(false)
-  const followingTailRef = useRef(true)
-  const virtuosoRef = useRef<VirtuosoHandle>(null)
-
-  useLayoutEffect(() => {
-    followingTailRef.current = !autoScrollPaused && !hasNewerEvents
-  }, [autoScrollPaused, hasNewerEvents])
-
+  const tailClearanceHeight = Math.max(
+    TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX,
+    bottomInsetHeight + TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX,
+  )
+  const alignTailNow = useCallback(() => {
+    const scroller = scrollerElementRef.current
+    if (scroller) scroller.scrollTop = scroller.scrollHeight
+  }, [])
+  const cancelInitialTailPinSettle = useCallback(() => {
+    if (initialTailPinSettleTimerRef.current === null) return
+    window.clearTimeout(initialTailPinSettleTimerRef.current)
+    initialTailPinSettleTimerRef.current = null
+  }, [])
+  const settleInitialTailPin = useCallback(() => {
+    cancelInitialTailPinSettle()
+    initialTailPinSettleTimerRef.current = window.setTimeout(() => {
+      initialTailPinSettleTimerRef.current = null
+      if (
+        !initialTailPinPendingRef.current ||
+        !tailPinCanSettleRef.current ||
+        !followingTailRef.current
+      ) {
+        return
+      }
+      alignTailNow()
+      initialTailPinPendingRef.current = false
+    }, INITIAL_TAIL_PIN_SETTLE_MS)
+  }, [alignTailNow, cancelInitialTailPinSettle])
   const scheduleTailAlignment = useCallback((force = false) => {
-    if (!force && (!followingTailRef.current || userScrollIntentRef.current)) return
+    if (!force && (!autoScrollRef.current || !followingTailRef.current)) return
     forceTailAlignmentRef.current ||= force
     if (tailAlignmentFrameRef.current !== null) return
-
     tailAlignmentFrameRef.current = window.requestAnimationFrame(() => {
       tailAlignmentFrameRef.current = null
       const forced = forceTailAlignmentRef.current
       forceTailAlignmentRef.current = false
-      if (!forced && (!followingTailRef.current || userScrollIntentRef.current)) return
-
-      const scroller = scrollerElementRef.current
-      if (scroller) scroller.scrollTop = scroller.scrollHeight
+      if (!forced && (!autoScrollRef.current || !followingTailRef.current)) return
+      alignTailNow()
     })
-  }, [])
+  }, [alignTailNow])
+
+  const pauseFollowing = useCallback(() => {
+    scrollDirectionRef.current = 'older'
+    resumeAttemptRef.current += 1
+    initialTailPinPendingRef.current = false
+    tailPinCanSettleRef.current = true
+    cancelInitialTailPinSettle()
+    if (!followingTailRef.current) return
+    followingTailRef.current = false
+    setFollowingTailState(false)
+    onFollowingTailChange?.(false)
+    if (tailAlignmentFrameRef.current !== null) {
+      window.cancelAnimationFrame(tailAlignmentFrameRef.current)
+      tailAlignmentFrameRef.current = null
+    }
+    forceTailAlignmentRef.current = false
+  }, [cancelInitialTailPinSettle, onFollowingTailChange])
+
+  const resumeFollowing = useCallback(async () => {
+    const attempt = resumeAttemptRef.current + 1
+    resumeAttemptRef.current = attempt
+    scrollDirectionRef.current = null
+    initialTailPinPendingRef.current = true
+    tailPinCanSettleRef.current = !hasNewerEvents
+
+    if (!hasNewerEvents) {
+      alignTailNow()
+      followingTailRef.current = true
+      setFollowingTailState(true)
+      onFollowingTailChange?.(true)
+      scheduleTailAlignment(true)
+      settleInitialTailPin()
+      return
+    }
+
+    followingTailRef.current = true
+    setFollowingTailState(true)
+    onFollowingTailChange?.(true)
+    try {
+      await onJumpToLatest?.()
+    } finally {
+      if (resumeAttemptRef.current === attempt && followingTailRef.current) {
+        tailPinCanSettleRef.current = true
+        alignTailNow()
+        onFollowingTailChange?.(true)
+        scheduleTailAlignment(true)
+        settleInitialTailPin()
+      }
+    }
+  }, [alignTailNow, hasNewerEvents, onFollowingTailChange, onJumpToLatest, scheduleTailAlignment, settleInitialTailPin])
+
+  useLayoutEffect(() => {
+    autoScrollRef.current = autoScroll
+  }, [autoScroll])
+
+  useLayoutEffect(() => {
+    if (!initialTailPinPendingRef.current) return
+    if (!followingTailRef.current) {
+      initialTailPinPendingRef.current = false
+      cancelInitialTailPinSettle()
+      return
+    }
+    scheduleTailAlignment(true)
+    if (loading) {
+      cancelInitialTailPinSettle()
+    } else {
+      settleInitialTailPin()
+    }
+  }, [cancelInitialTailPinSettle, events, loading, scheduleTailAlignment, settleInitialTailPin, tailClearanceHeight])
+
+  useLayoutEffect(() => {
+    const wasAutoScrolling = previousAutoScrollRef.current
+    previousAutoScrollRef.current = autoScroll
+    if (!autoScroll) {
+      if (wasAutoScrolling && followingTailRef.current) {
+        initialTailPinPendingRef.current = true
+        tailPinCanSettleRef.current = true
+        scheduleTailAlignment(true)
+        settleInitialTailPin()
+      }
+      return
+    }
+    scheduleTailAlignment()
+  }, [activityStatus, autoScroll, error, events, scheduleTailAlignment, settleInitialTailPin, tailClearanceHeight])
+
+  useEffect(() => {
+    if (!autoScroll || !followingTail) return
+    const itemList = scrollerElementRef.current?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
+    if (!itemList || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => scheduleTailAlignment())
+    observer.observe(itemList)
+    return () => observer.disconnect()
+  }, [autoScroll, followingTail, scheduleTailAlignment, timeline.length])
 
   useEffect(() => {
     return () => {
@@ -147,16 +283,43 @@ export function ChatTranscript({
         window.cancelAnimationFrame(tailAlignmentFrameRef.current)
         tailAlignmentFrameRef.current = null
       }
+      if (touchTailSnapFrameRef.current !== null) {
+        window.cancelAnimationFrame(touchTailSnapFrameRef.current)
+        touchTailSnapFrameRef.current = null
+      }
+      if (touchScrollSettleTimerRef.current !== null) {
+        window.clearTimeout(touchScrollSettleTimerRef.current)
+        touchScrollSettleTimerRef.current = null
+      }
+      cancelInitialTailPinSettle()
       forceTailAlignmentRef.current = false
     }
-  }, [])
+  }, [cancelInitialTailPinSettle])
+
+  const handleTotalListHeightChanged = useCallback(() => {
+    if (!initialTailPinPendingRef.current || !followingTailRef.current) return
+    scheduleTailAlignment(true)
+    if (!loading && tailPinCanSettleRef.current) settleInitialTailPin()
+  }, [loading, scheduleTailAlignment, settleInitialTailPin])
 
   useEffect(() => {
-    if (events.length === 0) {
-      setAutoScrollPaused(false)
-      userScrollIntentRef.current = false
+    const previouslyHadNewerEvents = previousHasNewerEventsRef.current
+    previousHasNewerEventsRef.current = hasNewerEvents
+    if (hasNewerEvents) {
+      if (initialTailPinPendingRef.current) return
+      if (!followingTailRef.current) return
+      followingTailRef.current = false
+      setFollowingTailState(false)
+      return
     }
-  }, [events.length])
+    if (
+      previouslyHadNewerEvents &&
+      !followingTailRef.current &&
+      scrollDirectionRef.current === 'latest'
+    ) {
+      void resumeFollowing()
+    }
+  }, [hasNewerEvents, resumeFollowing])
 
   useEffect(() => {
     if (!loadingOlderEvents) {
@@ -168,77 +331,53 @@ export function ChatTranscript({
     if (!loadingNewerEvents) autoLoadNewerRef.current = false
   }, [loadingNewerEvents])
 
-  function markUserScrollIntent() {
-    userScrollIntentRef.current = true
-    setAutoScrollPaused(true)
-    onFollowingTailChange?.(false)
-  }
-
-  function handleWheel(event: WheelEvent<HTMLDivElement>) {
-    if (event.deltaY < 0) {
-      markUserScrollIntent()
-    }
-  }
-
-  function handleTouchStart(event: TouchEvent<HTMLDivElement>) {
-    lastTouchYRef.current = event.touches[0]?.clientY ?? null
-  }
-
-  function handleTouchMove(event: TouchEvent<HTMLDivElement>) {
-    const touchY = event.touches[0]?.clientY
-    if (touchY === undefined) return
-    const movingTowardOlder = lastTouchYRef.current !== null && touchY > lastTouchYRef.current
-    lastTouchYRef.current = touchY
-    if (movingTowardOlder) {
-      markUserScrollIntent()
-    }
-  }
-
-  function handleTouchEnd() {
-    lastTouchYRef.current = null
-  }
-
-  function handleScrollKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const movingTowardOlder =
-      event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home' || (event.key === ' ' && event.shiftKey)
-    if (scrollIntentKeys.has(event.key) && movingTowardOlder) {
-      markUserScrollIntent()
-    }
-  }
-
-  function handleAtBottomChange(atBottom: boolean) {
-    atBottomRef.current = atBottom
-    if (atBottom && !hasNewerEvents) {
-      userScrollIntentRef.current = false
-      setAutoScrollPaused(false)
-      onFollowingTailChange?.(true)
-    } else if (userScrollIntentRef.current) {
-      setAutoScrollPaused(true)
-      onFollowingTailChange?.(false)
-    }
-  }
-
-  function requestOlderEvents(explicit = false) {
+  function requestOlderEvents() {
+    const scroller = scrollerElementRef.current
+    const pointerMovingOlder =
+      pointerScrollActiveRef.current && Boolean(scroller && scroller.scrollTop < lastObservedScrollTopRef.current)
+    const reviewingOlder =
+      !followingTailRef.current || scrollDirectionRef.current === 'older' || pointerMovingOlder
     if (
+      !reviewingOlder ||
       !hasOlderEvents ||
       loadingOlderEvents ||
       autoLoadOlderRef.current ||
-      (!explicit && !userScrollIntentRef.current) ||
       !onLoadOlderEvents
     ) {
       return Promise.resolve()
     }
+    if (followingTailRef.current) pauseFollowing()
     autoLoadOlderRef.current = true
-    userScrollIntentRef.current = true
-    setAutoScrollPaused(true)
-    onFollowingTailChange?.(false)
     return Promise.resolve(onLoadOlderEvents()).finally(() => {
       autoLoadOlderRef.current = false
     })
   }
 
   function requestNewerEvents() {
-    if (!hasNewerEvents || loadingNewerEvents || autoLoadNewerRef.current || !onLoadNewerEvents) {
+    const scroller = scrollerElementRef.current
+    const pointerMovingLatest =
+      pointerScrollActiveRef.current && Boolean(scroller && scroller.scrollTop > lastObservedScrollTopRef.current)
+    const reviewingLatest = scrollDirectionRef.current === 'latest' || pointerMovingLatest
+    if (
+      reviewingLatest &&
+      hasNewerEvents &&
+      scroller &&
+      isWithinTailSnapZone(scroller, tailClearanceHeight)
+    ) {
+      if (touchScrollActiveRef.current || touchMomentumActiveRef.current) {
+        armTouchTailResume()
+        if (touchMomentumActiveRef.current) scheduleTouchScrollSettle()
+        return Promise.resolve()
+      }
+      return resumeFollowing()
+    }
+    if (
+      !reviewingLatest ||
+      !hasNewerEvents ||
+      loadingNewerEvents ||
+      autoLoadNewerRef.current ||
+      !onLoadNewerEvents
+    ) {
       return Promise.resolve()
     }
     autoLoadNewerRef.current = true
@@ -247,27 +386,180 @@ export function ChatTranscript({
     })
   }
 
-  const tailSpacerHeight = Math.max(
-    TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX,
-    bottomInsetHeight + TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX,
-  )
+  function armTouchTailResume() {
+    if (touchTailResumePendingRef.current) return
+    touchTailResumePendingRef.current = true
+    setTouchTailResumePending(true)
+  }
+
+  function cancelTouchTailResume() {
+    if (!touchTailResumePendingRef.current && !touchTailResumePending) return
+    touchTailResumePendingRef.current = false
+    setTouchTailResumePending(false)
+  }
+
+  function scheduleTouchScrollSettle() {
+    if (touchScrollSettleTimerRef.current !== null) return
+    touchScrollSettleTimerRef.current = window.setTimeout(() => {
+      touchScrollSettleTimerRef.current = null
+      touchMomentumActiveRef.current = false
+      if (!touchTailResumePendingRef.current) return
+      touchTailResumePendingRef.current = false
+      void resumeFollowing().finally(() => setTouchTailResumePending(false))
+    }, TOUCH_SCROLL_SETTLE_MS)
+  }
+
+  function handleWheel(event: WheelEvent<HTMLDivElement>) {
+    pointerScrollActiveRef.current = false
+    touchScrollActiveRef.current = false
+    touchMomentumActiveRef.current = false
+    if (touchScrollSettleTimerRef.current !== null) {
+      window.clearTimeout(touchScrollSettleTimerRef.current)
+      touchScrollSettleTimerRef.current = null
+    }
+    cancelTouchTailResume()
+    if (event.deltaY < 0) {
+      pauseFollowing()
+    } else if (event.deltaY > 0) {
+      scrollDirectionRef.current = 'latest'
+    }
+  }
+
+  function handleTouchStart(event: TouchEvent<HTMLDivElement>) {
+    touchScrollActiveRef.current = true
+    touchMomentumActiveRef.current = false
+    if (touchScrollSettleTimerRef.current !== null) {
+      window.clearTimeout(touchScrollSettleTimerRef.current)
+      touchScrollSettleTimerRef.current = null
+    }
+    lastTouchYRef.current = event.touches[0]?.clientY ?? null
+  }
+
+  function handleTouchMove(event: TouchEvent<HTMLDivElement>) {
+    const touchY = event.touches[0]?.clientY
+    if (touchY === undefined) return
+    if (lastTouchYRef.current !== null) {
+      if (touchY > lastTouchYRef.current) {
+        if (touchTailSnapFrameRef.current !== null) {
+          window.cancelAnimationFrame(touchTailSnapFrameRef.current)
+          touchTailSnapFrameRef.current = null
+        }
+        cancelTouchTailResume()
+        pauseFollowing()
+      } else if (touchY < lastTouchYRef.current) {
+        scrollDirectionRef.current = 'latest'
+        const scroller = event.currentTarget
+        if (touchTailSnapFrameRef.current !== null) window.cancelAnimationFrame(touchTailSnapFrameRef.current)
+        touchTailSnapFrameRef.current = window.requestAnimationFrame(() => {
+          touchTailSnapFrameRef.current = null
+          if (
+            scrollDirectionRef.current === 'latest' &&
+            (!followingTailRef.current || hasNewerEvents) &&
+            isWithinTailSnapZone(scroller, tailClearanceHeight)
+          ) {
+            armTouchTailResume()
+          }
+        })
+      }
+    }
+    lastTouchYRef.current = touchY
+  }
+
+  function handleTouchEnd(event: TouchEvent<HTMLDivElement>) {
+    const scroller = event.currentTarget
+    lastTouchYRef.current = null
+    touchScrollActiveRef.current = false
+    touchMomentumActiveRef.current = true
+    scheduleTouchScrollSettle()
+    if (touchTailSnapFrameRef.current !== null) window.cancelAnimationFrame(touchTailSnapFrameRef.current)
+    touchTailSnapFrameRef.current = window.requestAnimationFrame(() => {
+      touchTailSnapFrameRef.current = null
+      if (
+        scrollDirectionRef.current === 'latest' &&
+        (!followingTailRef.current || hasNewerEvents) &&
+        isWithinTailSnapZone(scroller, tailClearanceHeight)
+      ) {
+        armTouchTailResume()
+        scheduleTouchScrollSettle()
+      }
+    })
+  }
+
+  function handleScrollKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const movingOlder =
+      event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home' || (event.key === ' ' && event.shiftKey)
+    const movingLatest =
+      event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End' || (event.key === ' ' && !event.shiftKey)
+    if (movingOlder) pauseFollowing()
+    if (movingLatest) scrollDirectionRef.current = 'latest'
+  }
+
+  function handleScrollerPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return
+    pointerScrollActiveRef.current = true
+    scrollDirectionRef.current = null
+    lastObservedScrollTopRef.current = event.currentTarget.scrollTop
+  }
+
+  function handleScrollerPointerEnd() {
+    pointerScrollActiveRef.current = false
+  }
+
+  function handleAtBottomChange(atBottom: boolean) {
+    if (
+      !atBottom ||
+      scrollDirectionRef.current !== 'latest' ||
+      (followingTailRef.current && !hasNewerEvents)
+    ) {
+      return
+    }
+    if (touchScrollActiveRef.current || touchMomentumActiveRef.current) {
+      armTouchTailResume()
+      if (touchMomentumActiveRef.current) scheduleTouchScrollSettle()
+      return
+    }
+    void resumeFollowing()
+  }
+
+  function handleScroll(event: UIEvent<HTMLDivElement>) {
+    const scroller = event.currentTarget
+    const previousScrollTop = lastObservedScrollTopRef.current
+    const currentScrollTop = scroller.scrollTop
+    const observedDirection =
+      currentScrollTop < previousScrollTop ? 'older' : currentScrollTop > previousScrollTop ? 'latest' : null
+    lastObservedScrollTopRef.current = currentScrollTop
+    const direction = scrollDirectionRef.current ?? (pointerScrollActiveRef.current ? observedDirection : null)
+
+    if (direction === 'older') {
+      cancelTouchTailResume()
+      pauseFollowing()
+      return
+    }
+    if (direction !== 'latest' || (followingTailRef.current && !hasNewerEvents)) return
+    if (isWithinTailSnapZone(scroller, tailClearanceHeight)) {
+      if (touchScrollActiveRef.current || touchMomentumActiveRef.current) {
+        armTouchTailResume()
+        if (touchMomentumActiveRef.current) scheduleTouchScrollSettle()
+      } else {
+        void resumeFollowing()
+      }
+    } else if (hasNewerEvents) {
+      void requestNewerEvents()
+    }
+  }
+
   const virtualItems = useMemo<VirtualTimelineItem[]>(() => {
     const items: VirtualTimelineItem[] = []
-    if (hasOlderEvents || loadingOlderEvents) items.push({ kind: 'older-control', id: 'older-control' })
     for (const [timelineIndex, item] of timeline.entries()) {
       items.push({ kind: 'timeline', id: item.id, item, timelineIndex })
     }
-    if (hasNewerEvents || loadingNewerEvents) items.push({ kind: 'newer-control', id: 'newer-control' })
     if (activityStatus && !hasNewerEvents) items.push({ kind: 'activity', id: 'activity', status: activityStatus })
-    items.push({ kind: 'spacer', id: 'tail-spacer', height: tailSpacerHeight })
+    if (error) items.push({ kind: 'error', id: 'chat-error', message: error })
     return items
   }, [
     activityStatus,
+    error,
     hasNewerEvents,
-    hasOlderEvents,
-    loadingNewerEvents,
-    loadingOlderEvents,
-    tailSpacerHeight,
     timeline,
   ])
   const virtualItemIDs = virtualItems.map((item) => item.id)
@@ -295,48 +587,6 @@ export function ChatTranscript({
     })
   }
 
-  const focusedVirtualIndex =
-    focusSeq > 0
-      ? virtualItems.findIndex((entry) => entry.kind === 'timeline' && timelineItemContainsSeq(entry.item, focusSeq))
-      : -1
-
-  useEffect(() => {
-    if (focusedVirtualIndex < 0) return
-    setAutoScrollPaused(true)
-    userScrollIntentRef.current = true
-    onFollowingTailChange?.(false)
-    const frame = window.requestAnimationFrame(() => {
-      virtuosoRef.current?.scrollToIndex({
-        index: firstItemIndex + focusedVirtualIndex,
-        align: 'center',
-      })
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [firstItemIndex, focusSeq, focusedVirtualIndex, onFollowingTailChange])
-
-  useEffect(() => {
-    scheduleTailAlignment()
-  }, [autoScrollPaused, events, hasNewerEvents, scheduleTailAlignment, tailSpacerHeight])
-
-  useEffect(() => {
-    const scroller = scrollerElementRef.current
-    const itemList = scroller?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
-    if (!scroller || !itemList || typeof ResizeObserver === 'undefined') return
-
-    const observer = new ResizeObserver(() => scheduleTailAlignment())
-    observer.observe(itemList)
-    scheduleTailAlignment()
-    return () => observer.disconnect()
-  }, [scheduleTailAlignment, timeline.length])
-
-  if (error && timeline.length === 0) {
-    return (
-      <div role="alert" className="flex h-full items-center justify-center p-8 text-center text-sm text-destructive">
-        Failed to load chat history: {error}
-      </div>
-    )
-  }
-
   if (loading && timeline.length === 0) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
@@ -345,7 +595,7 @@ export function ChatTranscript({
     )
   }
 
-  if (timeline.length === 0 && !activityStatus) {
+  if (timeline.length === 0 && !activityStatus && !error) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
         No messages yet. Submit a prompt to start the chat.
@@ -355,24 +605,6 @@ export function ChatTranscript({
 
   const latestMessageIndex = timeline.reduce((latest, item, index) => (item.kind === 'message' ? index : latest), -1)
   const messageDateBreakIndexes = messageDateBreaks(timeline)
-  const jumpButtonBottom = Math.max(16, bottomInsetHeight + 12)
-
-  async function jumpToLatest() {
-    userScrollIntentRef.current = false
-    setAutoScrollPaused(false)
-    onFollowingTailChange?.(true)
-    scheduleTailAlignment(true)
-    if (!hasNewerEvents) return
-    try {
-      await onJumpToLatest?.()
-    } finally {
-      userScrollIntentRef.current = false
-      setAutoScrollPaused(false)
-      onFollowingTailChange?.(true)
-      scheduleTailAlignment(true)
-    }
-  }
-
   function updateChatGlow(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return
 
@@ -394,54 +626,40 @@ export function ChatTranscript({
       onPointerLeave={hideChatGlow}
       onPointerCancel={hideChatGlow}
     >
-      <Virtuoso
-        ref={virtuosoRef}
+      <Virtuoso<VirtualTimelineItem, TranscriptContext>
         scrollerRef={(element) => {
           scrollerElementRef.current = element instanceof HTMLElement ? element : null
         }}
-        className="chat-scroll-area subtle-scrollbar h-full min-h-0"
+        className="chat-scroll-area subtle-scrollbar h-full min-h-0 overscroll-y-none"
         data={virtualItems}
+        context={{ tailClearanceHeight }}
+        components={transcriptComponents}
         computeItemKey={(_, item) => item.id}
         firstItemIndex={firstItemIndex}
         initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-        atBottomThreshold={AUTO_SCROLL_BOTTOM_THRESHOLD_PX}
+        alignToBottom
+        followOutput={false}
+        atBottomThreshold={tailClearanceHeight + AUTO_SCROLL_SNAP_MIN_PX}
         atBottomStateChange={handleAtBottomChange}
+        totalListHeightChanged={handleTotalListHeightChanged}
         increaseViewportBy={{ top: 600, bottom: 800 }}
         overscan={200}
         startReached={() => void requestOlderEvents()}
-        endReached={() => {
-          if (userScrollIntentRef.current) void requestNewerEvents()
-        }}
+        endReached={() => void requestNewerEvents()}
         onWheel={handleWheel}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onKeyDown={handleScrollKeyDown}
+        onPointerDown={handleScrollerPointerDown}
+        onPointerUp={handleScrollerPointerEnd}
+        onPointerCancel={handleScrollerPointerEnd}
+        onScroll={handleScroll}
         role="log"
         aria-label="Chat messages"
         aria-live="polite"
         aria-relevant="additions text"
         itemContent={(_, virtualItem) => {
-          if (virtualItem.kind === 'older-control') {
-            return (
-              <div
-                className={cn(
-                  'px-4 pb-3',
-                  topInset === 'sessionHeader' && 'lg:pt-24',
-                  topInset === 'sessionHeaderAlert' && 'lg:pt-36',
-                )}
-              >
-                <LoadOlderEventsButton loading={loadingOlderEvents} onLoad={() => requestOlderEvents(true)} />
-              </div>
-            )
-          }
-          if (virtualItem.kind === 'newer-control') {
-            return (
-              <div className="px-4 pt-3">
-                <LoadNewerEventsButton loading={loadingNewerEvents} onLoad={requestNewerEvents} />
-              </div>
-            )
-          }
           if (virtualItem.kind === 'activity') {
             return (
               <div className="px-4 pt-3">
@@ -449,23 +667,29 @@ export function ChatTranscript({
               </div>
             )
           }
-          if (virtualItem.kind === 'spacer') {
+          if (virtualItem.kind === 'error') {
             return (
-              <div
-                data-testid="chat-transcript-tail-spacer"
-                aria-hidden="true"
-                style={{ height: `${virtualItem.height}px` }}
-              />
+              <div className="px-4 pt-3">
+                <div
+                  role="alert"
+                  data-testid="chat-transcript-error"
+                  className="mx-auto flex w-fit max-w-[min(36rem,100%)] items-center justify-center gap-2 rounded-lg border border-destructive/25 bg-destructive/[0.06] px-3 py-2 text-center text-xs shadow-sm"
+                >
+                  <CircleAlert className="size-3.5 shrink-0 text-destructive/80" aria-hidden="true" />
+                  <span className="shrink-0 font-medium text-destructive/90">Chat issue</span>
+                  <span className="min-w-0 break-words text-muted-foreground">{virtualItem.message}</span>
+                </div>
+              </div>
             )
           }
           const { item, timelineIndex } = virtualItem
           return (
             <div
+              data-transcript-row={item.id}
               className={cn(
                 'px-4',
                 timelineItemContainsSeq(item, focusSeq) && 'rounded-xl bg-primary/8 py-2 ring-2 ring-primary/45',
                 timelineIndex === 0 && !hasOlderEvents && topInset === 'sessionHeader' && 'lg:pt-24',
-                timelineIndex === 0 && !hasOlderEvents && topInset === 'sessionHeaderAlert' && 'lg:pt-36',
                 timelineRowSpacing(
                   item,
                   timeline[timelineIndex - 1],
@@ -484,16 +708,16 @@ export function ChatTranscript({
           )
         }}
       />
-      {autoScrollPaused || hasNewerEvents ? (
+      {(!followingTail || hasNewerEvents) && !touchTailResumePending ? (
         <div
-          className={cn('pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4')}
-          style={{ bottom: `${jumpButtonBottom}px` }}
+          className="pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4"
+          style={{ bottom: `${Math.max(16, bottomInsetHeight + 12)}px` }}
         >
           <button
             type="button"
             className="pointer-events-auto inline-flex h-9 items-center gap-2 rounded-full border border-border/70 bg-background/90 px-3.5 text-xs font-medium text-foreground shadow-lg shadow-black/10 backdrop-blur transition-colors hover:bg-background"
             aria-label="Scroll to latest and resume auto-scroll"
-            onClick={() => void jumpToLatest()}
+            onClick={() => void resumeFollowing()}
           >
             <ChevronDown className="size-3.5" aria-hidden="true" />
             Jump to latest
@@ -502,6 +726,27 @@ export function ChatTranscript({
       ) : null}
     </div>
   )
+}
+
+function isWithinTailSnapZone(scroller: HTMLElement, tailClearanceHeight: number) {
+  const distanceFromBottom = Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop)
+  const snapDistance =
+    tailClearanceHeight + Math.max(AUTO_SCROLL_SNAP_MIN_PX, scroller.clientHeight * AUTO_SCROLL_SNAP_VIEWPORT_RATIO)
+  return distanceFromBottom <= snapDistance
+}
+
+function TranscriptFooter({ context }: { context: TranscriptContext }) {
+  return (
+    <div
+      data-testid="chat-transcript-tail-spacer"
+      aria-hidden="true"
+      style={{ height: `${context.tailClearanceHeight}px` }}
+    />
+  )
+}
+
+const transcriptComponents = {
+  Footer: TranscriptFooter,
 }
 
 function ActivityIndicatorRow({ status }: { status: ChatActivityStatus }) {
@@ -605,48 +850,6 @@ function timelineRowSpacing(item: ChatTimelineItem, previous: ChatTimelineItem |
 
 function timelineItemContainsSeq(item: ChatTimelineItem, seq: number) {
   return seq > 0 && seq >= item.startSeq && seq <= item.endSeq
-}
-
-function LoadOlderEventsButton({ loading, onLoad }: { loading: boolean; onLoad?: () => Promise<void> | void }) {
-  return (
-    <div className="flex justify-center">
-      <button
-        type="button"
-        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/70 bg-background/80 px-3 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-background hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
-        aria-label="Load older events"
-        disabled={loading || !onLoad}
-        onClick={() => void onLoad?.()}
-      >
-        {loading ? (
-          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-        ) : (
-          <ChevronUp className="size-3.5" aria-hidden="true" />
-        )}
-        {loading ? 'Loading' : 'Load older'}
-      </button>
-    </div>
-  )
-}
-
-function LoadNewerEventsButton({ loading, onLoad }: { loading: boolean; onLoad?: () => Promise<void> | void }) {
-  return (
-    <div className="flex justify-center">
-      <button
-        type="button"
-        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/70 bg-background/80 px-3 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-background hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
-        aria-label="Load newer events"
-        disabled={loading || !onLoad}
-        onClick={() => void onLoad?.()}
-      >
-        {loading ? (
-          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-        ) : (
-          <ChevronDown className="size-3.5" aria-hidden="true" />
-        )}
-        {loading ? 'Loading' : 'Load newer'}
-      </button>
-    </div>
-  )
 }
 
 function ChatTimelineRow({
@@ -895,7 +1098,7 @@ function ImageAttachmentPreview({ attachment }: { attachment: ChatTranscriptAtta
           <img src={attachment.sourceURL} alt={attachment.name} className="h-24 w-24 object-cover" />
         </button>
       </DialogTrigger>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] gap-4 overflow-hidden border-border/90 p-4 sm:max-w-5xl">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] gap-4 overflow-hidden p-4 sm:max-w-5xl">
         <div className="flex min-w-0 items-start justify-between gap-3 pr-8">
           <div className="min-w-0">
             <DialogTitle className="truncate text-base">{attachment.name}</DialogTitle>

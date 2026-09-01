@@ -46,6 +46,8 @@ const cachedSessionLimit = 8
 const recentEventsRequestRetentionMs = 2000
 const persistentEventsWriteDelayMs = 1200
 const streamResyncEventType = 'stream.resync.required'
+export const initialEventHistoryByteBudget = 512 * 1024
+export const initialEventHistoryMaxTurns = 50
 const sessionEventCache = new Map<string, SessionEventCacheEntry>()
 const recentEventsRequests = new Map<string, Promise<EventHistoryResponse>>()
 const persistentEventsWriteTimers = new Map<string, number>()
@@ -64,6 +66,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const [events, setEvents] = useState<AgentEvent[]>([])
   const [liveEvents, setLiveEvents] = useState<AgentEvent[]>([])
   const [streamState, setStreamState] = useState<StreamState>('idle')
+  const [streamSessionID, setStreamSessionID] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [hasOlderEvents, setHasOlderEvents] = useState(false)
   const [hasNewerEvents, setHasNewerEventsState] = useState(false)
@@ -87,6 +90,8 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const refreshKey = options.refreshKey ?? 0
   const includeDebugEvents = options.includeDebugEvents ?? false
   const targetSeq = options.targetSeq ?? 0
+  const effectiveStreamState: StreamState =
+    sessionID !== streamSessionID ? (sessionID ? 'loading' : 'idle') : streamState
 
   const setHasNewerEvents = useCallback((value: boolean) => {
     hasNewerEventsRef.current = value
@@ -108,6 +113,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     const selectionEpoch = selectionEpochRef.current
     selectedSessionIDRef.current = sessionID
     activeSessionIDRef.current = sessionID
+    setStreamSessionID(sessionID)
     loadingOlderEventsRef.current = false
     loadingNewerEventsRef.current = false
     followingTailRef.current = true
@@ -310,9 +316,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           listEventTurnsAround(activeSessionID, targetSeq, 2, {
             includeDebug: activeIncludeDebugEvents,
           }),
-          listRecentEventTurns(activeSessionID, defaultEventTurnPageSize, {
-            includeDebug: activeIncludeDebugEvents,
-          }),
+          listAdaptiveRecentEventTurns(activeSessionID, activeIncludeDebugEvents),
         ])
         if (closed) return
 
@@ -465,25 +469,27 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     if (!sessionID) return
     setError('')
     followingTailRef.current = true
-    const immediate = boundEventWindow(liveEventsRef.current, 'latest', residentEventWindowPolicy)
-    oldestSeqRef.current = firstSeq(immediate.events)
-    newestSeqRef.current = lastSeq(immediate.events)
-    setEvents(immediate.events)
-    setHasOlderEvents((current) => current || immediate.trimmedStart || oldestSeqRef.current > 1)
+    setEvents((current) => {
+      const immediate = mergeBoundedEvents(current, liveEventsRef.current, 'latest', residentEventWindowPolicy)
+      oldestSeqRef.current = firstSeq(immediate.events)
+      newestSeqRef.current = lastSeq(immediate.events)
+      setHasOlderEvents((currentHasOlder) => currentHasOlder || immediate.trimmedStart || oldestSeqRef.current > 1)
+      return immediate.events
+    })
     setHasNewerEvents(false)
 
     try {
-      const history = await listRecentEventTurns(sessionID, defaultEventTurnPageSize, {
-        includeDebug: includeDebugEvents,
-      })
+      const history = await listAdaptiveRecentEventTurns(sessionID, includeDebugEvents)
       if (activeSessionIDRef.current !== sessionID) return
       const combined = appendEvents([], [...history.events, ...liveEventsRef.current])
-      const next = boundEventWindow(combined, 'latest', residentEventWindowPolicy)
-      oldestSeqRef.current = firstSeq(next.events)
-      newestSeqRef.current = lastSeq(next.events)
-      lastSeqRef.current = Math.max(lastSeqRef.current, newestSeqRef.current)
-      setEvents(next.events)
-      setHasOlderEvents((history.page?.has_older ?? oldestSeqRef.current > 1) || next.trimmedStart)
+      setEvents((current) => {
+        const next = mergeBoundedEvents(current, combined, 'latest', residentEventWindowPolicy)
+        oldestSeqRef.current = firstSeq(next.events)
+        newestSeqRef.current = lastSeq(next.events)
+        lastSeqRef.current = Math.max(lastSeqRef.current, newestSeqRef.current)
+        setHasOlderEvents((history.page?.has_older ?? oldestSeqRef.current > 1) || next.trimmedStart)
+        return next.events
+      })
     } catch (loadError) {
       if (activeSessionIDRef.current === sessionID) {
         setError(loadError instanceof Error ? loadError.message : 'Failed to refresh the latest events')
@@ -502,7 +508,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   return {
     events,
     liveEvents,
-    streamState,
+    streamState: effectiveStreamState,
     error,
     hasOlderEvents,
     hasNewerEvents,
@@ -529,9 +535,7 @@ function listRecentEventsOnce(
   const existing = recentEventsRequests.get(key)
   if (existing) return existing
 
-  const request = listRecentEventTurns(sessionID, defaultEventTurnPageSize, {
-    includeDebug: includeDebugEvents,
-  }).catch((error) => {
+  const request = listAdaptiveRecentEventTurns(sessionID, includeDebugEvents).catch((error) => {
     recentEventsRequests.delete(key)
     throw error
   })
@@ -619,6 +623,126 @@ export function trimEventsToRecentTurns(events: AgentEvent[], turns: number) {
     if (foundTurns === turns) return events.slice(index)
   }
   return events
+}
+
+export async function listAdaptiveRecentEventTurns(
+  sessionID: string,
+  includeDebugEvents = false,
+  byteBudget = initialEventHistoryByteBudget,
+  maxTurns = initialEventHistoryMaxTurns,
+) {
+  const initial = await listRecentEventTurns(sessionID, defaultEventTurnPageSize, {
+    includeDebug: includeDebugEvents,
+  })
+  let events = [...initial.events]
+  let hasOlder = initial.page?.has_older === true
+  let turns = eventTurnCount(events)
+
+  while (hasOlder && turns > 0 && turns < maxTurns) {
+    const usedBytes = serializedHistoryBytes(events)
+    if (turns >= defaultEventTurnPageSize && usedBytes >= byteBudget) {
+      break
+    }
+
+    const remainingBytes = Math.max(1, byteBudget - usedBytes)
+    const averageTurnBytes = Math.max(1, Math.ceil(usedBytes / turns))
+    const requestedTurns = Math.min(maxTurns - turns, Math.max(1, Math.ceil(remainingBytes / averageTurnBytes)))
+    const beforeSeq = firstSeq(events)
+    if (beforeSeq <= 1) {
+      hasOlder = false
+      break
+    }
+
+    const older = await listEventTurnsBefore(sessionID, beforeSeq, requestedTurns, {
+      includeDebug: includeDebugEvents,
+    })
+    if (older.events.length === 0) {
+      hasOlder = false
+      break
+    }
+
+    const merged = appendEvents([], [...older.events, ...events])
+    const bounded = trimEventsToRecentTurnBudget(
+      merged,
+      byteBudget,
+      defaultEventTurnPageSize,
+      maxTurns,
+      older.page?.has_older !== true,
+    )
+    const trimmedForBudget = bounded.length < merged.length
+    events = bounded
+    turns = eventTurnCount(events)
+    hasOlder = trimmedForBudget || older.page?.has_older === true
+    if (trimmedForBudget || firstSeq(older.events) >= beforeSeq) {
+      break
+    }
+  }
+
+  const first = firstSeq(events)
+  const last = lastSeq(events)
+  const inferredOlder = initial.page === undefined && first > 1
+  return {
+    events,
+    page: {
+      first_seq: first,
+      last_seq: last,
+      has_older: hasOlder || inferredOlder,
+      has_newer: initial.page?.has_newer ?? false,
+      starts_mid_turn: hasOlder && events[0]?.type !== 'user.message.completed',
+      ends_mid_turn: initial.page?.ends_mid_turn ?? false,
+    },
+  }
+}
+
+export function trimEventsToRecentTurnBudget(
+  events: AgentEvent[],
+  byteBudget: number,
+  minimumTurns = defaultEventTurnPageSize,
+  maximumTurns = initialEventHistoryMaxTurns,
+  includePreamble = false,
+) {
+  if (events.length === 0 || byteBudget <= 0 || maximumTurns <= 0) return []
+
+  const turnStarts = events.flatMap((event, index) => (event.type === 'user.message.completed' ? [index] : []))
+  if (turnStarts.length === 0) return events
+
+  let selectedTurns = 0
+  let selectedBytes = 0
+  let start = events.length
+  for (let turnIndex = turnStarts.length - 1; turnIndex >= 0 && selectedTurns < maximumTurns; turnIndex -= 1) {
+    const turnStart = turnStarts[turnIndex]
+    const turnEnd = turnIndex + 1 < turnStarts.length ? turnStarts[turnIndex + 1] : events.length
+    const turnBytes = serializedHistoryBytes(events.slice(turnStart, turnEnd))
+    if (selectedTurns >= minimumTurns && selectedBytes + turnBytes > byteBudget) {
+      break
+    }
+    start = turnStart
+    selectedTurns += 1
+    selectedBytes += turnBytes
+  }
+
+  if (includePreamble && start === turnStarts[0] && turnStarts[0] > 0) {
+    const preambleBytes = serializedHistoryBytes(events.slice(0, turnStarts[0]))
+    if (selectedBytes + preambleBytes <= byteBudget) {
+      start = 0
+    }
+  }
+  return events.slice(start)
+}
+
+function eventTurnCount(events: AgentEvent[]) {
+  return events.reduce((count, event) => count + (event.type === 'user.message.completed' ? 1 : 0), 0)
+}
+
+function serializedHistoryBytes(events: AgentEvent[]) {
+  const encoder = new TextEncoder()
+  return events.reduce((bytes, event) => {
+    try {
+      return bytes + encoder.encode(JSON.stringify(event)).byteLength
+    } catch {
+      return Number.MAX_SAFE_INTEGER
+    }
+  }, 2)
 }
 
 function evictOldSessionEventCaches() {
