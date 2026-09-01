@@ -351,6 +351,33 @@ test('schedules view uses the shared floating session header', async () => {
   expect(scheduleInfo?.closest('.session-schedules-body')).toBeTruthy()
 })
 
+test('repository skills view uses the shared floating session header and information card', async () => {
+  const user = userEvent.setup()
+  render(<App />)
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  await user.click(screen.getAllByRole('button', { name: 'Show repository skills' })[0])
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/skills'))
+  const skillsHeader = screen.getByTestId('floating-skills-header')
+  expect(within(skillsHeader).getByRole('button', { name: 'Session settings' })).toBeInTheDocument()
+  expect(skillsHeader.querySelector('.command-chat-header')).toBeInTheDocument()
+  const info = screen.getByRole('heading', { name: 'Repository skills' }).closest('section')
+  expect(info).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
+})
+
+test('user skills appears beneath Overview and opens the global management route', async () => {
+  const user = userEvent.setup()
+  render(<App />)
+  const navigation = await screen.findByRole('complementary', { name: 'Sessions' })
+  const overview = within(navigation).getByRole('button', { name: 'Overview' })
+  const userSkills = within(navigation).getByRole('button', { name: 'User skills' })
+  expect(overview.compareDocumentPosition(userSkills) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  await user.click(userSkills)
+  await waitFor(() => expect(window.location.pathname).toBe('/skills'))
+  expect(await screen.findByRole('heading', { name: 'User skills' })).toBeInTheDocument()
+  expect(screen.getByText('/Users/tester/.agents/skills')).toBeInTheDocument()
+  expect(userSkills).toHaveAttribute('aria-current', 'page')
+})
+
 test('loading with a session route selects that session', async () => {
   window.history.replaceState({}, '', '/sessions/sess_2')
 
@@ -1543,6 +1570,13 @@ function fetchMock({
     const schedulesMatch = path.match(/^\/api\/sessions\/([^/?]+)\/schedules$/)
     if (schedulesMatch) {
       return jsonResponse({ schedules: [] })
+    }
+    const repositorySkillsMatch = path.match(/^\/api\/sessions\/([^/?]+)\/repository-skills$/)
+    if (repositorySkillsMatch) {
+      return jsonResponse({ skills: [] })
+    }
+    if (path === '/api/user-skills') {
+      return jsonResponse({ home_path: '/Users/tester', skills: [] })
     }
     if (path === '/api/sessions/sess_1/events?before_seq=252&turns=2') {
       return jsonResponse({ events: olderEvents })

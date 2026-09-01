@@ -146,7 +146,7 @@ export function SessionSchedules({
           const isExpanded = Boolean(expanded[schedule.id])
           const isEditing = editingID === schedule.id
           return (
-            <section key={schedule.id} className="overflow-hidden rounded-lg border bg-card shadow-sm">
+            <section key={schedule.id} className="overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm">
                 {isEditing ? (
                   <div className="p-4"><ScheduleEditor form={form} setForm={setForm} saving={busy === 'save'} onSave={() => void save()} onCancel={() => setEditingID(null)} /></div>
                 ) : (
@@ -164,7 +164,7 @@ export function SessionSchedules({
                         <Button size="icon" variant="ghost" aria-label={`Delete ${schedule.name}`} disabled={Boolean(busy)} onClick={() => { if (window.confirm(`Delete “${schedule.name}” and cancel its queued runs?`)) void perform(`delete-${schedule.id}`, () => deleteSchedule(session.id, schedule.id)) }}><Trash2 /></Button>
                       </div>
                     </div>
-                    <button type="button" className="flex w-full items-center justify-between border-t px-4 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-muted/40" onClick={() => setExpanded((current) => ({ ...current, [schedule.id]: !isExpanded }))}><span>Recent runs ({history.length})</span>{isExpanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}</button>
+                    <button type="button" className="flex w-full items-center justify-between border-t border-border/70 px-4 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-muted/40" onClick={() => setExpanded((current) => ({ ...current, [schedule.id]: !isExpanded }))}><span>Recent runs ({history.length})</span>{isExpanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}</button>
                     {isExpanded ? <OccurrenceHistory items={history} busy={busy} onCancel={(item) => void perform(`cancel-${item.id}`, () => cancelScheduleOccurrence(session.id, schedule.id, item.id))} /> : null}
                   </>
                 )}
@@ -179,7 +179,7 @@ export function SessionSchedules({
 function ScheduleEditor({ form, setForm, saving, onSave, onCancel }: { form: FormState; setForm: (value: FormState | ((current: FormState) => FormState)) => void; saving: boolean; onSave: () => void; onCancel: () => void }) {
   const valid = form.prompt.trim() && form.timezone.trim() && (form.kind !== 'cron' || form.expression.trim()) && (form.kind !== 'weekly' || form.weekdays.length > 0)
   return (
-    <div className="rounded-lg border bg-muted/20 p-4">
+    <div className="rounded-lg border border-border/80 bg-muted/20 p-4">
       <div className="mb-4 flex items-center justify-between"><h3 className="font-semibold">Schedule details</h3><Button size="icon" variant="ghost" aria-label="Close schedule editor" onClick={onCancel}><X /></Button></div>
       <div className="grid gap-4 md:grid-cols-2">
         <Field label="Name"><Input value={form.name} placeholder="Optional — derived from prompt" onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} /></Field>
@@ -189,7 +189,7 @@ function ScheduleEditor({ form, setForm, saving, onSave, onCancel }: { form: For
         {form.kind === 'interval' ? <Field label="Every"><div className="grid grid-cols-[1fr_1.4fr] gap-2"><Input type="number" min={1} value={form.every} onChange={(event) => setForm((current) => ({ ...current, every: Math.max(1, Number(event.target.value)) }))} /><NativeSelect value={form.unit} onChange={(value) => setForm((current) => ({ ...current, unit: value as FormState['unit'] }))}><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></NativeSelect></div></Field> : null}
         {form.kind === 'daily' || form.kind === 'weekly' ? <Field label="Time"><Input type="time" value={form.time} onChange={(event) => setForm((current) => ({ ...current, time: event.target.value }))} /></Field> : null}
         {form.kind === 'cron' ? <Field label="Five-field cron"><Input className="font-mono" placeholder="0 9 * * 1-5" value={form.expression} onChange={(event) => setForm((current) => ({ ...current, expression: event.target.value }))} /></Field> : null}
-        {form.kind === 'weekly' ? <div className="md:col-span-2"><span className="mb-1.5 block text-xs font-medium">Weekdays</span><div className="flex flex-wrap gap-2">{weekdays.map(([value, label]) => <label key={value} className="flex cursor-pointer items-center gap-1.5 rounded-md border bg-background px-2.5 py-2 text-xs"><input type="checkbox" checked={form.weekdays.includes(value)} onChange={() => setForm((current) => ({ ...current, weekdays: current.weekdays.includes(value) ? current.weekdays.filter((day) => day !== value) : [...current.weekdays, value] }))} />{label}</label>)}</div></div> : null}
+        {form.kind === 'weekly' ? <div className="md:col-span-2"><span className="mb-1.5 block text-xs font-medium">Weekdays</span><div className="flex flex-wrap gap-2">{weekdays.map(([value, label]) => <label key={value} className="flex cursor-pointer items-center gap-1.5 rounded-md border border-border/80 bg-background px-2.5 py-2 text-xs"><input type="checkbox" checked={form.weekdays.includes(value)} onChange={() => setForm((current) => ({ ...current, weekdays: current.weekdays.includes(value) ? current.weekdays.filter((day) => day !== value) : [...current.weekdays, value] }))} />{label}</label>)}</div></div> : null}
       </div>
       <label className="mt-4 flex items-center gap-2 text-sm"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm((current) => ({ ...current, enabled: event.target.checked }))} />Active after saving</label>
       <div className="mt-5 flex justify-end gap-2"><Button variant="outline" onClick={onCancel}>Cancel</Button><Button disabled={!valid || saving} onClick={onSave}>{saving ? 'Saving…' : 'Save schedule'}</Button></div>
@@ -198,8 +198,8 @@ function ScheduleEditor({ form, setForm, saving, onSave, onCancel }: { form: For
 }
 
 function OccurrenceHistory({ items, busy, onCancel }: { items: ScheduleOccurrence[]; busy: string; onCancel: (item: ScheduleOccurrence) => void }) {
-  if (items.length === 0) return <div className="border-t px-4 py-5 text-sm text-muted-foreground">No runs yet.</div>
-  return <div className="divide-y border-t">{items.map((item) => <div key={item.id} className="flex items-center gap-3 px-4 py-3 text-sm"><Badge variant={occurrenceVariant(item.status)}>{item.status}</Badge><div className="min-w-0 flex-1"><p>{formatDate(item.scheduled_for)}</p><p className="text-xs text-muted-foreground">{item.trigger === 'manual' ? 'Run now' : 'Scheduled'}{item.error ? ` · ${item.error}` : ''}</p></div>{item.status === 'queued' ? <Button size="sm" variant="ghost" disabled={Boolean(busy)} onClick={() => onCancel(item)}>Cancel</Button> : null}</div>)}</div>
+  if (items.length === 0) return <div className="border-t border-border/70 px-4 py-5 text-sm text-muted-foreground">No runs yet.</div>
+  return <div className="divide-y divide-border/70 border-t border-border/70">{items.map((item) => <div key={item.id} className="flex items-center gap-3 px-4 py-3 text-sm"><Badge variant={occurrenceVariant(item.status)}>{item.status}</Badge><div className="min-w-0 flex-1"><p>{formatDate(item.scheduled_for)}</p><p className="text-xs text-muted-foreground">{item.trigger === 'manual' ? 'Run now' : 'Scheduled'}{item.error ? ` · ${item.error}` : ''}</p></div>{item.status === 'queued' ? <Button size="sm" variant="ghost" disabled={Boolean(busy)} onClick={() => onCancel(item)}>Cancel</Button> : null}</div>)}</div>
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="block"><span className="mb-1.5 block text-xs font-medium">{label}</span>{children}</label> }

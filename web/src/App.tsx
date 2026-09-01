@@ -1,4 +1,4 @@
-import { CalendarClock, Folder, Menu, MessageSquare, Plus, Server, Terminal, X } from 'lucide-react'
+import { BookOpen, CalendarClock, Folder, Menu, MessageSquare, Plus, Server, Terminal, X } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -72,6 +72,7 @@ import { RunHealthRail } from '@/components/run-health-rail'
 import { ChatSessionHeader, SessionDetail } from '@/components/session-detail'
 import { SessionList } from '@/components/session-list'
 import { SessionSchedules } from '@/components/session-schedules'
+import { RepositorySkills } from '@/components/repository-skills'
 import { defaultSessionListFilters, type SessionListFilters } from '@/components/session-list-filters'
 import { WorkspaceFilesView } from '@/components/workspace-files'
 import { hasSessionAttention, latestSessionSeq, sessionAttention } from '@/lib/session-attention'
@@ -168,7 +169,8 @@ function App() {
   const [sessionSearchQuery, setSessionSearchQuery] = useState('')
   const [sessionListFilters, setSessionListFilters] = useState<SessionListFilters>(defaultSessionListFilters)
   const [appView, setAppView] = useState<AppView>(() => selectedSessionRouteFromLocation().view)
-  const [overviewSelected, setOverviewSelected] = useState(() => !isSessionLocation())
+  const [userSkillsSelected, setUserSkillsSelected] = useState(() => isUserSkillsLocation())
+  const [overviewSelected, setOverviewSelected] = useState(() => !isSessionLocation() && !isUserSkillsLocation())
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
   const overviewSelectedRef = useRef(overviewSelected)
   const appViewRef = useRef<AppView>(appView)
@@ -300,6 +302,7 @@ function App() {
     const nextOverviewSelected = sessionID === null
     overviewSelectedRef.current = nextOverviewSelected
     setOverviewSelected(nextOverviewSelected)
+    setUserSkillsSelected(false)
     selectedSessionIDRef.current = sessionID
     setSelectedSessionID(sessionID)
     if (historyMode !== 'none') {
@@ -313,6 +316,20 @@ function App() {
     selectSession(null, historyMode)
     setMobileListOpen(false)
   }, [selectSession])
+
+  const selectUserSkills = useCallback((historyMode: SessionRouteHistoryMode = 'push') => {
+    appViewRef.current = 'session'
+    setAppView('session')
+    overviewSelectedRef.current = false
+    setOverviewSelected(false)
+    setUserSkillsSelected(true)
+    selectedSessionIDRef.current = null
+    setSelectedSessionID(null)
+    if (historyMode !== 'none' && window.location.pathname !== '/skills') {
+      window.history[historyMode === 'replace' ? 'replaceState' : 'pushState']({}, '', '/skills')
+    }
+    setMobileListOpen(false)
+  }, [])
 
   const selectAppView = useCallback(
     (view: AppView, historyMode: Exclude<SessionRouteHistoryMode, 'none'> = 'push', filePath: string | null = null) => {
@@ -435,6 +452,10 @@ function App() {
   useEffect(() => {
     function handlePopState() {
       const route = selectedSessionRouteFromLocation()
+      if (isUserSkillsLocation()) {
+        selectUserSkills('none')
+        return
+      }
       if (!isSessionLocation()) {
         selectOverview('none')
         return
@@ -446,7 +467,7 @@ function App() {
 
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
-  }, [requestSessionSelection, selectOverview])
+  }, [requestSessionSelection, selectOverview, selectUserSkills])
 
   useEffect(() => {
     setShowDebugEvents(loadSessionDebugPreference(selectedSessionID))
@@ -664,7 +685,15 @@ function App() {
       const sortedSessions = sortSessions(mergedSessions)
       sessionsRef.current = sortedSessions
       setSessions(sortedSessions)
-      selectSession(nextSelectedID, preserveSlugRoute ? 'none' : 'replace')
+      if (isUserSkillsLocation()) {
+        selectedSessionIDRef.current = null
+        setSelectedSessionID(null)
+        overviewSelectedRef.current = false
+        setOverviewSelected(false)
+        setUserSkillsSelected(true)
+      } else {
+        selectSession(nextSelectedID, preserveSlugRoute ? 'none' : 'replace')
+      }
     } catch (loadError) {
       if (showLoading) {
         setError(messageFromError(loadError))
@@ -1049,6 +1078,8 @@ function App() {
     onSelect: (sessionID: string) => requestSessionSelection(sessionID, 'push'),
     overviewSelected,
     onOverview: () => selectOverview('push'),
+    userSkillsSelected,
+    onUserSkills: () => selectUserSkills('push'),
     onCreate: () => setCreateOpen(true),
     appMenuAction: renderAppMenu(),
   }
@@ -1069,13 +1100,15 @@ function App() {
       ? 'translate-x-8'
       : appView === 'schedules'
         ? 'translate-x-16'
-        : appView === 'files'
+        : appView === 'skills'
           ? 'translate-x-24'
-          : appView === 'host'
+          : appView === 'files'
             ? 'translate-x-32'
+            : appView === 'host'
+              ? 'translate-x-40'
           : 'translate-x-0'
   const viewToggle = (
-    <div className="relative grid shrink-0 grid-cols-5 rounded-md bg-muted p-1 shadow-inner">
+    <div className="relative grid shrink-0 grid-cols-6 rounded-md bg-muted p-1 shadow-inner">
       <span
         aria-hidden="true"
         className={cn(
@@ -1121,6 +1154,18 @@ function App() {
       </button>
       <button
         type="button"
+        aria-label="Show repository skills"
+        aria-pressed={appView === 'skills'}
+        className={cn(
+          'relative z-10 flex h-8 w-8 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          appView === 'skills' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+        )}
+        onClick={() => selectAppView('skills')}
+      >
+        <BookOpen className="size-4" />
+      </button>
+      <button
+        type="button"
         aria-label="Show files"
         aria-pressed={appView === 'files'}
         className={cn(
@@ -1157,6 +1202,58 @@ function App() {
       <Menu />
     </Button>
   )
+  const floatingRepositorySkillsHeader = (
+    <>
+      <div
+        data-testid="mobile-floating-skills-header"
+        className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden"
+      >
+        <FilesWorkspaceHeader
+          session={selectedSession}
+          resolvingSessionID={selectedSession ? null : selectedSessionID}
+          fallbackTitle="Skills"
+          errorMessage={error || streamError}
+          leadingAction={openSessionsButton}
+          headerActions={viewToggle}
+          onUpdateTitle={handleUpdateTitle}
+          onUpdateWorkspace={handleUpdateWorkspace}
+          hasUnsavedWorkspaceFile={workspaceFileDirty}
+          onUpdateAgentOptions={handleUpdateAgentOptions}
+          showDebugEvents={showDebugEvents}
+          onShowDebugEventsChange={handleShowDebugEventsChange}
+          onClear={() => { requestSessionAction('clear'); return Promise.resolve() }}
+          onCompact={() => { requestSessionAction('compact'); return Promise.resolve() }}
+          onToggleArchive={() => { requestArchiveSession(); return Promise.resolve() }}
+          onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
+          clearPending={selectedSession ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear' : false}
+          compactPending={selectedSession ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact' : false}
+          archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+        />
+      </div>
+      <div data-testid="floating-skills-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
+        <FilesWorkspaceHeader
+          session={selectedSession}
+          resolvingSessionID={selectedSession ? null : selectedSessionID}
+          fallbackTitle="Skills"
+          errorMessage={error || streamError}
+          headerActions={viewToggle}
+          onUpdateTitle={handleUpdateTitle}
+          onUpdateWorkspace={handleUpdateWorkspace}
+          hasUnsavedWorkspaceFile={workspaceFileDirty}
+          onUpdateAgentOptions={handleUpdateAgentOptions}
+          showDebugEvents={showDebugEvents}
+          onShowDebugEventsChange={handleShowDebugEventsChange}
+          onClear={() => { requestSessionAction('clear'); return Promise.resolve() }}
+          onCompact={() => { requestSessionAction('compact'); return Promise.resolve() }}
+          onToggleArchive={() => { requestArchiveSession(); return Promise.resolve() }}
+          onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
+          clearPending={selectedSession ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear' : false}
+          compactPending={selectedSession ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact' : false}
+          archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+        />
+      </div>
+    </>
+  )
   const currentSessionRoute = selectedSessionRouteFromLocation()
   const resolvingInitialSessionSelection = loadingSessions && !selectedSessionID
   const unresolvedRouteSessionKey = resolvingInitialSessionSelection
@@ -1165,6 +1262,8 @@ function App() {
   const resolvingSelectedSessionID = selectedSession ? null : (selectedSessionID ?? unresolvedRouteSessionKey)
   const resolvingChatSessionID = selectedSession ? null : (selectedSessionID ?? unresolvedRouteSessionKey)
   const isOverview = overviewSelected && selectedSessionID === null
+  const isUserSkills = userSkillsSelected && selectedSessionID === null
+  const isGlobalView = isOverview || isUserSkills
 
   return (
     <main className="app-shell">
@@ -1172,7 +1271,7 @@ function App() {
         {list}
       </div>
 
-      {!isOverview ? (
+      {!isGlobalView ? (
         <PaneResizeHandle
           label="Resize sessions pane"
           value={paneWidths.left}
@@ -1192,6 +1291,8 @@ function App() {
               onOpenSessions={() => setMobileListOpen(true)}
               onCreate={() => setCreateOpen(true)}
             />
+          ) : isUserSkills ? (
+            <RepositorySkills userScope onOpenSessions={() => setMobileListOpen(true)} />
           ) : appView === 'schedules' ? (
             <>
               <div
@@ -1280,6 +1381,15 @@ function App() {
                 session={selectedSession}
                 resolvingSessionID={resolvingSelectedSessionID}
                 refreshKey={events.filter((event) => event.type.startsWith('schedule.')).length}
+              />
+            </>
+          ) : appView === 'skills' ? (
+            <>
+              {floatingRepositorySkillsHeader}
+              <RepositorySkills
+                session={selectedSession}
+                resolvingSessionID={resolvingSelectedSessionID}
+                onOpenFile={(path) => void handleOpenWorkspacePath(path)}
               />
             </>
           ) : appView === 'console' ? (
@@ -1556,7 +1666,7 @@ function App() {
         </div>
       </section>
 
-      {!isOverview ? (
+      {!isGlobalView ? (
         <PaneResizeHandle
           label="Resize details pane"
           value={paneWidths.right}
@@ -1567,7 +1677,7 @@ function App() {
         />
       ) : null}
 
-      <div className={cn('min-h-0 shrink-0', isOverview ? 'hidden' : 'hidden lg:flex')} style={paneWidthStyle(paneWidths.right)}>
+      <div className={cn('min-h-0 shrink-0', isGlobalView ? 'hidden' : 'hidden lg:flex')} style={paneWidthStyle(paneWidths.right)}>
         <RunHealthRail
           session={selectedSession}
           resolvingSessionID={resolvingSelectedSessionID}
@@ -2472,6 +2582,10 @@ function selectedSessionRouteFromLocation() {
 
 function isSessionLocation() {
   return typeof window !== 'undefined' && window.location.pathname.startsWith('/sessions/')
+}
+
+function isUserSkillsLocation() {
+  return typeof window !== 'undefined' && window.location.pathname === '/skills'
 }
 
 function resolveSessionRouteSessionID(route: SessionRoute, sessions: Session[]) {

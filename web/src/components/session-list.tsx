@@ -1,4 +1,4 @@
-import { Archive, LayoutDashboard, ListFilter, LoaderCircle, Plus, Search } from 'lucide-react'
+import { Archive, BookOpen, LayoutDashboard, ListFilter, LoaderCircle, Plus, Search } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -27,6 +27,8 @@ type Props = {
   onSelect: (sessionID: string) => void
   overviewSelected?: boolean
   onOverview?: () => void
+  userSkillsSelected?: boolean
+  onUserSkills?: () => void
   onCreate: () => void
   appMenuAction?: ReactNode
   variant?: 'full' | 'embedded'
@@ -44,6 +46,8 @@ export function SessionList({
   onSelect,
   overviewSelected = false,
   onOverview,
+  userSkillsSelected = false,
+  onUserSkills,
   onCreate,
   appMenuAction,
   variant = 'full',
@@ -123,6 +127,18 @@ export function SessionList({
         >
           <LayoutDashboard className="size-4 text-muted-foreground" />
           Overview
+        </button>
+        <button
+          type="button"
+          onClick={onUserSkills}
+          aria-current={userSkillsSelected ? 'page' : undefined}
+          className={cn(
+            'mt-1 flex w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left text-sm font-medium transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+            userSkillsSelected && 'border-primary/30 bg-background/80 shadow-sm',
+          )}
+        >
+          <BookOpen className="size-4 text-muted-foreground" />
+          User skills
         </button>
       </div>
 

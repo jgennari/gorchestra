@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	eventservice "github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/hosting"
 	"github.com/jgennari/gorchestra/internal/notifications"
+	"github.com/jgennari/gorchestra/internal/reposkills"
 	"github.com/jgennari/gorchestra/internal/scheduler"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
@@ -148,24 +150,27 @@ type Dependencies struct {
 	Hosting        HostingManager
 	HostStore      HostRuntimeStore
 	Schedules      *scheduler.Service
+	UserHome       string
 }
 
 type API struct {
-	store         Store
-	events        EventService
-	agents        AgentRegistry
-	runs          RunManager
-	console       *console.Manager
-	notifications NotificationService
-	workdir       string
-	workspaces    workspaceConfig
-	staticAssets  fs.FS
-	agentAPIURL   string
-	executable    string
-	hosting       HostingManager
-	hostStore     HostRuntimeStore
-	dashboard     DashboardStore
-	schedules     *scheduler.Service
+	store            Store
+	events           EventService
+	agents           AgentRegistry
+	runs             RunManager
+	console          *console.Manager
+	notifications    NotificationService
+	workdir          string
+	workspaces       workspaceConfig
+	staticAssets     fs.FS
+	agentAPIURL      string
+	executable       string
+	hosting          HostingManager
+	hostStore        HostRuntimeStore
+	dashboard        DashboardStore
+	schedules        *scheduler.Service
+	repositorySkills *reposkills.Manager
+	userHome         string
 }
 
 var _ RunManager = (*runcontrol.Manager)(nil)
@@ -226,12 +231,19 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.hosting = deps[0].Hosting
 		api.hostStore = deps[0].HostStore
 		api.schedules = deps[0].Schedules
+		api.userHome = strings.TrimSpace(deps[0].UserHome)
 		if dashboard, ok := deps[0].Store.(DashboardStore); ok {
 			api.dashboard = dashboard
 		}
 	}
 	if api.console == nil {
 		api.console = console.NewManager()
+	}
+	api.repositorySkills = reposkills.NewManager()
+	if api.userHome == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			api.userHome = normalizeWorkspaceRoot(home)
+		}
 	}
 
 	r := chi.NewRouter()
@@ -252,6 +264,13 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Get("/api/sessions/{sessionId}/files/raw", api.sessionFileRawHandler)
 		r.Get("/api/sessions/{sessionId}/files/search", api.sessionFileSearchHandler)
 		r.Get("/api/sessions/{sessionId}/skills", api.sessionSkillsHandler)
+		r.Get("/api/sessions/{sessionId}/repository-skills", api.listRepositorySkillsHandler)
+		r.Post("/api/sessions/{sessionId}/repository-skills", api.createRepositorySkillHandler)
+		r.Post("/api/sessions/{sessionId}/repository-skills/repair-claude-bridges", api.repairRepositorySkillClaudeBridgesHandler)
+		r.Get("/api/sessions/{sessionId}/repository-skills/{name}", api.getRepositorySkillHandler)
+		r.Patch("/api/sessions/{sessionId}/repository-skills/{name}", api.updateRepositorySkillHandler)
+		r.Delete("/api/sessions/{sessionId}/repository-skills/{name}", api.deleteRepositorySkillHandler)
+		r.Post("/api/sessions/{sessionId}/repository-skills/{name}/claude-bridge", api.repairRepositorySkillClaudeBridgeHandler)
 		r.Post("/api/sessions/{sessionId}/messages", api.submitMessageHandler)
 		r.Get("/api/sessions/{sessionId}/queued-messages", api.listQueuedMessagesHandler)
 		r.Delete("/api/sessions/{sessionId}/queued-messages/{queuedMessageId}", api.removeQueuedMessageHandler)
@@ -273,6 +292,15 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Post("/api/sessions/{sessionId}/console", api.startConsoleHandler)
 		r.Delete("/api/sessions/{sessionId}/console", api.killConsoleHandler)
 		r.Get("/api/sessions/{sessionId}/console/ws", api.consoleWebSocketHandler)
+	}
+	if api.userHome != "" {
+		r.Get("/api/user-skills", api.listUserSkillsHandler)
+		r.Post("/api/user-skills", api.createUserSkillHandler)
+		r.Post("/api/user-skills/repair-claude-bridges", api.repairUserSkillClaudeBridgesHandler)
+		r.Get("/api/user-skills/{name}", api.getUserSkillHandler)
+		r.Patch("/api/user-skills/{name}", api.updateUserSkillHandler)
+		r.Delete("/api/user-skills/{name}", api.deleteUserSkillHandler)
+		r.Post("/api/user-skills/{name}/claude-bridge", api.repairUserSkillClaudeBridgeHandler)
 	}
 	if api.store != nil {
 		r.Get("/api/sessions", api.listSessionsHandler)

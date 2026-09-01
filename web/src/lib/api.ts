@@ -44,6 +44,44 @@ export type ScheduleInput = {
   enabled: boolean
 }
 
+export type RepositorySkillBridge = {
+  status: 'linked' | 'missing' | 'conflict' | 'error'
+  path: string
+  message?: string
+}
+
+export type RepositorySkill = {
+  directory_name: string
+  name: string
+  description: string
+  path: string
+  modified_at?: string
+  revision?: string
+  validation_errors: string[]
+  resource_count: number
+  editable: boolean
+  linked: boolean
+  instructions?: string
+  claude_bridge: RepositorySkillBridge
+}
+
+export type RepositorySkillInput = {
+  name: string
+  description: string
+  instructions: string
+  revision?: string
+}
+
+export type RepositorySkillBridgeRepair = {
+  skill: RepositorySkill
+  backup_path?: string
+}
+
+export type UserSkillCatalog = {
+  home_path: string
+  skills: RepositorySkill[]
+}
+
 export type Session = {
   id: string
   title: string
@@ -959,6 +997,89 @@ export async function cancelScheduleOccurrence(sessionID: string, scheduleID: st
   return requestJSON<ScheduleOccurrence>(
     `/api/sessions/${encodeURIComponent(sessionID)}/schedules/${encodeURIComponent(scheduleID)}/occurrences/${encodeURIComponent(occurrenceID)}`,
     { method: 'DELETE' },
+  )
+}
+
+export async function listRepositorySkills(sessionID: string) {
+  const response = await requestJSON<{ skills: RepositorySkill[] }>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/repository-skills`,
+  )
+  return response.skills
+}
+
+export async function getRepositorySkill(sessionID: string, name: string) {
+  return requestJSON<RepositorySkill>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/repository-skills/${encodeURIComponent(name)}`,
+  )
+}
+
+export async function createRepositorySkill(sessionID: string, input: RepositorySkillInput) {
+  return requestJSON<RepositorySkill>(`/api/sessions/${encodeURIComponent(sessionID)}/repository-skills`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function updateRepositorySkill(sessionID: string, currentName: string, input: RepositorySkillInput) {
+  return requestJSON<RepositorySkill>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/repository-skills/${encodeURIComponent(currentName)}`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  )
+}
+
+export async function deleteRepositorySkill(sessionID: string, name: string) {
+  return requestNoContent(
+    `/api/sessions/${encodeURIComponent(sessionID)}/repository-skills/${encodeURIComponent(name)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function repairRepositorySkillClaudeBridge(sessionID: string, name: string, replaceConflict = false) {
+  return requestJSON<RepositorySkillBridgeRepair>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/repository-skills/${encodeURIComponent(name)}/claude-bridge`,
+    { method: 'POST', ...(replaceConflict ? { body: JSON.stringify({ replace_conflict: true }) } : {}) },
+  )
+}
+
+export async function repairRepositorySkillClaudeBridges(sessionID: string) {
+  return requestJSON<{ skills: RepositorySkill[]; repaired: number }>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/repository-skills/repair-claude-bridges`,
+    { method: 'POST' },
+  )
+}
+
+export async function listUserSkills() {
+  return requestJSON<UserSkillCatalog>('/api/user-skills')
+}
+
+export async function getUserSkill(name: string) {
+  return requestJSON<RepositorySkill>(`/api/user-skills/${encodeURIComponent(name)}`)
+}
+
+export async function createUserSkill(input: RepositorySkillInput) {
+  return requestJSON<RepositorySkill>('/api/user-skills', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export async function updateUserSkill(currentName: string, input: RepositorySkillInput) {
+  return requestJSON<RepositorySkill>(`/api/user-skills/${encodeURIComponent(currentName)}`, {
+    method: 'PATCH', body: JSON.stringify(input),
+  })
+}
+
+export async function deleteUserSkill(name: string) {
+  return requestNoContent(`/api/user-skills/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+export async function repairUserSkillClaudeBridge(name: string, replaceConflict = false) {
+  return requestJSON<RepositorySkillBridgeRepair>(
+    `/api/user-skills/${encodeURIComponent(name)}/claude-bridge`,
+    { method: 'POST', ...(replaceConflict ? { body: JSON.stringify({ replace_conflict: true }) } : {}) },
+  )
+}
+
+export async function repairUserSkillClaudeBridges() {
+  return requestJSON<{ skills: RepositorySkill[]; repaired: number }>(
+    '/api/user-skills/repair-claude-bridges', { method: 'POST' },
   )
 }
 
