@@ -30,6 +30,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/hosting"
 	"github.com/jgennari/gorchestra/internal/httpapi"
 	"github.com/jgennari/gorchestra/internal/notifications"
+	"github.com/jgennari/gorchestra/internal/scheduler"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 	"github.com/jgennari/gorchestra/internal/webassets"
@@ -179,6 +180,7 @@ func main() {
 		log.Fatalf("agent registry startup failed: %v", err)
 	}
 	runManager := runcontrol.NewManager()
+	scheduleService := scheduler.New(dbStore, eventService)
 
 	frontendAssets, err := webassets.Dist()
 	if err != nil {
@@ -189,9 +191,13 @@ func main() {
 	if err != nil {
 		log.Printf("resolve gorchestra executable failed: %v", err)
 	}
+	handler := httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets, AgentAPIURL: listeningURL("127.0.0.1", cfg.port), Executable: executable, Hosting: hostingManager, HostStore: dbStore, Schedules: scheduleService})
+	if err := scheduleService.Start(ctx); err != nil {
+		log.Fatalf("schedule service startup failed: %v", err)
+	}
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets, AgentAPIURL: listeningURL("127.0.0.1", cfg.port), Executable: executable, Hosting: hostingManager, HostStore: dbStore}),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

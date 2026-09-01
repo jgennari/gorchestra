@@ -1,6 +1,49 @@
 export type SessionStatus = 'idle' | 'running' | 'failed'
 export type AgentType = 'fake' | 'codex' | 'claude' | 'opencode' | 'pi'
 
+export type ScheduleCadence =
+  | { kind: 'interval'; every: number; unit: 'minutes' | 'hours' | 'days' }
+  | { kind: 'daily'; time: string }
+  | { kind: 'weekly'; time: string; weekdays: string[] }
+  | { kind: 'cron'; expression: string }
+
+export type SessionSchedule = {
+  id: string
+  session_id: string
+  name: string
+  prompt: string
+  cadence: ScheduleCadence
+  timezone: string
+  enabled: boolean
+  next_run_at: string | null
+  pending_count: number
+  last_status?: string
+  last_scheduled_for?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type ScheduleOccurrence = {
+  id: string
+  schedule_id: string
+  trigger: 'scheduled' | 'manual'
+  scheduled_for: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  run_id?: string
+  error?: string
+  created_at: string
+  started_at?: string
+  completed_at?: string
+}
+
+export type ScheduleInput = {
+  name: string
+  prompt: string
+  cadence: ScheduleCadence
+  timezone: string
+  enabled: boolean
+}
+
 export type Session = {
   id: string
   title: string
@@ -867,6 +910,55 @@ export async function removeQueuedMessage(sessionID: string, queuedMessageID: st
     {
       method: 'DELETE',
     },
+  )
+}
+
+export async function listSchedules(sessionID: string) {
+  const response = await requestJSON<{ schedules: SessionSchedule[] }>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/schedules`,
+  )
+  return response.schedules
+}
+
+export async function createSchedule(sessionID: string, input: ScheduleInput) {
+  return requestJSON<SessionSchedule>(`/api/sessions/${encodeURIComponent(sessionID)}/schedules`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function updateSchedule(sessionID: string, scheduleID: string, input: ScheduleInput) {
+  return requestJSON<SessionSchedule>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/schedules/${encodeURIComponent(scheduleID)}`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  )
+}
+
+export async function deleteSchedule(sessionID: string, scheduleID: string) {
+  return requestNoContent(
+    `/api/sessions/${encodeURIComponent(sessionID)}/schedules/${encodeURIComponent(scheduleID)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function runScheduleNow(sessionID: string, scheduleID: string) {
+  return requestJSON<ScheduleOccurrence>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/schedules/${encodeURIComponent(scheduleID)}/run-now`,
+    { method: 'POST' },
+  )
+}
+
+export async function listScheduleOccurrences(sessionID: string, scheduleID: string, limit = 25) {
+  const response = await requestJSON<{ occurrences: ScheduleOccurrence[] }>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/schedules/${encodeURIComponent(scheduleID)}/occurrences?limit=${limit}`,
+  )
+  return response.occurrences
+}
+
+export async function cancelScheduleOccurrence(sessionID: string, scheduleID: string, occurrenceID: string) {
+  return requestJSON<ScheduleOccurrence>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/schedules/${encodeURIComponent(scheduleID)}/occurrences/${encodeURIComponent(occurrenceID)}`,
+    { method: 'DELETE' },
   )
 }
 

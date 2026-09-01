@@ -21,6 +21,7 @@ import (
 	eventservice "github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/hosting"
 	"github.com/jgennari/gorchestra/internal/notifications"
+	"github.com/jgennari/gorchestra/internal/scheduler"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 )
@@ -146,6 +147,7 @@ type Dependencies struct {
 	Executable     string
 	Hosting        HostingManager
 	HostStore      HostRuntimeStore
+	Schedules      *scheduler.Service
 }
 
 type API struct {
@@ -163,6 +165,7 @@ type API struct {
 	hosting       HostingManager
 	hostStore     HostRuntimeStore
 	dashboard     DashboardStore
+	schedules     *scheduler.Service
 }
 
 var _ RunManager = (*runcontrol.Manager)(nil)
@@ -222,6 +225,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.executable = deps[0].Executable
 		api.hosting = deps[0].Hosting
 		api.hostStore = deps[0].HostStore
+		api.schedules = deps[0].Schedules
 		if dashboard, ok := deps[0].Store.(DashboardStore); ok {
 			api.dashboard = dashboard
 		}
@@ -256,6 +260,15 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Post("/api/sessions/{sessionId}/cancel", api.cancelSessionHandler)
 		r.Post("/api/sessions/{sessionId}/requests/{requestId}/answer", api.answerUserInputHandler)
 		r.Post("/api/sessions/{sessionId}/permissions/{requestId}/resolve", api.resolvePermissionHandler)
+		if api.schedules != nil {
+			r.Get("/api/sessions/{sessionId}/schedules", api.listSchedulesHandler)
+			r.Post("/api/sessions/{sessionId}/schedules", api.createScheduleHandler)
+			r.Patch("/api/sessions/{sessionId}/schedules/{scheduleId}", api.updateScheduleHandler)
+			r.Delete("/api/sessions/{sessionId}/schedules/{scheduleId}", api.deleteScheduleHandler)
+			r.Post("/api/sessions/{sessionId}/schedules/{scheduleId}/run-now", api.runScheduleNowHandler)
+			r.Get("/api/sessions/{sessionId}/schedules/{scheduleId}/occurrences", api.listScheduleOccurrencesHandler)
+			r.Delete("/api/sessions/{sessionId}/schedules/{scheduleId}/occurrences/{occurrenceId}", api.cancelScheduleOccurrenceHandler)
+		}
 		r.Get("/api/sessions/{sessionId}/console", api.consoleStatusHandler)
 		r.Post("/api/sessions/{sessionId}/console", api.startConsoleHandler)
 		r.Delete("/api/sessions/{sessionId}/console", api.killConsoleHandler)
@@ -296,6 +309,11 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Post("/api/notifications/test", api.testNotificationHandler)
 	}
 	r.NotFound(api.notFoundHandler)
+	if api.schedules != nil {
+		api.schedules.SetDispatch(func(sessionID string) {
+			go api.startQueuedMessageRun(context.Background(), sessionID)
+		})
+	}
 
 	if api.hosting != nil {
 		return hostedPreviewDispatch{app: r, hosting: api.hosting}

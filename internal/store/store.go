@@ -741,7 +741,7 @@ func (s *Store) EnqueueMessage(ctx context.Context, params EnqueueMessageParams)
 		var pendingCount int
 		if err := tx.QueryRowContext(
 			ctx,
-			`SELECT COUNT(*) FROM queued_messages WHERE session_id = ? AND status = ?`,
+			`SELECT COUNT(*) FROM queued_messages WHERE session_id = ? AND status = ? AND source_kind = 'manual'`,
 			sessionID,
 			string(QueuedMessageStatusPending),
 		).Scan(&pendingCount); err != nil {
@@ -774,14 +774,15 @@ func (s *Store) EnqueueMessage(ctx context.Context, params EnqueueMessageParams)
 		Content:      content,
 		AgentOptions: append(json.RawMessage(nil), agentOptions...),
 		Skills:       append(json.RawMessage(nil), skills...),
+		SourceKind:   "manual",
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
 
 	if _, err := tx.ExecContext(
 		ctx,
-		`INSERT INTO queued_messages (id, session_id, seq, status, content, agent_options_json, skills_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO queued_messages (id, session_id, seq, status, content, agent_options_json, skills_json, source_kind, source_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		queued.ID,
 		queued.SessionID,
 		queued.Seq,
@@ -789,6 +790,8 @@ func (s *Store) EnqueueMessage(ctx context.Context, params EnqueueMessageParams)
 		queued.Content,
 		string(queued.AgentOptions),
 		string(queued.Skills),
+		queued.SourceKind,
+		queued.SourceID,
 		formatTime(queued.CreatedAt),
 		formatTime(queued.UpdatedAt),
 	); err != nil {
@@ -809,9 +812,9 @@ func (s *Store) ListQueuedMessages(ctx context.Context, sessionID string) ([]Que
 
 	rows, err := s.db.QueryContext(
 		ctx,
-		`SELECT id, session_id, seq, status, content, agent_options_json, skills_json, created_at, updated_at
+		`SELECT id, session_id, seq, status, content, agent_options_json, skills_json, source_kind, source_id, created_at, updated_at
 		 FROM queued_messages
-		 WHERE session_id = ? AND status = ?
+		 WHERE session_id = ? AND status = ? AND source_kind = 'manual'
 		 ORDER BY seq ASC`,
 		sessionID,
 		string(QueuedMessageStatusPending),
@@ -854,10 +857,10 @@ func (s *Store) ClaimNextQueuedMessage(ctx context.Context, sessionID string) (Q
 
 	row := tx.QueryRowContext(
 		ctx,
-		`SELECT id, session_id, seq, status, content, agent_options_json, skills_json, created_at, updated_at
+		`SELECT id, session_id, seq, status, content, agent_options_json, skills_json, source_kind, source_id, created_at, updated_at
 		 FROM queued_messages
 		 WHERE session_id = ? AND status = ?
-		 ORDER BY seq ASC
+		 ORDER BY CASE source_kind WHEN 'manual' THEN 0 ELSE 1 END, seq ASC
 		 LIMIT 1`,
 		sessionID,
 		string(QueuedMessageStatusPending),
@@ -945,7 +948,7 @@ func (s *Store) updateQueuedMessageStatus(ctx context.Context, params QueueMessa
 func (s *Store) getQueuedMessage(ctx context.Context, sessionID string, messageID string) (QueuedMessage, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT id, session_id, seq, status, content, agent_options_json, skills_json, created_at, updated_at
+		`SELECT id, session_id, seq, status, content, agent_options_json, skills_json, source_kind, source_id, created_at, updated_at
 		 FROM queued_messages
 		 WHERE session_id = ? AND id = ?`,
 		sessionID,
@@ -1519,6 +1522,8 @@ func scanQueuedMessage(row rowScanner) (QueuedMessage, error) {
 		&message.Content,
 		&agentOptions,
 		&skills,
+		&message.SourceKind,
+		&message.SourceID,
 		&createdAt,
 		&updatedAt,
 	); err != nil {

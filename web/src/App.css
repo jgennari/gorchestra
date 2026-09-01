@@ -68,7 +68,8 @@
   padding-top: calc(max(env(safe-area-inset-top, 0px), 2rem) + 5rem);
 }
 
-.host-preview-body {
+.host-preview-body,
+.session-schedules-body {
   padding-top: calc(max(env(safe-area-inset-top, 0px), 2rem) + 5.25rem);
 }
 
@@ -98,7 +99,8 @@
     padding-top: calc(env(safe-area-inset-top, 0px) + 4.625rem);
   }
 
-  .host-preview-body {
+  .host-preview-body,
+  .session-schedules-body {
     padding-top: calc(env(safe-area-inset-top, 0px) + 4.875rem);
   }
 
@@ -120,7 +122,8 @@
     padding-top: 4.75rem;
   }
 
-  .host-preview-body {
+  .host-preview-body,
+  .session-schedules-body {
     padding-top: 4.75rem;
   }
 

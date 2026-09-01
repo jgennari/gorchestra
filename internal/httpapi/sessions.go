@@ -467,6 +467,12 @@ func (api API) archiveSessionHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "failed to stop the hosted preview before archiving: "+err.Error())
 		return
 	}
+	if api.schedules != nil {
+		if err := api.schedules.PauseForArchive(r.Context(), sessionID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to pause schedules before archiving")
+			return
+		}
+	}
 
 	archived, err := api.store.ArchiveSession(r.Context(), store.ArchiveSessionParams{ID: session.ID})
 	if err != nil {
@@ -1025,7 +1031,7 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		metadata,
 		agents.AgentActionMessage,
 		func(ctx context.Context) error {
-			return api.appendUserMessage(ctx, session.ID, content, attachments, skills, eventOptions, "")
+			return api.appendUserMessage(ctx, session.ID, content, attachments, skills, eventOptions, nil, "")
 		},
 		"failed to persist user message",
 	)
@@ -1416,9 +1422,19 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		release()
 		return false
 	}
-	if session.Status != store.SessionStatusIdle || session.ArchivedAt != nil {
+	if session.Status == store.SessionStatusRunning || session.ArchivedAt != nil {
 		release()
 		return false
+	}
+	var scheduledOccurrence *store.ScheduleOccurrence
+	if queued.SourceKind == "schedule" && api.schedules != nil {
+		occurrence, occurrenceErr := api.schedules.Occurrence(ctx, queued.SourceID)
+		if occurrenceErr != nil {
+			log.Printf("failed to load scheduled occurrence: session_id=%s occurrence_id=%s error=%v", session.ID, queued.SourceID, occurrenceErr)
+			release()
+			return false
+		}
+		scheduledOccurrence = &occurrence
 	}
 
 	var queuedOptions submitAgentOptions
@@ -1434,6 +1450,18 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		log.Printf("failed to prepare queued message options: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
 		release()
 		return false
+	}
+	sourceMetadata := map[string]any{}
+	if scheduledOccurrence != nil {
+		metadata["run_trigger"] = "schedule"
+		metadata["schedule_id"] = scheduledOccurrence.ScheduleID
+		metadata["occurrence_id"] = scheduledOccurrence.ID
+		metadata["scheduled_for"] = scheduledOccurrence.ScheduledFor.UTC().Format(time.RFC3339Nano)
+		for key, value := range metadata {
+			if key == "run_trigger" || key == "schedule_id" || key == "occurrence_id" || key == "scheduled_for" {
+				sourceMetadata[key] = value
+			}
+		}
 	}
 	skills := decodeSkillReferences(queued.Skills)
 
@@ -1467,7 +1495,7 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		return false
 	}
 
-	if err := api.appendUserMessage(ctx, session.ID, queued.Content, nil, skills, eventOptions, queued.ID); err != nil {
+	if err := api.appendUserMessage(ctx, session.ID, queued.Content, nil, skills, eventOptions, sourceMetadata, queued.ID); err != nil {
 		cleanup()
 		log.Printf("failed to append queued user message: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
 		release()
@@ -1504,11 +1532,24 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		release()
 		return false
 	}
+	if scheduledOccurrence != nil {
+		api.schedules.MarkRunning(ctx, session.ID, scheduledOccurrence.ScheduleID, scheduledOccurrence.ID, runID)
+	}
 
 	go func() {
 		completed := api.runAgent(runCtx, updatedSession, queued.Content, nil, skills, agent, metadata, agents.AgentActionMessage, runID)
 		cleanup()
-		if completed {
+		if scheduledOccurrence != nil {
+			status := "completed"
+			if !completed {
+				status = "failed"
+				if current, loadErr := api.store.GetSession(context.Background(), session.ID); loadErr == nil && current.Status == store.SessionStatusIdle {
+					status = "cancelled"
+				}
+			}
+			api.schedules.MarkFinished(context.Background(), session.ID, scheduledOccurrence.ScheduleID, scheduledOccurrence.ID, status)
+		}
+		if completed || scheduledOccurrence != nil {
 			api.startQueuedMessageRun(context.Background(), session.ID)
 		}
 	}()
@@ -1631,6 +1672,7 @@ func (api API) appendUserMessage(
 	attachments []agents.Attachment,
 	skills []agents.SkillReference,
 	agentOptions map[string]any,
+	sourceMetadata map[string]any,
 	queueItemID string,
 ) error {
 	payloadValue := map[string]any{"text": content}
@@ -1642,6 +1684,9 @@ func (api API) appendUserMessage(
 	}
 	if len(agentOptions) > 0 {
 		payloadValue["agent_options"] = agentOptions
+	}
+	for key, value := range sourceMetadata {
+		payloadValue[key] = value
 	}
 	if strings.TrimSpace(queueItemID) != "" {
 		payloadValue["queue_item_id"] = strings.TrimSpace(queueItemID)

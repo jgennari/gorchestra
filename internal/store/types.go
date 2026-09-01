@@ -95,8 +95,42 @@ type QueuedMessage struct {
 	Content      string
 	AgentOptions json.RawMessage
 	Skills       json.RawMessage
+	SourceKind   string
+	SourceID     string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+}
+
+type SessionSchedule struct {
+	ID               string
+	SessionID        string
+	Name             string
+	Prompt           string
+	Cadence          json.RawMessage
+	Timezone         string
+	Enabled          bool
+	NextRunAt        *time.Time
+	DeletedAt        *time.Time
+	PendingCount     int
+	LastStatus       string
+	LastScheduledFor *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type ScheduleOccurrence struct {
+	ID             string
+	ScheduleID     string
+	SessionID      string
+	QueueMessageID string
+	Trigger        string
+	ScheduledFor   time.Time
+	Status         string
+	RunID          string
+	Error          string
+	CreatedAt      time.Time
+	StartedAt      *time.Time
+	CompletedAt    *time.Time
 }
 
 // HostRuntime is the durable control-plane snapshot for one session preview.
@@ -248,6 +282,37 @@ type SaveHostRuntimeParams struct {
 type QueueMessageIDParams struct {
 	SessionID string
 	ID        string
+}
+
+type CreateScheduleParams struct {
+	SessionID string
+	Name      string
+	Prompt    string
+	Cadence   json.RawMessage
+	Timezone  string
+	Enabled   bool
+	NextRunAt *time.Time
+}
+
+type UpdateScheduleParams struct {
+	SessionID string
+	ID        string
+	Name      string
+	Prompt    string
+	Cadence   json.RawMessage
+	Timezone  string
+	Enabled   bool
+	NextRunAt *time.Time
+}
+
+type MaterializeScheduleOccurrenceParams struct {
+	ScheduleID   string
+	SessionID    string
+	Prompt       string
+	Trigger      string
+	ScheduledFor time.Time
+	NextRunAt    *time.Time
+	Advance      bool
 }
 
 type SetNotificationKeysParams struct {

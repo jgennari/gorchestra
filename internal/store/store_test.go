@@ -28,11 +28,15 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "dashboard_runs")
 	assertTableExists(t, ctx, store, "dashboard_run_files")
 	assertTableExists(t, ctx, store, "dashboard_run_outcomes")
+	assertTableExists(t, ctx, store, "session_schedules")
+	assertTableExists(t, ctx, store, "schedule_occurrences")
 	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
 	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
 	assertColumnExists(t, ctx, store, "sessions", "next_event_seq")
 	assertColumnExists(t, ctx, store, "push_subscriptions", "origin")
 	assertColumnExists(t, ctx, store, "queued_messages", "skills_json")
+	assertColumnExists(t, ctx, store, "queued_messages", "source_kind")
+	assertColumnExists(t, ctx, store, "queued_messages", "source_id")
 }
 
 func TestMigrationsAreIdempotent(t *testing.T) {
@@ -47,8 +51,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 17 {
-		t.Fatalf("expected seventeen recorded migrations, got %d", count)
+	if count != 18 {
+		t.Fatalf("expected eighteen recorded migrations, got %d", count)
 	}
 }
 
@@ -673,6 +677,38 @@ func TestQueuedMessageAllowsSkillOnlyInput(t *testing.T) {
 	}
 	if queued.Content != "" || len(queued.Skills) == 0 {
 		t.Fatalf("expected skill-only queued message, got %#v", queued)
+	}
+}
+
+func TestManualQueuedMessageClaimsBeforeScheduledOccurrence(t *testing.T) {
+	ctx := context.Background()
+	database := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, database)
+	next := time.Now().Add(time.Hour)
+	schedule, err := database.CreateSchedule(ctx, CreateScheduleParams{SessionID: session.ID, Name: "Check", Prompt: "Scheduled", Cadence: json.RawMessage(`{"kind":"daily","time":"09:00"}`), Timezone: "UTC", Enabled: true, NextRunAt: &next})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.MaterializeScheduleOccurrence(ctx, MaterializeScheduleOccurrenceParams{ScheduleID: schedule.ID, SessionID: session.ID, Prompt: "Scheduled", Trigger: "manual", ScheduledFor: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	manual, err := database.EnqueueMessage(ctx, EnqueueMessageParams{SessionID: session.ID, Content: "Manual", MaxPending: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := database.ClaimNextQueuedMessage(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != manual.ID || claimed.SourceKind != "manual" {
+		t.Fatalf("expected manual priority, got %#v", claimed)
+	}
+	visible, err := database.ListQueuedMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != 0 {
+		t.Fatalf("scheduled work should not appear in composer queue: %#v", visible)
 	}
 }
 

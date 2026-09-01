@@ -334,6 +334,23 @@ test('header hosted preview view updates the route and shows host status', async
   ).toBe(true)
 })
 
+test('schedules view uses the shared floating session header', async () => {
+  const user = userEvent.setup()
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  await user.click(screen.getAllByRole('button', { name: 'Show schedules' })[0])
+
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/schedules'))
+  const schedulesHeader = screen.getByTestId('floating-schedules-header')
+  expect(within(schedulesHeader).getByRole('button', { name: 'Session settings' })).toBeInTheDocument()
+  expect(schedulesHeader.querySelector('.command-chat-header')).toBeInTheDocument()
+  const scheduleInfo = screen.getByRole('heading', { name: 'Scheduled tasks' }).closest('section')
+  expect(scheduleInfo).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
+  expect(scheduleInfo?.closest('.session-schedules-body')).toBeTruthy()
+})
+
 test('loading with a session route selects that session', async () => {
   window.history.replaceState({}, '', '/sessions/sess_2')
 
@@ -1522,6 +1539,10 @@ function fetchMock({
     const hostLogsMatch = path.match(/^\/api\/sessions\/([^/?]+)\/host\/logs$/)
     if (hostLogsMatch) {
       return jsonResponse({ chunks: [], first_seq: 0, last_seq: 0, truncated: false })
+    }
+    const schedulesMatch = path.match(/^\/api\/sessions\/([^/?]+)\/schedules$/)
+    if (schedulesMatch) {
+      return jsonResponse({ schedules: [] })
     }
     if (path === '/api/sessions/sess_1/events?before_seq=252&turns=2') {
       return jsonResponse({ events: olderEvents })

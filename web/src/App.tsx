@@ -1,4 +1,4 @@
-import { Folder, Menu, MessageSquare, Plus, Server, Terminal, X } from 'lucide-react'
+import { CalendarClock, Folder, Menu, MessageSquare, Plus, Server, Terminal, X } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -71,6 +71,7 @@ import { NotificationsDialog } from '@/components/notifications-dialog'
 import { RunHealthRail } from '@/components/run-health-rail'
 import { ChatSessionHeader, SessionDetail } from '@/components/session-detail'
 import { SessionList } from '@/components/session-list'
+import { SessionSchedules } from '@/components/session-schedules'
 import { defaultSessionListFilters, type SessionListFilters } from '@/components/session-list-filters'
 import { WorkspaceFilesView } from '@/components/workspace-files'
 import { hasSessionAttention, latestSessionSeq, sessionAttention } from '@/lib/session-attention'
@@ -1066,13 +1067,15 @@ function App() {
   const viewOffsetClassName =
     appView === 'console'
       ? 'translate-x-8'
-      : appView === 'files'
+      : appView === 'schedules'
         ? 'translate-x-16'
-        : appView === 'host'
+        : appView === 'files'
           ? 'translate-x-24'
+          : appView === 'host'
+            ? 'translate-x-32'
           : 'translate-x-0'
   const viewToggle = (
-    <div className="relative grid shrink-0 grid-cols-4 rounded-md bg-muted p-1 shadow-inner">
+    <div className="relative grid shrink-0 grid-cols-5 rounded-md bg-muted p-1 shadow-inner">
       <span
         aria-hidden="true"
         className={cn(
@@ -1103,6 +1106,18 @@ function App() {
         onClick={() => selectAppView('console')}
       >
         <Terminal className="size-4" />
+      </button>
+      <button
+        type="button"
+        aria-label="Show schedules"
+        aria-pressed={appView === 'schedules'}
+        className={cn(
+          'relative z-10 flex h-8 w-8 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          appView === 'schedules' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+        )}
+        onClick={() => selectAppView('schedules')}
+      >
+        <CalendarClock className="size-4" />
       </button>
       <button
         type="button"
@@ -1177,6 +1192,96 @@ function App() {
               onOpenSessions={() => setMobileListOpen(true)}
               onCreate={() => setCreateOpen(true)}
             />
+          ) : appView === 'schedules' ? (
+            <>
+              <div
+                data-testid="mobile-floating-schedules-header"
+                className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden"
+              >
+                <FilesWorkspaceHeader
+                  session={selectedSession}
+                  resolvingSessionID={resolvingSelectedSessionID}
+                  fallbackTitle="Schedules"
+                  errorMessage={error || streamError}
+                  leadingAction={openSessionsButton}
+                  headerActions={viewToggle}
+                  onUpdateTitle={handleUpdateTitle}
+                  onUpdateWorkspace={handleUpdateWorkspace}
+                  hasUnsavedWorkspaceFile={workspaceFileDirty}
+                  onUpdateAgentOptions={handleUpdateAgentOptions}
+                  showDebugEvents={showDebugEvents}
+                  onShowDebugEventsChange={handleShowDebugEventsChange}
+                  onClear={() => {
+                    requestSessionAction('clear')
+                    return Promise.resolve()
+                  }}
+                  onCompact={() => {
+                    requestSessionAction('compact')
+                    return Promise.resolve()
+                  }}
+                  onToggleArchive={() => {
+                    requestArchiveSession()
+                    return Promise.resolve()
+                  }}
+                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
+                  clearPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      : false
+                  }
+                  compactPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      : false
+                  }
+                  archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+                />
+              </div>
+              <div data-testid="floating-schedules-header" className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
+                <FilesWorkspaceHeader
+                  session={selectedSession}
+                  resolvingSessionID={resolvingSelectedSessionID}
+                  fallbackTitle="Schedules"
+                  errorMessage={error || streamError}
+                  headerActions={viewToggle}
+                  onUpdateTitle={handleUpdateTitle}
+                  onUpdateWorkspace={handleUpdateWorkspace}
+                  hasUnsavedWorkspaceFile={workspaceFileDirty}
+                  onUpdateAgentOptions={handleUpdateAgentOptions}
+                  showDebugEvents={showDebugEvents}
+                  onShowDebugEventsChange={handleShowDebugEventsChange}
+                  onClear={() => {
+                    requestSessionAction('clear')
+                    return Promise.resolve()
+                  }}
+                  onCompact={() => {
+                    requestSessionAction('compact')
+                    return Promise.resolve()
+                  }}
+                  onToggleArchive={() => {
+                    requestArchiveSession()
+                    return Promise.resolve()
+                  }}
+                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
+                  clearPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                      : false
+                  }
+                  compactPending={
+                    selectedSession
+                      ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                      : false
+                  }
+                  archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+                />
+              </div>
+              <SessionSchedules
+                session={selectedSession}
+                resolvingSessionID={resolvingSelectedSessionID}
+                refreshKey={events.filter((event) => event.type.startsWith('schedule.')).length}
+              />
+            </>
           ) : appView === 'console' ? (
             <HostConsole
               session={selectedSession}

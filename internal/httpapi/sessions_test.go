@@ -22,6 +22,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents"
 	"github.com/jgennari/gorchestra/internal/agents/fake"
 	eventservice "github.com/jgennari/gorchestra/internal/events"
+	"github.com/jgennari/gorchestra/internal/scheduler"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 )
@@ -2905,6 +2906,7 @@ func newIntegrationAPIWithWorkspaceRoots(t *testing.T, ctx context.Context, work
 	}
 
 	runManager := runcontrol.NewManager()
+	scheduleService := scheduler.New(dbStore, events)
 	handler := NewRouter(Dependencies{
 		Store:          dbStore,
 		Events:         events,
@@ -2912,6 +2914,7 @@ func newIntegrationAPIWithWorkspaceRoots(t *testing.T, ctx context.Context, work
 		Runs:           runManager,
 		Workdir:        workdir,
 		WorkspaceRoots: workspaceRoots,
+		Schedules:      scheduleService,
 	})
 
 	return dbStore, events, runManager, handler
