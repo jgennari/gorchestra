@@ -1,13 +1,12 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { Archive, Eraser, FolderCog, Loader2, Minimize2, PanelRightOpen, RefreshCw, Settings, Square, Terminal } from 'lucide-react'
+import { Loader2, RefreshCw, Square, Terminal } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
-import { consoleWebSocketURL, getConsoleStatus, killConsole, type ConsoleStatus } from '@/lib/api'
+import { consoleWebSocketURL, getConsoleStatus, killConsole } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import { ChangeWorkspaceDialog } from '@/components/change-workspace-dialog'
-import { SessionRenameForm, SessionTitle } from '@/components/session-title-editor'
+import { SessionTitle } from '@/components/session-title-editor'
 import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
 import { cn } from '@/lib/utils'
 
@@ -24,43 +23,23 @@ export function HostConsole({
   resolvedTheme,
   headerActions,
   mobileLeadingAction,
-  onUpdateTitle,
-  onUpdateWorkspace,
-  onClear,
-  onCompact,
-  onToggleArchive,
-  onOpenWorkspaceDetails,
-  clearPending = false,
-  compactPending = false,
-  archivePending = false,
 }: {
   session: Session | null
   resolvingSessionID?: string | null
   resolvedTheme: 'light' | 'dark'
   headerActions?: ReactNode
   mobileLeadingAction?: ReactNode
-  onUpdateTitle: (title: string) => Promise<void>
-  onUpdateWorkspace: (workspacePath: string) => Promise<void>
-  onClear?: () => Promise<void>
-  onCompact?: () => Promise<void>
-  onToggleArchive?: () => Promise<void>
-  onOpenWorkspaceDetails?: () => void
-  clearPending?: boolean
-  compactPending?: boolean
-  archivePending?: boolean
 }) {
   const terminalElementRef = useRef<HTMLDivElement | null>(null)
   const terminalRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<number | null>(null)
-  const [status, setStatus] = useState<ConsoleStatus | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [restartKey, setRestartKey] = useState(0)
   const [restarting, setRestarting] = useState(false)
 
   const sessionID = session?.id ?? ''
-  const workspacePath = status?.workspace_path || session?.workspace_path || ''
 
   const fit = useCallback(() => {
     const fitAddon = fitAddonRef.current
@@ -79,20 +58,13 @@ export function HostConsole({
   }, [])
 
   useEffect(() => {
-    setStatus(null)
     setErrorMessage('')
     if (!sessionID) {
       return
     }
 
     let cancelled = false
-    void getConsoleStatus(sessionID)
-      .then((nextStatus) => {
-        if (!cancelled) {
-          setStatus(nextStatus)
-        }
-      })
-      .catch((error: unknown) => {
+    void getConsoleStatus(sessionID).catch((error: unknown) => {
         if (!cancelled) {
           setErrorMessage(messageFromUnknown(error))
         }
@@ -258,38 +230,21 @@ export function HostConsole({
       <div className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden">
         <ConsoleHeader
           session={session}
-          workspacePath={workspacePath}
           restarting={restarting}
           leadingAction={mobileLeadingAction}
           headerActions={headerActions}
           onRestart={() => void handleRestart()}
           onStop={() => void killConsole(sessionID)}
-          onUpdateTitle={onUpdateTitle}
-          onUpdateWorkspace={onUpdateWorkspace}
-          mobileSessionActions={{
-            session,
-            onClear,
-            onCompact,
-            onToggleArchive,
-            onOpenWorkspaceDetails,
-            clearPending,
-            compactPending,
-            archivePending,
-          }}
           className="command-chat-header pointer-events-auto rounded-xl border border-border/90 px-3 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
         />
       </div>
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block">
         <ConsoleHeader
           session={session}
-          workspacePath={workspacePath}
           restarting={restarting}
           headerActions={headerActions}
           onRestart={() => void handleRestart()}
           onStop={() => void killConsole(sessionID)}
-          onUpdateTitle={onUpdateTitle}
-          onUpdateWorkspace={onUpdateWorkspace}
-          mobileSessionActions={null}
           className="command-chat-header pointer-events-auto rounded-xl border border-border/90 px-3 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
         />
       </div>
@@ -310,102 +265,48 @@ export function HostConsole({
 
 function ConsoleHeader({
   session,
-  workspacePath,
   restarting,
   leadingAction,
   headerActions,
   onRestart,
   onStop,
-  onUpdateTitle,
-  onUpdateWorkspace,
-  mobileSessionActions,
   className,
 }: {
   session: Session
-  workspacePath: string
   restarting: boolean
   leadingAction?: ReactNode
   headerActions?: ReactNode
   onRestart: () => void
   onStop: () => void
-  onUpdateTitle: (title: string) => Promise<void>
-  onUpdateWorkspace: (workspacePath: string) => Promise<void>
-  mobileSessionActions?: MobileSessionActions | null
   className?: string
 }) {
   return (
     <div className={cn('flex min-h-14 shrink-0 items-center justify-between gap-3 py-2', className)}>
       {leadingAction ? <div className="shrink-0">{leadingAction}</div> : null}
-      <div className="flex min-w-0 flex-1 items-center gap-1">
+      <div className="min-w-0 flex-1">
         <SessionTitle title={session.title} />
-        <ConsoleMenu
-          session={session}
-          workspacePath={workspacePath}
-          restarting={restarting}
-          onRestart={onRestart}
-          onStop={onStop}
-          onUpdateTitle={onUpdateTitle}
-          onUpdateWorkspace={onUpdateWorkspace}
-          mobileSessionActions={mobileSessionActions}
-        />
       </div>
-      <div className="flex shrink-0 items-center gap-3">{headerActions}</div>
+      <div className="flex shrink-0 items-center gap-2">
+        <ConsoleActionsMenu restarting={restarting} onRestart={onRestart} onStop={onStop} />
+        {headerActions}
+      </div>
     </div>
   )
 }
 
-function ConsoleMenu({
-  session,
-  workspacePath,
-  restarting,
-  onRestart,
-  onStop,
-  onUpdateTitle,
-  onUpdateWorkspace,
-  mobileSessionActions,
-}: {
-  session: Session
-  workspacePath: string
-  restarting: boolean
-  onRestart: () => void
-  onStop: () => void
-  onUpdateTitle: (title: string) => Promise<void>
-  onUpdateWorkspace: (workspacePath: string) => Promise<void>
-  mobileSessionActions?: MobileSessionActions | null
-}) {
+function ConsoleActionsMenu({ restarting, onRestart, onStop }: { restarting: boolean; onRestart: () => void; onStop: () => void }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
-  const { triggerRef, popoverStyle } = useAnchoredPopover(open)
-  const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
-  const mobileActionPending =
-    mobileSessionActions?.clearPending || mobileSessionActions?.compactPending || mobileSessionActions?.archivePending
-  const mobileCodexActionDisabled =
-    !mobileSessionActions?.session ||
-    mobileSessionActions.session.agent_type !== 'codex' ||
-    mobileSessionActions.session.status === 'running' ||
-    Boolean(mobileSessionActions.session.archived_at) ||
-    Boolean(mobileActionPending)
-  const mobileCompactDisabled = mobileCodexActionDisabled || !mobileSessionActions?.session?.provider_session_id
-  const mobileArchiveDisabled =
-    !mobileSessionActions?.session ||
-    mobileSessionActions.session.status === 'running' ||
-    Boolean(mobileSessionActions.archivePending)
+  const { triggerRef, popoverStyle } = useAnchoredPopover(open, 224)
 
   useEffect(() => {
     if (!open) return
-
     function handlePointerDown(event: PointerEvent) {
-      if (!menuRef.current?.contains(event.target as Node)) {
-        setOpen(false)
-      }
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false)
     }
-
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        setOpen(false)
-      }
+      if (event.key === 'Escape') setOpen(false)
     }
-
     document.addEventListener('pointerdown', handlePointerDown)
     document.addEventListener('keydown', handleKeyDown)
     return () => {
@@ -422,156 +323,28 @@ function ConsoleMenu({
         size="icon"
         variant="ghost"
         className="h-8 w-8 text-muted-foreground hover:bg-background/50 hover:text-foreground"
-        aria-label="Session settings"
-        aria-haspopup="dialog"
+        aria-label="Console actions"
+        aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <Settings aria-hidden="true" />
+        <Terminal aria-hidden="true" />
       </Button>
       {open ? (
-        <div
-          role="dialog"
-          aria-label="Session settings"
-          style={popoverStyle}
-          className="z-50 overflow-y-auto rounded-lg border border-border/80 bg-popover p-3 text-sm text-popover-foreground shadow-lg"
-        >
-          <div className="border-b border-border/70 px-2 pb-3">
-            <SessionRenameForm title={session.title} onSave={onUpdateTitle} />
-          </div>
-          <div className="border-b px-2 pb-2 pt-3">
-            <p className="text-xs font-semibold uppercase text-muted-foreground">Workspace</p>
-            <p className="mt-1 truncate text-xs text-muted-foreground" title={workspacePath}>
-              {workspacePath || 'Unavailable'}
-            </p>
-          </div>
-          <button
-            type="button"
-            className="mt-2 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground"
-            onClick={() => {
-              setOpen(false)
-              setWorkspaceDialogOpen(true)
-            }}
-          >
-            <FolderCog className="size-4" aria-hidden="true" />
-            Change workspace
-          </button>
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground"
-            disabled={restarting}
-            onClick={() => {
-              onRestart()
-              setOpen(false)
-            }}
-          >
+        <div role="menu" aria-label="Console actions" style={popoverStyle} className="z-50 overflow-y-auto rounded-lg border border-border/80 bg-popover p-1.5 text-sm text-popover-foreground shadow-lg">
+          <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:opacity-50" disabled={restarting} onClick={() => { onRestart(); setOpen(false) }}>
             <RefreshCw className={cn('size-4', restarting && 'animate-spin')} />
             Restart console
           </button>
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-destructive hover:bg-destructive/10"
-            onClick={() => {
-              onStop()
-              setOpen(false)
-            }}
-          >
+          <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-destructive hover:bg-destructive/10" onClick={() => { onStop(); setOpen(false) }}>
             <Square className="size-4" />
             Stop console
           </button>
-          {mobileSessionActions ? (
-            <div className="mt-2 space-y-1 border-t border-border/70 pt-2 lg:hidden">
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground"
-                onClick={() => {
-                  setOpen(false)
-                  mobileSessionActions.onOpenWorkspaceDetails?.()
-                }}
-              >
-                <PanelRightOpen className="size-4" aria-hidden="true" />
-                Workspace details
-              </button>
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45"
-                disabled={mobileCodexActionDisabled}
-                onClick={() => {
-                  setOpen(false)
-                  void mobileSessionActions.onClear?.()
-                }}
-              >
-                {mobileSessionActions.clearPending ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Eraser className="size-4" aria-hidden="true" />
-                )}
-                {mobileSessionActions.clearPending ? 'Clearing' : 'Clear context'}
-              </button>
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45"
-                disabled={mobileCompactDisabled}
-                onClick={() => {
-                  setOpen(false)
-                  void mobileSessionActions.onCompact?.()
-                }}
-              >
-                {mobileSessionActions.compactPending ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Minimize2 className="size-4" aria-hidden="true" />
-                )}
-                {mobileSessionActions.compactPending ? 'Compacting' : 'Compact context'}
-              </button>
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-45"
-                disabled={mobileArchiveDisabled}
-                onClick={() => {
-                  setOpen(false)
-                  void mobileSessionActions.onToggleArchive?.()
-                }}
-              >
-                {mobileSessionActions.archivePending ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Archive className="size-4" aria-hidden="true" />
-                )}
-                {mobileSessionActions.archivePending
-                  ? mobileSessionActions.session?.archived_at
-                    ? 'Restoring'
-                    : 'Archiving'
-                  : mobileSessionActions.session?.archived_at
-                    ? 'Restore session'
-                    : 'Archive session'}
-              </button>
-            </div>
-          ) : null}
         </div>
       ) : null}
-      <ChangeWorkspaceDialog
-        session={session}
-        open={workspaceDialogOpen}
-        hasUnsavedFile={false}
-        onOpenChange={setWorkspaceDialogOpen}
-        onChangeWorkspace={onUpdateWorkspace}
-      />
     </div>
   )
 }
-
-type MobileSessionActions = {
-  session: Session | null
-  onClear?: () => Promise<void>
-  onCompact?: () => Promise<void>
-  onToggleArchive?: () => Promise<void>
-  onOpenWorkspaceDetails?: () => void
-  clearPending?: boolean
-  compactPending?: boolean
-  archivePending?: boolean
-}
-
 function parseConsoleMessage(data: string): ConsoleMessage | null {
   try {
     return JSON.parse(data) as ConsoleMessage

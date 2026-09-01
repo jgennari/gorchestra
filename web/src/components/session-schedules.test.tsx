@@ -58,4 +58,6 @@ test('renders the empty state as a regular card', async () => {
   const emptyState = (await screen.findByText('No scheduled tasks')).closest('div')
   expect(emptyState).toHaveClass('border', 'border-border/80', 'bg-background/72', 'shadow-sm')
   expect(emptyState).not.toHaveClass('border-dashed')
+  expect(emptyState?.parentElement).toHaveClass('w-full', 'flex-1')
+  expect(emptyState?.parentElement).not.toHaveClass('max-w-5xl')
 })

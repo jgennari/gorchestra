@@ -45,6 +45,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } 
 import { cn } from '@/lib/utils'
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48
+const TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX = 10
 const scrollIntentKeys = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])
 
 type ChatActivityStatus = { kind: 'thinking' } | { kind: 'working'; since: string }
@@ -174,7 +175,7 @@ export function ChatTranscript({
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
-    if (!atBottomRef.current || event.deltaY < 0) {
+    if (event.deltaY < 0) {
       markUserScrollIntent()
     }
   }
@@ -188,7 +189,7 @@ export function ChatTranscript({
     if (touchY === undefined) return
     const movingTowardOlder = lastTouchYRef.current !== null && touchY > lastTouchYRef.current
     lastTouchYRef.current = touchY
-    if (!atBottomRef.current || movingTowardOlder) {
+    if (movingTowardOlder) {
       markUserScrollIntent()
     }
   }
@@ -200,7 +201,7 @@ export function ChatTranscript({
   function handleScrollKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     const movingTowardOlder =
       event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home' || (event.key === ' ' && event.shiftKey)
-    if (scrollIntentKeys.has(event.key) && (!atBottomRef.current || movingTowardOlder)) {
+    if (scrollIntentKeys.has(event.key) && movingTowardOlder) {
       markUserScrollIntent()
     }
   }
@@ -246,7 +247,10 @@ export function ChatTranscript({
     })
   }
 
-  const tailSpacerHeight = Math.max(8, bottomInsetHeight + 8)
+  const tailSpacerHeight = Math.max(
+    TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX,
+    bottomInsetHeight + TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX,
+  )
   const virtualItems = useMemo<VirtualTimelineItem[]>(() => {
     const items: VirtualTimelineItem[] = []
     if (hasOlderEvents || loadingOlderEvents) items.push({ kind: 'older-control', id: 'older-control' })
@@ -350,14 +354,23 @@ export function ChatTranscript({
   }
 
   const latestMessageIndex = timeline.reduce((latest, item, index) => (item.kind === 'message' ? index : latest), -1)
+  const messageDateBreakIndexes = messageDateBreaks(timeline)
   const jumpButtonBottom = Math.max(16, bottomInsetHeight + 12)
 
   async function jumpToLatest() {
-    if (hasNewerEvents) await onJumpToLatest?.()
     userScrollIntentRef.current = false
     setAutoScrollPaused(false)
     onFollowingTailChange?.(true)
     scheduleTailAlignment(true)
+    if (!hasNewerEvents) return
+    try {
+      await onJumpToLatest?.()
+    } finally {
+      userScrollIntentRef.current = false
+      setAutoScrollPaused(false)
+      onFollowingTailChange?.(true)
+      scheduleTailAlignment(true)
+    }
   }
 
   function updateChatGlow(event: ReactPointerEvent<HTMLDivElement>) {
@@ -464,6 +477,7 @@ export function ChatTranscript({
                 item={item}
                 focusSeq={focusSeq}
                 collapseExtraTools={item.kind === 'message' && timelineIndex < latestMessageIndex}
+                showMessageDate={messageDateBreakIndexes.has(timelineIndex)}
                 onOpenFilePath={onOpenFilePath}
               />
             </div>
@@ -638,11 +652,13 @@ function LoadNewerEventsButton({ loading, onLoad }: { loading: boolean; onLoad?:
 function ChatTimelineRow({
   item,
   collapseExtraTools,
+  showMessageDate,
   onOpenFilePath,
   focusSeq,
 }: {
   item: ChatTimelineItem
   collapseExtraTools: boolean
+  showMessageDate: boolean
   onOpenFilePath?: (path: string) => Promise<void> | void
   focusSeq: number
 }) {
@@ -659,6 +675,7 @@ function ChatTimelineRow({
     <ChatMessageRow
       message={item.message}
       collapseExtraTools={collapseExtraTools}
+      showDate={showMessageDate}
       onOpenFilePath={onOpenFilePath}
       focusSeq={focusSeq}
     />
@@ -690,59 +707,33 @@ function ActionBreakRow({ action }: { action: ChatActionBreak }) {
 function ChatMessageRow({
   message,
   collapseExtraTools,
+  showDate,
   onOpenFilePath,
   focusSeq,
 }: {
   message: ChatTranscriptMessage
   collapseExtraTools: boolean
+  showDate: boolean
   onOpenFilePath?: (path: string) => Promise<void> | void
   focusSeq: number
 }) {
   const user = message.role === 'user'
   const plan = message.variant === 'plan'
   const [showAllTools, setShowAllTools] = useState(false)
-  const [showMessageRail, setShowMessageRail] = useState(false)
   const [messageCopied, setMessageCopied] = useState(false)
   const [messageCopyFailed, setMessageCopyFailed] = useState(false)
-  const hoverIntentTimerRef = useRef<number | null>(null)
   const shouldCollapseTools = collapseExtraTools && message.tools.length > 3
   const visibleTools = !shouldCollapseTools || showAllTools ? message.tools : message.tools.slice(0, 3)
   const hasHiddenTools = message.tools.length > visibleTools.length
-  const timestamp = formatMessageTimestamp(message.createdAt)
-  const showMessageCopy = Boolean(message.text && !message.streaming)
+  const timestampValue = messageTimestamp(message)
+  const timestamp = formatMessageTimestamp(timestampValue, showDate)
+  const turnDuration = formatTurnDuration(message.durationMs)
+  const showMessageCopy = Boolean(message.text)
   const focusedTool = message.tools.find((tool) => focusSeq >= tool.startSeq && focusSeq <= tool.endSeq)
 
   useEffect(() => {
     if (focusedTool) setShowAllTools(true)
   }, [focusedTool])
-
-  useEffect(() => {
-    return () => {
-      if (hoverIntentTimerRef.current !== null) {
-        window.clearTimeout(hoverIntentTimerRef.current)
-      }
-    }
-  }, [])
-
-  function clearHoverIntentTimer() {
-    if (hoverIntentTimerRef.current !== null) {
-      window.clearTimeout(hoverIntentTimerRef.current)
-      hoverIntentTimerRef.current = null
-    }
-  }
-
-  function handleRailMouseEnter() {
-    clearHoverIntentTimer()
-    hoverIntentTimerRef.current = window.setTimeout(() => {
-      setShowMessageRail(true)
-      hoverIntentTimerRef.current = null
-    }, 1000)
-  }
-
-  function hideMessageRail() {
-    clearHoverIntentTimer()
-    setShowMessageRail(false)
-  }
 
   async function handleMessageCopy() {
     if (!message.text) {
@@ -761,50 +752,40 @@ function ChatMessageRow({
 
   return (
     <article className={cn('flex', user ? 'justify-end' : 'justify-start')} data-message-variant={message.variant}>
-      <div
-        className="relative inline-block max-w-full overflow-hidden sm:-mt-8 sm:max-w-[min(48rem,90%)] sm:pt-8"
-        onMouseEnter={handleRailMouseEnter}
-        onMouseLeave={hideMessageRail}
-      >
+      <div className="relative inline-block max-w-full sm:max-w-[min(48rem,90%)]">
         {timestamp ? (
-          <div className="pointer-events-none absolute inset-x-0 top-0 hidden h-8 overflow-hidden sm:block">
-            <div
-              className="absolute right-1 bottom-0 flex items-center gap-1 transform-gpu transition-[opacity,transform] duration-250 ease-out will-change-[opacity,transform]"
-              style={{
-                opacity: showMessageRail ? 1 : 0,
-                transform: showMessageRail ? 'translateY(0)' : 'translateY(1.25rem)',
-              }}
-            >
-              <time
-                className="text-[11px] font-normal tabular-nums text-muted-foreground/80"
-                dateTime={message.createdAt}
-              >
-                {timestamp}
-              </time>
-              {messageCopyFailed ? (
-                <span
-                  role="alert"
-                  title={clipboardCopyErrorMessage}
-                  className="pointer-events-auto whitespace-nowrap text-[11px] font-medium text-destructive"
-                >
-                  Copy failed
+          <div className="flex h-4 items-center justify-end gap-0.5 px-1 text-[10px] leading-none text-muted-foreground/55">
+            {turnDuration ? (
+              <>
+                <span className="tabular-nums" aria-label={`Total turn time ${turnDuration}`}>
+                  {turnDuration}
                 </span>
-              ) : null}
-              {showMessageRail && showMessageCopy ? (
-                <button
-                  type="button"
-                  aria-label="Copy message"
-                  onClick={() => void handleMessageCopy()}
-                  className="pointer-events-auto inline-flex size-5 items-center justify-center rounded border border-border/70 bg-background/90 text-muted-foreground shadow-sm transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {messageCopied ? (
-                    <Check className="size-3" aria-hidden="true" />
-                  ) : (
-                    <Copy className="size-3" aria-hidden="true" />
-                  )}
-                </button>
-              ) : null}
-            </div>
+                <span aria-hidden="true">·</span>
+              </>
+            ) : null}
+            <time className="font-normal tabular-nums" dateTime={timestampValue}>
+              {timestamp}
+            </time>
+            {messageCopyFailed ? (
+              <span role="alert" title={clipboardCopyErrorMessage} className="ml-1 whitespace-nowrap text-destructive">
+                Copy failed
+              </span>
+            ) : null}
+            {showMessageCopy ? (
+              <button
+                type="button"
+                aria-label="Copy message"
+                title={messageCopied ? 'Copied' : 'Copy message'}
+                onClick={() => void handleMessageCopy()}
+                className="inline-flex size-4 items-center justify-center rounded text-muted-foreground/45 transition-colors hover:bg-muted/55 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {messageCopied ? (
+                  <Check className="size-3" aria-hidden="true" />
+                ) : (
+                  <Copy className="size-3" aria-hidden="true" />
+                )}
+              </button>
+            ) : null}
           </div>
         ) : null}
         <div
@@ -954,7 +935,56 @@ function formatAttachmentSize(sizeBytes: number) {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function formatMessageTimestamp(value: string) {
+function messageDateBreaks(timeline: ChatTimelineItem[]) {
+  const breaks = new Set<number>()
+  let previousMessageDate: Date | null = null
+
+  for (const [index, item] of timeline.entries()) {
+    if (item.kind !== 'message') continue
+    const currentMessageDate = parseMessageDate(messageTimestamp(item.message))
+    if (!currentMessageDate) continue
+    if (previousMessageDate && !sameLocalCalendarDay(previousMessageDate, currentMessageDate)) {
+      breaks.add(index)
+    }
+    previousMessageDate = currentMessageDate
+  }
+
+  return breaks
+}
+
+function parseMessageDate(value: string) {
+  if (!value) return null
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function sameLocalCalendarDay(left: Date, right: Date) {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  )
+}
+
+function messageTimestamp(message: ChatTranscriptMessage) {
+  return message.role === 'assistant' && !message.streaming && message.completedAt
+    ? message.completedAt
+    : message.createdAt
+}
+
+function formatTurnDuration(durationMs: number | null) {
+  if (durationMs === null || !Number.isFinite(durationMs) || durationMs < 0) return ''
+  const totalSeconds = Math.round(durationMs / 1000)
+  if (totalSeconds < 60) return `${totalSeconds} sec`
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  if (minutes < 60) return seconds ? `${minutes} min ${seconds} sec` : `${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return remainingMinutes ? `${hours} hr ${remainingMinutes} min` : `${hours} hr`
+}
+
+function formatMessageTimestamp(value: string, includeDate = false) {
   if (!value) {
     return ''
   }
@@ -962,10 +992,10 @@ function formatMessageTimestamp(value: string) {
   if (Number.isNaN(date.getTime())) {
     return ''
   }
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'short',
-    timeStyle: 'short',
-  }).format(date)
+  const options: Intl.DateTimeFormatOptions = includeDate
+    ? { dateStyle: 'short', timeStyle: 'short' }
+    : { timeStyle: 'short' }
+  return new Intl.DateTimeFormat(undefined, options).format(date)
 }
 
 type MarkdownVariant = 'default' | 'inverted' | 'plan'
@@ -1546,7 +1576,7 @@ function DebugEventRow({ event }: { event: ChatDebugEvent }) {
 
 function RunErrorRow({ error }: { error: ChatRunError }) {
   const sequence = error.startSeq === error.endSeq ? `#${error.startSeq}` : `#${error.startSeq}-${error.endSeq}`
-  const timestamp = formatMessageTimestamp(error.createdAt)
+  const timestamp = formatMessageTimestamp(error.createdAt, true)
 
   return (
     <article className="flex justify-start" role="alert" aria-label={`${error.label}: ${error.error}`}>

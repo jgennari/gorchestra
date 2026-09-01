@@ -603,6 +603,42 @@ test('chat transcript merges streaming assistant deltas with completion text', (
   expect(transcript[1]).toMatchObject({ role: 'assistant', text: 'Hi there', streaming: false })
 })
 
+test('chat transcript measures completed assistant responses from the run start', () => {
+  const transcript = buildChatTranscript([
+    timedEvent(1, 'user.message.completed', '2026-06-12T16:03:25Z', { text: 'Do the work' }),
+    timedEvent(2, 'agent.run.started', '2026-06-12T16:03:26Z'),
+    timedEvent(3, 'tool.call.completed', '2026-06-12T16:03:50Z', { item_id: 'tool_1', command: 'go test' }),
+    timedEvent(4, 'agent.message.completed', '2026-06-12T16:04:00Z', {
+      item_id: 'msg_1',
+      text: 'Done',
+    }),
+  ])
+
+  expect(transcript[1]).toMatchObject({
+    role: 'assistant',
+    text: 'Done',
+    completedAt: '2026-06-12T16:04:00Z',
+    durationMs: 34_000,
+  })
+})
+
+test('chat transcript measures later responses from the previous response instead of cumulatively', () => {
+  const transcript = buildChatTranscript([
+    timedEvent(1, 'user.message.completed', '2026-06-12T16:03:25Z', { text: 'Do the work' }),
+    timedEvent(2, 'agent.run.started', '2026-06-12T16:03:26Z'),
+    timedEvent(3, 'agent.message.completed', '2026-06-12T16:03:36Z', {
+      item_id: 'msg_1',
+      text: 'First update',
+    }),
+    timedEvent(4, 'agent.message.completed', '2026-06-12T16:04:00Z', {
+      item_id: 'msg_2',
+      text: 'Final update',
+    }),
+  ])
+
+  expect(transcript.slice(1).map((message) => message.durationMs)).toEqual([10_000, 24_000])
+})
+
 test('chat transcript uses event attachment URLs instead of inline image data', () => {
   const transcript = buildChatTranscript([
     event(7, 'user.message.completed', {

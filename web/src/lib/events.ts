@@ -113,6 +113,8 @@ export type ChatTranscriptMessage = {
   skills: SkillReference[]
   status: string
   createdAt: string
+  completedAt: string
+  durationMs: number | null
   tools: ChatTranscriptTool[]
   streaming: boolean
   startSeq: number
@@ -496,6 +498,8 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
       })
     }
   }
+
+  applyAssistantBlockDurations(messages, events)
 
   return items.filter((item) => {
     if (item.kind === 'debug' || item.kind === 'action' || item.kind === 'error') {
@@ -1383,6 +1387,8 @@ function chatMessageFromGroup(role: ChatTranscriptMessage['role'], group: EventG
     skills: chatSkillsFromGroup(group),
     status: group.status,
     createdAt: group.events[0]?.created_at ?? '',
+    completedAt: latestGroupTimestamp(group),
+    durationMs: null,
     tools: [],
     streaming: group.status === 'delta' || group.status === 'started',
     startSeq: group.startSeq,
@@ -2154,8 +2160,62 @@ function chatGroupItemID(group: EventGroup) {
 }
 
 function updateMessageRange(message: ChatTranscriptMessage, group: EventGroup) {
+  if (group.endSeq >= message.endSeq) {
+    message.completedAt = latestGroupTimestamp(group) || message.completedAt
+  }
   message.startSeq = Math.min(message.startSeq, group.startSeq)
   message.endSeq = Math.max(message.endSeq, group.endSeq)
+}
+
+function latestGroupTimestamp(group: EventGroup) {
+  let latestEvent: AgentEvent | undefined
+  for (const event of group.events) {
+    if (!latestEvent || event.seq > latestEvent.seq) latestEvent = event
+  }
+  return latestEvent?.created_at ?? ''
+}
+
+function applyAssistantBlockDurations(messages: ChatTranscriptMessage[], events: AgentEvent[]) {
+  const sortedEvents = sortedUniqueEvents(events)
+  let previousAssistantCompletedAt = ''
+  let currentUserMessageAt = ''
+
+  for (const message of messages) {
+    message.durationMs = null
+    if (message.role === 'user') {
+      currentUserMessageAt = message.createdAt
+      previousAssistantCompletedAt = ''
+      continue
+    }
+    if (message.streaming) continue
+
+    const completedAt = timestampMilliseconds(message.completedAt)
+    if (completedAt === null) continue
+
+    const startedAt = timestampMilliseconds(
+      previousAssistantCompletedAt || runStartedAtBefore(sortedEvents, message.startSeq) || currentUserMessageAt,
+    )
+    if (message.text.trim() && startedAt !== null && completedAt >= startedAt) {
+      message.durationMs = completedAt - startedAt
+    }
+    previousAssistantCompletedAt = message.completedAt
+  }
+}
+
+function runStartedAtBefore(events: AgentEvent[], sequence: number) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event.seq > sequence) continue
+    if (event.type === 'agent.run.started') return event.created_at
+    if (isTerminalEvent(event.type)) break
+  }
+  return ''
+}
+
+function timestampMilliseconds(value: string) {
+  if (!value) return null
+  const timestamp = new Date(value).getTime()
+  return Number.isNaN(timestamp) ? null : timestamp
 }
 
 function mergeChatText(current: string, next: string) {

@@ -287,8 +287,8 @@ test('mobile session menu opens workspace details in a floating dialog', async (
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
   const mobileHeader = screen.getByTestId('mobile-floating-session-header')
 
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Session settings' }))
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Workspace details' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'More session actions' }))
+  await user.click(within(mobileHeader).getByRole('menuitem', { name: 'Workspace details' }))
 
   const dialog = await screen.findByRole('dialog', { name: 'Workspace details' })
   expect(within(dialog).getByText('Activity')).toBeInTheDocument()
@@ -307,7 +307,7 @@ test('header files view opens workspace files inline', async () => {
   await user.click(screen.getAllByRole('button', { name: 'Show files' })[0])
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/files'))
   const filesHeader = screen.getByTestId('floating-files-header')
-  expect(within(filesHeader).getByRole('button', { name: 'Session settings' })).toBeInTheDocument()
+  expect(within(filesHeader).getByRole('button', { name: 'Show session settings' })).toBeInTheDocument()
   expect(screen.getByText('No file selected').closest('.host-console-frame')).toBeTruthy()
 
   await user.click((await screen.findAllByRole('button', { name: /main\.go/i }))[0])
@@ -326,7 +326,7 @@ test('header hosted preview view updates the route and shows host status', async
 
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/host'))
   expect(await screen.findByText('No host recipe found')).toBeInTheDocument()
-  expect(within(screen.getByTestId('floating-host-header')).getByRole('button', { name: 'Session settings' })).toBeInTheDocument()
+  expect(within(screen.getByTestId('floating-host-header')).getByRole('button', { name: 'Show session settings' })).toBeInTheDocument()
   expect(
     screen
       .getAllByRole('button', { name: 'Show hosted preview' })
@@ -344,11 +344,30 @@ test('schedules view uses the shared floating session header', async () => {
 
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/schedules'))
   const schedulesHeader = screen.getByTestId('floating-schedules-header')
-  expect(within(schedulesHeader).getByRole('button', { name: 'Session settings' })).toBeInTheDocument()
+  expect(within(schedulesHeader).getByRole('button', { name: 'Show session settings' })).toBeInTheDocument()
   expect(schedulesHeader.querySelector('.command-chat-header')).toBeInTheDocument()
   const scheduleInfo = screen.getByRole('heading', { name: 'Scheduled tasks' }).closest('section')
   expect(scheduleInfo).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
   expect(scheduleInfo?.closest('.session-schedules-body')).toBeTruthy()
+})
+
+test('session settings is a routed card page and mobile views live in an overflow menu', async () => {
+  const user = userEvent.setup()
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  const mobileHeader = screen.getByTestId('mobile-floating-session-header')
+  expect(within(mobileHeader).queryByRole('button', { name: 'Session settings' })).not.toBeInTheDocument()
+
+  await user.click(within(mobileHeader).getByRole('button', { name: 'More session actions' }))
+  await user.click(within(mobileHeader).getByRole('menuitem', { name: 'Session settings' }))
+
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/settings'))
+  const card = screen.getByRole('heading', { name: 'Session settings' }).closest('section')
+  expect(card).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
+  expect(card?.closest('.session-settings-body')).toBeTruthy()
+  expect(screen.getByTestId('floating-settings-header')).toBeInTheDocument()
 })
 
 test('repository skills view uses the shared floating session header and information card', async () => {
@@ -358,7 +377,7 @@ test('repository skills view uses the shared floating session header and informa
   await user.click(screen.getAllByRole('button', { name: 'Show repository skills' })[0])
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/skills'))
   const skillsHeader = screen.getByTestId('floating-skills-header')
-  expect(within(skillsHeader).getByRole('button', { name: 'Session settings' })).toBeInTheDocument()
+  expect(within(skillsHeader).getByRole('button', { name: 'Show session settings' })).toBeInTheDocument()
   expect(skillsHeader.querySelector('.command-chat-header')).toBeInTheDocument()
   const info = screen.getByRole('heading', { name: 'Repository skills' }).closest('section')
   expect(info).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
@@ -743,18 +762,18 @@ test('switching sessions discards an unsaved settings rename', async () => {
   render(<App />)
 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
-  const header = screen.getByTestId('floating-session-header')
-  await user.click(within(header).getByRole('button', { name: 'Session settings' }))
+  await user.click(screen.getAllByRole('button', { name: 'Show session settings' })[0])
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/settings'))
 
-  const input = within(header).getByRole('textbox', { name: 'Session name' })
+  const input = screen.getByRole('textbox', { name: 'Session name' })
   await user.clear(input)
   await user.type(input, 'Renamed session')
   expect(input).toHaveValue('Renamed session')
 
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
 
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
-  expect(screen.queryByRole('dialog', { name: 'Session settings' })).not.toBeInTheDocument()
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs/settings'))
+  expect(screen.getByRole('textbox', { name: 'Session name' })).toHaveValue('Write docs')
   expect(
     screen
       .getAllByRole('button', { name: /Write docs/ })
@@ -947,6 +966,68 @@ test('switching back to a cached session restores transcript before replaying st
   })
 
   expect(await screen.findByText('Replayed update')).toBeInTheDocument()
+})
+
+test('jump to latest adopts the live stream before the tail refresh completes', async () => {
+  const user = userEvent.setup()
+  const baseFetch = fetchMock({
+    events: [
+      event(39, 'user.message.completed', { text: 'Visible prompt' }),
+      event(40, 'agent.message.completed', { item_id: 'msg_1', text: 'Visible answer' }),
+    ],
+  })
+  let tailRequests = 0
+  let resolveTailRefresh: (() => void) | undefined
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions/sess_1/events?tail=true&turns=2') {
+      tailRequests += 1
+      if (tailRequests === 2) {
+        await new Promise<void>((resolve) => {
+          resolveTailRefresh = resolve
+        })
+        return jsonResponse({
+          events: [
+            event(39, 'user.message.completed', { text: 'Visible prompt' }),
+            event(40, 'agent.message.completed', { item_id: 'msg_1', text: 'Visible answer' }),
+            event(41, 'agent.message.completed', { item_id: 'msg_2', text: 'Live answer' }),
+          ],
+        })
+      }
+    }
+    return baseFetch(url, init)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  const source = await findEventSource('/api/sessions/sess_1/events/stream?after_seq=40')
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  Object.defineProperties(log, {
+    scrollTop: { configurable: true, writable: true, value: 120 },
+    scrollHeight: { configurable: true, value: 1000 },
+    clientHeight: { configurable: true, value: 400 },
+  })
+  fireEvent.wheel(log, { deltaY: -100 })
+  fireEvent.scroll(log)
+
+  act(() => {
+    source.emit(event(41, 'agent.message.completed', { item_id: 'msg_2', text: 'Live answer' }))
+  })
+
+  expect(screen.queryByText('Live answer')).not.toBeInTheDocument()
+  const jumpButton = await screen.findByRole('button', {
+    name: 'Scroll to latest and resume auto-scroll',
+  })
+  await user.click(jumpButton)
+
+  expect(await screen.findByText('Live answer')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+  expect(tailRequests).toBe(2)
+
+  await act(async () => {
+    resolveTailRefresh?.()
+    await Promise.resolve()
+  })
 })
 
 test('global activity stream marks another session pending input', async () => {

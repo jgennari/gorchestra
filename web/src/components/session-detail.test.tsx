@@ -1,5 +1,4 @@
 import { render, screen, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import type { ComponentProps, ReactNode } from 'react'
 import type { AgentEvent, Session } from '@/lib/api'
 import { SessionDetail } from '@/components/session-detail'
@@ -210,15 +209,14 @@ test('session detail uses matching floating headers on mobile and desktop', () =
   expect(screen.queryByText(/Last event:/)).not.toBeInTheDocument()
 })
 
-test('session settings gear immediately follows the title without a rename button', () => {
+test('session header gives the title priority without inline settings controls', () => {
   renderDetail()
 
   const header = desktopFloatingHeader()
   const title = within(header).getByRole('heading', { name: 'Inspect repo' })
-  const settings = within(header).getByRole('button', { name: 'Session settings' })
 
-  expect(title.nextElementSibling).toContainElement(settings)
-  expect(settings.querySelector('.lucide-settings')).not.toBeNull()
+  expect(title.parentElement).toHaveClass('min-w-0', 'flex-1')
+  expect(within(header).queryByRole('button', { name: 'Session settings' })).not.toBeInTheDocument()
   expect(within(header).queryByRole('button', { name: 'Edit session title' })).not.toBeInTheDocument()
 })
 
@@ -234,188 +232,6 @@ test('composer stack floats over the transcript while reserving tail inset', () 
   expect(screen.getByText('No messages yet. Submit a prompt to start the chat.')).toBeInTheDocument()
 })
 
-test('mobile session details menu exposes right-rail session actions', async () => {
-  const user = userEvent.setup()
-  const onClear = vi.fn(async () => undefined)
-  const onCompact = vi.fn(async () => undefined)
-  const onToggleArchive = vi.fn(async () => undefined)
-  const onOpenWorkspaceDetails = vi.fn()
-
-  renderDetail({
-    session: { ...baseSession, agent_type: 'codex', provider_session_id: 'thread_1' },
-    onClear,
-    onCompact,
-    onToggleArchive,
-    onOpenWorkspaceDetails,
-  })
-
-  const mobileHeader = screen.getByTestId('mobile-floating-session-header')
-
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Session settings' }))
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Workspace details' }))
-
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Session settings' }))
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Clear context' }))
-
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Session settings' }))
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Compact context' }))
-
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Session settings' }))
-  await user.click(within(mobileHeader).getByRole('button', { name: 'Archive session' }))
-
-  expect(onOpenWorkspaceDetails).toHaveBeenCalledOnce()
-  expect(onClear).toHaveBeenCalledOnce()
-  expect(onCompact).toHaveBeenCalledOnce()
-  expect(onToggleArchive).toHaveBeenCalledOnce()
-})
-
-test('desktop session details menu does not duplicate right-rail actions', async () => {
-  const user = userEvent.setup()
-
-  renderDetail({
-    session: { ...baseSession, agent_type: 'codex', provider_session_id: 'thread_1' },
-    onClear: async () => undefined,
-    onCompact: async () => undefined,
-    onToggleArchive: async () => undefined,
-  })
-
-  const desktopHeader = desktopFloatingHeader()
-  await user.click(within(desktopHeader).getByRole('button', { name: 'Session settings' }))
-  const dialog = within(desktopHeader).getByRole('dialog', { name: 'Session settings' })
-
-  expect(within(dialog).queryByRole('button', { name: 'Clear context' })).not.toBeInTheDocument()
-  expect(within(dialog).queryByRole('button', { name: 'Compact context' })).not.toBeInTheDocument()
-  expect(within(dialog).queryByRole('button', { name: 'Archive session' })).not.toBeInTheDocument()
-  expect(within(dialog).queryByRole('button', { name: 'Workspace details' })).not.toBeInTheDocument()
-})
-
-test('floating chat header shows session settings and copies the session key', async () => {
-  const user = userEvent.setup()
-  const writeText = vi.fn(async () => undefined)
-  Object.defineProperty(navigator, 'clipboard', {
-    configurable: true,
-    value: { writeText },
-  })
-
-  renderDetail()
-
-  expect(screen.queryByText('sess_1')).not.toBeInTheDocument()
-
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
-
-  const popover = screen.getByRole('dialog', { name: 'Session settings' })
-  expect(within(popover).getByText('Session key')).toBeInTheDocument()
-  expect(within(popover).getByText('sess_1')).toBeInTheDocument()
-  expect(within(popover).getByText('Workspace path')).toBeInTheDocument()
-  expect(within(popover).getByText('/repo')).toBeInTheDocument()
-
-  await user.click(within(popover).getByRole('button', { name: 'Copy session key' }))
-  await user.click(within(popover).getByRole('button', { name: 'Copy workspace path' }))
-
-  expect(writeText).toHaveBeenCalledWith('sess_1')
-  expect(writeText).toHaveBeenCalledWith('/repo')
-  expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
-})
-
-test('session settings renames the session and discards an unsaved draft when closed', async () => {
-  const user = userEvent.setup()
-  const onUpdateTitle = vi.fn(async () => undefined)
-  renderDetail({ onUpdateTitle })
-
-  const header = desktopFloatingHeader()
-  await user.click(within(header).getByRole('button', { name: 'Session settings' }))
-  const popover = within(header).getByRole('dialog', { name: 'Session settings' })
-  const input = within(popover).getByRole('textbox', { name: 'Session name' })
-  await user.clear(input)
-  await user.type(input, '  Renamed chat  {Enter}')
-
-  expect(onUpdateTitle).toHaveBeenCalledWith('Renamed chat')
-  expect(within(header).getByRole('dialog', { name: 'Session settings' })).toBeInTheDocument()
-
-  await user.clear(input)
-  await user.type(input, 'Unsaved name')
-  await user.keyboard('{Escape}')
-  expect(within(header).queryByRole('dialog', { name: 'Session settings' })).not.toBeInTheDocument()
-
-  await user.click(within(header).getByRole('button', { name: 'Session settings' }))
-  expect(within(header).getByRole('textbox', { name: 'Session name' })).toHaveValue('Inspect repo')
-})
-
-test('session details reports when clipboard access and fallback both fail', async () => {
-  const user = userEvent.setup()
-  Object.defineProperty(navigator, 'clipboard', {
-    configurable: true,
-    value: { writeText: vi.fn(async () => { throw new DOMException('Denied', 'NotAllowedError') }) },
-  })
-  Object.defineProperty(document, 'execCommand', {
-    configurable: true,
-    value: vi.fn(() => false),
-  })
-
-  renderDetail()
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
-  const popover = screen.getByRole('dialog', { name: 'Session settings' })
-  await user.click(within(popover).getByRole('button', { name: 'Copy session key' }))
-
-  expect(await within(popover).findByRole('alert')).toHaveTextContent('Select the text and copy it manually.')
-})
-
-test('floating chat header updates the codex permission policy', async () => {
-  const user = userEvent.setup()
-  const onUpdateAgentOptions = vi.fn(async () => undefined)
-
-  renderDetail({
-    session: {
-      ...baseSession,
-      agent_type: 'codex',
-      agent_options: { codex: { run_dangerously: false } },
-    },
-    onUpdateAgentOptions,
-  })
-
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
-  const askControl = within(desktopFloatingHeader()).getByRole('radio', { name: 'Ask' })
-
-  expect(askControl).toHaveAttribute('aria-checked', 'false')
-
-  await user.click(askControl)
-
-  expect(onUpdateAgentOptions).toHaveBeenCalledWith({ codex: { permission_policy: 'ask' } })
-})
-
-test('floating chat header updates the claude permission policy', async () => {
-  const user = userEvent.setup()
-  const onUpdateAgentOptions = vi.fn(async () => undefined)
-
-  renderDetail({
-    session: {
-      ...baseSession,
-      agent_type: 'claude',
-      agent_options: { claude: { run_dangerously: false } },
-    },
-    onUpdateAgentOptions,
-  })
-
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
-  const askControl = within(desktopFloatingHeader()).getByRole('radio', { name: 'Ask' })
-
-  expect(askControl).toHaveAttribute('aria-checked', 'false')
-
-  await user.click(askControl)
-
-  expect(onUpdateAgentOptions).toHaveBeenCalledWith({ claude: { permission_policy: 'ask' } })
-})
-
-test('floating chat header hides permission policy for fake sessions', async () => {
-  const user = userEvent.setup()
-
-  renderDetail()
-
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
-
-  expect(screen.queryByRole('radiogroup', { name: /permission policy/i })).not.toBeInTheDocument()
-})
-
 test('floating chat header owns session errors', () => {
   renderDetail({
     errorMessage: 'HTTP 502',
@@ -425,25 +241,6 @@ test('floating chat header owns session errors', () => {
   expect(alert).toHaveTextContent('HTTP 502')
   expect(alert).toHaveClass('command-error-banner', 'text-destructive')
   expect(screen.queryByText(/Failed to load chat history/)).not.toBeInTheDocument()
-})
-
-test('session details menu toggles debug events', async () => {
-  const user = userEvent.setup()
-  const onShowDebugEventsChange = vi.fn()
-
-  renderDetail({ showDebugEvents: true, onShowDebugEventsChange })
-
-  expect(screen.getByText('No messages yet. Submit a prompt to start the chat.')).toBeInTheDocument()
-  expect(screen.queryByRole('tab', { name: 'Debug' })).not.toBeInTheDocument()
-
-  await user.click(within(desktopFloatingHeader()).getByRole('button', { name: 'Session settings' }))
-  const debug = within(desktopFloatingHeader()).getByRole('switch', { name: 'Debug' })
-
-  expect(debug).toHaveAttribute('aria-checked', 'true')
-
-  await user.click(debug)
-
-  expect(onShowDebugEventsChange).toHaveBeenCalledWith(false)
 })
 
 type SessionDetailProps = ComponentProps<typeof SessionDetail>
@@ -466,13 +263,9 @@ function props(overrides: Partial<SessionDetailProps>): SessionDetailProps {
     events: [],
     streamState: 'connected',
     showDebugEvents: false,
-    onShowDebugEventsChange: () => undefined,
     onSubmitPrompt: async () => undefined,
     onAnswerUserInput: async () => undefined,
     onCancel: async () => undefined,
-    onUpdateTitle: async () => undefined,
-    onUpdateWorkspace: async () => undefined,
-    onUpdateAgentOptions: async () => undefined,
     ...overrides,
   }
 }

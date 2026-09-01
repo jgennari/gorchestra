@@ -20,8 +20,56 @@ test('renders user and assistant messages without duplicating completion text', 
   expect(screen.getByText('Hi there')).toBeInTheDocument()
   expect(screen.queryByText('Hi thereHi there')).not.toBeInTheDocument()
   expect(container.querySelectorAll('time[datetime="2026-06-12T16:00:00Z"]')).toHaveLength(2)
-  expect(container.querySelector('time[datetime="2026-06-12T16:00:00Z"]')?.closest('.hidden')).toHaveClass('sm:block')
-  expect(container.querySelector('time[datetime="2026-06-12T16:00:00Z"]')?.parentElement).toHaveStyle({ opacity: '0' })
+  const firstTimestamp = container.querySelector('time[datetime="2026-06-12T16:00:00Z"]')
+  expect(firstTimestamp).toBeVisible()
+  const timestampPosition = firstTimestamp?.compareDocumentPosition(screen.getByText('Hello')) ?? 0
+  expect(timestampPosition & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+    Node.DOCUMENT_POSITION_FOLLOWING,
+  )
+  expect(screen.getAllByRole('button', { name: 'Copy message' })).toHaveLength(2)
+})
+
+test('adds the date only to the first message after a local day boundary', () => {
+  const firstTimestamp = '2026-06-12T23:50:00'
+  const sameDayTimestamp = '2026-06-12T23:55:00'
+  const nextDayTimestamp = '2026-06-13T00:05:00'
+  const { container } = render(
+    <ChatTranscript
+      events={[
+        { ...event(1, 'user.message.completed', 'user', 'completed', { text: 'Late prompt' }), created_at: firstTimestamp },
+        { ...event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Late answer' }), created_at: sameDayTimestamp },
+        { ...event(3, 'user.message.completed', 'user', 'completed', { text: 'Next prompt' }), created_at: nextDayTimestamp },
+      ]}
+    />,
+  )
+
+  const firstTime = container.querySelector(`time[datetime="${firstTimestamp}"]`)
+  const sameDayTime = container.querySelector(`time[datetime="${sameDayTimestamp}"]`)
+  const nextDayTime = container.querySelector(`time[datetime="${nextDayTimestamp}"]`)
+
+  expect(firstTime).toHaveTextContent(new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(firstTimestamp)))
+  expect(sameDayTime).toHaveTextContent(new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(sameDayTimestamp)))
+  expect(nextDayTime).toHaveTextContent(
+    new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(nextDayTimestamp)),
+  )
+})
+
+test('shows the completed response time and total turn duration', () => {
+  const completedAt = '2026-06-12T16:04:00Z'
+  const { container } = render(
+    <ChatTranscript
+      events={[
+        { ...event(1, 'user.message.completed', 'user', 'completed', { text: 'Do the work' }), created_at: '2026-06-12T16:03:25Z' },
+        { ...event(2, 'agent.run.started', 'assistant', 'started', {}), created_at: '2026-06-12T16:03:26Z' },
+        { ...event(3, 'agent.message.completed', 'assistant', 'completed', { item_id: 'msg_1', text: 'Done' }), created_at: completedAt },
+      ]}
+    />,
+  )
+
+  expect(container.querySelector(`time[datetime="${completedAt}"]`)).toHaveTextContent(
+    new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(completedAt)),
+  )
+  expect(screen.getByLabelText('Total turn time 34 sec')).toHaveTextContent('34 sec')
 })
 
 test('renders session actions as conversation breaks', () => {
@@ -176,7 +224,7 @@ test('uses fixed transcript bottom breathing room', () => {
     />,
   )
 
-  expect(screen.getByTestId('chat-transcript-tail-spacer')).toHaveStyle({ height: '8px' })
+  expect(screen.getByTestId('chat-transcript-tail-spacer')).toHaveStyle({ height: '10px' })
 })
 
 test('uses measured bottom inset height for transcript tail spacer', () => {
@@ -187,7 +235,7 @@ test('uses measured bottom inset height for transcript tail spacer', () => {
     />,
   )
 
-  expect(screen.getByTestId('chat-transcript-tail-spacer')).toHaveStyle({ height: '268px' })
+  expect(screen.getByTestId('chat-transcript-tail-spacer')).toHaveStyle({ height: '270px' })
 })
 
 test('positions and clears the hatch glow from mouse movement', () => {
@@ -468,6 +516,80 @@ test('keeps following the tail after a downward wheel gesture at the bottom', as
 
   await waitFor(() => expect(log.scrollTop).toBe(1160))
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
+test('does not pause a downward gesture while streaming layout is temporarily off-bottom', async () => {
+  const onFollowingTailChange = vi.fn()
+  const { rerender } = render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 560, scrollHeight: 1000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  onFollowingTailChange.mockClear()
+  fireEvent.wheel(log, { deltaY: 80 })
+
+  expect(onFollowingTailChange).not.toHaveBeenCalledWith(false)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+
+  setScrollMetrics(log, { scrollTop: 560, scrollHeight: 1180, clientHeight: 400 })
+  rerender(
+    <ChatTranscript
+      events={[
+        event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' }),
+        event(2, 'agent.message.delta', 'assistant', 'delta', { item_id: 'msg_2', text: 'Streaming' }),
+      ]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+
+  await waitFor(() => expect(log.scrollTop).toBe(1180))
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
+test('jump to latest realigns immediately while the latest-page refresh is still pending', async () => {
+  let resolveJump: () => void = () => undefined
+  const onJumpToLatest = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveJump = resolve
+      }),
+  )
+  const onFollowingTailChange = vi.fn()
+  const { rerender } = render(
+    <ChatTranscript
+      hasNewerEvents
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Older' })]}
+      onJumpToLatest={onJumpToLatest}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  setScrollMetrics(log, { scrollTop: 120, scrollHeight: 1400, clientHeight: 400 })
+
+  fireEvent.click(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' }))
+
+  expect(onJumpToLatest).toHaveBeenCalledOnce()
+  expect(onFollowingTailChange).toHaveBeenCalledWith(true)
+  await waitFor(() => expect(log.scrollTop).toBe(1400))
+
+  rerender(
+    <ChatTranscript
+      events={[event(2, 'agent.message.delta', 'assistant', 'delta', { item_id: 'msg_2', text: 'Live tail' })]}
+      onJumpToLatest={onJumpToLatest}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+
+  await act(async () => {
+    resolveJump()
+    await Promise.resolve()
+  })
 })
 
 test('coalesces live event and row resize tail alignment into one scroll write in strict mode', async () => {
@@ -751,7 +873,7 @@ test('shows an explicit error when code cannot be copied', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('Copy failed')
 })
 
-test('copies full message text from the timestamp rail and hides copy while streaming', async () => {
+test('always shows the subtle message copy action, including while streaming', async () => {
   const user = userEvent.setup()
   const writeText = vi.fn(async () => undefined)
   Object.defineProperty(navigator, 'clipboard', {
@@ -769,11 +891,7 @@ test('copies full message text from the timestamp rail and hides copy while stre
     />,
   )
 
-  await user.hover(screen.getByText('Full answer body'))
-  expect(screen.queryByRole('button', { name: 'Copy message' })).not.toBeInTheDocument()
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument(), {
-    timeout: 1200,
-  })
+  expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Copy message' }))
 
   expect(writeText).toHaveBeenCalledWith('Full answer body')
@@ -784,7 +902,7 @@ test('copies full message text from the timestamp rail and hides copy while stre
     />,
   )
 
-  expect(screen.queryByRole('button', { name: 'Copy message' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument()
 })
 
 test('groups tool calls under assistant messages with expandable output', async () => {

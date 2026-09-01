@@ -464,19 +464,31 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const jumpToLatest = useCallback(async () => {
     if (!sessionID) return
     setError('')
-    const history = await listRecentEventTurns(sessionID, defaultEventTurnPageSize, {
-      includeDebug: includeDebugEvents,
-    })
-    if (activeSessionIDRef.current !== sessionID) return
-    const combined = appendEvents([], [...history.events, ...liveEventsRef.current])
-    const next = boundEventWindow(combined, 'latest', residentEventWindowPolicy)
     followingTailRef.current = true
-    oldestSeqRef.current = firstSeq(next.events)
-    newestSeqRef.current = lastSeq(next.events)
-    lastSeqRef.current = Math.max(lastSeqRef.current, newestSeqRef.current)
-    setEvents(next.events)
-    setHasOlderEvents((history.page?.has_older ?? oldestSeqRef.current > 1) || next.trimmedStart)
+    const immediate = boundEventWindow(liveEventsRef.current, 'latest', residentEventWindowPolicy)
+    oldestSeqRef.current = firstSeq(immediate.events)
+    newestSeqRef.current = lastSeq(immediate.events)
+    setEvents(immediate.events)
+    setHasOlderEvents((current) => current || immediate.trimmedStart || oldestSeqRef.current > 1)
     setHasNewerEvents(false)
+
+    try {
+      const history = await listRecentEventTurns(sessionID, defaultEventTurnPageSize, {
+        includeDebug: includeDebugEvents,
+      })
+      if (activeSessionIDRef.current !== sessionID) return
+      const combined = appendEvents([], [...history.events, ...liveEventsRef.current])
+      const next = boundEventWindow(combined, 'latest', residentEventWindowPolicy)
+      oldestSeqRef.current = firstSeq(next.events)
+      newestSeqRef.current = lastSeq(next.events)
+      lastSeqRef.current = Math.max(lastSeqRef.current, newestSeqRef.current)
+      setEvents(next.events)
+      setHasOlderEvents((history.page?.has_older ?? oldestSeqRef.current > 1) || next.trimmedStart)
+    } catch (loadError) {
+      if (activeSessionIDRef.current === sessionID) {
+        setError(loadError instanceof Error ? loadError.message : 'Failed to refresh the latest events')
+      }
+    }
   }, [includeDebugEvents, sessionID, setHasNewerEvents])
 
   const setFollowingTail = useCallback((following: boolean) => {

@@ -181,7 +181,7 @@ export function RepositorySkills({
 
   return (
     <div className={userScope ? 'h-full overflow-y-auto bg-background' : 'repository-skills-body flex h-full min-h-0 flex-col overflow-y-auto px-3 pb-3'}>
-      <div className={userScope ? 'dashboard-overview-content mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 pb-16 sm:px-6 lg:px-8' : 'mx-auto flex w-full max-w-5xl flex-col gap-4 pb-16'}>
+      <div className={userScope ? 'dashboard-overview-content mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 pb-16 sm:px-6 lg:px-8' : 'flex min-h-0 w-full flex-1 flex-col gap-3 pb-16'}>
         <section className="shrink-0 rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm" aria-labelledby="repository-skills-heading">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
