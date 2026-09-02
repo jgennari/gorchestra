@@ -1127,6 +1127,7 @@ test('repeated leading-edge reaches grow the transcript without refetching loade
   await waitFor(() => expect(screen.getByText('Prompt three')).toBeInTheDocument())
   expect(screen.getByText('Prompt four')).toBeInTheDocument()
 
+  fireEvent.wheel(log, { deltaY: -100 })
   fireEvent.scroll(log, { target: { scrollTop: 0 } })
   await waitFor(() => expect(screen.getByText('Prompt one')).toBeInTheDocument())
   expect(screen.getByText('Prompt two')).toBeInTheDocument()

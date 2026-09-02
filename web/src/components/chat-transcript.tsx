@@ -19,15 +19,13 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
-  type TouchEvent,
-  type UIEvent,
-  type WheelEvent,
+  type WheelEvent as ReactWheelEvent,
 } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Virtuoso } from 'react-virtuoso'
+import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import remarkGfm from 'remark-gfm'
 import type { AgentEvent } from '@/lib/api'
 import type {
@@ -45,11 +43,11 @@ import { clipboardCopyErrorMessage, copyText } from '@/lib/clipboard'
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
-const TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX = 10
+const TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX = 6
 const AUTO_SCROLL_SNAP_MIN_PX = 240
 const AUTO_SCROLL_SNAP_VIEWPORT_RATIO = 0.4
-const INITIAL_TAIL_PIN_SETTLE_MS = 200
-const TOUCH_SCROLL_SETTLE_MS = 100
+const PHYSICAL_TAIL_THRESHOLD_PX = 2
+const HISTORY_LOAD_EDGE_ROWS = 3
 
 type ChatActivityStatus = { kind: 'thinking' } | { kind: 'working'; since: string }
 
@@ -84,17 +82,9 @@ type VirtualTimelineItem =
     }
   | { kind: 'activity'; id: string; status: ChatActivityStatus }
   | { kind: 'error'; id: string; message: string }
+  | { kind: 'tail'; id: 'tail-breathing-room' }
 
-type TranscriptContext = {
-  tailClearanceHeight: number
-}
-
-type VirtualIndexState = {
-  itemIDsKey: string
-  itemIDs: string[]
-  timelineItemIDs: string[]
-  firstItemIndex: number
-}
+type TranscriptVirtualizer = Virtualizer<HTMLDivElement, HTMLDivElement>
 
 export function ChatTranscript({
   events,
@@ -118,208 +108,48 @@ export function ChatTranscript({
   focusSeq = 0,
 }: Props) {
   const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
-  const scrollerElementRef = useRef<HTMLElement | null>(null)
-  const tailAlignmentFrameRef = useRef<number | null>(null)
-  const touchTailSnapFrameRef = useRef<number | null>(null)
-  const forceTailAlignmentRef = useRef(false)
-  const autoScrollRef = useRef(autoScroll)
-  const previousAutoScrollRef = useRef(autoScroll)
+  const scrollDebug = useMemo(transcriptScrollDebugEnabled, [])
+  const scrollerElementRef = useRef<HTMLDivElement | null>(null)
+  const scrollDebugReadoutRef = useRef<HTMLDivElement | null>(null)
   const initiallyFollowingTail = pinToLatestOnMount || !hasNewerEvents
   const followingTailRef = useRef(initiallyFollowingTail)
-  const initialTailPinPendingRef = useRef(pinToLatestOnMount)
-  const tailPinCanSettleRef = useRef(true)
-  const initialTailPinSettleTimerRef = useRef<number | null>(null)
-  const scrollDirectionRef = useRef<'older' | 'latest' | null>(null)
-  const pointerScrollActiveRef = useRef(false)
-  const touchScrollActiveRef = useRef(false)
-  const touchMomentumActiveRef = useRef(false)
-  const touchScrollSettleTimerRef = useRef<number | null>(null)
-  const touchTailResumePendingRef = useRef(false)
-  const lastObservedScrollTopRef = useRef(0)
-  const lastTouchYRef = useRef<number | null>(null)
-  const resumeAttemptRef = useRef(0)
-  const previousHasNewerEventsRef = useRef(hasNewerEvents)
+  const initialTailPinPendingRef = useRef(pinToLatestOnMount || !hasNewerEvents)
+  const snapToTailPendingRef = useRef(false)
+  const resumeInFlightRef = useRef(false)
+  const lastScrollDirectionRef = useRef<'forward' | 'backward' | null>(null)
+  const userScrollIntentRef = useRef<'forward' | 'backward' | null>(null)
+  const scrollPointerActiveRef = useRef(false)
+  const scrollPointerYRef = useRef<number | null>(null)
+  const scrollPointerTypeRef = useRef('')
+  const tailScrollFrameRef = useRef<number | null>(null)
   const [followingTail, setFollowingTailState] = useState(initiallyFollowingTail)
-  const [touchTailResumePending, setTouchTailResumePending] = useState(false)
+  const [snapToTailPending, setSnapToTailPending] = useState(false)
   const autoLoadOlderRef = useRef(false)
   const autoLoadNewerRef = useRef(false)
-  const tailClearanceHeight = Math.max(
-    TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX,
-    bottomInsetHeight + TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX,
-  )
-  const alignTailNow = useCallback(() => {
-    const scroller = scrollerElementRef.current
-    if (scroller) scroller.scrollTop = scroller.scrollHeight
+  const composerClearanceHeight = Math.max(0, bottomInsetHeight)
+  const tailClearanceHeight = composerClearanceHeight + TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX
+  const setFollowingTail = useCallback((next: boolean, forceNotification = false) => {
+    const changed = followingTailRef.current !== next
+    followingTailRef.current = next
+    if (changed) setFollowingTailState(next)
+    if (changed || forceNotification) onFollowingTailChange?.(next)
+  }, [onFollowingTailChange])
+
+  const setSnapToTailPendingValue = useCallback((next: boolean) => {
+    if (snapToTailPendingRef.current === next) return
+    snapToTailPendingRef.current = next
+    setSnapToTailPending(next)
   }, [])
-  const cancelInitialTailPinSettle = useCallback(() => {
-    if (initialTailPinSettleTimerRef.current === null) return
-    window.clearTimeout(initialTailPinSettleTimerRef.current)
-    initialTailPinSettleTimerRef.current = null
-  }, [])
-  const settleInitialTailPin = useCallback(() => {
-    cancelInitialTailPinSettle()
-    initialTailPinSettleTimerRef.current = window.setTimeout(() => {
-      initialTailPinSettleTimerRef.current = null
-      if (
-        !initialTailPinPendingRef.current ||
-        !tailPinCanSettleRef.current ||
-        !followingTailRef.current
-      ) {
-        return
-      }
-      alignTailNow()
-      initialTailPinPendingRef.current = false
-    }, INITIAL_TAIL_PIN_SETTLE_MS)
-  }, [alignTailNow, cancelInitialTailPinSettle])
-  const scheduleTailAlignment = useCallback((force = false) => {
-    if (!force && (!autoScrollRef.current || !followingTailRef.current)) return
-    forceTailAlignmentRef.current ||= force
-    if (tailAlignmentFrameRef.current !== null) return
-    tailAlignmentFrameRef.current = window.requestAnimationFrame(() => {
-      tailAlignmentFrameRef.current = null
-      const forced = forceTailAlignmentRef.current
-      forceTailAlignmentRef.current = false
-      if (!forced && (!autoScrollRef.current || !followingTailRef.current)) return
-      alignTailNow()
-    })
-  }, [alignTailNow])
 
   const pauseFollowing = useCallback(() => {
-    scrollDirectionRef.current = 'older'
-    resumeAttemptRef.current += 1
     initialTailPinPendingRef.current = false
-    tailPinCanSettleRef.current = true
-    cancelInitialTailPinSettle()
-    if (!followingTailRef.current) return
-    followingTailRef.current = false
-    setFollowingTailState(false)
-    onFollowingTailChange?.(false)
-    if (tailAlignmentFrameRef.current !== null) {
-      window.cancelAnimationFrame(tailAlignmentFrameRef.current)
-      tailAlignmentFrameRef.current = null
-    }
-    forceTailAlignmentRef.current = false
-  }, [cancelInitialTailPinSettle, onFollowingTailChange])
+    setSnapToTailPendingValue(false)
+    setFollowingTail(false)
+  }, [setFollowingTail, setSnapToTailPendingValue])
 
-  const resumeFollowing = useCallback(async () => {
-    const attempt = resumeAttemptRef.current + 1
-    resumeAttemptRef.current = attempt
-    scrollDirectionRef.current = null
-    initialTailPinPendingRef.current = true
-    tailPinCanSettleRef.current = !hasNewerEvents
-
-    if (!hasNewerEvents) {
-      alignTailNow()
-      followingTailRef.current = true
-      setFollowingTailState(true)
-      onFollowingTailChange?.(true)
-      scheduleTailAlignment(true)
-      settleInitialTailPin()
-      return
-    }
-
-    followingTailRef.current = true
-    setFollowingTailState(true)
-    onFollowingTailChange?.(true)
-    try {
-      await onJumpToLatest?.()
-    } finally {
-      if (resumeAttemptRef.current === attempt && followingTailRef.current) {
-        tailPinCanSettleRef.current = true
-        alignTailNow()
-        onFollowingTailChange?.(true)
-        scheduleTailAlignment(true)
-        settleInitialTailPin()
-      }
-    }
-  }, [alignTailNow, hasNewerEvents, onFollowingTailChange, onJumpToLatest, scheduleTailAlignment, settleInitialTailPin])
-
-  useLayoutEffect(() => {
-    autoScrollRef.current = autoScroll
-  }, [autoScroll])
-
-  useLayoutEffect(() => {
-    if (!initialTailPinPendingRef.current) return
-    if (!followingTailRef.current) {
-      initialTailPinPendingRef.current = false
-      cancelInitialTailPinSettle()
-      return
-    }
-    scheduleTailAlignment(true)
-    if (loading) {
-      cancelInitialTailPinSettle()
-    } else {
-      settleInitialTailPin()
-    }
-  }, [cancelInitialTailPinSettle, events, loading, scheduleTailAlignment, settleInitialTailPin, tailClearanceHeight])
-
-  useLayoutEffect(() => {
-    const wasAutoScrolling = previousAutoScrollRef.current
-    previousAutoScrollRef.current = autoScroll
-    if (!autoScroll) {
-      if (wasAutoScrolling && followingTailRef.current) {
-        initialTailPinPendingRef.current = true
-        tailPinCanSettleRef.current = true
-        scheduleTailAlignment(true)
-        settleInitialTailPin()
-      }
-      return
-    }
-    scheduleTailAlignment()
-  }, [activityStatus, autoScroll, error, events, scheduleTailAlignment, settleInitialTailPin, tailClearanceHeight])
-
-  useEffect(() => {
-    if (!autoScroll || !followingTail) return
-    const itemList = scrollerElementRef.current?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
-    if (!itemList || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(() => scheduleTailAlignment())
-    observer.observe(itemList)
-    return () => observer.disconnect()
-  }, [autoScroll, followingTail, scheduleTailAlignment, timeline.length])
-
-  useEffect(() => {
-    return () => {
-      if (tailAlignmentFrameRef.current !== null) {
-        window.cancelAnimationFrame(tailAlignmentFrameRef.current)
-        tailAlignmentFrameRef.current = null
-      }
-      if (touchTailSnapFrameRef.current !== null) {
-        window.cancelAnimationFrame(touchTailSnapFrameRef.current)
-        touchTailSnapFrameRef.current = null
-      }
-      if (touchScrollSettleTimerRef.current !== null) {
-        window.clearTimeout(touchScrollSettleTimerRef.current)
-        touchScrollSettleTimerRef.current = null
-      }
-      cancelInitialTailPinSettle()
-      forceTailAlignmentRef.current = false
-    }
-  }, [cancelInitialTailPinSettle])
-
-  const handleTotalListHeightChanged = useCallback(() => {
-    if (!initialTailPinPendingRef.current || !followingTailRef.current) return
-    scheduleTailAlignment(true)
-    if (!loading && tailPinCanSettleRef.current) settleInitialTailPin()
-  }, [loading, scheduleTailAlignment, settleInitialTailPin])
-
-  useEffect(() => {
-    const previouslyHadNewerEvents = previousHasNewerEventsRef.current
-    previousHasNewerEventsRef.current = hasNewerEvents
-    if (hasNewerEvents) {
-      if (initialTailPinPendingRef.current) return
-      if (!followingTailRef.current) return
-      followingTailRef.current = false
-      setFollowingTailState(false)
-      return
-    }
-    if (
-      previouslyHadNewerEvents &&
-      !followingTailRef.current &&
-      scrollDirectionRef.current === 'latest'
-    ) {
-      void resumeFollowing()
-    }
-  }, [hasNewerEvents, resumeFollowing])
+  useEffect(() => () => {
+    if (tailScrollFrameRef.current !== null) window.cancelAnimationFrame(tailScrollFrameRef.current)
+  }, [])
 
   useEffect(() => {
     if (!loadingOlderEvents) {
@@ -332,13 +162,7 @@ export function ChatTranscript({
   }, [loadingNewerEvents])
 
   function requestOlderEvents() {
-    const scroller = scrollerElementRef.current
-    const pointerMovingOlder =
-      pointerScrollActiveRef.current && Boolean(scroller && scroller.scrollTop < lastObservedScrollTopRef.current)
-    const reviewingOlder =
-      !followingTailRef.current || scrollDirectionRef.current === 'older' || pointerMovingOlder
     if (
-      !reviewingOlder ||
       !hasOlderEvents ||
       loadingOlderEvents ||
       autoLoadOlderRef.current ||
@@ -346,7 +170,6 @@ export function ChatTranscript({
     ) {
       return Promise.resolve()
     }
-    if (followingTailRef.current) pauseFollowing()
     autoLoadOlderRef.current = true
     return Promise.resolve(onLoadOlderEvents()).finally(() => {
       autoLoadOlderRef.current = false
@@ -354,25 +177,7 @@ export function ChatTranscript({
   }
 
   function requestNewerEvents() {
-    const scroller = scrollerElementRef.current
-    const pointerMovingLatest =
-      pointerScrollActiveRef.current && Boolean(scroller && scroller.scrollTop > lastObservedScrollTopRef.current)
-    const reviewingLatest = scrollDirectionRef.current === 'latest' || pointerMovingLatest
     if (
-      reviewingLatest &&
-      hasNewerEvents &&
-      scroller &&
-      isWithinTailSnapZone(scroller, tailClearanceHeight)
-    ) {
-      if (touchScrollActiveRef.current || touchMomentumActiveRef.current) {
-        armTouchTailResume()
-        if (touchMomentumActiveRef.current) scheduleTouchScrollSettle()
-        return Promise.resolve()
-      }
-      return resumeFollowing()
-    }
-    if (
-      !reviewingLatest ||
       !hasNewerEvents ||
       loadingNewerEvents ||
       autoLoadNewerRef.current ||
@@ -386,168 +191,6 @@ export function ChatTranscript({
     })
   }
 
-  function armTouchTailResume() {
-    if (touchTailResumePendingRef.current) return
-    touchTailResumePendingRef.current = true
-    setTouchTailResumePending(true)
-  }
-
-  function cancelTouchTailResume() {
-    if (!touchTailResumePendingRef.current && !touchTailResumePending) return
-    touchTailResumePendingRef.current = false
-    setTouchTailResumePending(false)
-  }
-
-  function scheduleTouchScrollSettle() {
-    if (touchScrollSettleTimerRef.current !== null) return
-    touchScrollSettleTimerRef.current = window.setTimeout(() => {
-      touchScrollSettleTimerRef.current = null
-      touchMomentumActiveRef.current = false
-      if (!touchTailResumePendingRef.current) return
-      touchTailResumePendingRef.current = false
-      void resumeFollowing().finally(() => setTouchTailResumePending(false))
-    }, TOUCH_SCROLL_SETTLE_MS)
-  }
-
-  function handleWheel(event: WheelEvent<HTMLDivElement>) {
-    pointerScrollActiveRef.current = false
-    touchScrollActiveRef.current = false
-    touchMomentumActiveRef.current = false
-    if (touchScrollSettleTimerRef.current !== null) {
-      window.clearTimeout(touchScrollSettleTimerRef.current)
-      touchScrollSettleTimerRef.current = null
-    }
-    cancelTouchTailResume()
-    if (event.deltaY < 0) {
-      pauseFollowing()
-    } else if (event.deltaY > 0) {
-      scrollDirectionRef.current = 'latest'
-    }
-  }
-
-  function handleTouchStart(event: TouchEvent<HTMLDivElement>) {
-    touchScrollActiveRef.current = true
-    touchMomentumActiveRef.current = false
-    if (touchScrollSettleTimerRef.current !== null) {
-      window.clearTimeout(touchScrollSettleTimerRef.current)
-      touchScrollSettleTimerRef.current = null
-    }
-    lastTouchYRef.current = event.touches[0]?.clientY ?? null
-  }
-
-  function handleTouchMove(event: TouchEvent<HTMLDivElement>) {
-    const touchY = event.touches[0]?.clientY
-    if (touchY === undefined) return
-    if (lastTouchYRef.current !== null) {
-      if (touchY > lastTouchYRef.current) {
-        if (touchTailSnapFrameRef.current !== null) {
-          window.cancelAnimationFrame(touchTailSnapFrameRef.current)
-          touchTailSnapFrameRef.current = null
-        }
-        cancelTouchTailResume()
-        pauseFollowing()
-      } else if (touchY < lastTouchYRef.current) {
-        scrollDirectionRef.current = 'latest'
-        const scroller = event.currentTarget
-        if (touchTailSnapFrameRef.current !== null) window.cancelAnimationFrame(touchTailSnapFrameRef.current)
-        touchTailSnapFrameRef.current = window.requestAnimationFrame(() => {
-          touchTailSnapFrameRef.current = null
-          if (
-            scrollDirectionRef.current === 'latest' &&
-            (!followingTailRef.current || hasNewerEvents) &&
-            isWithinTailSnapZone(scroller, tailClearanceHeight)
-          ) {
-            armTouchTailResume()
-          }
-        })
-      }
-    }
-    lastTouchYRef.current = touchY
-  }
-
-  function handleTouchEnd(event: TouchEvent<HTMLDivElement>) {
-    const scroller = event.currentTarget
-    lastTouchYRef.current = null
-    touchScrollActiveRef.current = false
-    touchMomentumActiveRef.current = true
-    scheduleTouchScrollSettle()
-    if (touchTailSnapFrameRef.current !== null) window.cancelAnimationFrame(touchTailSnapFrameRef.current)
-    touchTailSnapFrameRef.current = window.requestAnimationFrame(() => {
-      touchTailSnapFrameRef.current = null
-      if (
-        scrollDirectionRef.current === 'latest' &&
-        (!followingTailRef.current || hasNewerEvents) &&
-        isWithinTailSnapZone(scroller, tailClearanceHeight)
-      ) {
-        armTouchTailResume()
-        scheduleTouchScrollSettle()
-      }
-    })
-  }
-
-  function handleScrollKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const movingOlder =
-      event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home' || (event.key === ' ' && event.shiftKey)
-    const movingLatest =
-      event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End' || (event.key === ' ' && !event.shiftKey)
-    if (movingOlder) pauseFollowing()
-    if (movingLatest) scrollDirectionRef.current = 'latest'
-  }
-
-  function handleScrollerPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return
-    pointerScrollActiveRef.current = true
-    scrollDirectionRef.current = null
-    lastObservedScrollTopRef.current = event.currentTarget.scrollTop
-  }
-
-  function handleScrollerPointerEnd() {
-    pointerScrollActiveRef.current = false
-  }
-
-  function handleAtBottomChange(atBottom: boolean) {
-    if (
-      !atBottom ||
-      scrollDirectionRef.current !== 'latest' ||
-      (followingTailRef.current && !hasNewerEvents)
-    ) {
-      return
-    }
-    if (touchScrollActiveRef.current || touchMomentumActiveRef.current) {
-      armTouchTailResume()
-      if (touchMomentumActiveRef.current) scheduleTouchScrollSettle()
-      return
-    }
-    void resumeFollowing()
-  }
-
-  function handleScroll(event: UIEvent<HTMLDivElement>) {
-    const scroller = event.currentTarget
-    const previousScrollTop = lastObservedScrollTopRef.current
-    const currentScrollTop = scroller.scrollTop
-    const observedDirection =
-      currentScrollTop < previousScrollTop ? 'older' : currentScrollTop > previousScrollTop ? 'latest' : null
-    lastObservedScrollTopRef.current = currentScrollTop
-    const direction = scrollDirectionRef.current ?? (pointerScrollActiveRef.current ? observedDirection : null)
-
-    if (direction === 'older') {
-      cancelTouchTailResume()
-      pauseFollowing()
-      return
-    }
-    if (direction !== 'latest' || (followingTailRef.current && !hasNewerEvents)) return
-    if (isWithinTailSnapZone(scroller, tailClearanceHeight)) {
-      if (touchScrollActiveRef.current || touchMomentumActiveRef.current) {
-        armTouchTailResume()
-        if (touchMomentumActiveRef.current) scheduleTouchScrollSettle()
-      } else {
-        void resumeFollowing()
-      }
-    } else if (hasNewerEvents) {
-      void requestNewerEvents()
-    }
-  }
-
   const virtualItems = useMemo<VirtualTimelineItem[]>(() => {
     const items: VirtualTimelineItem[] = []
     for (const [timelineIndex, item] of timeline.entries()) {
@@ -555,6 +198,7 @@ export function ChatTranscript({
     }
     if (activityStatus && !hasNewerEvents) items.push({ kind: 'activity', id: 'activity', status: activityStatus })
     if (error) items.push({ kind: 'error', id: 'chat-error', message: error })
+    if (items.length > 0) items.push({ kind: 'tail', id: 'tail-breathing-room' })
     return items
   }, [
     activityStatus,
@@ -562,30 +206,198 @@ export function ChatTranscript({
     hasNewerEvents,
     timeline,
   ])
-  const virtualItemIDs = virtualItems.map((item) => item.id)
-  const timelineItemIDs = virtualItems.filter((item) => item.kind === 'timeline').map((item) => item.id)
-  const virtualItemIDsKey = virtualItemIDs.join('\0')
-  const [virtualIndexState, setVirtualIndexState] = useState<VirtualIndexState>(() => ({
-    itemIDsKey: virtualItemIDsKey,
-    itemIDs: virtualItemIDs,
-    timelineItemIDs,
-    firstItemIndex: 1_000_000,
-  }))
-  let firstItemIndex = virtualIndexState.firstItemIndex
-  if (virtualIndexState.itemIDsKey !== virtualItemIDsKey) {
-    const anchorID = virtualIndexState.timelineItemIDs.find((id) => virtualItemIDs.includes(id))
-    firstItemIndex = anchorID
-      ? virtualIndexState.firstItemIndex +
-        virtualIndexState.itemIDs.indexOf(anchorID) -
-        virtualItemIDs.indexOf(anchorID)
-      : 1_000_000
-    setVirtualIndexState({
-      itemIDsKey: virtualItemIDsKey,
-      itemIDs: virtualItemIDs,
-      timelineItemIDs,
-      firstItemIndex,
+  const getItemKey = useCallback((index: number) => virtualItems[index]?.id ?? index, [virtualItems])
+  const estimateSize = useCallback((index: number) => estimateVirtualTimelineItem(virtualItems[index]), [virtualItems])
+  const latestEventSeq = events.at(-1)?.seq ?? 0
+  const activityRevision = activityStatus?.kind === 'working'
+    ? `working:${activityStatus.since}`
+    : (activityStatus?.kind ?? '')
+  const liveTailRevision = `${events.length}:${latestEventSeq}:${activityRevision}:${error}:${showDebugEvents}`
+  const scheduleTailScroll = useCallback((instance: TranscriptVirtualizer) => {
+    instance.scrollToEnd({ behavior: 'auto' })
+    if (tailScrollFrameRef.current !== null) window.cancelAnimationFrame(tailScrollFrameRef.current)
+    tailScrollFrameRef.current = window.requestAnimationFrame(() => {
+      tailScrollFrameRef.current = null
+      instance.scrollToEnd({ behavior: 'auto' })
     })
+  }, [])
+  const resumeFollowing = useCallback(async (instance: TranscriptVirtualizer) => {
+    if (resumeInFlightRef.current) return
+    resumeInFlightRef.current = true
+    initialTailPinPendingRef.current = false
+    setSnapToTailPendingValue(true)
+    try {
+      if (hasNewerEvents) await onJumpToLatest?.()
+      setFollowingTail(true, true)
+      scheduleTailScroll(instance)
+    } finally {
+      resumeInFlightRef.current = false
+      setSnapToTailPendingValue(false)
+    }
+  }, [hasNewerEvents, onJumpToLatest, scheduleTailScroll, setFollowingTail, setSnapToTailPendingValue])
+  // TanStack Virtual intentionally exposes a mutable virtualizer instance; React Compiler skips this component.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: virtualItems.length,
+    getScrollElement: () => scrollerElementRef.current,
+    estimateSize,
+    getItemKey,
+    anchorTo: 'end',
+    // The event timeline can replace or regroup the final row without changing
+    // `count` (for example, Thinking -> first assistant message). TanStack's
+    // followOnAppend intentionally ignores that case, so the event-stream
+    // layout effect below owns live-tail reconciliation instead.
+    followOnAppend: false,
+    scrollEndThreshold: PHYSICAL_TAIL_THRESHOLD_PX,
+    // The overlay itself remains virtual padding. A permanent, exactly-sized
+    // tail item owns the visual breathing room so it never moves between rows
+    // during a tool/activity transition.
+    paddingEnd: composerClearanceHeight,
+    overscan: 6,
+    directDomUpdates: true,
+    // Keep TanStack's synchronous resize commit enabled. Streaming messages and
+    // tool rows can grow by more than the reserved composer clearance in one
+    // ResizeObserver pass; committing the new sizer height with the scroll
+    // correction prevents the browser from clamping that correction to the
+    // previous (shorter) scroll range.
+    onChange: handleVirtualizerChange,
+  })
+
+  function handleVirtualizerChange(instance: TranscriptVirtualizer, sync: boolean) {
+    updateScrollDebugReadout(instance)
+    const direction = instance.scrollDirection
+    const userDirection = userScrollIntentRef.current
+    if (sync && direction && direction === userDirection) lastScrollDirectionRef.current = direction
+
+    if (
+      !userDirection &&
+      followingTailRef.current &&
+      !hasNewerEvents &&
+      physicalDistanceFromEnd(scrollerElementRef.current) > PHYSICAL_TAIL_THRESHOLD_PX
+    ) {
+      instance.scrollToEnd({ behavior: 'auto' })
+    }
+
+    if (sync && direction === 'backward' && userDirection === 'backward') {
+      pauseFollowing()
+      const firstVisibleIndex = instance.getVirtualItems()[0]?.index ?? Number.POSITIVE_INFINITY
+      if (firstVisibleIndex <= HISTORY_LOAD_EDGE_ROWS) void requestOlderEvents()
+      return
+    }
+
+    if (sync && direction === 'forward' && userDirection === 'forward') {
+      const distanceFromEnd = physicalDistanceFromEnd(scrollerElementRef.current)
+      if (distanceFromEnd <= PHYSICAL_TAIL_THRESHOLD_PX && !hasNewerEvents) {
+        setSnapToTailPendingValue(false)
+        setFollowingTail(true)
+        return
+      }
+      if (distanceFromEnd <= tailSnapDistance(instance, tailClearanceHeight)) {
+        setSnapToTailPendingValue(true)
+        return
+      }
+      setSnapToTailPendingValue(false)
+      const lastVisibleIndex = instance.getVirtualItems().at(-1)?.index ?? -1
+      if (hasNewerEvents && lastVisibleIndex >= virtualItems.length - HISTORY_LOAD_EDGE_ROWS - 1) {
+        void requestNewerEvents()
+      }
+      return
+    }
+
+    if (!sync && !instance.isScrolling) {
+      const shouldResume = snapToTailPendingRef.current && lastScrollDirectionRef.current === 'forward'
+      lastScrollDirectionRef.current = null
+      userScrollIntentRef.current = null
+      if (shouldResume) void resumeFollowing(instance)
+    }
   }
+
+  function updateScrollDebugReadout(instance: TranscriptVirtualizer) {
+    const readout = scrollDebugReadoutRef.current
+    const scroller = scrollerElementRef.current
+    if (!scrollDebug || !readout || !scroller) return
+    const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+    const physicalDistance = physicalDistanceFromEnd(scroller)
+    readout.textContent = [
+      `inset ${composerClearanceHeight}px`,
+      `tail ${TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX}px`,
+      `dist ${Math.round(physicalDistance)}px`,
+      `top ${Math.round(scroller.scrollTop)}/${Math.round(maxScrollTop)}`,
+      followingTailRef.current ? 'pinned' : 'paused',
+      instance.scrollDirection ?? 'idle',
+    ].join(' · ')
+  }
+
+  function recordUserScrollIntent(direction: 'forward' | 'backward') {
+    userScrollIntentRef.current = direction
+    lastScrollDirectionRef.current = direction
+  }
+
+  function handleScrollWheel(event: ReactWheelEvent<HTMLDivElement>) {
+    if (event.deltaY === 0) return
+    const direction = event.deltaY > 0 ? 'forward' : 'backward'
+    recordUserScrollIntent(direction)
+    if (direction === 'backward') pauseFollowing()
+  }
+
+  function handleScrollPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    scrollPointerActiveRef.current = true
+    scrollPointerYRef.current = event.clientY
+    scrollPointerTypeRef.current = event.pointerType
+  }
+
+  function handleScrollPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const previousY = scrollPointerYRef.current
+    if (!scrollPointerActiveRef.current || previousY === null) return
+    const deltaY = event.clientY - previousY
+    scrollPointerYRef.current = event.clientY
+    if (Math.abs(deltaY) < 2) return
+    const touchLike = scrollPointerTypeRef.current === 'touch' || scrollPointerTypeRef.current === 'pen'
+    const direction = touchLike
+      ? (deltaY > 0 ? 'backward' : 'forward')
+      : (deltaY > 0 ? 'forward' : 'backward')
+    recordUserScrollIntent(direction)
+  }
+
+  function handleScrollPointerEnd() {
+    scrollPointerActiveRef.current = false
+    scrollPointerYRef.current = null
+    scrollPointerTypeRef.current = ''
+  }
+
+  function handleScrollKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const backward = event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home'
+    const forward = event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End' || event.key === ' '
+    if (!backward && !forward) return
+    const direction = backward ? 'backward' : 'forward'
+    recordUserScrollIntent(direction)
+    if (direction === 'backward') pauseFollowing()
+  }
+
+  useLayoutEffect(() => {
+    if (!initialTailPinPendingRef.current || loading || virtualItems.length === 0) return
+    void resumeFollowing(virtualizer)
+  }, [loading, resumeFollowing, virtualItems.length, virtualizer])
+
+  useLayoutEffect(() => {
+    if (
+      initialTailPinPendingRef.current ||
+      !followingTailRef.current ||
+      hasNewerEvents ||
+      virtualItems.length === 0
+    ) {
+      return
+    }
+    if (physicalDistanceFromEnd(scrollerElementRef.current) <= PHYSICAL_TAIL_THRESHOLD_PX) return
+    virtualizer.scrollToEnd({ behavior: 'auto' })
+  }, [hasNewerEvents, liveTailRevision, virtualItems.length, virtualizer])
+
+  const previousTailClearanceHeightRef = useRef(tailClearanceHeight)
+  useLayoutEffect(() => {
+    if (previousTailClearanceHeightRef.current === tailClearanceHeight) return
+    previousTailClearanceHeightRef.current = tailClearanceHeight
+    if (followingTailRef.current && !hasNewerEvents) scheduleTailScroll(virtualizer)
+  }, [hasNewerEvents, scheduleTailScroll, tailClearanceHeight, virtualizer])
 
   if (loading && timeline.length === 0) {
     return (
@@ -626,49 +438,52 @@ export function ChatTranscript({
       onPointerLeave={hideChatGlow}
       onPointerCancel={hideChatGlow}
     >
-      <Virtuoso<VirtualTimelineItem, TranscriptContext>
-        scrollerRef={(element) => {
-          scrollerElementRef.current = element instanceof HTMLElement ? element : null
-        }}
-        className="chat-scroll-area subtle-scrollbar h-full min-h-0 overscroll-y-none"
-        data={virtualItems}
-        context={{ tailClearanceHeight }}
-        components={transcriptComponents}
-        computeItemKey={(_, item) => item.id}
-        firstItemIndex={firstItemIndex}
-        initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-        alignToBottom
-        followOutput={false}
-        atBottomThreshold={tailClearanceHeight + AUTO_SCROLL_SNAP_MIN_PX}
-        atBottomStateChange={handleAtBottomChange}
-        totalListHeightChanged={handleTotalListHeightChanged}
-        increaseViewportBy={{ top: 600, bottom: 800 }}
-        overscan={200}
-        startReached={() => void requestOlderEvents()}
-        endReached={() => void requestNewerEvents()}
-        onWheel={handleWheel}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-        onKeyDown={handleScrollKeyDown}
-        onPointerDown={handleScrollerPointerDown}
-        onPointerUp={handleScrollerPointerEnd}
-        onPointerCancel={handleScrollerPointerEnd}
-        onScroll={handleScroll}
+      <div
+        ref={scrollerElementRef}
+        className="chat-scroll-area subtle-scrollbar flex h-full min-h-0 flex-col overflow-y-auto overscroll-y-none"
         role="log"
         aria-label="Chat messages"
         aria-live="polite"
         aria-relevant="additions text"
-        itemContent={(_, virtualItem) => {
-          if (virtualItem.kind === 'activity') {
-            return (
-              <div className="px-4 pt-3">
+        aria-busy={loading || autoScroll}
+        data-tail-clearance-height={tailClearanceHeight}
+        onWheelCapture={handleScrollWheel}
+        onPointerDownCapture={handleScrollPointerDown}
+        onPointerMoveCapture={handleScrollPointerMove}
+        onPointerUpCapture={handleScrollPointerEnd}
+        onPointerCancelCapture={handleScrollPointerEnd}
+        onKeyDownCapture={handleScrollKeyDown}
+      >
+        <div
+          key="tanstack-direct-container-v1"
+          ref={virtualizer.containerRef}
+          data-testid="chat-transcript-virtual-content"
+          className="relative mt-auto w-full shrink-0"
+        >
+          {virtualizer.getVirtualItems().map((virtualRow) => {
+            const virtualItem = virtualItems[virtualRow.index]
+            if (!virtualItem) return null
+            let content: ReactNode
+          if (virtualItem.kind === 'tail') {
+              content = (
+                <div
+                  data-testid="chat-tail-breathing-room"
+                  aria-hidden="true"
+                  className={cn(scrollDebug && 'bg-fuchsia-500/80')}
+                  style={{ height: `${TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX}px` }}
+                />
+              )
+            } else if (virtualItem.kind === 'activity') {
+              content = (
+              <div className={cn(
+                'px-4 py-1.5',
+                scrollDebug && 'bg-amber-400/20 outline outline-2 -outline-offset-2 outline-amber-400',
+              )}>
                 <ActivityIndicatorRow status={virtualItem.status} />
               </div>
             )
-          }
-          if (virtualItem.kind === 'error') {
-            return (
+            } else if (virtualItem.kind === 'error') {
+              content = (
               <div className="px-4 pt-3">
                 <div
                   role="alert"
@@ -681,9 +496,9 @@ export function ChatTranscript({
                 </div>
               </div>
             )
-          }
-          const { item, timelineIndex } = virtualItem
-          return (
+            } else {
+              const { item, timelineIndex } = virtualItem
+              content = (
             <div
               data-transcript-row={item.id}
               className={cn(
@@ -706,9 +521,36 @@ export function ChatTranscript({
               />
             </div>
           )
-        }}
-      />
-      {(!followingTail || hasNewerEvents) && !touchTailResumePending ? (
+            }
+            return (
+              <div
+                key={virtualRow.key}
+                ref={virtualizer.measureElement}
+                data-index={virtualRow.index}
+                className="absolute left-0 top-0 w-full"
+              >
+                {content}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      {scrollDebug ? (
+        <>
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 z-40 h-0.5 bg-cyan-400"
+            style={{ bottom: `${composerClearanceHeight}px` }}
+          />
+          <div
+            ref={scrollDebugReadoutRef}
+            className="pointer-events-none absolute right-3 top-20 z-40 rounded bg-black/85 px-2 py-1 font-mono text-[10px] text-white shadow"
+          >
+            inset {composerClearanceHeight}px · tail {TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX}px · waiting for scroll
+          </div>
+        </>
+      ) : null}
+      {(!followingTail || hasNewerEvents) && !snapToTailPending ? (
         <div
           className="pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4"
           style={{ bottom: `${Math.max(16, bottomInsetHeight + 12)}px` }}
@@ -717,7 +559,7 @@ export function ChatTranscript({
             type="button"
             className="pointer-events-auto inline-flex h-9 items-center gap-2 rounded-full border border-border/70 bg-background/90 px-3.5 text-xs font-medium text-foreground shadow-lg shadow-black/10 backdrop-blur transition-colors hover:bg-background"
             aria-label="Scroll to latest and resume auto-scroll"
-            onClick={() => void resumeFollowing()}
+            onClick={() => void resumeFollowing(virtualizer)}
           >
             <ChevronDown className="size-3.5" aria-hidden="true" />
             Jump to latest
@@ -728,25 +570,33 @@ export function ChatTranscript({
   )
 }
 
-function isWithinTailSnapZone(scroller: HTMLElement, tailClearanceHeight: number) {
-  const distanceFromBottom = Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop)
-  const snapDistance =
-    tailClearanceHeight + Math.max(AUTO_SCROLL_SNAP_MIN_PX, scroller.clientHeight * AUTO_SCROLL_SNAP_VIEWPORT_RATIO)
-  return distanceFromBottom <= snapDistance
+function transcriptScrollDebugEnabled() {
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).get('debug-scroll') === '1'
 }
 
-function TranscriptFooter({ context }: { context: TranscriptContext }) {
+function physicalDistanceFromEnd(scroller: HTMLDivElement | null) {
+  if (!scroller) return Number.POSITIVE_INFINITY
+  return Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop)
+}
+
+function tailSnapDistance(virtualizer: TranscriptVirtualizer, tailClearanceHeight: number) {
   return (
-    <div
-      data-testid="chat-transcript-tail-spacer"
-      aria-hidden="true"
-      style={{ height: `${context.tailClearanceHeight}px` }}
-    />
+    tailClearanceHeight +
+    Math.max(
+      AUTO_SCROLL_SNAP_MIN_PX,
+      (virtualizer.scrollRect?.height ?? 0) * AUTO_SCROLL_SNAP_VIEWPORT_RATIO,
+    )
   )
 }
 
-const transcriptComponents = {
-  Footer: TranscriptFooter,
+function estimateVirtualTimelineItem(item: VirtualTimelineItem | undefined) {
+  if (!item) return 160
+  if (item.kind === 'tail') return TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX
+  if (item.kind === 'activity') return 40
+  if (item.kind === 'error') return 56
+  if (item.item.kind === 'action' || item.item.kind === 'debug') return 56
+  return 180
 }
 
 function ActivityIndicatorRow({ status }: { status: ChatActivityStatus }) {
@@ -845,7 +695,7 @@ function timelineRowSpacing(item: ChatTimelineItem, previous: ChatTimelineItem |
   if (item.kind === 'error' || previous?.kind === 'error') {
     return 'mt-3'
   }
-  return 'mt-5'
+  return 'mt-4'
 }
 
 function timelineItemContainsSeq(item: ChatTimelineItem, seq: number) {

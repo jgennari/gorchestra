@@ -1,127 +1,147 @@
 import '@testing-library/jest-dom/vitest'
 import { vi } from 'vitest'
 
-vi.mock('react-virtuoso', async () => {
+vi.mock('@tanstack/react-virtual', async () => {
   const React = await import('react')
 
-  type MockVirtuosoProps = {
-    data?: unknown[]
-    firstItemIndex?: number
-    atBottomThreshold?: number
-    className?: string
-    role?: string
-    'aria-label'?: string
-    'aria-live'?: string
-    'aria-relevant'?: string
-    computeItemKey?: (index: number, item: unknown) => React.Key
-    itemContent?: (index: number, item: unknown) => React.ReactNode
-    followOutput?: boolean | 'auto' | 'smooth' | ((atBottom: boolean) => false | 'auto' | 'smooth')
-    components?: { Footer?: React.ComponentType<{ context: unknown }> }
-    context?: unknown
-    atBottomStateChange?: (atBottom: boolean) => void
-    startReached?: (index: number) => void
-    endReached?: (index: number) => void
-    scrollerRef?: (ref: HTMLElement | null | Window) => unknown
-    onWheel?: React.WheelEventHandler<HTMLDivElement>
-    onTouchStart?: React.TouchEventHandler<HTMLDivElement>
-    onTouchMove?: React.TouchEventHandler<HTMLDivElement>
-    onTouchEnd?: React.TouchEventHandler<HTMLDivElement>
-    onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>
-    onScroll?: React.UIEventHandler<HTMLDivElement>
-    onPointerDown?: React.PointerEventHandler<HTMLDivElement>
-    onPointerUp?: React.PointerEventHandler<HTMLDivElement>
-    onPointerCancel?: React.PointerEventHandler<HTMLDivElement>
+  type MockVirtualizerOptions = {
+    count: number
+    getScrollElement: () => HTMLDivElement | null
+    estimateSize: (index: number) => number
+    getItemKey: (index: number) => React.Key
+    paddingEnd?: number
+    scrollEndThreshold?: number
+    followOnAppend?: boolean | ScrollBehavior
+    onChange?: (instance: MockVirtualizer, sync: boolean) => void
   }
 
-  const Virtuoso = React.forwardRef(function MockVirtuoso(props: MockVirtuosoProps, forwardedRef) {
-    const data = React.useMemo(() => props.data ?? [], [props.data])
-    const reportScroller = props.scrollerRef
-    const scrollerRef = React.useRef<HTMLDivElement>(null)
-    const previousDataRef = React.useRef(data)
-    const previousContextRef = React.useRef(props.context)
+  type MockVirtualItem = {
+    index: number
+    key: React.Key
+    start: number
+    size: number
+    end: number
+  }
 
-    React.useImperativeHandle(forwardedRef, () => {
-      const scrollToBottom = () => {
-        const element = scrollerRef.current
-        if (!element) return
-        element.scrollTop = element.scrollHeight
-        props.atBottomStateChange?.(true)
-      }
-      return {
-        autoscrollToBottom: scrollToBottom,
-        scrollToIndex: scrollToBottom,
-      }
-    })
+  type MockVirtualizer = {
+    scrollDirection: 'forward' | 'backward' | null
+    scrollRect: { width: number; height: number } | null
+    getVirtualItems: () => MockVirtualItem[]
+    getTotalSize: () => number
+    getDistanceFromEnd: () => number
+    isAtEnd: (threshold?: number) => boolean
+    scrollToEnd: (_options?: { behavior?: ScrollBehavior }) => void
+    measureElement: (_element: Element | null) => void
+  }
 
-    React.useLayoutEffect(() => {
-      reportScroller?.(scrollerRef.current)
-      return () => {
-        reportScroller?.(null)
-      }
-    }, [reportScroller])
+  function useVirtualizer(options: MockVirtualizerOptions) {
+    const optionsRef = React.useRef(options)
+    optionsRef.current = options
+    const scrollEndTimerRef = React.useRef<number | null>(null)
+    const previousCountRef = React.useRef(options.count)
+    const wasAtEndRef = React.useRef(true)
+    const instanceRef = React.useRef<MockVirtualizer | null>(null)
 
-    React.useLayoutEffect(() => {
-      const element = scrollerRef.current
-      if (element && (previousDataRef.current !== data || previousContextRef.current !== props.context)) {
-        const gap = element.scrollHeight - element.scrollTop - element.clientHeight
-        const atBottom = gap <= (props.atBottomThreshold ?? 0)
-        const followOutput =
-          typeof props.followOutput === 'function' ? props.followOutput(atBottom) : props.followOutput
-        if (followOutput) {
-          element.scrollTop = element.scrollHeight
-        }
-      }
-      previousDataRef.current = data
-      previousContextRef.current = props.context
-    }, [data, props])
-
-    return React.createElement(
-      'div',
-      {
-        ref: scrollerRef,
-        className: props.className,
-        role: props.role,
-        'aria-label': props['aria-label'],
-        'aria-live': props['aria-live'],
-        'aria-relevant': props['aria-relevant'],
-        'data-testid': 'virtuoso-scroller',
-        'data-first-item-index': props.firstItemIndex,
-        onWheel: props.onWheel,
-        onTouchStart: props.onTouchStart,
-        onTouchMove: props.onTouchMove,
-        onTouchEnd: props.onTouchEnd,
-        onKeyDown: props.onKeyDown,
-        onPointerDown: props.onPointerDown,
-        onPointerUp: props.onPointerUp,
-        onPointerCancel: props.onPointerCancel,
-        onScroll: (event: React.UIEvent<HTMLDivElement>) => {
-          const element = event.currentTarget
-          const gap = element.scrollHeight - element.scrollTop - element.clientHeight
-          const atBottom = gap <= (props.atBottomThreshold ?? 0)
-          props.atBottomStateChange?.(atBottom)
-          if (element.scrollTop <= 160) props.startReached?.(0)
-          if (atBottom) props.endReached?.(Math.max(0, data.length - 1))
-          props.onScroll?.(event)
+    if (!instanceRef.current) {
+      const instance: MockVirtualizer = {
+        scrollDirection: null,
+        scrollRect: null,
+        getVirtualItems() {
+          let start = 0
+          return Array.from({ length: optionsRef.current.count }, (_, index) => {
+            const size = optionsRef.current.estimateSize(index)
+            const item = {
+              index,
+              key: optionsRef.current.getItemKey(index),
+              start,
+              size,
+              end: start + size,
+            }
+            start += size
+            return item
+          })
         },
-      },
-      React.createElement(
-        'div',
-        { 'data-testid': 'virtuoso-item-list' },
-        data.map((item, index) =>
-          React.createElement(
-            'div',
-            { key: props.computeItemKey?.(index, item) ?? index, 'data-index': index },
-            props.itemContent?.(index, item),
-          ),
-        ),
-      ),
-      props.components?.Footer
-        ? React.createElement(props.components.Footer, { context: props.context })
-        : null,
-    )
-  })
+        getTotalSize() {
+          const items = instance.getVirtualItems()
+          return (items.at(-1)?.end ?? 0) + (optionsRef.current.paddingEnd ?? 0)
+        },
+        getDistanceFromEnd() {
+          const element = optionsRef.current.getScrollElement()
+          if (!element) return Number.POSITIVE_INFINITY
+          const logicalOverride = element.dataset.mockVirtualDistanceFromEnd
+          if (logicalOverride !== undefined) return Number(logicalOverride)
+          return Math.max(0, element.scrollHeight - element.clientHeight - element.scrollTop)
+        },
+        isAtEnd(threshold = optionsRef.current.scrollEndThreshold ?? 0) {
+          return instance.getDistanceFromEnd() <= threshold
+        },
+        scrollToEnd() {
+          const element = optionsRef.current.getScrollElement()
+          if (!element) return
+          element.scrollTop = element.scrollHeight
+        },
+        measureElement() {},
+      }
+      instanceRef.current = instance
+    }
 
-  return { Virtuoso }
+    const instance = instanceRef.current
+    instance.scrollRect = (() => {
+      const element = options.getScrollElement()
+      return element ? { width: element.clientWidth, height: element.clientHeight } : null
+    })()
+
+    React.useLayoutEffect(() => {
+      const element = optionsRef.current.getScrollElement()
+      if (!element) return
+      let previousScrollTop = element.scrollTop
+      let pendingWheelDirection: 'forward' | 'backward' | null = null
+
+      const handleScroll = () => {
+        const currentScrollTop = element.scrollTop
+        instance.scrollDirection =
+          pendingWheelDirection ??
+          (currentScrollTop < previousScrollTop
+            ? 'backward'
+            : currentScrollTop > previousScrollTop
+              ? 'forward'
+              : instance.scrollDirection)
+        pendingWheelDirection = null
+        previousScrollTop = currentScrollTop
+        instance.scrollRect = { width: element.clientWidth, height: element.clientHeight }
+        wasAtEndRef.current = instance.isAtEnd()
+        optionsRef.current.onChange?.(instance, true)
+        if (scrollEndTimerRef.current !== null) window.clearTimeout(scrollEndTimerRef.current)
+        scrollEndTimerRef.current = window.setTimeout(() => {
+          scrollEndTimerRef.current = null
+          optionsRef.current.onChange?.(instance, false)
+          instance.scrollDirection = null
+        }, 1)
+      }
+      const handleWheel = (event: WheelEvent) => {
+        if (event.deltaY < 0) pendingWheelDirection = 'backward'
+        if (event.deltaY > 0) pendingWheelDirection = 'forward'
+      }
+
+      element.addEventListener('scroll', handleScroll)
+      element.addEventListener('wheel', handleWheel)
+      return () => {
+        element.removeEventListener('scroll', handleScroll)
+        element.removeEventListener('wheel', handleWheel)
+        if (scrollEndTimerRef.current !== null) window.clearTimeout(scrollEndTimerRef.current)
+      }
+    }, [instance])
+
+    React.useLayoutEffect(() => {
+      const countIncreased = options.count > previousCountRef.current
+      previousCountRef.current = options.count
+      if (countIncreased && options.followOnAppend && wasAtEndRef.current) instance.scrollToEnd()
+    }, [instance, options.count, options.followOnAppend])
+
+    return instance
+  }
+
+  return { useVirtualizer }
 })
 
 if (!window.localStorage) {

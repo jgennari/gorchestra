@@ -403,6 +403,7 @@
 .chat-scroll-area {
   position: relative;
   z-index: 1;
+  overflow-anchor: none;
   overscroll-behavior-y: none;
 }
 

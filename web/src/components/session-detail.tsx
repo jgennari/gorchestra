@@ -237,7 +237,7 @@ export function SessionDetail({
         ref={bottomInsetRef}
         className="session-bottom-safe-area pointer-events-none absolute inset-x-0 bottom-0 z-20"
       >
-        <div data-testid="session-bottom-stack" className="pointer-events-auto relative flex flex-col gap-3 pt-3">
+        <div data-testid="session-bottom-stack" className="pointer-events-auto relative flex flex-col gap-3 pt-2">
           <PermissionQueue requests={permissionRequests} onResolve={onResolvePermission} />
           <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
           <PromptComposer
