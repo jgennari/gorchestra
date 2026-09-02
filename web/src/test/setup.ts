@@ -31,6 +31,7 @@ vi.mock('@tanstack/react-virtual', async () => {
     getDistanceFromEnd: () => number
     isAtEnd: (threshold?: number) => boolean
     scrollToEnd: (_options?: { behavior?: ScrollBehavior }) => void
+    scrollToIndex: (index: number, _options?: { align?: string; behavior?: ScrollBehavior }) => void
     measureElement: (_element: Element | null) => void
   }
 
@@ -79,6 +80,12 @@ vi.mock('@tanstack/react-virtual', async () => {
           const element = optionsRef.current.getScrollElement()
           if (!element) return
           element.scrollTop = element.scrollHeight
+        },
+        scrollToIndex(index) {
+          const element = optionsRef.current.getScrollElement()
+          const item = instance.getVirtualItems()[index]
+          if (!element || !item) return
+          element.scrollTop = item.start
         },
         measureElement() {},
       }

@@ -37,6 +37,7 @@ import type {
   ChatTranscriptMessage,
   ChatTranscriptTool,
   ChatTranscriptToolContent,
+  TranscriptSequenceRange,
 } from '@/lib/events'
 import { buildChatTimeline } from '@/lib/events'
 import { clipboardCopyErrorMessage, copyText } from '@/lib/clipboard'
@@ -73,6 +74,8 @@ type Props = {
   onFollowingTailChange?: (following: boolean) => void
   onOpenFilePath?: (path: string) => Promise<void> | void
   focusSeq?: number
+  focusRequest?: number
+  onVisibleSequenceRangeChange?: (range: TranscriptSequenceRange | null) => void
 }
 
 type VirtualTimelineItem =
@@ -108,6 +111,8 @@ export function ChatTranscript({
   onFollowingTailChange,
   onOpenFilePath,
   focusSeq = 0,
+  focusRequest = 0,
+  onVisibleSequenceRangeChange,
 }: Props) {
   const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
   const scrollDebug = useMemo(transcriptScrollDebugEnabled, [])
@@ -124,6 +129,7 @@ export function ChatTranscript({
   const scrollPointerYRef = useRef<number | null>(null)
   const scrollPointerTypeRef = useRef('')
   const tailScrollFrameRef = useRef<number | null>(null)
+  const visibleSequenceRangeRef = useRef('')
   const [followingTail, setFollowingTailState] = useState(initiallyFollowingTail)
   const [snapToTailPending, setSnapToTailPending] = useState(false)
   const autoLoadOlderRef = useRef(false)
@@ -208,6 +214,10 @@ export function ChatTranscript({
     hasNewerEvents,
     timeline,
   ])
+  const focusedVirtualIndex = useMemo(
+    () => virtualItems.findIndex((item) => item.kind === 'timeline' && timelineItemContainsSeq(item.item, focusSeq)),
+    [focusSeq, virtualItems],
+  )
   const getItemKey = useCallback((index: number) => virtualItems[index]?.id ?? index, [virtualItems])
   const estimateSize = useCallback((index: number) => estimateVirtualTimelineItem(virtualItems[index]), [virtualItems])
   const latestEventSeq = events.at(-1)?.seq ?? 0
@@ -266,6 +276,7 @@ export function ChatTranscript({
   })
 
   function handleVirtualizerChange(instance: TranscriptVirtualizer, sync: boolean) {
+    updateVisibleSequenceRange(instance)
     updateScrollDebugReadout(instance)
     const direction = instance.scrollDirection
     const userDirection = userScrollIntentRef.current
@@ -339,6 +350,27 @@ export function ChatTranscript({
         setSnapToTailPendingValue(false)
       }
     }
+  }
+
+  function updateVisibleSequenceRange(instance: TranscriptVirtualizer) {
+    const renderedItems = instance.getVirtualItems()
+    const viewportStart = instance.scrollOffset ?? 0
+    const viewportHeight = instance.scrollRect?.height ?? 0
+    const visibleRows = viewportHeight > 0
+      ? renderedItems.filter((item) => item.end >= viewportStart && item.start <= viewportStart + viewportHeight)
+      : renderedItems
+    const visibleItems = visibleRows
+      .flatMap((virtualItem) => {
+        const item = virtualItems[virtualItem.index]
+        return item?.kind === 'timeline' ? [item.item] : []
+      })
+    const first = visibleItems[0]
+    const last = visibleItems.at(-1)
+    const range = first && last ? { firstSeq: first.startSeq, lastSeq: last.endSeq } : null
+    const key = range ? `${range.firstSeq}:${range.lastSeq}` : ''
+    if (visibleSequenceRangeRef.current === key) return
+    visibleSequenceRangeRef.current = key
+    onVisibleSequenceRangeChange?.(range)
   }
 
   function updateScrollDebugReadout(instance: TranscriptVirtualizer) {
@@ -429,6 +461,17 @@ export function ChatTranscript({
     if (!initialTailPinPendingRef.current || loading || virtualItems.length === 0) return
     void resumeFollowing(virtualizer)
   }, [loading, resumeFollowing, virtualItems.length, virtualizer])
+
+  useLayoutEffect(() => {
+    updateVisibleSequenceRange(virtualizer)
+  })
+
+  useLayoutEffect(() => {
+    if (loading || focusSeq <= 0 || focusedVirtualIndex < 0) return
+    virtualizer.scrollToIndex(focusedVirtualIndex, { align: 'center', behavior: 'auto' })
+  }, [focusRequest, focusSeq, focusedVirtualIndex, loading, virtualizer])
+
+  useEffect(() => () => onVisibleSequenceRangeChange?.(null), [onVisibleSequenceRangeChange])
 
   useLayoutEffect(() => {
     if (
@@ -556,7 +599,8 @@ export function ChatTranscript({
               data-transcript-row={item.id}
               className={cn(
                 'px-4',
-                timelineItemContainsSeq(item, focusSeq) && 'rounded-xl bg-primary/8 py-2 ring-2 ring-primary/45',
+                timelineItemContainsSeq(item, focusSeq)
+                  && 'mx-2 rounded-xl bg-primary/8 px-2 py-2 ring-2 ring-inset ring-primary/35',
                 timelineIndex === 0 && !hasOlderEvents && topInset === 'sessionHeader' && 'lg:pt-24',
                 timelineRowSpacing(
                   item,

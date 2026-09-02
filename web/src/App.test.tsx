@@ -225,6 +225,63 @@ test('switching app views updates the session route and browser history', async 
   ).toBe(true)
 })
 
+test('the desktop rail picker persists its selected utility', async () => {
+  const user = userEvent.setup()
+  render(<App />)
+
+  await user.click(await screen.findByRole('button', { name: 'Rail content: Files' }))
+  await user.click(screen.getByRole('menuitemradio', { name: 'Blocks' }))
+
+  await waitFor(() => expect(window.localStorage.getItem('gorchestra.rail-content.v1')).toBe('blocks'))
+  expect(screen.getByRole('region', { name: 'Blocks game' })).toBeInTheDocument()
+  expect(screen.getByText('Activity')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Archive selected session' })).toBeInTheDocument()
+})
+
+test('a conversation map segment opens chat at its event sequence', async () => {
+  const user = userEvent.setup()
+  const events = [
+    { ...event(1, 'user.message.completed', { text: 'Inspect the build' }), role: 'user' },
+    event(2, 'agent.message.completed', { text: 'The build passes.' }),
+  ]
+  window.localStorage.setItem('gorchestra.rail-content.v1', 'conversation-map')
+  const baseFetch = fetchMock({ events })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url) === '/api/sessions/sess_1/events?around_seq=2&turns=2&max_bytes=1048576') {
+        return jsonResponse({
+          events,
+          page: {
+            first_seq: 1,
+            last_seq: 2,
+            server_last_seq: 2,
+            has_older: false,
+            has_newer: true,
+            starts_mid_turn: false,
+            ends_mid_turn: false,
+          },
+        })
+      }
+      return baseFetch(url, init)
+    }),
+  )
+
+  render(<App />)
+  await user.click(await screen.findByRole('button', { name: /Open Agent response · #2/ }))
+
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo'))
+  expect(window.location.search).toBe('?event_seq=2')
+  expect(screen.getByText('The build passes.').closest('[data-transcript-row]')).toHaveClass(
+    'mx-2',
+    'ring-2',
+    'ring-inset',
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Jump conversation map to latest' }))
+  await waitFor(() => expect(window.location.search).toBe(''))
+})
+
 test('loading with console and files routes restores the routed app view', async () => {
   window.history.replaceState({}, '', '/sessions/sess_1/files')
   const firstRender = render(<App />)

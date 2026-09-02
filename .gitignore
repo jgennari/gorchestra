@@ -23,6 +23,7 @@ web/node_modules/
 web/dist/
 web/build/
 web/.vite/
+web/test-results/
 !internal/webassets/
 !internal/webassets/dist/
 !internal/webassets/dist/**

@@ -186,6 +186,18 @@
   outline: none;
 }
 
+.blocks-game-board-wrap {
+  container-type: size;
+}
+
+.blocks-game-board {
+  height: 100%;
+  max-height: 30rem;
+  height: min(100cqh, 30rem);
+  max-width: 100cqw;
+  aspect-ratio: 1 / 2;
+}
+
 .command-card {
   background: linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--surface) / 0.96));
   border-color: hsl(var(--border) / 0.72);

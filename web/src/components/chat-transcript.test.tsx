@@ -1586,6 +1586,41 @@ test('labels provider debug rows with provider event type', () => {
   expect(screen.queryByText('provider.codex.event')).not.toBeInTheDocument()
 })
 
+test('reports the visible conversation sequence range for the rail map', async () => {
+  const onVisibleSequenceRangeChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'user.message.completed', 'user', 'completed', { text: 'First prompt' }),
+        event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'First answer' }),
+        event(3, 'user.message.completed', 'user', 'completed', { text: 'Second prompt' }),
+        event(4, 'agent.message.completed', 'assistant', 'completed', { text: 'Second answer' }),
+      ]}
+      onVisibleSequenceRangeChange={onVisibleSequenceRangeChange}
+    />,
+  )
+
+  await waitFor(() => {
+    expect(onVisibleSequenceRangeChange).toHaveBeenCalledWith({ firstSeq: 1, lastSeq: 4 })
+  })
+})
+
+test('a repeated focus request scrolls the targeted virtual conversation row into view', () => {
+  const events = [
+    event(1, 'user.message.completed', 'user', 'completed', { text: 'First prompt' }),
+    event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'First answer' }),
+    event(3, 'user.message.completed', 'user', 'completed', { text: 'Second prompt' }),
+    event(4, 'agent.message.completed', 'assistant', 'completed', { text: 'Second answer' }),
+  ]
+  const { rerender } = render(<ChatTranscript events={events} focusSeq={3} focusRequest={0} />)
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  setScrollMetrics(log, { scrollTop: 0, scrollHeight: 1000, clientHeight: 200 })
+
+  rerender(<ChatTranscript events={events} focusSeq={3} focusRequest={1} />)
+
+  expect(log.scrollTop).toBeGreaterThan(0)
+})
+
 function setScrollMetrics(
   element: HTMLElement,
   metrics: { scrollTop: number; scrollHeight: number; clientHeight: number },

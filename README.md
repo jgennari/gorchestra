@@ -57,7 +57,8 @@ Start a session, choose a workspace, and let the agent run. Gorchestra keeps the
 - Tune agent options like model, reasoning effort, service tier, planning mode, and dangerous mode.
 - Follow messages, thinking, tool calls, command output, file edits, errors, and debug events in one transcript.
 - Keep typing while a run is active, queue messages, attach images, and answer agent-requested prompts when a run needs input.
-- Browse, search, preview, and edit workspace files from the side rail.
+- Configure the side rail with workspace files, a conversation minimap, a block-stacking game, or blank space.
+- Browse, search, preview, and edit workspace files from the side rail or full files view.
 - Review file-change diffs and jump straight into the editor for the changed file.
 - Start a workspace-defined development stack and open its stable, session-scoped preview URL.
 - Refresh or reconnect without losing the session history.

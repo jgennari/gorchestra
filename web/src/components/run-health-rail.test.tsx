@@ -101,7 +101,7 @@ test('run health rail can hide file browsing for compact mobile details', () => 
       events={[]}
       streamState="connected"
       streamError=""
-      showFiles={false}
+      showUtilityContent={false}
       onToggleArchive={async () => undefined}
     />,
   )
@@ -109,6 +109,95 @@ test('run health rail can hide file browsing for compact mobile details', () => 
   expect(screen.getByText('Activity')).toBeInTheDocument()
   expect(screen.queryByText('Files')).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Refresh files' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /Rail content:/ })).not.toBeInTheDocument()
+})
+
+test('the hidden desktop utility does no file work at mobile widths', () => {
+  const previousWidth = window.innerWidth
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 767 })
+  const fetchMock = vi.mocked(fetch)
+  fetchMock.mockClear()
+
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      contentMode="files"
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  expect(screen.queryByRole('button', { name: /Rail content:/ })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Refresh files' })).not.toBeInTheDocument()
+  expect(fetchMock).not.toHaveBeenCalled()
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: previousWidth })
+})
+
+test('run health rail changes its configurable middle content from the activity header', async () => {
+  const user = userEvent.setup()
+  const onContentModeChange = vi.fn()
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      contentMode="files"
+      onContentModeChange={onContentModeChange}
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Rail content: Files' }))
+  await user.click(screen.getByRole('menuitemradio', { name: 'Blocks' }))
+
+  expect(onContentModeChange).toHaveBeenCalledWith('blocks')
+})
+
+test('blank rail content keeps operational panels and removes the flexible utility', () => {
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      contentMode="blank"
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  expect(screen.getByText('Activity')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Archive selected session' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Refresh files' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('navigation', { name: 'Conversation map' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('region', { name: 'Blocks game' })).not.toBeInTheDocument()
+})
+
+test('conversation map receives the rail history controls', async () => {
+  const user = userEvent.setup()
+  const onLoadOlderEvents = vi.fn()
+  const onSelectConversationSeq = vi.fn()
+  render(
+    <RunHealthRail
+      session={session}
+      events={[event(1, 'user.message.completed', 'user', 'completed', { text: 'Earlier prompt' })]}
+      streamState="connected"
+      streamError=""
+      contentMode="conversation-map"
+      hasOlderEvents
+      onLoadOlderEvents={onLoadOlderEvents}
+      onSelectConversationSeq={onSelectConversationSeq}
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Load earlier conversation turns' }))
+  await user.click(screen.getByRole('button', { name: /Open User message · #1/ }))
+
+  expect(onLoadOlderEvents).toHaveBeenCalledOnce()
+  expect(onSelectConversationSeq).toHaveBeenCalledWith(1)
 })
 
 test('run health rail archives an idle session from the slice action', async () => {

@@ -60,6 +60,7 @@ import { useAppBadge } from '@/hooks/use-app-badge'
 import { useFavicon } from '@/hooks/use-favicon'
 import { usePushNotifications } from '@/hooks/use-push-notifications'
 import { useReleaseUpdate } from '@/hooks/use-release-update'
+import { useRailContentPreference } from '@/hooks/use-rail-content'
 import { useTheme } from '@/hooks/use-theme'
 import { Button } from '@/components/ui/button'
 import {
@@ -90,6 +91,7 @@ import {
   readNotificationAttentionSeqs,
   writeNotificationAttention,
 } from '@/lib/notification-attention'
+import type { TranscriptSequenceRange } from '@/lib/events'
 import {
   sessionPath,
   sessionRouteFromPathname,
@@ -180,6 +182,8 @@ function App() {
   const [spotlightOpen, setSpotlightOpen] = useState(false)
   const [composerFocusRequest, setComposerFocusRequest] = useState(0)
   const [focusedEventSeq, setFocusedEventSeq] = useState(() => eventSequenceFromLocation())
+  const [focusedEventRequest, setFocusedEventRequest] = useState(0)
+  const [transcriptVisibleRange, setTranscriptVisibleRange] = useState<TranscriptSequenceRange | null>(null)
   const [focusedFileLine, setFocusedFileLine] = useState(() => fileLineFromLocation())
   const [appView, setAppView] = useState<AppView>(() => selectedSessionRouteFromLocation().view)
   const [userSkillsSelected, setUserSkillsSelected] = useState(() => isUserSkillsLocation())
@@ -221,6 +225,7 @@ function App() {
     [effectiveLastSeenSeqBySession, sessions],
   )
   const theme = useTheme()
+  const railContent = useRailContentPreference()
   const release = useReleaseUpdate()
   const pushNotifications = usePushNotifications()
   const playSessionStopSound = pushNotifications.playSessionStopSound
@@ -454,6 +459,7 @@ function App() {
 
   useEffect(() => {
     selectedSessionIDRef.current = selectedSessionID
+    setTranscriptVisibleRange(null)
   }, [selectedSessionID])
 
   useEffect(() => {
@@ -481,6 +487,7 @@ function App() {
     function handlePopState() {
       const route = selectedSessionRouteFromLocation()
       setFocusedEventSeq(eventSequenceFromLocation())
+      setFocusedEventRequest((current) => current + 1)
       setFocusedFileLine(fileLineFromLocation())
       if (isUserSkillsLocation()) {
         selectUserSkills('none')
@@ -708,6 +715,16 @@ function App() {
     includeDebugEvents: showDebugEvents,
     targetSeq: focusedEventSeq,
   })
+
+  const handleJumpToLatest = useCallback(() => {
+    if (focusedEventSeq <= 0) return jumpToLatest()
+    setFocusedEventSeq(0)
+    const sessionID = selectedSessionIDRef.current
+    if (appViewRef.current === 'session') {
+      writeSelectedSessionRoute(sessionID, 'replace', 'session', sessionsRef.current)
+    }
+    return Promise.resolve()
+  }, [focusedEventSeq, jumpToLatest])
 
   useEffect(() => {
     if (error) {
@@ -1122,6 +1139,7 @@ function App() {
       setOpenWorkspaceFile(null)
       setFocusedFileLine(0)
       setFocusedEventSeq(result.event_seq ?? 0)
+      setFocusedEventRequest((current) => current + 1)
       writeSpotlightResultRoute(session, 'session', null, {
         eventSeq: result.event_seq,
       })
@@ -1129,6 +1147,17 @@ function App() {
       setError(messageFromError(searchResultError))
     }
   }
+
+  const handleSelectConversationSeq = useCallback((seq: number) => {
+    const session = sessionsRef.current.find((item) => item.id === selectedSessionIDRef.current)
+    if (!session || !Number.isSafeInteger(seq) || seq <= 0) return
+    appViewRef.current = 'session'
+    setAppView('session')
+    setFocusedFileLine(0)
+    setFocusedEventSeq(seq)
+    setFocusedEventRequest((current) => current + 1)
+    writeSpotlightResultRoute(session, 'session', null, { eventSeq: seq })
+  }, [])
 
   function beginPaneResize(side: PaneSide, event: ReactPointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) {
@@ -1764,7 +1793,7 @@ function App() {
               loadingNewerEvents={loadingNewerEvents}
               onLoadOlderEvents={loadOlderEvents}
               onLoadNewerEvents={loadNewerEvents}
-              onJumpToLatest={jumpToLatest}
+              onJumpToLatest={handleJumpToLatest}
               onFollowingTailChange={setFollowingTail}
               errorMessage={chatErrorMessage}
               showDebugEvents={showDebugEvents}
@@ -1777,6 +1806,8 @@ function App() {
               composerFocusRequest={composerFocusRequest}
               onErrorMessageChange={setError}
               focusedEventSeq={focusedEventSeq}
+              focusedEventRequest={focusedEventRequest}
+              onVisibleSequenceRangeChange={setTranscriptVisibleRange}
               headerActions={viewToggle}
               mobileLeadingAction={openSessionsButton}
             />
@@ -1806,6 +1837,19 @@ function App() {
           streamState={streamState}
           streamError={streamError}
           fileRefreshKey={fileRefreshKey}
+          contentMode={railContent.mode}
+          onContentModeChange={railContent.setMode}
+          contentActive={!isGlobalView}
+          hasOlderEvents={hasOlderEvents}
+          hasNewerEvents={hasNewerEvents}
+          loadingOlderEvents={loadingOlderEvents}
+          loadingNewerEvents={loadingNewerEvents}
+          onLoadOlderEvents={loadOlderEvents}
+          onLoadNewerEvents={loadNewerEvents}
+          onJumpToLatest={handleJumpToLatest}
+          visibleSequenceRange={transcriptVisibleRange}
+          focusedEventSeq={focusedEventSeq}
+          onSelectConversationSeq={handleSelectConversationSeq}
           onClear={() => {
             requestSessionAction('clear')
             return Promise.resolve()
@@ -1943,7 +1987,7 @@ function App() {
               streamState={streamState}
               streamError={streamError}
               fileRefreshKey={fileRefreshKey}
-              showFiles={false}
+              showUtilityContent={false}
               onClear={() => {
                 requestSessionAction('clear')
                 return Promise.resolve()

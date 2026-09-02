@@ -190,6 +190,11 @@ export type ChatTimelineItem =
       action: ChatActionBreak
     }
 
+export type TranscriptSequenceRange = {
+  firstSeq: number
+  lastSeq: number
+}
+
 export type PendingUserInputRequest = {
   requestID: string
   provider: string

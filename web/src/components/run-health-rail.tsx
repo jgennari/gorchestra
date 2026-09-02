@@ -1,11 +1,28 @@
-import { Activity, Archive, Clock3, Eraser, Gauge, Loader2, Minimize2 } from 'lucide-react'
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+import {
+  Activity,
+  Archive,
+  Check,
+  Clock3,
+  Eraser,
+  Folder,
+  Gamepad2,
+  Gauge,
+  Loader2,
+  Map,
+  Minimize2,
+  Square,
+} from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { AgentEvent, Session, WorkspaceFileContent } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
-import type { TokenUsageSummary } from '@/lib/events'
+import type { RailContentMode } from '@/hooks/use-rail-content'
+import type { TokenUsageSummary, TranscriptSequenceRange } from '@/lib/events'
 import { eventLabel, groupEvents, latestTokenUsage } from '@/lib/events'
+import { BlocksGame } from '@/components/blocks-game'
 import { Button } from '@/components/ui/button'
+import { ConversationMap } from '@/components/conversation-map'
 import { WorkspaceFileBrowser } from '@/components/workspace-files'
 import { cn } from '@/lib/utils'
 
@@ -20,7 +37,20 @@ type Props = {
   onToggleArchive: () => Promise<void>
   onOpenFile?: (file: WorkspaceFileContent) => void
   fileRefreshKey?: number
-  showFiles?: boolean
+  showUtilityContent?: boolean
+  contentMode?: RailContentMode
+  onContentModeChange?: (mode: RailContentMode) => void
+  contentActive?: boolean
+  hasOlderEvents?: boolean
+  hasNewerEvents?: boolean
+  loadingOlderEvents?: boolean
+  loadingNewerEvents?: boolean
+  onLoadOlderEvents?: () => Promise<void> | void
+  onLoadNewerEvents?: () => Promise<void> | void
+  onJumpToLatest?: () => Promise<void> | void
+  visibleSequenceRange?: TranscriptSequenceRange | null
+  focusedEventSeq?: number
+  onSelectConversationSeq?: (seq: number) => void
   clearPending?: boolean
   compactPending?: boolean
   archivePending?: boolean
@@ -37,11 +67,31 @@ export function RunHealthRail({
   onToggleArchive,
   onOpenFile,
   fileRefreshKey = 0,
-  showFiles = true,
+  showUtilityContent = true,
+  contentMode = 'files',
+  onContentModeChange = () => undefined,
+  contentActive = true,
+  hasOlderEvents = false,
+  hasNewerEvents = false,
+  loadingOlderEvents = false,
+  loadingNewerEvents = false,
+  onLoadOlderEvents,
+  onLoadNewerEvents,
+  onJumpToLatest,
+  visibleSequenceRange = null,
+  focusedEventSeq = 0,
+  onSelectConversationSeq,
   clearPending = false,
   compactPending = false,
   archivePending = false,
 }: Props) {
+  const desktopLayout = useDesktopLayout()
+  const [blocksMounted, setBlocksMounted] = useState(contentMode === 'blocks')
+  const showContentSlot = showUtilityContent && desktopLayout
+  const slotActive = showContentSlot && contentActive
+  useEffect(() => {
+    if (contentMode === 'blocks') setBlocksMounted(true)
+  }, [contentMode])
   const latestEvent = events.at(-1)
   const tokenUsage = latestTokenUsage(events)
   const providerCumulativeTokenCount = tokenUsage?.kind === 'context' ? 0 : (tokenUsage?.total.totalTokens ?? 0)
@@ -67,12 +117,17 @@ export function RunHealthRail({
         <RailPanel>
           <div className="flex items-center justify-between gap-2">
             <RailSectionTitle icon={Activity} label="Activity" />
-            <ActiveChatDot
-              active={Boolean(session)}
-              running={session?.status === 'running'}
-              state={streamState}
-              error={streamError}
-            />
+            <div className="flex items-center gap-1">
+              {showContentSlot ? (
+                <RailContentPicker mode={contentMode} onChange={onContentModeChange} />
+              ) : null}
+              <ActiveChatDot
+                active={Boolean(session)}
+                running={session?.status === 'running'}
+                state={streamState}
+                error={streamError}
+              />
+            </div>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2">
             <Metric label="Events" value={totalEventCount} />
@@ -96,14 +151,37 @@ export function RunHealthRail({
         </RailPanel>
       </div>
 
-      {showFiles ? (
-        <div className="mt-3 min-h-0 flex-1">
-          <WorkspaceFileBrowser
-            session={session}
-            resolvingSessionID={resolvingSessionID}
-            refreshKey={fileRefreshKey}
-            onOpenFile={onOpenFile}
-          />
+      {showUtilityContent ? (
+        <div className={cn('mt-3 min-h-0 flex-1', !desktopLayout && 'hidden')}>
+          {desktopLayout && contentMode === 'files' ? (
+            <WorkspaceFileBrowser
+              session={session}
+              resolvingSessionID={resolvingSessionID}
+              refreshKey={fileRefreshKey}
+              onOpenFile={onOpenFile}
+            />
+          ) : null}
+          {desktopLayout && contentMode === 'conversation-map' ? (
+            <ConversationMap
+              events={events}
+              hasOlderEvents={hasOlderEvents}
+              hasNewerEvents={hasNewerEvents}
+              loadingOlderEvents={loadingOlderEvents}
+              loadingNewerEvents={loadingNewerEvents}
+              onLoadOlderEvents={onLoadOlderEvents}
+              onLoadNewerEvents={onLoadNewerEvents}
+              onJumpToLatest={onJumpToLatest}
+              visibleRange={visibleSequenceRange}
+              focusedSeq={focusedEventSeq}
+              onSelectSeq={onSelectConversationSeq}
+            />
+          ) : null}
+          {blocksMounted ? (
+            <BlocksGame
+              active={slotActive && contentMode === 'blocks'}
+              className={contentMode === 'blocks' ? undefined : 'hidden'}
+            />
+          ) : null}
         </div>
       ) : null}
 
@@ -147,6 +225,78 @@ export function RunHealthRail({
       </div>
     </aside>
   )
+}
+
+const railContentOptions: Array<{
+  mode: RailContentMode
+  label: string
+  icon: LucideIcon
+}> = [
+  { mode: 'files', label: 'Files', icon: Folder },
+  { mode: 'conversation-map', label: 'Conversation map', icon: Map },
+  { mode: 'blocks', label: 'Blocks', icon: Gamepad2 },
+  { mode: 'blank', label: 'Blank', icon: Square },
+]
+
+function RailContentPicker({ mode, onChange }: { mode: RailContentMode; onChange: (mode: RailContentMode) => void }) {
+  const selected = railContentOptions.find((option) => option.mode === mode) ?? railContentOptions[0]
+  const SelectedIcon = selected.icon
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7 text-muted-foreground"
+          aria-label={`Rail content: ${selected.label}`}
+          title={`Rail content: ${selected.label}`}
+        >
+          <SelectedIcon aria-hidden="true" />
+        </Button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={12}
+          className="z-50 w-52 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-xl"
+        >
+          <DropdownMenu.Label className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            Rail content
+          </DropdownMenu.Label>
+          <DropdownMenu.RadioGroup value={mode} onValueChange={(value) => onChange(value as RailContentMode)}>
+            {railContentOptions.map(({ mode: optionMode, label, icon: Icon }) => (
+              <DropdownMenu.RadioItem
+                key={optionMode}
+                value={optionMode}
+                className="flex min-h-9 cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
+              >
+                <Icon className="size-4 text-muted-foreground" aria-hidden="true" />
+                <span className="flex-1">{label}</span>
+                <DropdownMenu.ItemIndicator>
+                  <Check className="size-4" aria-hidden="true" />
+                </DropdownMenu.ItemIndicator>
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  )
+}
+
+function useDesktopLayout() {
+  const [desktop, setDesktop] = useState(() => typeof window === 'undefined' || window.innerWidth >= 1024)
+  useEffect(() => {
+    function update() {
+      setDesktop(window.innerWidth >= 1024)
+    }
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
+  return desktop
 }
 
 function ActiveChatDot({

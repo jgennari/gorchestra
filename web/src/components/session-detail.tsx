@@ -22,6 +22,7 @@ import {
   latestTerminalEvent,
   pendingUserInputRequest,
   pendingPermissionRequests,
+  type TranscriptSequenceRange,
 } from '@/lib/events'
 import { cn } from '@/lib/utils'
 
@@ -58,6 +59,8 @@ type Props = {
   headerActions?: ReactNode
   mobileLeadingAction?: ReactNode
   focusedEventSeq?: number
+  focusedEventRequest?: number
+  onVisibleSequenceRangeChange?: (range: TranscriptSequenceRange | null) => void
 }
 
 export function SessionDetail({
@@ -87,6 +90,8 @@ export function SessionDetail({
   headerActions,
   mobileLeadingAction,
   focusedEventSeq = 0,
+  focusedEventRequest = 0,
+  onVisibleSequenceRangeChange,
 }: Props) {
   const bottomInsetRef = useRef<HTMLDivElement>(null)
   const [bottomInsetHeight, setBottomInsetHeight] = useState(0)
@@ -214,6 +219,8 @@ export function SessionDetail({
           onFollowingTailChange={onFollowingTailChange}
           onOpenFilePath={onOpenFilePath}
           focusSeq={focusedEventSeq}
+          focusRequest={focusedEventRequest}
+          onVisibleSequenceRangeChange={onVisibleSequenceRangeChange}
         />
         <div
           data-testid="mobile-floating-session-header"
