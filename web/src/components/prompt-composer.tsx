@@ -83,6 +83,7 @@ type Props = {
   onCancel?: () => Promise<void>
   onError?: (message: string) => void
   onFocus?: () => void
+  focusRequest?: number
 }
 
 type CodexSelection = {
@@ -139,6 +140,7 @@ export function PromptComposer({
   onCancel,
   onError,
   onFocus,
+  focusRequest = 0,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -371,6 +373,12 @@ export function PromptComposer({
     window.addEventListener('focus', handleWindowFocus)
     return () => window.removeEventListener('focus', handleWindowFocus)
   }, [onFocus])
+
+  useEffect(() => {
+    if (focusRequest > 0) {
+      textareaRef.current?.focus({ preventScroll: true })
+    }
+  }, [focusRequest])
 
   useEffect(() => {
     if (!sessionID) {

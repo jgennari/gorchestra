@@ -81,7 +81,8 @@ export function SessionList({
           )}
         >
           <LayoutDashboard className="size-4 text-muted-foreground" />
-          Overview
+          <span className="flex-1">Overview</span>
+          <ShortcutHint shortcut="O" />
         </button>
         <button
           type="button"
@@ -93,7 +94,8 @@ export function SessionList({
           )}
         >
           <BookOpen className="size-4 text-muted-foreground" />
-          User skills
+          <span className="flex-1">User skills</span>
+          <ShortcutHint shortcut="S" />
         </button>
         <button
           type="button"
@@ -103,9 +105,7 @@ export function SessionList({
         >
           <Search className="size-4 text-muted-foreground" />
           <span className="flex-1">Search</span>
-          <kbd className="rounded border border-border/70 bg-background/70 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-            {navigator.platform.toLowerCase().includes('mac') ? '⌘K' : 'Ctrl K'}
-          </kbd>
+          <ShortcutHint shortcut="K" />
         </button>
       </div>
 
@@ -118,7 +118,7 @@ export function SessionList({
           <div className="p-4 text-sm text-muted-foreground">No sessions yet.</div>
         ) : (
           <div className="session-list-rows space-y-1.5 p-2.5">
-            {sessions.map((session) => (
+            {sessions.map((session, index) => (
               <button
                 key={session.id}
                 type="button"
@@ -126,7 +126,7 @@ export function SessionList({
                 aria-current={selectedSessionID === session.id ? 'true' : undefined}
                 aria-label={session.archived_at ? `${session.title || 'Untitled session'} archived` : undefined}
                 className={cn(
-                  'session-row grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                  'session-row grid w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                   selectedSessionID === session.id && 'border-primary/30 bg-background/80 shadow-sm',
                   session.archived_at &&
                     'border-dashed border-border/80 bg-surface-muted/65 text-muted-foreground hover:border-border hover:bg-surface-muted/80',
@@ -159,12 +159,25 @@ export function SessionList({
                     {session.agent_type} / {formatShortTime(session.updated_at)}
                   </span>
                 </span>
+                {index < 5 ? <ShortcutHint shortcut={String(index + 1)} /> : null}
               </button>
             ))}
           </div>
         )}
       </ScrollArea>
     </aside>
+  )
+}
+
+function ShortcutHint({ shortcut }: { shortcut: string }) {
+  const modifier = navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl '
+  return (
+    <kbd
+      aria-hidden="true"
+      className="rounded border border-border/70 bg-background/70 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+    >
+      {modifier}{shortcut}
+    </kbd>
   )
 }
 

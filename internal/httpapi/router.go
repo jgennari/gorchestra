@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -33,6 +34,7 @@ const (
 	defaultEventLimit        = 500
 	maxEventLimit            = 1000
 	maxEventTurnLimit        = 50
+	maxEventTurnPageLimit    = 5000
 	eventHistoryBackfillStep = 250
 	maxEventPayloadStringLen = 64 * 1024
 	maxEventHistoryBytes     = 2 * 1024 * 1024
@@ -209,6 +211,7 @@ type eventHistoryResponse struct {
 type eventHistoryPage struct {
 	FirstSeq      int64 `json:"first_seq"`
 	LastSeq       int64 `json:"last_seq"`
+	ServerLastSeq int64 `json:"server_last_seq"`
 	HasOlder      bool  `json:"has_older"`
 	HasNewer      bool  `json:"has_newer"`
 	StartsMidTurn bool  `json:"starts_mid_turn"`
@@ -470,12 +473,16 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	maxBytes, ok := parseEventHistoryByteLimit(w, r)
+	if !ok {
+		return
+	}
 	filter, ok := parseEventListFilter(w, r)
 	if !ok {
 		return
 	}
 
-	result, err := api.listHistoryEvents(r, sessionID, limit, turns, filter)
+	result, err := api.listHistoryEvents(r, sessionID, limit, turns, maxBytes, filter)
 	if errors.Is(err, errInvalidEventHistoryCursor) {
 		writeError(w, http.StatusBadRequest, eventHistoryCursorMessage(err))
 		return
@@ -485,13 +492,13 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responses := boundedEventResponses(result.Events, result.PreferLatest, maxEventHistoryBytes)
+	responses := boundedEventResponses(result.Events, result.PreferLatest, maxBytes)
 	page, err := api.eventHistoryPage(r.Context(), sessionID, responses, filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to inspect event page")
 		return
 	}
-	writeJSON(w, http.StatusOK, eventHistoryResponse{Events: responses, Page: page})
+	writeCompressedJSON(w, r, http.StatusOK, eventHistoryResponse{Events: responses, Page: page})
 }
 
 func (api API) eventAttachmentHandler(w http.ResponseWriter, r *http.Request) {
@@ -595,6 +602,7 @@ func (api API) listHistoryEvents(
 	sessionID string,
 	limit int,
 	turns int,
+	maxBytes int,
 	filter store.EventListFilter,
 ) (eventHistoryResult, error) {
 	query := r.URL.Query()
@@ -668,7 +676,13 @@ func (api API) listHistoryEvents(
 		var events []store.Event
 		var err error
 		if turns > 0 {
-			events, err = api.store.ListRecentEventTurnsPageFiltered(r.Context(), sessionID, turns, limit, filter)
+			if r.URL.Query().Has("limit") {
+				events, err = api.store.ListRecentEventTurnsPageFiltered(r.Context(), sessionID, turns, limit, filter)
+			} else {
+				events, err = adaptiveLatestTurnEvents(turns, maxBytes, func(pageLimit int) ([]store.Event, error) {
+					return api.store.ListRecentEventTurnsPageFiltered(r.Context(), sessionID, turns, pageLimit, filter)
+				})
+			}
 		} else {
 			events, err = api.listBoundarySafeRecentEvents(r.Context(), sessionID, limit, filter)
 		}
@@ -681,7 +695,15 @@ func (api API) listHistoryEvents(
 		}
 		var events []store.Event
 		if turns > 0 {
-			events, err = api.store.ListEventTurnsBeforePageFiltered(r.Context(), sessionID, beforeSeq, turns, limit, filter)
+			if r.URL.Query().Has("limit") {
+				events, err = api.store.ListEventTurnsBeforePageFiltered(r.Context(), sessionID, beforeSeq, turns, limit, filter)
+			} else {
+				events, err = adaptiveLatestTurnEvents(turns, maxBytes, func(pageLimit int) ([]store.Event, error) {
+					return api.store.ListEventTurnsBeforePageFiltered(
+						r.Context(), sessionID, beforeSeq, turns, pageLimit, filter,
+					)
+				})
+			}
 		} else {
 			events, err = api.listBoundarySafeEventsBefore(r.Context(), sessionID, beforeSeq, limit, filter)
 		}
@@ -704,6 +726,38 @@ func (api API) listHistoryEvents(
 		events, err = api.store.ListEventsFiltered(r.Context(), sessionID, afterSeq, limit, filter)
 	}
 	return eventHistoryResult{Events: events}, err
+}
+
+func adaptiveLatestTurnEvents(
+	turns int,
+	maxBytes int,
+	list func(limit int) ([]store.Event, error),
+) ([]store.Event, error) {
+	limit := defaultEventLimit
+	for {
+		events, err := list(limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(events) < limit || visibleTurnCount(events) >= turns || limit >= maxEventTurnPageLimit {
+			return events, nil
+		}
+		bounded := boundedLatestTurnResponses(eventResponses(events), maxBytes)
+		if encodedEventResponsesBytes(bounded)+2 >= maxBytes*9/10 {
+			return events, nil
+		}
+		limit = min(limit*2, maxEventTurnPageLimit)
+	}
+}
+
+func visibleTurnCount(events []store.Event) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == "user.message.completed" {
+			count++
+		}
+	}
+	return count
 }
 
 func (api API) listBoundarySafeRecentEvents(
@@ -1028,6 +1082,23 @@ func parseEventTurnLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 	return turns, true
 }
 
+func parseEventHistoryByteLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("max_bytes"))
+	if raw == "" {
+		return maxEventHistoryBytes, true
+	}
+
+	maxBytes, err := strconv.Atoi(raw)
+	if err != nil || maxBytes <= 0 {
+		writeError(w, http.StatusBadRequest, "max_bytes must be a positive integer")
+		return 0, false
+	}
+	if maxBytes > maxEventHistoryBytes {
+		return maxEventHistoryBytes, true
+	}
+	return maxBytes, true
+}
+
 func parseEventListFilter(w http.ResponseWriter, r *http.Request) (store.EventListFilter, bool) {
 	raw := r.URL.Query().Get("include_debug")
 	if raw == "" {
@@ -1121,27 +1192,7 @@ func boundedEventResponses(events []store.Event, preferLatest bool, maxBytes int
 
 	used := 2
 	if preferLatest {
-		start := len(responses)
-		for index := len(responses) - 1; index >= 0; index-- {
-			encoded, err := json.Marshal(responses[index])
-			if err != nil {
-				continue
-			}
-			next := used + len(encoded)
-			if start < len(responses) {
-				next++
-			}
-			if next > maxBytes && start < len(responses) {
-				break
-			}
-			if next > maxBytes {
-				responses[index].Payload = json.RawMessage(`{"_gorchestra_window_truncated":true}`)
-				return responses[index : index+1]
-			}
-			start = index
-			used = next
-		}
-		return responses[start:]
+		return boundedLatestTurnResponses(responses, maxBytes)
 	}
 
 	end := 0
@@ -1167,26 +1218,138 @@ func boundedEventResponses(events []store.Event, preferLatest bool, maxBytes int
 	return responses[:end]
 }
 
+func boundedLatestTurnResponses(responses []eventResponse, maxBytes int) []eventResponse {
+	turnStarts := make([]int, 0)
+	for index := range responses {
+		if responses[index].Type == "user.message.completed" {
+			turnStarts = append(turnStarts, index)
+		}
+	}
+	if len(turnStarts) == 0 {
+		return boundedLatestEventResponses(responses, maxBytes)
+	}
+
+	start := len(responses)
+	used := 2
+	selectedTurns := 0
+	for turnIndex := len(turnStarts) - 1; turnIndex >= 0; turnIndex-- {
+		turnStart := turnStarts[turnIndex]
+		turnEnd := len(responses)
+		if turnIndex+1 < len(turnStarts) {
+			turnEnd = turnStarts[turnIndex+1]
+		}
+		turnBytes := encodedEventResponsesBytes(responses[turnStart:turnEnd])
+		next := used + turnBytes
+		if selectedTurns > 0 {
+			next++
+		}
+		if next > maxBytes && selectedTurns > 0 {
+			break
+		}
+		start = turnStart
+		used = next
+		selectedTurns++
+	}
+	if start == turnStarts[0] && start > 0 && responses[0].Seq == 1 {
+		preambleBytes := encodedEventResponsesBytes(responses[:start])
+		next := used + preambleBytes
+		if used > 2 && preambleBytes > 0 {
+			next++
+		}
+		if next <= maxBytes {
+			start = 0
+		}
+	}
+
+	selected := append([]eventResponse(nil), responses[start:]...)
+	if encodedEventResponsesBytes(selected)+2 <= maxBytes {
+		return selected
+	}
+	return compactEventResponsesToBytes(selected, maxBytes)
+}
+
+func boundedLatestEventResponses(responses []eventResponse, maxBytes int) []eventResponse {
+	used := 2
+	start := len(responses)
+	for index := len(responses) - 1; index >= 0; index-- {
+		eventBytes := encodedEventResponseBytes(responses[index])
+		next := used + eventBytes
+		if start < len(responses) {
+			next++
+		}
+		if next > maxBytes && start < len(responses) {
+			break
+		}
+		start = index
+		used = next
+	}
+	selected := append([]eventResponse(nil), responses[start:]...)
+	if encodedEventResponsesBytes(selected)+2 <= maxBytes {
+		return selected
+	}
+	return compactEventResponsesToBytes(selected, maxBytes)
+}
+
+func compactEventResponsesToBytes(responses []eventResponse, maxBytes int) []eventResponse {
+	compacted := append([]eventResponse(nil), responses...)
+	marker := json.RawMessage(`{"_gorchestra_window_truncated":true}`)
+	for encodedEventResponsesBytes(compacted)+2 > maxBytes {
+		largestIndex := -1
+		largestPayload := len(marker)
+		for index := range compacted {
+			if len(compacted[index].Payload) > largestPayload {
+				largestIndex = index
+				largestPayload = len(compacted[index].Payload)
+			}
+		}
+		if largestIndex < 0 {
+			break
+		}
+		compacted[largestIndex].Payload = marker
+	}
+	return compacted
+}
+
+func encodedEventResponsesBytes(responses []eventResponse) int {
+	used := 0
+	for index := range responses {
+		used += encodedEventResponseBytes(responses[index])
+		if index > 0 {
+			used++
+		}
+	}
+	return used
+}
+
+func encodedEventResponseBytes(response eventResponse) int {
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return 0
+	}
+	return len(encoded)
+}
+
 func (api API) eventHistoryPage(
 	ctx context.Context,
 	sessionID string,
 	events []eventResponse,
 	_ store.EventListFilter,
 ) (eventHistoryPage, error) {
-	if len(events) == 0 {
-		return eventHistoryPage{}, nil
-	}
-	first := events[0]
-	last := events[len(events)-1]
 	session, err := api.store.GetSession(ctx, sessionID)
 	if err != nil {
 		return eventHistoryPage{}, err
 	}
+	if len(events) == 0 {
+		return eventHistoryPage{ServerLastSeq: session.LastEventSeq}, nil
+	}
+	first := events[0]
+	last := events[len(events)-1]
 	hasOlder := first.Seq > 1
 	hasNewer := session.LastEventSeq > last.Seq
 	return eventHistoryPage{
 		FirstSeq:      first.Seq,
 		LastSeq:       last.Seq,
+		ServerLastSeq: session.LastEventSeq,
 		HasOlder:      hasOlder,
 		HasNewer:      hasNewer,
 		StartsMidTurn: hasOlder && first.Type != "user.message.completed",
@@ -1459,6 +1622,49 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+func writeCompressedJSON(w http.ResponseWriter, r *http.Request, status int, value any) {
+	body, err := json.Marshal(value)
+	if err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Add("Vary", "Accept-Encoding")
+	if len(body) < 1024 || !acceptsEncoding(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+		return
+	}
+
+	w.Header().Set("Content-Encoding", "gzip")
+	w.WriteHeader(status)
+	writer := gzip.NewWriter(w)
+	_, _ = writer.Write(body)
+	_ = writer.Close()
+}
+
+func acceptsEncoding(header string, encoding string) bool {
+	for _, value := range strings.Split(header, ",") {
+		parts := strings.Split(value, ";")
+		name := strings.TrimSpace(parts[0])
+		if !strings.EqualFold(name, encoding) && name != "*" {
+			continue
+		}
+		enabled := true
+		for _, parameter := range parts[1:] {
+			key, rawQuality, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+			if ok && strings.EqualFold(strings.TrimSpace(key), "q") && strings.TrimSpace(rawQuality) == "0" {
+				enabled = false
+			}
+		}
+		if enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {

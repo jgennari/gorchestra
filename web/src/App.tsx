@@ -178,6 +178,7 @@ function App() {
   const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
   const [notificationAttentionRestored, setNotificationAttentionRestored] = useState(false)
   const [spotlightOpen, setSpotlightOpen] = useState(false)
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0)
   const [focusedEventSeq, setFocusedEventSeq] = useState(() => eventSequenceFromLocation())
   const [focusedFileLine, setFocusedFileLine] = useState(() => fileLineFromLocation())
   const [appView, setAppView] = useState<AppView>(() => selectedSessionRouteFromLocation().view)
@@ -352,6 +353,9 @@ function App() {
 
   const selectAppView = useCallback(
     (view: AppView, historyMode: Exclude<SessionRouteHistoryMode, 'none'> = 'push', filePath: string | null = null) => {
+      if (view === 'session') {
+        setComposerFocusRequest((current) => current + 1)
+      }
       appViewRef.current = view
       setAppView(view)
       setFocusedEventSeq(0)
@@ -378,6 +382,9 @@ function App() {
 
   const requestSessionSelection = useCallback(
     (sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
+      if (sessionID && appViewRef.current === 'session') {
+        setComposerFocusRequest((current) => current + 1)
+      }
       if (sessionID === selectedSessionIDRef.current) {
         clearNotificationAttentionForSession(sessionID)
         return
@@ -493,14 +500,46 @@ function App() {
   }, [requestSessionSelection, selectOverview, selectUserSkills])
 
   useEffect(() => {
-    function handleSearchShortcut(event: globalThis.KeyboardEvent) {
-      if (event.key.toLowerCase() !== 'k' || (!event.metaKey && !event.ctrlKey)) return
+    function handleNavigationShortcut(event: globalThis.KeyboardEvent) {
+      if (
+        event.defaultPrevented ||
+        (!event.metaKey && !event.ctrlKey) ||
+        event.altKey ||
+        event.shiftKey
+      ) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+      if (key === 'k') {
+        event.preventDefault()
+        setSpotlightOpen(true)
+        return
+      }
+      if (key === 'o') {
+        event.preventDefault()
+        selectOverview('push')
+        return
+      }
+      if (key === 's') {
+        event.preventDefault()
+        selectUserSkills('push')
+        return
+      }
+
+      if (!/^[1-5]$/.test(key)) {
+        return
+      }
+      const session = sessionsRef.current[Number(key) - 1]
+      if (!session) {
+        return
+      }
       event.preventDefault()
-      setSpotlightOpen(true)
+      requestSessionSelection(session.id, 'push')
     }
-    window.addEventListener('keydown', handleSearchShortcut)
-    return () => window.removeEventListener('keydown', handleSearchShortcut)
-  }, [])
+    window.addEventListener('keydown', handleNavigationShortcut)
+    return () => window.removeEventListener('keydown', handleNavigationShortcut)
+  }, [requestSessionSelection, selectOverview, selectUserSkills])
 
   useEffect(() => {
     setShowDebugEvents(loadSessionDebugPreference(selectedSessionID))
@@ -827,6 +866,9 @@ function App() {
   }) {
     const session = await createSession(params)
     applySession(session)
+    if (appViewRef.current === 'session') {
+      setComposerFocusRequest((current) => current + 1)
+    }
     selectSession(session.id, 'push')
     return session
   }
@@ -1076,6 +1118,7 @@ function App() {
 
       appViewRef.current = 'session'
       setAppView('session')
+      setComposerFocusRequest((current) => current + 1)
       setOpenWorkspaceFile(null)
       setFocusedFileLine(0)
       setFocusedEventSeq(result.event_seq ?? 0)
@@ -1731,6 +1774,7 @@ function App() {
               onCancel={handleCancel}
               onOpenFilePath={handleOpenWorkspacePath}
               onComposerFocus={handleComposerFocus}
+              composerFocusRequest={composerFocusRequest}
               onErrorMessageChange={setError}
               focusedEventSeq={focusedEventSeq}
               headerActions={viewToggle}

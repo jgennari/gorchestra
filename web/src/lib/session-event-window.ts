@@ -10,7 +10,7 @@ export const residentEventWindowPolicy = {
 } as const
 
 export const liveEventWindowPolicy = {
-  maxTurns: 2,
+  maxTurns: 50,
   maxDurableEvents: 1000,
   maxBytes: 2 * 1024 * 1024,
   maxTransientEvents: 200,
@@ -18,9 +18,9 @@ export const liveEventWindowPolicy = {
 } as const
 
 export const cachedEventWindowPolicy = {
-  maxTurns: 2,
-  maxDurableEvents: 500,
-  maxBytes: 512 * 1024,
+  maxTurns: 50,
+  maxDurableEvents: 1000,
+  maxBytes: 2 * 1024 * 1024,
   maxTransientEvents: 0,
   maxTransientBytes: 0,
 } as const

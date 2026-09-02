@@ -177,6 +177,7 @@ test('selecting a session updates the browser route', async () => {
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
 
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveFocus())
 })
 
 test('switching app views updates the session route and browser history', async () => {
@@ -428,7 +429,7 @@ test('loading with a session slug route selects that session without replacing t
     if (path === '/api/sessions/sess_2') {
       return jsonResponse(secondSession)
     }
-    if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_2/events?tail=true&turns=50&max_bytes=2097152') {
       return jsonResponse({ events: [] })
     }
     throw new Error(`unexpected URL ${path}`)
@@ -497,7 +498,7 @@ test('session route shows loading instead of no selection while sessions load', 
       })
       return jsonResponse({ sessions: [firstSession, secondSession] })
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152') {
       return jsonResponse({ events: [] })
     }
     throw new Error(`unexpected URL ${path}`)
@@ -552,7 +553,7 @@ test('cached session route renders the session shell while history loads', async
     if (path === '/api/sessions/sess_1') {
       return jsonResponse(firstSession)
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152') {
       await new Promise<void>((resolve) => {
         resolveEvents = resolve
       })
@@ -593,7 +594,7 @@ test('cached slug route renders the session shell while sessions load', async ()
     if (path === '/api/sessions/sess_2') {
       return jsonResponse(secondSession)
     }
-    if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_2/events?tail=true&turns=50&max_bytes=2097152') {
       return jsonResponse({ events: [] })
     }
     throw new Error(`unexpected URL ${path}`)
@@ -634,10 +635,10 @@ test('server session list wins over stale cached slug aliases', async () => {
     if (path === '/api/sessions/sess_2') {
       return jsonResponse(renamedSecondSession)
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152') {
       return jsonResponse({ events: [] })
     }
-    if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_2/events?tail=true&turns=50&max_bytes=2097152') {
       return jsonResponse({ events: [] })
     }
     throw new Error(`unexpected URL ${path}`)
@@ -673,7 +674,7 @@ test('session route shows inline chat history loading once session details are a
     if (path === '/api/sessions?limit=50') {
       return jsonResponse({ sessions: [firstSession, secondSession] })
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152') {
       await new Promise<void>((resolve) => {
         resolveEvents = resolve
       })
@@ -696,7 +697,7 @@ test('session route shows inline chat history loading once session details are a
   await waitFor(() => expect(screen.queryByText('Loading session...')).not.toBeInTheDocument())
 })
 
-test('session route restores cached transcript before network session loading finishes', async () => {
+test('session route restores cached transcript and reconnects without downloading the tail again', async () => {
   window.history.replaceState({}, '', '/sessions/sess_1')
   vi.stubGlobal('indexedDB', createFakeIndexedDB())
   clearSessionEventCacheForTest()
@@ -726,7 +727,7 @@ test('session route restores cached transcript before network session loading fi
     if (path === '/api/sessions/sess_1') {
       return jsonResponse(firstSession)
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152') {
       return jsonResponse({
         events: [
           event(10, 'user.message.completed', { text: 'Cached prompt' }),
@@ -742,12 +743,11 @@ test('session route restores cached transcript before network session loading fi
 
   await waitFor(() => expect(screen.getByText('Cached answer')).toBeInTheDocument(), { timeout: 3000 })
   expect(screen.queryByText('Loading session...')).not.toBeInTheDocument()
-  await waitFor(() =>
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/sess_1/events?tail=true&turns=2',
-      expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
+  expect(
+    fetch.mock.calls.some(
+      ([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152',
     ),
-  )
+  ).toBe(false)
   await findEventSource('/api/sessions/sess_1/events/stream?after_seq=11')
 
   await act(async () => {
@@ -794,6 +794,34 @@ test('search button opens global spotlight search', async () => {
   expect(fetch).toHaveBeenCalledWith('/api/search?q=Inspect&session_id=sess_1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
 })
 
+test('global navigation shortcuts open overview, user skills, and recent sessions', async () => {
+  const recentSessions = [
+    session('sess_3', 'Third newest', '2026-06-12T16:03:00Z'),
+    session('sess_1', 'Newest', '2026-06-12T16:05:00Z'),
+    session('sess_5', 'Fifth newest', '2026-06-12T16:01:00Z'),
+    session('sess_2', 'Second newest', '2026-06-12T16:04:00Z'),
+    session('sess_4', 'Fourth newest', '2026-06-12T16:02:00Z'),
+  ]
+  vi.stubGlobal('fetch', fetchMock({ sessions: recentSessions }))
+
+  render(<App />)
+  await screen.findByText('Fifth newest')
+
+  fireEvent.keyDown(window, { key: 'o', metaKey: true })
+  await waitFor(() => expect(window.location.pathname).toBe('/'))
+
+  fireEvent.keyDown(window, { key: 's', metaKey: true })
+  await waitFor(() => expect(window.location.pathname).toBe('/skills'))
+
+  fireEvent.keyDown(window, { key: '1', metaKey: true })
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/newest'))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveFocus())
+
+  fireEvent.keyDown(window, { key: '5', ctrlKey: true })
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/fifth-newest'))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveFocus())
+})
+
 test('initial session load fetches the recent event window and streams after the tail', async () => {
   const fetch = fetchMock({
     events: [event(39, 'agent.message.delta', { text: 'Tail' }), event(40, 'agent.message.completed', { text: 'Tail' })],
@@ -804,7 +832,7 @@ test('initial session load fetches the recent event window and streams after the
 
   await waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/sess_1/events?tail=true&turns=2',
+      '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152',
       expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
@@ -825,7 +853,7 @@ test('successful prompt submit relies on the existing live stream without refres
 
   await waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/sess_1/events?tail=true&turns=2',
+      '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152',
       expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
@@ -840,7 +868,7 @@ test('successful prompt submit relies on the existing live stream without refres
       expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
-  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2')).toHaveLength(1)
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152')).toHaveLength(1)
   act(() => {
     source.emit(event(41, 'user.message.completed', { text: 'Fresh prompt' }))
   })
@@ -866,7 +894,7 @@ test('successful prompt submit keeps the current transcript visible while awaiti
     if (path === '/api/sessions/sess_1/messages' && init?.method === 'POST') {
       return jsonResponse({ session_id: 'sess_1', status: 'running' })
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152') {
       tailRequests += 1
       return jsonResponse({ events: [event(40, 'user.message.completed', { text: 'Previous prompt' })] })
     }
@@ -898,18 +926,7 @@ test('successful prompt submit keeps the current transcript visible while awaiti
 test('switching back to a cached session restores transcript before replaying stream updates', async () => {
   const user = userEvent.setup()
   const baseFetch = fetchMock()
-  let tailRequests = 0
-  let resolveTailRefresh: (() => void) | undefined
   const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-    if (String(url) === '/api/sessions/sess_1/events?tail=true&turns=2') {
-      tailRequests += 1
-      if (tailRequests === 2) {
-        await new Promise<void>((resolve) => {
-          resolveTailRefresh = resolve
-        })
-        return jsonResponse({ events: [event(40, 'user.message.completed', { text: 'Cached prompt' })] })
-      }
-    }
     return baseFetch(url, init)
   })
   vi.stubGlobal('fetch', fetch)
@@ -930,13 +947,8 @@ test('switching back to a cached session restores transcript before replaying st
   expect(await screen.findByText('Cached prompt')).toBeInTheDocument()
   expect(screen.queryByText('Loading chat history...')).not.toBeInTheDocument()
   expect(
-    fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2'),
-  ).toHaveLength(2)
-
-  await act(async () => {
-    resolveTailRefresh?.()
-    await Promise.resolve()
-  })
+    fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152'),
+  ).toHaveLength(1)
 
   await waitFor(() =>
     expect(
@@ -965,7 +977,7 @@ test('reviewing history buffers live events until jumping without reconnecting t
   })
   let tailRequests = 0
   const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-    if (String(url) === '/api/sessions/sess_1/events?tail=true&turns=2') {
+    if (String(url) === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152') {
       tailRequests += 1
     }
     return baseFetch(url, init)
@@ -1074,7 +1086,7 @@ test('reaching the leading edge fetches the previous turn page', async () => {
 
   await waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
-      '/api/sessions/sess_1/events?before_seq=252&turns=2',
+      '/api/sessions/sess_1/events?before_seq=252&turns=25&max_bytes=1048576',
       expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
@@ -1092,7 +1104,7 @@ test('repeated leading-edge reaches grow the transcript without refetching loade
   })
   const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const path = String(url)
-    if (path === '/api/sessions/sess_1/events?before_seq=9&turns=2') {
+    if (path === '/api/sessions/sess_1/events?before_seq=9&turns=25&max_bytes=1048576') {
       return jsonResponse({
         events: [
           event(5, 'user.message.completed', { text: 'Prompt three' }),
@@ -1102,7 +1114,7 @@ test('repeated leading-edge reaches grow the transcript without refetching loade
         ],
       })
     }
-    if (path === '/api/sessions/sess_1/events?before_seq=5&turns=2') {
+    if (path === '/api/sessions/sess_1/events?before_seq=5&turns=25&max_bytes=1048576') {
       return jsonResponse({
         events: [
           event(1, 'user.message.completed', { text: 'Prompt one' }),
@@ -1132,10 +1144,10 @@ test('repeated leading-edge reaches grow the transcript without refetching loade
   await waitFor(() => expect(screen.getByText('Prompt one')).toBeInTheDocument())
   expect(screen.getByText('Prompt two')).toBeInTheDocument()
   expect(screen.getByText('Prompt six')).toBeInTheDocument()
-  expect(fetch.mock.calls.filter(([url]) => String(url).includes('events?tail=true&turns=2'))).toHaveLength(1)
+  expect(fetch.mock.calls.filter(([url]) => String(url).includes('events?tail=true&turns=50&max_bytes=2097152'))).toHaveLength(1)
   expect(fetch.mock.calls.filter(([url]) => String(url).includes('events?before_seq=')).map(([url]) => String(url))).toEqual([
-    '/api/sessions/sess_1/events?before_seq=9&turns=2',
-    '/api/sessions/sess_1/events?before_seq=5&turns=2',
+    '/api/sessions/sess_1/events?before_seq=9&turns=25&max_bytes=1048576',
+    '/api/sessions/sess_1/events?before_seq=5&turns=25&max_bytes=1048576',
   ])
 })
 
@@ -1150,7 +1162,7 @@ test('loaded older turns remain visible after submitting a new prompt', async ()
     ],
   })
   const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-    if (String(url) === '/api/sessions/sess_1/events?before_seq=5&turns=2') {
+    if (String(url) === '/api/sessions/sess_1/events?before_seq=5&turns=25&max_bytes=1048576') {
       return jsonResponse({
         events: [
           event(1, 'user.message.completed', { text: 'Prompt one' }),
@@ -1175,7 +1187,7 @@ test('loaded older turns remain visible after submitting a new prompt', async ()
 
   await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
 
-  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=2')).toHaveLength(1)
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152')).toHaveLength(1)
   act(() => {
     source.emit(event(9, 'user.message.completed', { text: 'Fresh prompt' }))
   })
@@ -1529,13 +1541,13 @@ function fetchMock({
         })
       }
     }
-    if (path === '/api/sessions/sess_1/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152') {
       return jsonResponse({ events: recentEvents })
     }
-    if (path === '/api/sessions/sess_2/events?tail=true&turns=2') {
+    if (path === '/api/sessions/sess_2/events?tail=true&turns=50&max_bytes=2097152') {
       return jsonResponse({ events: [] })
     }
-    if (/^\/api\/sessions\/[^/]+\/events\?tail=true&turns=2$/.test(path)) {
+    if (/^\/api\/sessions\/[^/]+\/events\?tail=true&turns=50&max_bytes=2097152$/.test(path)) {
       return jsonResponse({ events: [] })
     }
     const consoleMatch = path.match(/^\/api\/sessions\/([^/?]+)\/console$/)
@@ -1576,7 +1588,7 @@ function fetchMock({
     if (path === '/api/user-skills') {
       return jsonResponse({ home_path: '/Users/tester', skills: [] })
     }
-    if (path === '/api/sessions/sess_1/events?before_seq=252&turns=2') {
+    if (path === '/api/sessions/sess_1/events?before_seq=252&turns=25&max_bytes=1048576') {
       return jsonResponse({ events: olderEvents })
     }
     if (path === '/api/sessions/sess_1/files') {

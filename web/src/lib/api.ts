@@ -676,6 +676,7 @@ type AnswerUserInputResponse = {
 export type EventHistoryPage = {
   first_seq: number
   last_seq: number
+  server_last_seq?: number
   has_older: boolean
   has_newer: boolean
   starts_mid_turn: boolean
@@ -1164,12 +1165,16 @@ export async function resolvePermission(sessionID: string, requestID: string, op
 
 type EventListOptions = {
   includeDebug?: boolean
+  maxBytes?: number
 }
 
 function eventListParams(params: Record<string, string>, options: EventListOptions) {
   const search = new URLSearchParams(params)
   if (options.includeDebug) {
     search.set('include_debug', 'true')
+  }
+  if (options.maxBytes !== undefined && options.maxBytes > 0) {
+    search.set('max_bytes', String(Math.floor(options.maxBytes)))
   }
   return search
 }

@@ -13,14 +13,19 @@ import {
   appendBoundedEvent,
   boundEventWindow,
   cachedEventWindowPolicy,
+  eventWindowStats,
   liveEventWindowPolicy,
   mergeBoundedEvents,
   residentEventWindowPolicy,
 } from '@/lib/session-event-window'
 import {
   clearSessionCacheForTest,
+  ensurePersistentSessionStorage,
   readCachedSessionEvents as readPersistentCachedSessionEvents,
-  writeCachedSessionEvents as writePersistentCachedSessionEvents,
+  readCachedSessionEventsBefore as readPersistentCachedSessionEventsBefore,
+  writeCachedSessionEvent as writePersistentCachedSessionEvent,
+  writeCachedSessionEventPage as writePersistentCachedSessionEventPage,
+  writeCachedSessionEventWindow as writePersistentCachedSessionEventWindow,
 } from '@/lib/session-cache'
 
 export type StreamState = 'idle' | 'loading' | 'connected' | 'reconnecting' | 'disconnected'
@@ -42,23 +47,21 @@ type SessionEventCacheEntry = {
   usedAt: number
 }
 
-const cachedSessionLimit = 8
 const recentEventsRequestRetentionMs = 2000
-const persistentEventsWriteDelayMs = 1200
 const streamResyncEventType = 'stream.resync.required'
-export const initialEventHistoryByteBudget = 512 * 1024
+export const initialEventHistoryByteBudget = 2 * 1024 * 1024
 export const initialEventHistoryMaxTurns = 50
+const pagedEventHistoryByteBudget = 1024 * 1024
+const pagedEventHistoryTurns = 25
+const persistentHotWindowCheckpointSeqs = 250
+const memoryEventCacheBytesLimit = 32 * 1024 * 1024
+const memoryEventCacheEntryLimit = 50
 const sessionEventCache = new Map<string, SessionEventCacheEntry>()
 const recentEventsRequests = new Map<string, Promise<EventHistoryResponse>>()
-const persistentEventsWriteTimers = new Map<string, number>()
 
 export function clearSessionEventCacheForTest() {
   sessionEventCache.clear()
   recentEventsRequests.clear()
-  for (const timer of persistentEventsWriteTimers.values()) {
-    window.clearTimeout(timer)
-  }
-  persistentEventsWriteTimers.clear()
   clearSessionCacheForTest()
 }
 
@@ -85,6 +88,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const followingTailRef = useRef(true)
   const hasNewerEventsRef = useRef(false)
   const liveEventsRef = useRef<AgentEvent[]>([])
+  const persistentHotWindowSeqRef = useRef(0)
   const onEventRef = useRef(options.onEvent)
   const reconnectDelayMs = options.reconnectDelayMs ?? 1000
   const refreshKey = options.refreshKey ?? 0
@@ -126,6 +130,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       oldestSeqRef.current = 0
       newestSeqRef.current = 0
       liveEventsRef.current = []
+      persistentHotWindowSeqRef.current = 0
       loadedSessionIDRef.current = null
       selectedSessionIDRef.current = null
       loadedIncludeDebugEventsRef.current = false
@@ -143,6 +148,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         oldestSeqRef.current = cachedSession.oldestSeq
         newestSeqRef.current = lastSeq(cachedSession.events)
         liveEventsRef.current = cachedSession.events
+        persistentHotWindowSeqRef.current = 0
         loadedSessionIDRef.current = sessionID
         loadedIncludeDebugEventsRef.current = includeDebugEvents
         setEvents(cachedSession.events)
@@ -154,6 +160,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         oldestSeqRef.current = 0
         newestSeqRef.current = 0
         liveEventsRef.current = []
+        persistentHotWindowSeqRef.current = 0
         setEvents([])
         setLiveEvents([])
         setHasOlderEvents(false)
@@ -163,6 +170,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
 
     const activeSessionID = sessionID
     const activeIncludeDebugEvents = includeDebugEvents
+    if (!activeIncludeDebugEvents) void ensurePersistentSessionStorage()
     let closed = false
     let source: EventSource | null = null
     let reconnectTimer: number | undefined
@@ -212,8 +220,22 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           false,
           activeIncludeDebugEvents,
           lastSeqRef.current,
-          isTerminalEvent(event.type),
         )
+        if (!activeIncludeDebugEvents && !isTransientEvent(event)) {
+          void writePersistentCachedSessionEvent(activeSessionID, event, lastSeqRef.current)
+          if (
+            isTerminalEvent(event.type) ||
+            lastSeqRef.current - persistentHotWindowSeqRef.current >= persistentHotWindowCheckpointSeqs
+          ) {
+            persistentHotWindowSeqRef.current = lastSeqRef.current
+            void writePersistentCachedSessionEventWindow(
+              activeSessionID,
+              nextLive.events,
+              nextLive.trimmedStart || firstSeq(nextLive.events) > 1,
+              lastSeqRef.current,
+            )
+          }
+        }
         onEventRef.current?.(event)
       } catch (eventError) {
         setError(eventError instanceof Error ? eventError.message : 'Failed to parse event')
@@ -251,7 +273,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     function applyTail(history: EventHistoryResponse, preserveVisible: boolean) {
       const historyLastSeq = lastSeq(history.events)
       const normalizedHistoryEvents = appendEvents([], history.events)
-      lastSeqRef.current = Math.max(lastSeqRef.current, historyLastSeq)
+      lastSeqRef.current = Math.max(lastSeqRef.current, history.page?.server_last_seq ?? 0, historyLastSeq)
       const boundedLive = boundEventWindow(normalizedHistoryEvents, 'latest', liveEventWindowPolicy)
       liveEventsRef.current = boundedLive.events
       setLiveEvents(boundedLive.events)
@@ -281,8 +303,20 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         history.page?.has_newer ?? false,
         activeIncludeDebugEvents,
         lastSeqRef.current,
-        true,
       )
+      if (!activeIncludeDebugEvents) {
+        persistentHotWindowSeqRef.current = lastSeqRef.current
+        void writePersistentCachedSessionEventPage(activeSessionID, normalizedHistoryEvents, {
+          coverageFirstSeq:
+            history.page === undefined
+              ? firstSeq(normalizedHistoryEvents)
+              : history.page.first_seq ||
+                (history.events.length === 0 && history.page.server_last_seq ? 1 : 0),
+          coverageLastSeq: history.page?.server_last_seq ?? history.page?.last_seq ?? historyLastSeq,
+          serverLastSeq: history.page?.server_last_seq ?? lastSeqRef.current,
+          hasOlderEvents: pageHasOlder,
+        })
+      }
     }
 
     async function loadTail(preserveVisible: boolean) {
@@ -315,6 +349,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         const [history, tail] = await Promise.all([
           listEventTurnsAround(activeSessionID, targetSeq, 2, {
             includeDebug: activeIncludeDebugEvents,
+            maxBytes: pagedEventHistoryByteBudget,
           }),
           listAdaptiveRecentEventTurns(activeSessionID, activeIncludeDebugEvents),
         ])
@@ -327,7 +362,12 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setEvents(visible.events)
         oldestSeqRef.current = firstSeq(visible.events)
         newestSeqRef.current = lastSeq(visible.events)
-        lastSeqRef.current = Math.max(lastSeqRef.current, lastSeq(tail.events), newestSeqRef.current)
+        lastSeqRef.current = Math.max(
+          lastSeqRef.current,
+          tail.page?.server_last_seq ?? 0,
+          lastSeq(tail.events),
+          newestSeqRef.current,
+        )
         setHasOlderEvents((history.page?.has_older ?? oldestSeqRef.current > 1) || visible.trimmedStart)
         setHasNewerEvents((history.page?.has_newer ?? false) || visible.trimmedEnd)
         loadedSessionIDRef.current = activeSessionID
@@ -339,8 +379,30 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           false,
           activeIncludeDebugEvents,
           lastSeqRef.current,
-          true,
         )
+        if (!activeIncludeDebugEvents) {
+          persistentHotWindowSeqRef.current = lastSeqRef.current
+          void writePersistentCachedSessionEventWindow(
+            activeSessionID,
+            boundedLive.events,
+            (tail.page?.has_older ?? firstSeq(tail.events) > 1) || boundedLive.trimmedStart,
+            lastSeqRef.current,
+          )
+          void writePersistentCachedSessionEventPage(activeSessionID, history.events, {
+            coverageFirstSeq: history.page?.first_seq ?? firstSeq(history.events),
+            coverageLastSeq: history.page?.last_seq ?? lastSeq(history.events),
+            serverLastSeq: tail.page?.server_last_seq ?? lastSeqRef.current,
+            hasOlderEvents: history.page?.has_older,
+            updateHotWindow: false,
+          })
+          void writePersistentCachedSessionEventPage(activeSessionID, tail.events, {
+            coverageFirstSeq: tail.page?.first_seq ?? firstSeq(tail.events),
+            coverageLastSeq: tail.page?.server_last_seq ?? tail.page?.last_seq ?? lastSeq(tail.events),
+            serverLastSeq: tail.page?.server_last_seq ?? lastSeqRef.current,
+            hasOlderEvents: tail.page?.has_older,
+            updateHotWindow: false,
+          })
+        }
         connect(lastSeqRef.current)
       } catch (loadError) {
         if (closed) return
@@ -351,7 +413,10 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
 
     async function hydratePersistentCacheOrLoad() {
       setStreamState('loading')
-      const persistentSession = await readPersistentCachedSessionEvents(activeSessionID, activeIncludeDebugEvents)
+      const persistentSession = await readPersistentCachedSessionEvents(
+        activeSessionID,
+        activeIncludeDebugEvents,
+      )
       if (closed) return
       if (persistentSession) {
         const bounded = boundEventWindow(persistentSession.events, 'latest', cachedEventWindowPolicy)
@@ -359,20 +424,25 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         oldestSeqRef.current = firstSeq(bounded.events)
         newestSeqRef.current = lastSeq(bounded.events)
         liveEventsRef.current = bounded.events
+        persistentHotWindowSeqRef.current = persistentSession.lastSeq
         loadedSessionIDRef.current = activeSessionID
         loadedIncludeDebugEventsRef.current = activeIncludeDebugEvents
         setEvents(bounded.events)
         setLiveEvents(bounded.events)
         setHasOlderEvents(persistentSession.hasOlderEvents || bounded.trimmedStart)
         setHasNewerEvents(false)
+        connect(lastSeqRef.current)
+        return
       }
       await loadTail(false)
     }
 
     if (targetSeq > 0) {
       void loadTarget()
-    } else if (sameSessionRefresh || cachedSession) {
-      void loadTail(sameSessionRefresh)
+    } else if (sameSessionRefresh) {
+      void loadTail(true)
+    } else if (cachedSession) {
+      connect(lastSeqRef.current)
     } else {
       void hydratePersistentCacheOrLoad()
     }
@@ -381,6 +451,19 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       closed = true
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
       closeSource()
+      if (
+        !activeIncludeDebugEvents &&
+        liveEventsRef.current.length > 0 &&
+        lastSeqRef.current > persistentHotWindowSeqRef.current
+      ) {
+        persistentHotWindowSeqRef.current = lastSeqRef.current
+        void writePersistentCachedSessionEventWindow(
+          activeSessionID,
+          liveEventsRef.current,
+          firstSeq(liveEventsRef.current) > 1,
+          lastSeqRef.current,
+        )
+      }
       if (activeSessionIDRef.current === activeSessionID) activeSessionIDRef.current = null
       setStreamState('disconnected')
     }
@@ -399,9 +482,30 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     setLoadingOlderEvents(true)
     setError('')
     try {
-      const history = await listEventTurnsBefore(sessionID, beforeSeq, defaultEventTurnPageSize, {
-        includeDebug: includeDebugEvents,
-      })
+      const persistentHistory = await readPersistentCachedSessionEventsBefore(
+        sessionID,
+        beforeSeq,
+        pagedEventHistoryTurns,
+        pagedEventHistoryByteBudget,
+        includeDebugEvents,
+      )
+      const history = persistentHistory
+        ? {
+            events: persistentHistory.events,
+            page: {
+              first_seq: persistentHistory.oldestSeq,
+              last_seq: lastSeq(persistentHistory.events),
+              server_last_seq: persistentHistory.lastSeq,
+              has_older: persistentHistory.hasOlderEvents,
+              has_newer: true,
+              starts_mid_turn: false,
+              ends_mid_turn: true,
+            },
+          }
+        : await listEventTurnsBefore(sessionID, beforeSeq, pagedEventHistoryTurns, {
+            includeDebug: includeDebugEvents,
+            maxBytes: pagedEventHistoryByteBudget,
+          })
       if (activeSessionIDRef.current !== sessionID) return
       if (history.events.length === 0) {
         setHasOlderEvents(false)
@@ -415,6 +519,14 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setHasNewerEvents(hasNewerEventsRef.current || next.trimmedEnd)
         return next.events
       })
+      if (!persistentHistory && !includeDebugEvents) {
+        void writePersistentCachedSessionEventPage(sessionID, history.events, {
+          coverageFirstSeq: history.page?.first_seq ?? firstSeq(history.events),
+          coverageLastSeq: beforeSeq - 1,
+          serverLastSeq: history.page?.server_last_seq ?? lastSeqRef.current,
+          hasOlderEvents: history.page?.has_older,
+        })
+      }
     } catch (loadError) {
       if (activeSessionIDRef.current === sessionID) {
         setError(loadError instanceof Error ? loadError.message : 'Failed to load older events')
@@ -434,8 +546,9 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     setLoadingNewerEvents(true)
     setError('')
     try {
-      const history = await listEventTurnsAfter(sessionID, afterSeq, defaultEventTurnPageSize, {
+      const history = await listEventTurnsAfter(sessionID, afterSeq, pagedEventHistoryTurns, {
         includeDebug: includeDebugEvents,
+        maxBytes: pagedEventHistoryByteBudget,
       })
       if (activeSessionIDRef.current !== sessionID) return
       if (history.events.length === 0) {
@@ -453,6 +566,14 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         followingTailRef.current = !(hasNewer || next.trimmedEnd)
         return next.events
       })
+      if (!includeDebugEvents) {
+        void writePersistentCachedSessionEventPage(sessionID, history.events, {
+          coverageFirstSeq: history.page?.first_seq ?? afterSeq + 1,
+          coverageLastSeq: history.page?.last_seq ?? lastSeq(history.events),
+          serverLastSeq: history.page?.server_last_seq ?? lastSeqRef.current,
+          hasOlderEvents: history.page?.has_older,
+        })
+      }
     } catch (loadError) {
       if (activeSessionIDRef.current === sessionID) {
         setError(loadError instanceof Error ? loadError.message : 'Failed to load newer events')
@@ -490,6 +611,14 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setHasOlderEvents((history.page?.has_older ?? oldestSeqRef.current > 1) || next.trimmedStart)
         return next.events
       })
+      if (!includeDebugEvents) {
+        void writePersistentCachedSessionEventPage(sessionID, history.events, {
+          coverageFirstSeq: history.page?.first_seq ?? firstSeq(history.events),
+          coverageLastSeq: history.page?.last_seq ?? lastSeq(history.events),
+          serverLastSeq: history.page?.server_last_seq ?? lastSeqRef.current,
+          hasOlderEvents: history.page?.has_older,
+        })
+      }
     } catch (loadError) {
       if (activeSessionIDRef.current === sessionID) {
         setError(loadError instanceof Error ? loadError.message : 'Failed to refresh the latest events')
@@ -567,7 +696,6 @@ function writeCachedSessionEvents(
   hasNewerEvents: boolean,
   includeDebugEvents: boolean,
   cursorSeq = lastSeq(events),
-  persist = false,
 ) {
   const cacheKey = sessionEventCacheKey(sessionID, includeDebugEvents)
   const cacheableEvents = events.filter((event) => !isTransientEvent(event))
@@ -582,32 +710,6 @@ function writeCachedSessionEvents(
     usedAt: Date.now(),
   })
   evictOldSessionEventCaches()
-  if (persist && !includeDebugEvents) {
-    schedulePersistentSessionEventsWrite(
-      sessionID,
-      bounded.events,
-      hasOlderEvents || bounded.trimmedStart,
-      false,
-      Math.max(cursorSeq, lastSeq(bounded.events)),
-    )
-  }
-}
-
-function schedulePersistentSessionEventsWrite(
-  sessionID: string,
-  events: AgentEvent[],
-  hasOlderEvents: boolean,
-  includeDebugEvents: boolean,
-  cursorSeq: number,
-) {
-  const cacheKey = sessionEventCacheKey(sessionID, includeDebugEvents)
-  const existingTimer = persistentEventsWriteTimers.get(cacheKey)
-  if (existingTimer !== undefined) window.clearTimeout(existingTimer)
-  const timer = window.setTimeout(() => {
-    persistentEventsWriteTimers.delete(cacheKey)
-    void writePersistentCachedSessionEvents(sessionID, events, hasOlderEvents, includeDebugEvents, cursorSeq)
-  }, persistentEventsWriteDelayMs)
-  persistentEventsWriteTimers.set(cacheKey, timer)
 }
 
 function sessionEventCacheKey(sessionID: string, includeDebugEvents: boolean) {
@@ -631,67 +733,10 @@ export async function listAdaptiveRecentEventTurns(
   byteBudget = initialEventHistoryByteBudget,
   maxTurns = initialEventHistoryMaxTurns,
 ) {
-  const initial = await listRecentEventTurns(sessionID, defaultEventTurnPageSize, {
+  return listRecentEventTurns(sessionID, maxTurns, {
     includeDebug: includeDebugEvents,
+    maxBytes: byteBudget,
   })
-  let events = [...initial.events]
-  let hasOlder = initial.page?.has_older === true
-  let turns = eventTurnCount(events)
-
-  while (hasOlder && turns > 0 && turns < maxTurns) {
-    const usedBytes = serializedHistoryBytes(events)
-    if (turns >= defaultEventTurnPageSize && usedBytes >= byteBudget) {
-      break
-    }
-
-    const remainingBytes = Math.max(1, byteBudget - usedBytes)
-    const averageTurnBytes = Math.max(1, Math.ceil(usedBytes / turns))
-    const requestedTurns = Math.min(maxTurns - turns, Math.max(1, Math.ceil(remainingBytes / averageTurnBytes)))
-    const beforeSeq = firstSeq(events)
-    if (beforeSeq <= 1) {
-      hasOlder = false
-      break
-    }
-
-    const older = await listEventTurnsBefore(sessionID, beforeSeq, requestedTurns, {
-      includeDebug: includeDebugEvents,
-    })
-    if (older.events.length === 0) {
-      hasOlder = false
-      break
-    }
-
-    const merged = appendEvents([], [...older.events, ...events])
-    const bounded = trimEventsToRecentTurnBudget(
-      merged,
-      byteBudget,
-      defaultEventTurnPageSize,
-      maxTurns,
-      older.page?.has_older !== true,
-    )
-    const trimmedForBudget = bounded.length < merged.length
-    events = bounded
-    turns = eventTurnCount(events)
-    hasOlder = trimmedForBudget || older.page?.has_older === true
-    if (trimmedForBudget || firstSeq(older.events) >= beforeSeq) {
-      break
-    }
-  }
-
-  const first = firstSeq(events)
-  const last = lastSeq(events)
-  const inferredOlder = initial.page === undefined && first > 1
-  return {
-    events,
-    page: {
-      first_seq: first,
-      last_seq: last,
-      has_older: hasOlder || inferredOlder,
-      has_newer: initial.page?.has_newer ?? false,
-      starts_mid_turn: hasOlder && events[0]?.type !== 'user.message.completed',
-      ends_mid_turn: initial.page?.ends_mid_turn ?? false,
-    },
-  }
 }
 
 export function trimEventsToRecentTurnBudget(
@@ -730,10 +775,6 @@ export function trimEventsToRecentTurnBudget(
   return events.slice(start)
 }
 
-function eventTurnCount(events: AgentEvent[]) {
-  return events.reduce((count, event) => count + (event.type === 'user.message.completed' ? 1 : 0), 0)
-}
-
 function serializedHistoryBytes(events: AgentEvent[]) {
   const encoder = new TextEncoder()
   return events.reduce((bytes, event) => {
@@ -746,9 +787,11 @@ function serializedHistoryBytes(events: AgentEvent[]) {
 }
 
 function evictOldSessionEventCaches() {
-  if (sessionEventCache.size <= cachedSessionLimit) return
   const entries = [...sessionEventCache.entries()].sort((left, right) => left[1].usedAt - right[1].usedAt)
-  for (const [sessionID] of entries.slice(0, sessionEventCache.size - cachedSessionLimit)) {
+  let totalBytes = entries.reduce((total, [, entry]) => total + eventWindowStats(entry.events).bytes, 0)
+  for (const [sessionID, entry] of entries) {
+    if (totalBytes <= memoryEventCacheBytesLimit && sessionEventCache.size <= memoryEventCacheEntryLimit) break
     sessionEventCache.delete(sessionID)
+    totalBytes -= eventWindowStats(entry.events).bytes
   }
 }

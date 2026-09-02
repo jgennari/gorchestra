@@ -62,6 +62,33 @@ test('session list exposes spotlight search without the old filter controls', as
   expect(onSearch).toHaveBeenCalledOnce()
 })
 
+test('session list shows navigation shortcuts and numbers the first five sessions', () => {
+  const extraSessions = [
+    sessionFixture('sess_3', 'Third'),
+    sessionFixture('sess_4', 'Fourth'),
+    sessionFixture('sess_5', 'Fifth'),
+    sessionFixture('sess_6', 'Sixth'),
+  ]
+  const { container } = render(<SessionListHarness sessions={[...sessions.slice(0, 2), ...extraSessions]} />)
+  const modifier = navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl '
+  const shortcuts = Array.from(container.querySelectorAll('kbd'), (element) => element.textContent)
+
+  expect(shortcuts).toEqual([
+    `${modifier}O`,
+    `${modifier}S`,
+    `${modifier}K`,
+    `${modifier}1`,
+    `${modifier}2`,
+    `${modifier}3`,
+    `${modifier}4`,
+    `${modifier}5`,
+  ])
+  const sessionRows = container.querySelectorAll('.session-row')
+  expect(sessionRows[0].querySelector('kbd')?.closest('.session-row-meta')).toBeNull()
+  expect(sessionRows[4].querySelector('kbd')).toHaveTextContent(`${modifier}5`)
+  expect(sessionRows[5].querySelector('kbd')).toBeNull()
+})
+
 test('session rows are keyboard selectable', async () => {
   const user = userEvent.setup()
   const onSelect = vi.fn()
@@ -168,4 +195,12 @@ function baseProps() {
 
 function SessionListHarness(props: Partial<ComponentProps<typeof SessionList>>) {
   return <SessionList {...baseProps()} {...props} />
+}
+
+function sessionFixture(id: string, title: string): Session {
+  return {
+    ...sessions[0],
+    id,
+    title,
+  }
 }

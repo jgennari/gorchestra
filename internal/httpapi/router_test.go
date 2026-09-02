@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -972,6 +974,132 @@ func TestEventHistoryTailReturnsCompleteRecentTurns(t *testing.T) {
 	}
 }
 
+func TestEventHistoryLatestByteBudgetKeepsWholeTurns(t *testing.T) {
+	events := []store.Event{
+		testEvent(1, "session.status.updated"),
+		testEvent(2, "user.message.completed"),
+		testEventWithPayload(3, "agent.message.completed", map[string]any{"text": strings.Repeat("a", 512)}),
+		testEvent(4, "user.message.completed"),
+		testEventWithPayload(5, "tool.call.completed", map[string]any{"text": strings.Repeat("b", 512)}),
+		testEvent(6, "agent.message.completed"),
+	}
+	all := eventResponses(events)
+	budget := encodedEventResponsesBytes(all[3:]) + 2
+
+	responses := boundedEventResponses(events, true, budget)
+	if got := eventSeqs(responses); !reflect.DeepEqual(got, []int64{4, 5, 6}) {
+		t.Fatalf("expected the latest complete turn, got %v", got)
+	}
+	if responses[0].Type != "user.message.completed" {
+		t.Fatalf("expected a whole-turn boundary, got %q", responses[0].Type)
+	}
+}
+
+func TestEventHistoryLatestByteBudgetPreservesPreambleWhenItFits(t *testing.T) {
+	events := []store.Event{
+		testEvent(1, "session.status.updated"),
+		testEvent(2, "user.message.completed"),
+		testEvent(3, "agent.message.completed"),
+	}
+
+	responses := boundedEventResponses(events, true, maxEventHistoryBytes)
+	if got := eventSeqs(responses); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
+		t.Fatalf("expected fitting preamble events to remain, got %v", got)
+	}
+}
+
+func TestEventHistoryTurnWindowExpandsPastDefaultEventCountWhenBytesRemain(t *testing.T) {
+	fakeStore := newFakeHTTPStore()
+	fakeStore.addSession(testSessionID)
+	events := make([]store.Event, 0, 600)
+	for seq := int64(1); seq <= 600; seq++ {
+		eventType := "agent.message.completed"
+		if seq == 1 || seq%100 == 1 {
+			eventType = "user.message.completed"
+		}
+		events = append(events, testEvent(seq, eventType))
+	}
+	fakeStore.setEvents(testSessionID, events...)
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/sessions/"+testSessionID+"/events?tail=true&turns=50&max_bytes=2097152",
+		nil,
+	)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: fakeStore}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+	if got, want := len(response.Events), 600; got != want {
+		t.Fatalf("expected %d byte-fitting events, got %d", want, got)
+	}
+	if got := fakeStore.listCallCount(); got != 2 {
+		t.Fatalf("expected adaptive 500 then 1000 event reads, got %d", got)
+	}
+}
+
+func TestEventHistoryReportsServerCursorWhenVisiblePageIsEmpty(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(testSessionID, testEvent(4, "provider.codex.request"))
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?after_seq=0", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response eventHistoryResponse
+	decodeJSON(t, rec, &response)
+	if len(response.Events) != 0 || response.Page.ServerLastSeq != 4 {
+		t.Fatalf("expected empty visible page with server cursor 4, got %#v", response)
+	}
+}
+
+func TestEventHistoryCompressesLargeJSONResponses(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+	store.setEvents(
+		testSessionID,
+		testEventWithPayload(1, "agent.message.completed", map[string]any{"text": strings.Repeat("compressible", 512)}),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events?after_seq=0", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("expected gzip response, got %q", got)
+	}
+	if got := rec.Header().Get("Vary"); !strings.Contains(got, "Accept-Encoding") {
+		t.Fatalf("expected Accept-Encoding vary header, got %q", got)
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("open gzip response: %v", err)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read gzip response: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("close gzip response: %v", err)
+	}
+	var response eventHistoryResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("decode gzip response: %v", err)
+	}
+	if got := eventSeqs(response.Events); !reflect.DeepEqual(got, []int64{1}) {
+		t.Fatalf("expected compressed event response, got %v", got)
+	}
+}
+
 func TestEventHistoryBeforeSeqReturnsPreviousCompleteTurns(t *testing.T) {
 	store := newFakeHTTPStore()
 	store.addSession(testSessionID)
@@ -1088,6 +1216,29 @@ func TestEventHistoryRejectsInvalidTurnPagination(t *testing.T) {
 			NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestEventHistoryRejectsInvalidByteBudget(t *testing.T) {
+	for _, maxBytes := range []string{"0", "-1", "nope"} {
+		t.Run(maxBytes, func(t *testing.T) {
+			store := newFakeHTTPStore()
+			store.addSession(testSessionID)
+			req := httptest.NewRequest(
+				http.MethodGet,
+				"/api/sessions/"+testSessionID+"/events?tail=true&turns=2&max_bytes="+maxBytes,
+				nil,
+			)
+			rec := httptest.NewRecorder()
+			NewRouter(Dependencies{Store: store}).ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+			}
+			assertErrorResponse(t, rec, "max_bytes must be a positive integer")
+			if got := store.listCallCount(); got != 0 {
+				t.Fatalf("expected no history read, got %d", got)
 			}
 		})
 	}

@@ -6,10 +6,12 @@ import {
   persistentCachedSingleEventBytesLimit,
   readCachedSession,
   readCachedSessionEvents,
+  readCachedSessionEventsBefore,
   readCachedSessionSnapshot,
   readCachedSessionSnapshotBySlug,
   writeCachedSession,
   writeCachedSessionEvents,
+  writeCachedSessionEventPage,
   writeCachedSessionSnapshot,
 } from '@/lib/session-cache'
 import { createFakeIndexedDB } from '@/test/fake-indexeddb'
@@ -48,15 +50,15 @@ test('session cache updates stale sync slug aliases when titles change', () => {
 })
 
 test('session cache evicts old sessions after the cache limit', async () => {
-  for (let index = 1; index <= 9; index += 1) {
+  for (let index = 1; index <= 51; index += 1) {
     await writeCachedSession(session(`sess_${index}`))
   }
 
   expect(await readCachedSession('sess_1')).toBeNull()
-  expect(await readCachedSession('sess_9')).toMatchObject({ id: 'sess_9' })
+  expect(await readCachedSession('sess_51')).toMatchObject({ id: 'sess_51' })
   expect(readCachedSessionSnapshot('sess_1')).toBeNull()
   expect(readCachedSessionSnapshotBySlug('session-sess-1')).toBeNull()
-  expect(readCachedSessionSnapshot('sess_9')).toMatchObject({ id: 'sess_9' })
+  expect(readCachedSessionSnapshot('sess_51')).toMatchObject({ id: 'sess_51' })
 })
 
 test('session cache ignores malformed sync snapshot data', () => {
@@ -89,6 +91,23 @@ test('session cache stores a trimmed recent event window', async () => {
   expect(cached?.hasOlderEvents).toBe(true)
 })
 
+test('session cache restores the hot window without the paged event index', async () => {
+  await writeCachedSessionEvents(
+    'sess_1',
+    [event(10, 'user.message.completed'), event(11, 'agent.message.completed')],
+    true,
+  )
+  const db = await openFakeDB(5, () => undefined)
+  await deleteFakeRecords(db, 'event-records', [eventRecordKey('sess_1', 10), eventRecordKey('sess_1', 11)])
+  await deleteFakeRecords(db, 'event-meta', ['sess_1'])
+  clearSessionCacheForTest()
+
+  const cached = await readCachedSessionEvents('sess_1')
+
+  expect(cached?.events.map((item) => item.seq)).toEqual([10, 11])
+  expect(cached).toMatchObject({ lastSeq: 11, oldestSeq: 10, hasOlderEvents: true })
+})
+
 test('session cache excludes transient deltas while retaining the stream cursor', async () => {
   await writeCachedSessionEvents(
     'sess_1',
@@ -108,7 +127,7 @@ test('session cache excludes transient deltas while retaining the stream cursor'
   expect(cached?.hasOlderEvents).toBe(false)
 })
 
-test('session cache drops oversized individual events from persisted event windows', async () => {
+test('session cache compacts oversized individual events without leaving a coverage hole', async () => {
   await writeCachedSessionEvents(
     'sess_1',
     [
@@ -120,9 +139,10 @@ test('session cache drops oversized individual events from persisted event windo
   )
 
   const cached = await readCachedSessionEvents('sess_1')
-  expect(cached?.events.map((item) => item.seq)).toEqual([1, 3])
+  expect(cached?.events.map((item) => item.seq)).toEqual([1, 2, 3])
+  expect(cached?.events[1].payload).toEqual({ _gorchestra_window_truncated: true })
   expect(cached?.lastSeq).toBe(3)
-  expect(cached?.hasOlderEvents).toBe(true)
+  expect(cached?.hasOlderEvents).toBe(false)
 })
 
 test('session event cache remains enabled on iOS browsers', async () => {
@@ -153,7 +173,7 @@ test('session event cache does not persist debug windows', async () => {
   expect(await readCachedSessionEvents('sess_1', true)).toBeNull()
 })
 
-test('session cache v3 upgrade clears old event windows but keeps session snapshots', async () => {
+test('session cache v5 upgrade migrates old event windows and keeps session snapshots', async () => {
   const oldDB = await openFakeDB(2, (db) => {
     db.createObjectStore('sessions')
     db.createObjectStore('events')
@@ -170,10 +190,67 @@ test('session cache v3 upgrade clears old event windows but keeps session snapsh
   clearSessionCacheForTest()
 
   expect(await readCachedSession('sess_1')).toMatchObject({ id: 'sess_1' })
-  expect(await readCachedSessionEvents('sess_1')).toBeNull()
+  expect(await readCachedSessionEvents('sess_1')).toMatchObject({ lastSeq: 1, oldestSeq: 1 })
 
   await writeCachedSessionEvents('sess_1', [event(2)], false)
-  expect(await readCachedSessionEvents('sess_1')).toMatchObject({ lastSeq: 2, oldestSeq: 2 })
+  expect(await readCachedSessionEvents('sess_1')).toMatchObject({ lastSeq: 2, oldestSeq: 1 })
+})
+
+test('session cache v5 lazily creates a hot window from the v4 paged index', async () => {
+  const oldDB = await openFakeDB(4, (db) => {
+    db.createObjectStore('sessions', { keyPath: 'id' })
+    db.createObjectStore('events', { keyPath: 'sessionID' })
+    const records = db.createObjectStore('event-records', { keyPath: 'key' })
+    records.createIndex('by-session', 'sessionID')
+    db.createObjectStore('event-meta', { keyPath: 'sessionID' })
+  })
+  const cachedEvent = event(7)
+  await putFakeRecord(oldDB, 'event-records', {
+    key: eventRecordKey('sess_1', 7),
+    sessionID: 'sess_1',
+    seq: 7,
+    event: cachedEvent,
+    bytes: new TextEncoder().encode(JSON.stringify(cachedEvent)).byteLength,
+  })
+  await putFakeRecord(oldDB, 'event-meta', {
+    sessionID: 'sess_1',
+    lastSeq: 7,
+    hasOlderEvents: true,
+    usedAt: Date.now(),
+    bytes: new TextEncoder().encode(JSON.stringify(cachedEvent)).byteLength,
+    coverage: [{ firstSeq: 7, lastSeq: 7 }],
+  })
+  clearSessionCacheForTest()
+
+  expect(await readCachedSessionEvents('sess_1')).toMatchObject({ lastSeq: 7, oldestSeq: 7 })
+  expect(await getFakeRecord(oldDB, 'event-hot-window', 'sess_1')).toMatchObject({ lastSeq: 7 })
+
+  await deleteFakeRecords(oldDB, 'event-records', [eventRecordKey('sess_1', 7)])
+  await deleteFakeRecords(oldDB, 'event-meta', ['sess_1'])
+  clearSessionCacheForTest()
+  expect(await readCachedSessionEvents('sess_1')).toMatchObject({ lastSeq: 7, oldestSeq: 7 })
+})
+
+test('session cache reuses previously fetched older page coverage', async () => {
+  await writeCachedSessionEventPage('sess_1', [event(5), event(6)], {
+    coverageFirstSeq: 5,
+    coverageLastSeq: 6,
+    serverLastSeq: 6,
+    hasOlderEvents: true,
+  })
+  expect(await readCachedSessionEventsBefore('sess_1', 5)).toBeNull()
+
+  await writeCachedSessionEventPage('sess_1', [event(1), event(2), event(3), event(4)], {
+    coverageFirstSeq: 1,
+    coverageLastSeq: 4,
+    serverLastSeq: 6,
+    hasOlderEvents: false,
+  })
+
+  const cached = await readCachedSessionEventsBefore('sess_1', 5)
+  expect(cached?.events.map((item) => item.seq)).toEqual([1, 2, 3, 4])
+  expect(cached?.hasOlderEvents).toBe(false)
+  expect(cached?.lastSeq).toBe(6)
 })
 
 test('session cache no-ops when IndexedDB is unavailable', async () => {
@@ -202,6 +279,27 @@ function putFakeRecord(db: IDBDatabase, storeName: string, value: unknown): Prom
     transaction.oncomplete = () => resolve()
     transaction.objectStore(storeName).put(value)
   })
+}
+
+function getFakeRecord(db: IDBDatabase, storeName: string, key: IDBValidKey): Promise<unknown> {
+  return new Promise((resolve) => {
+    const request = db.transaction(storeName, 'readonly').objectStore(storeName).get(key)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => resolve(undefined)
+  })
+}
+
+function deleteFakeRecords(db: IDBDatabase, storeName: string, keys: IDBValidKey[]): Promise<void> {
+  return new Promise((resolve) => {
+    const transaction = db.transaction(storeName, 'readwrite')
+    transaction.oncomplete = () => resolve()
+    const store = transaction.objectStore(storeName)
+    keys.forEach((key) => store.delete(key))
+  })
+}
+
+function eventRecordKey(sessionID: string, seq: number) {
+  return `${sessionID}:${String(seq).padStart(20, '0')}`
 }
 
 function session(id: string, title = `Session ${id}`): Session {

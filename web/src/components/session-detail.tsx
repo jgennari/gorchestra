@@ -53,6 +53,7 @@ type Props = {
   onCancel: () => Promise<void>
   onOpenFilePath?: (path: string) => Promise<void> | void
   onComposerFocus?: () => void
+  composerFocusRequest?: number
   onErrorMessageChange?: (message: string) => void
   headerActions?: ReactNode
   mobileLeadingAction?: ReactNode
@@ -81,6 +82,7 @@ export function SessionDetail({
   onCancel,
   onOpenFilePath,
   onComposerFocus,
+  composerFocusRequest = 0,
   onErrorMessageChange,
   headerActions,
   mobileLeadingAction,
@@ -254,6 +256,7 @@ export function SessionDetail({
             onCancel={session.status === 'running' ? onCancel : undefined}
             onError={onErrorMessageChange}
             onFocus={onComposerFocus}
+            focusRequest={composerFocusRequest}
           />
         </div>
       </div>
