@@ -494,7 +494,7 @@ test('scrolling toward newer history loads another page outside the snap zone', 
   expect(screen.queryByRole('button', { name: 'Load newer events' })).not.toBeInTheDocument()
 })
 
-test('settled forward scrolling in the generous snap zone adopts the live tail', async () => {
+test('settled forward scrolling within 16px adopts the live tail', async () => {
   const onJumpToLatest = vi.fn()
   const { rerender } = render(
     <ChatTranscript
@@ -505,7 +505,7 @@ test('settled forward scrolling in the generous snap zone adopts the live tail',
     />,
   )
   const log = screen.getByRole('log', { name: 'Chat messages' })
-  setScrollMetrics(log, { scrollTop: 700, scrollHeight: 1400, clientHeight: 400 })
+  setScrollMetrics(log, { scrollTop: 990, scrollHeight: 1400, clientHeight: 400 })
 
   fireEvent.wheel(log, { deltaY: 100 })
   fireEvent.scroll(log)
@@ -524,7 +524,7 @@ test('settled forward scrolling in the generous snap zone adopts the live tail',
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 })
 
-test('reversing away from the tail before scroll settle cancels the pending snap', async () => {
+test('reversing away from the 16px reattach zone before scroll settle cancels the pending snap', async () => {
   vi.useFakeTimers()
   try {
     const onJumpToLatest = vi.fn()
@@ -538,12 +538,12 @@ test('reversing away from the tail before scroll settle cancels the pending snap
     )
     const log = screen.getByRole('log', { name: 'Chat messages' })
 
-    setScrollMetrics(log, { scrollTop: 700, scrollHeight: 1400, clientHeight: 400 })
+    setScrollMetrics(log, { scrollTop: 990, scrollHeight: 1400, clientHeight: 400 })
     fireEvent.wheel(log, { deltaY: 100 })
     fireEvent.scroll(log)
     expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 
-    setScrollMetrics(log, { scrollTop: 650, scrollHeight: 1400, clientHeight: 400 })
+    setScrollMetrics(log, { scrollTop: 900, scrollHeight: 1400, clientHeight: 400 })
     fireEvent.wheel(log, { deltaY: -100 })
     fireEvent.scroll(log)
     expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
@@ -572,7 +572,7 @@ test('settled forward scrolling near the tail pulls to the physical bottom', asy
   fireEvent.wheel(log, { deltaY: -100 })
   fireEvent.scroll(log)
   await settleVirtualScroll()
-  setScrollMetrics(log, { scrollTop: 1370, scrollHeight: 2000, clientHeight: 400 })
+  setScrollMetrics(log, { scrollTop: 1590, scrollHeight: 2000, clientHeight: 400 })
   fireEvent.wheel(log, { deltaY: 100 })
   fireEvent.scroll(log)
   await settleVirtualScroll()
@@ -582,19 +582,219 @@ test('settled forward scrolling near the tail pulls to the physical bottom', asy
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 })
 
-test('an upward gesture pauses following even inside the generous snap zone', async () => {
+test('an upward gesture within 48px snaps back without pausing following', async () => {
+  const onFollowingTailChange = vi.fn()
   render(
-    <ChatTranscript events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]} />,
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
   )
   const log = screen.getByRole('log', { name: 'Chat messages' })
 
   setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
   fireEvent.scroll(log)
   await settleVirtualScroll()
-  setScrollMetrics(log, { scrollTop: 1500, scrollHeight: 2000, clientHeight: 400 })
+  setScrollMetrics(log, { scrollTop: 1568, scrollHeight: 2000, clientHeight: 400 })
   fireEvent.wheel(log, { deltaY: -100 })
   fireEvent.scroll(log)
 
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+  expect(onFollowingTailChange).not.toHaveBeenCalledWith(false)
+  await settleVirtualScroll()
+  expect(log.scrollTop).toBe(2000)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
+test('an upward gesture beyond 48px pauses following', async () => {
+  const onFollowingTailChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  setScrollMetrics(log, { scrollTop: 1551, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.wheel(log, { deltaY: -100 })
+  fireEvent.scroll(log)
+
+  expect(onFollowingTailChange).toHaveBeenLastCalledWith(false)
+  expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+})
+
+test('one-pixel wheel jitter stays pinned without flashing jump to latest', async () => {
+  const onFollowingTailChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  setScrollMetrics(log, { scrollTop: 1599, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.wheel(log, { deltaY: -1 })
+  fireEvent.scroll(log)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.wheel(log, { deltaY: 1 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+
+  expect(onFollowingTailChange).not.toHaveBeenCalledWith(false)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
+test('segmented touch momentum can reattach after an intermediate virtualizer settle', async () => {
+  const onFollowingTailChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  setScrollMetrics(log, { scrollTop: 1315, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.pointerDown(log, { pointerType: 'touch', clientY: 250 })
+  fireEvent.pointerMove(log, { pointerType: 'touch', clientY: 550 })
+  fireEvent.pointerCancel(log, { pointerType: 'touch' })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+
+  fireEvent.pointerDown(log, { pointerType: 'touch', clientY: 650 })
+  fireEvent.pointerMove(log, { pointerType: 'touch', clientY: 610 })
+  fireEvent.pointerCancel(log, { pointerType: 'touch' })
+  setScrollMetrics(log, { scrollTop: 1340, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  setScrollMetrics(log, { scrollTop: 1500, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  setScrollMetrics(log, { scrollTop: 1580, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  // The native scroll path remains authoritative even if WebKit does not
+  // produce a corresponding synchronous virtualizer change.
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+
+  expect(onFollowingTailChange).toHaveBeenLastCalledWith(true)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
+test('the physical bottom hydrates newer events even after input intent has settled', async () => {
+  vi.useFakeTimers()
+  try {
+    const onJumpToLatest = vi.fn()
+    const { rerender } = render(
+      <ChatTranscript
+        hasNewerEvents
+        onJumpToLatest={onJumpToLatest}
+        events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      />,
+    )
+    const log = screen.getByRole('log', { name: 'Chat messages' })
+
+    setScrollMetrics(log, { scrollTop: 1500, scrollHeight: 2000, clientHeight: 400 })
+    fireEvent.wheel(log, { deltaY: 100 })
+    fireEvent.scroll(log)
+    await act(async () => vi.runAllTimersAsync())
+    setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+    fireEvent.scroll(log)
+    await act(async () => vi.runAllTimersAsync())
+
+    expect(onJumpToLatest).toHaveBeenCalledOnce()
+    rerender(
+      <ChatTranscript
+        onJumpToLatest={onJumpToLatest}
+        events={[event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Latest' })]}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('ArrowUp uses the upward escape threshold instead of immediately pausing', async () => {
+  const onFollowingTailChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  fireEvent.keyDown(log, { key: 'ArrowUp' })
+  setScrollMetrics(log, { scrollTop: 1580, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+
+  expect(onFollowingTailChange).not.toHaveBeenCalledWith(false)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
+test.each(['PageUp', 'Home'])('%s immediately pauses following', (key) => {
+  const onFollowingTailChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  fireEvent.keyDown(log, { key })
+
+  expect(onFollowingTailChange).toHaveBeenLastCalledWith(false)
+  expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+})
+
+test('a slight forward scroll does not snap from far above the tail', async () => {
+  const onFollowingTailChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  await act(async () => {
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+  })
+  setScrollMetrics(log, { scrollTop: 1150, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.wheel(log, { deltaY: -450 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+
+  setScrollMetrics(log, { scrollTop: 1151, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.wheel(log, { deltaY: 1 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+
+  expect(onFollowingTailChange).toHaveBeenLastCalledWith(false)
   expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
 })
 

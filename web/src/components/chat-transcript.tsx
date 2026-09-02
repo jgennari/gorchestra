@@ -44,8 +44,10 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } 
 import { cn } from '@/lib/utils'
 
 const TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX = 6
-const AUTO_SCROLL_SNAP_MIN_PX = 240
-const AUTO_SCROLL_SNAP_VIEWPORT_RATIO = 0.4
+// Hysteresis keeps incidental wheel/touch jitter magnetized to the live tail,
+// while requiring a return to the physical tail before following resumes.
+const AUTO_SCROLL_DETACH_THRESHOLD_PX = 48
+const AUTO_SCROLL_REATTACH_THRESHOLD_PX = 16
 const PHYSICAL_TAIL_THRESHOLD_PX = 2
 const HISTORY_LOAD_EDGE_ROWS = 3
 
@@ -279,7 +281,16 @@ export function ChatTranscript({
     }
 
     if (sync && direction === 'backward' && userDirection === 'backward') {
-      pauseFollowing()
+      const distanceFromEnd = physicalDistanceFromEnd(scrollerElementRef.current)
+      if (followingTailRef.current) {
+        if (distanceFromEnd > AUTO_SCROLL_DETACH_THRESHOLD_PX) {
+          pauseFollowing()
+        } else {
+          setSnapToTailPendingValue(true)
+        }
+      } else {
+        setSnapToTailPendingValue(false)
+      }
       const firstVisibleIndex = instance.getVirtualItems()[0]?.index ?? Number.POSITIVE_INFINITY
       if (firstVisibleIndex <= HISTORY_LOAD_EDGE_ROWS) void requestOlderEvents()
       return
@@ -287,12 +298,22 @@ export function ChatTranscript({
 
     if (sync && direction === 'forward' && userDirection === 'forward') {
       const distanceFromEnd = physicalDistanceFromEnd(scrollerElementRef.current)
+      if (followingTailRef.current) {
+        if (distanceFromEnd <= PHYSICAL_TAIL_THRESHOLD_PX) {
+          setSnapToTailPendingValue(false)
+        } else if (distanceFromEnd <= AUTO_SCROLL_DETACH_THRESHOLD_PX) {
+          setSnapToTailPendingValue(true)
+        } else {
+          pauseFollowing()
+        }
+        return
+      }
       if (distanceFromEnd <= PHYSICAL_TAIL_THRESHOLD_PX && !hasNewerEvents) {
         setSnapToTailPendingValue(false)
         setFollowingTail(true)
         return
       }
-      if (distanceFromEnd <= tailSnapDistance(instance, tailClearanceHeight)) {
+      if (distanceFromEnd <= AUTO_SCROLL_REATTACH_THRESHOLD_PX) {
         setSnapToTailPendingValue(true)
         return
       }
@@ -305,10 +326,18 @@ export function ChatTranscript({
     }
 
     if (!sync && !instance.isScrolling) {
-      const shouldResume = snapToTailPendingRef.current && lastScrollDirectionRef.current === 'forward'
+      const shouldSnap = snapToTailPendingRef.current
       lastScrollDirectionRef.current = null
       userScrollIntentRef.current = null
-      if (shouldResume) void resumeFollowing(instance)
+      if (!shouldSnap) return
+      if (followingTailRef.current && !hasNewerEvents) {
+        setSnapToTailPendingValue(false)
+        scheduleTailScroll(instance)
+      } else if (physicalDistanceFromEnd(scrollerElementRef.current) <= AUTO_SCROLL_REATTACH_THRESHOLD_PX) {
+        void resumeFollowing(instance)
+      } else {
+        setSnapToTailPendingValue(false)
+      }
     }
   }
 
@@ -333,11 +362,33 @@ export function ChatTranscript({
     lastScrollDirectionRef.current = direction
   }
 
+  function handleNativeScroll() {
+    if (physicalDistanceFromEnd(scrollerElementRef.current) <= AUTO_SCROLL_REATTACH_THRESHOLD_PX) {
+      if (hasNewerEvents) {
+        setSnapToTailPendingValue(true)
+      } else {
+        setSnapToTailPendingValue(false)
+        setFollowingTail(true)
+      }
+    } else if (!followingTailRef.current) {
+      setSnapToTailPendingValue(false)
+    }
+  }
+
+  function handleNativeScrollEnd() {
+    if (physicalDistanceFromEnd(scrollerElementRef.current) > AUTO_SCROLL_REATTACH_THRESHOLD_PX) return
+    if (hasNewerEvents) {
+      void resumeFollowing(virtualizer)
+    } else {
+      setSnapToTailPendingValue(false)
+      setFollowingTail(true)
+    }
+  }
+
   function handleScrollWheel(event: ReactWheelEvent<HTMLDivElement>) {
     if (event.deltaY === 0) return
     const direction = event.deltaY > 0 ? 'forward' : 'backward'
     recordUserScrollIntent(direction)
-    if (direction === 'backward') pauseFollowing()
   }
 
   function handleScrollPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
@@ -371,7 +422,7 @@ export function ChatTranscript({
     if (!backward && !forward) return
     const direction = backward ? 'backward' : 'forward'
     recordUserScrollIntent(direction)
-    if (direction === 'backward') pauseFollowing()
+    if (event.key === 'PageUp' || event.key === 'Home') pauseFollowing()
   }
 
   useLayoutEffect(() => {
@@ -447,6 +498,8 @@ export function ChatTranscript({
         aria-relevant="additions text"
         aria-busy={loading || autoScroll}
         data-tail-clearance-height={tailClearanceHeight}
+        onScrollCapture={handleNativeScroll}
+        onScrollEndCapture={handleNativeScrollEnd}
         onWheelCapture={handleScrollWheel}
         onPointerDownCapture={handleScrollPointerDown}
         onPointerMoveCapture={handleScrollPointerMove}
@@ -578,16 +631,6 @@ function transcriptScrollDebugEnabled() {
 function physicalDistanceFromEnd(scroller: HTMLDivElement | null) {
   if (!scroller) return Number.POSITIVE_INFINITY
   return Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop)
-}
-
-function tailSnapDistance(virtualizer: TranscriptVirtualizer, tailClearanceHeight: number) {
-  return (
-    tailClearanceHeight +
-    Math.max(
-      AUTO_SCROLL_SNAP_MIN_PX,
-      (virtualizer.scrollRect?.height ?? 0) * AUTO_SCROLL_SNAP_VIEWPORT_RATIO,
-    )
-  )
 }
 
 function estimateVirtualTimelineItem(item: VirtualTimelineItem | undefined) {
