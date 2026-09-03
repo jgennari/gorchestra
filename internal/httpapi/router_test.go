@@ -541,6 +541,46 @@ func TestClearSessionNotificationAttentionReturnsUpdatedSession(t *testing.T) {
 	}
 }
 
+func TestClearAllSessionNotificationAttention(t *testing.T) {
+	fakeStore := newFakeHTTPStore()
+	fakeStore.addSessionWith(store.Session{
+		ID:                       "sess_first",
+		Title:                    "First",
+		AgentType:                "codex",
+		Status:                   store.SessionStatusIdle,
+		NotificationAttentionSeq: 4,
+		CreatedAt:                testCreatedAt,
+		UpdatedAt:                testCreatedAt,
+	})
+	fakeStore.addSessionWith(store.Session{
+		ID:                       "sess_second",
+		Title:                    "Second",
+		AgentType:                "codex",
+		Status:                   store.SessionStatusIdle,
+		NotificationAttentionSeq: 7,
+		CreatedAt:                testCreatedAt,
+		UpdatedAt:                testCreatedAt,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/notification-attention/clear", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: fakeStore}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	for _, sessionID := range []string{"sess_first", "sess_second"} {
+		session, err := fakeStore.GetSession(context.Background(), sessionID)
+		if err != nil {
+			t.Fatalf("get session: %v", err)
+		}
+		if session.NotificationAttentionSeq != 0 {
+			t.Fatalf("expected notification attention cleared for %s, got %d", sessionID, session.NotificationAttentionSeq)
+		}
+	}
+}
+
 func TestEventHistoryReturnsEventsAfterSeq(t *testing.T) {
 	store := newFakeHTTPStore()
 	store.addSession(testSessionID)
@@ -2153,6 +2193,17 @@ func (s *fakeHTTPStore) ClearNotificationAttention(_ context.Context, sessionID 
 	}
 	session.NotificationAttentionSeq = 0
 	s.sessions[sessionID] = session
+	return nil
+}
+
+func (s *fakeHTTPStore) ClearAllNotificationAttention(_ context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for sessionID, session := range s.sessions {
+		session.NotificationAttentionSeq = 0
+		s.sessions[sessionID] = session
+	}
 	return nil
 }
 

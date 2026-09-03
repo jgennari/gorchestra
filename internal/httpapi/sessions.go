@@ -261,6 +261,15 @@ func (api API) clearSessionNotificationAttentionHandler(w http.ResponseWriter, r
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (api API) clearAllSessionNotificationAttentionHandler(w http.ResponseWriter, r *http.Request) {
+	if err := api.store.ClearAllNotificationAttention(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to clear notification attention")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"cleared": true})
+}
+
 func (api API) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 	var request createSessionRequest
 	if !decodeJSONBody(w, r, &request) {

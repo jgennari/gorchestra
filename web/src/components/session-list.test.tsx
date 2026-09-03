@@ -154,6 +154,23 @@ test('idle session rows show unseen results with a solid yellow indicator', () =
   expect(screen.getByRole('img', { name: 'Session has unseen results' })).not.toHaveClass('animate-pulse')
 })
 
+test('session list can dismiss all unseen notifications', async () => {
+  const user = userEvent.setup()
+  const onDismissAllNotifications = vi.fn()
+
+  render(
+    <SessionListHarness
+      notificationCount={3}
+      onDismissAllNotifications={onDismissAllNotifications}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Dismiss all notifications' }))
+
+  expect(onDismissAllNotifications).toHaveBeenCalledOnce()
+  expect(screen.getByText('3')).toBeInTheDocument()
+})
+
 test('session list exposes the app menu action', async () => {
   const user = userEvent.setup()
   const onOpen = vi.fn()

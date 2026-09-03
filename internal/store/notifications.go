@@ -266,6 +266,13 @@ func (s *Store) ClearNotificationAttention(ctx context.Context, sessionID string
 	return nil
 }
 
+func (s *Store) ClearAllNotificationAttention(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM notification_attention`); err != nil {
+		return fmt.Errorf("clear all notification attention: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ListPushDeliveryAttempts(ctx context.Context, limit int) ([]PushDeliveryAttempt, error) {
 	if limit <= 0 {
 		limit = 20

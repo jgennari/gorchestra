@@ -161,6 +161,35 @@ test('focusing the composer clears finished-turn notification attention', async 
   await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(0))
 })
 
+test('dismiss all notifications clears every unseen session without opening them', async () => {
+  const user = userEvent.setup()
+  const setAppBadge = vi.fn(() => Promise.resolve())
+  Object.defineProperty(navigator, 'setAppBadge', { configurable: true, value: setAppBadge })
+  const fetch = fetchMock({
+    sessions: [
+      { ...firstSession, event_count: 5, last_event_seq: 5, notification_attention_seq: 5 },
+      { ...secondSession, event_count: 7, last_event_seq: 7, notification_attention_seq: 7 },
+    ],
+    events: [event(5, 'agent.run.completed', {})],
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByRole('img', { name: 'Session has unseen results' })).toHaveLength(2))
+  await user.click(screen.getByRole('button', { name: 'Dismiss all notifications' }))
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/notification-attention/clear',
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+  expect(screen.queryByRole('img', { name: 'Session has unseen results' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Dismiss all notifications' })).not.toBeInTheDocument()
+  await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(0))
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -1566,6 +1595,9 @@ function fetchMock({
         return jsonResponse({ ...matchedSession, notification_attention_seq: undefined })
       }
     }
+    if (path === '/api/sessions/notification-attention/clear' && init?.method === 'POST') {
+      return jsonResponse({ cleared: true })
+    }
     if (path === '/api/sessions/sess_1/clear' && init?.method === 'POST') {
       return jsonResponse({ session_id: 'sess_1', status: 'running' })
     }
@@ -1816,7 +1848,7 @@ function findExistingEventSource(urlPrefix: string) {
 function matchMediaMock(query: string): MediaQueryList {
   return {
     media: query,
-    matches: false,
+    matches: query === '(hover: hover) and (pointer: fine)',
     onchange: null,
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),

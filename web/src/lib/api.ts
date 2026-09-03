@@ -797,6 +797,12 @@ export async function clearSessionNotificationAttention(sessionID: string) {
   })
 }
 
+export async function clearAllSessionNotificationAttention() {
+  return requestJSON<{ cleared: boolean }>('/api/sessions/notification-attention/clear', {
+    method: 'POST',
+  })
+}
+
 export async function createSession(params: {
   agent_type: AgentType
   title?: string

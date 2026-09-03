@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import {
   isValidElement,
+  memo,
   useCallback,
   useEffect,
   useId,
@@ -24,7 +25,7 @@ import {
   type ReactNode,
   type WheelEvent as ReactWheelEvent,
 } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import remarkGfm from 'remark-gfm'
 import type { AgentEvent } from '@/lib/api'
@@ -128,6 +129,7 @@ export function ChatTranscript({
   const scrollPointerActiveRef = useRef(false)
   const scrollPointerYRef = useRef<number | null>(null)
   const scrollPointerTypeRef = useRef('')
+  const touchDetachedFromTailRef = useRef(false)
   const tailScrollFrameRef = useRef<number | null>(null)
   const visibleSequenceRangeRef = useRef('')
   const [followingTail, setFollowingTailState] = useState(initiallyFollowingTail)
@@ -236,6 +238,7 @@ export function ChatTranscript({
   const resumeFollowing = useCallback(async (instance: TranscriptVirtualizer) => {
     if (resumeInFlightRef.current) return
     resumeInFlightRef.current = true
+    touchDetachedFromTailRef.current = false
     initialTailPinPendingRef.current = false
     setSnapToTailPendingValue(true)
     try {
@@ -396,6 +399,7 @@ export function ChatTranscript({
 
   function handleNativeScroll() {
     if (physicalDistanceFromEnd(scrollerElementRef.current) <= AUTO_SCROLL_REATTACH_THRESHOLD_PX) {
+      if (touchDetachedFromTailRef.current) return
       if (hasNewerEvents) {
         setSnapToTailPendingValue(true)
       } else {
@@ -408,6 +412,7 @@ export function ChatTranscript({
   }
 
   function handleNativeScrollEnd() {
+    if (touchDetachedFromTailRef.current) return
     if (physicalDistanceFromEnd(scrollerElementRef.current) > AUTO_SCROLL_REATTACH_THRESHOLD_PX) return
     if (hasNewerEvents) {
       void resumeFollowing(virtualizer)
@@ -440,6 +445,10 @@ export function ChatTranscript({
       ? (deltaY > 0 ? 'backward' : 'forward')
       : (deltaY > 0 ? 'forward' : 'backward')
     recordUserScrollIntent(direction)
+    if (touchLike) {
+      touchDetachedFromTailRef.current = direction === 'backward'
+      if (direction === 'backward' && followingTailRef.current) pauseFollowing()
+    }
   }
 
   function handleScrollPointerEnd() {
@@ -1140,7 +1149,7 @@ function formatMessageTimestamp(value: string, includeDate = false) {
 
 type MarkdownVariant = 'default' | 'inverted' | 'plan'
 
-function MarkdownContent({
+const MarkdownContent = memo(function MarkdownContent({
   content,
   variant,
   onOpenFilePath,
@@ -1151,11 +1160,28 @@ function MarkdownContent({
 }) {
   const inverted = variant === 'inverted'
   const plan = variant === 'plan'
+  const contentRef = useRef<HTMLDivElement>(null)
+  const latestContentRef = useRef(content)
+  const [displayedContent, setDisplayedContent] = useState(content)
 
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
+  useLayoutEffect(() => {
+    latestContentRef.current = content
+    if (content === displayedContent || hasActiveSelectionWithin(contentRef.current)) return
+    setDisplayedContent(content)
+  }, [content, displayedContent])
+
+  useEffect(() => {
+    function flushHeldContent() {
+      if (hasActiveSelectionWithin(contentRef.current)) return
+      setDisplayedContent((current) => current === latestContentRef.current ? current : latestContentRef.current)
+    }
+
+    document.addEventListener('selectionchange', flushHeldContent)
+    return () => document.removeEventListener('selectionchange', flushHeldContent)
+  }, [])
+
+  const components = useMemo<Components>(
+    () => ({
         p: ({ children }) => (
           <p className="my-2 first:mt-0 last:mb-0 whitespace-pre-wrap break-words leading-relaxed">{children}</p>
         ),
@@ -1246,11 +1272,24 @@ function MarkdownContent({
         ),
         th: ({ children }) => <th className="border px-2 py-1 text-left font-medium">{children}</th>,
         td: ({ children }) => <td className="border px-2 py-1 align-top">{children}</td>,
-      }}
-    >
-      {content}
-    </ReactMarkdown>
+    }),
+    [inverted, onOpenFilePath, plan, variant],
   )
+
+  return (
+    <div ref={contentRef} className="contents">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        {displayedContent}
+      </ReactMarkdown>
+    </div>
+  )
+})
+
+function hasActiveSelectionWithin(element: HTMLElement | null) {
+  if (!element) return false
+  const selection = window.getSelection()
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false
+  return element.contains(selection.anchorNode) || element.contains(selection.focusNode)
 }
 
 function markdownFilePathFromHref(href: string | undefined) {

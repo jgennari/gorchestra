@@ -57,6 +57,7 @@ const maxImageAttachmentBytes = 5 * 1024 * 1024
 const maxImageAttachmentCount = 8
 const maxQueuedMessages = 5
 const queueShortcutLabel = 'Cmd/Ctrl+Shift+Enter'
+const composerAutoFocusMediaQuery = '(hover: hover) and (pointer: fine)'
 const claudeModelOptions = [
   { value: '', label: 'Default' },
   { value: 'opus', label: 'Opus' },
@@ -375,7 +376,7 @@ export function PromptComposer({
   }, [onFocus])
 
   useEffect(() => {
-    if (focusRequest > 0) {
+    if (focusRequest > 0 && supportsComposerAutoFocus()) {
       textareaRef.current?.focus({ preventScroll: true })
     }
   }, [focusRequest])
@@ -2881,6 +2882,16 @@ function resizePromptTextarea(textarea: HTMLTextAreaElement | null) {
 
   textarea.style.height = `${nextHeight}px`
   textarea.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden'
+}
+
+function supportsComposerAutoFocus() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  if (typeof window.matchMedia !== 'function') {
+    return navigator.maxTouchPoints === 0
+  }
+  return window.matchMedia(composerAutoFocusMediaQuery).matches
 }
 
 function cssNumber(value: string) {

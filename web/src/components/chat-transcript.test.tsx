@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import type { AgentEvent } from '@/lib/api'
@@ -171,6 +171,74 @@ test('renders markdown in chat messages', () => {
   expect(screen.getByText('Section 1').tagName).toBe('STRONG')
   expect(screen.getAllByRole('listitem')).toHaveLength(2)
   expect(screen.getByText('First item')).toBeInTheDocument()
+})
+
+test('preserves selected response text while unrelated stream content updates', () => {
+  const completed = event(1, 'agent.message.completed', 'assistant', 'completed', {
+    item_id: 'msg_1',
+    text: 'Copy this completed response',
+  })
+  const { rerender } = render(<ChatTranscript events={[completed]} />)
+  const response = screen.getByText('Copy this completed response')
+  const text = response.firstChild
+  expect(text).toBeInstanceOf(Text)
+  if (!(text instanceof Text)) return
+
+  const range = document.createRange()
+  range.setStart(text, 5)
+  range.setEnd(text, 9)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+  expect(selection?.toString()).toBe('this')
+
+  rerender(
+    <ChatTranscript
+      events={[
+        completed,
+        event(2, 'user.message.completed', 'user', 'completed', { text: 'Next request' }),
+        event(3, 'agent.message.delta', 'assistant', 'delta', { item_id: 'msg_2', text: 'Streaming' }),
+      ]}
+    />,
+  )
+
+  expect(window.getSelection()?.toString()).toBe('this')
+})
+
+test('preserves selected response text while that response continues streaming', () => {
+  const firstDelta = event(1, 'agent.message.delta', 'assistant', 'delta', {
+    item_id: 'msg_1',
+    text: 'Copy this response',
+  })
+  const { rerender } = render(<ChatTranscript events={[firstDelta]} />)
+  const response = screen.getByText('Copy this response')
+  const text = response.firstChild
+  expect(text).toBeInstanceOf(Text)
+  if (!(text instanceof Text)) return
+
+  const range = document.createRange()
+  range.setStart(text, 5)
+  range.setEnd(text, 9)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+
+  rerender(
+    <ChatTranscript
+      events={[
+        firstDelta,
+        event(2, 'agent.message.delta', 'assistant', 'delta', { item_id: 'msg_1', text: ' keeps growing' }),
+      ]}
+    />,
+  )
+
+  expect(window.getSelection()?.toString()).toBe('this')
+  expect(screen.queryByText('Copy this response keeps growing')).not.toBeInTheDocument()
+
+  selection?.removeAllRanges()
+  fireEvent(document, new Event('selectionchange'))
+
+  expect(screen.getByText('Copy this response keeps growing')).toBeInTheDocument()
 })
 
 test('opens markdown file links in the file editor action', async () => {
@@ -604,6 +672,32 @@ test('an upward gesture within 48px snaps back without pausing following', async
   await settleVirtualScroll()
   expect(log.scrollTop).toBe(2000)
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
+test('a deliberate touch drag detaches from the tail inside the wheel snap zone', async () => {
+  const onFollowingTailChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  const pointerDown = createEvent.pointerDown(log, { clientY: 200 })
+  Object.defineProperty(pointerDown, 'pointerType', { value: 'touch' })
+  fireEvent(log, pointerDown)
+  const pointerMove = createEvent.pointerMove(log, { clientY: 204 })
+  Object.defineProperty(pointerMove, 'pointerType', { value: 'touch' })
+  fireEvent(log, pointerMove)
+  setScrollMetrics(log, { scrollTop: 1596, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+
+  expect(onFollowingTailChange).toHaveBeenLastCalledWith(false)
+  expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
 })
 
 test('an upward gesture beyond 48px pauses following', async () => {

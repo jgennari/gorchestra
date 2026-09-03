@@ -509,6 +509,42 @@ func TestNotificationAttentionLifecycle(t *testing.T) {
 	}
 }
 
+func TestClearAllNotificationAttention(t *testing.T) {
+	ctx := context.Background()
+	testStore := newTestStore(t, ctx)
+
+	first, err := testStore.CreateSession(ctx, CreateSessionParams{Title: "First", AgentType: "codex"})
+	if err != nil {
+		t.Fatalf("create first session: %v", err)
+	}
+	second, err := testStore.CreateSession(ctx, CreateSessionParams{Title: "Second", AgentType: "codex"})
+	if err != nil {
+		t.Fatalf("create second session: %v", err)
+	}
+	for index, sessionID := range []string{first.ID, second.ID} {
+		if err := testStore.MarkNotificationAttention(ctx, MarkNotificationAttentionParams{
+			SessionID: sessionID,
+			Seq:       int64(index + 1),
+			EventType: "agent.run.completed",
+		}); err != nil {
+			t.Fatalf("mark notification attention: %v", err)
+		}
+	}
+
+	if err := testStore.ClearAllNotificationAttention(ctx); err != nil {
+		t.Fatalf("clear all notification attention: %v", err)
+	}
+	for _, sessionID := range []string{first.ID, second.ID} {
+		session, err := testStore.GetSession(ctx, sessionID)
+		if err != nil {
+			t.Fatalf("get session: %v", err)
+		}
+		if session.NotificationAttentionSeq != 0 {
+			t.Fatalf("expected notification attention cleared for %s, got %d", sessionID, session.NotificationAttentionSeq)
+		}
+	}
+}
+
 func TestSavePushSubscriptionRejectsMissingFields(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)

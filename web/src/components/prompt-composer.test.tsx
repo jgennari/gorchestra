@@ -895,6 +895,43 @@ test('composer acknowledges focus when the browser regains focus', () => {
   expect(onFocus).toHaveBeenCalledTimes(1)
 })
 
+test('composer focus requests focus the prompt on desktop-style input devices', () => {
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })))
+
+  render(
+    <PromptComposer
+      sessionID="sess_desktop_focus"
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+      focusRequest={1}
+    />,
+  )
+
+  expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveFocus()
+})
+
+test('composer focus requests do not open the keyboard on touch input devices', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })))
+
+  render(
+    <PromptComposer
+      sessionID="sess_touch_focus"
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+      focusRequest={1}
+    />,
+  )
+
+  const prompt = screen.getByRole('textbox', { name: 'Prompt' })
+  expect(prompt).not.toHaveFocus()
+
+  await user.click(prompt)
+  expect(prompt).toHaveFocus()
+})
+
 test('pi thinking menu closes when the prompt regains focus', async () => {
   const user = userEvent.setup()
   vi.stubGlobal(

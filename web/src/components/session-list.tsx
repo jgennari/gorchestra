@@ -1,4 +1,4 @@
-import { Archive, BookOpen, LayoutDashboard, Plus, Search } from 'lucide-react'
+import { Archive, BellOff, BookOpen, LayoutDashboard, Plus, Search } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -20,6 +20,9 @@ type Props = {
   userSkillsSelected?: boolean
   onUserSkills?: () => void
   onSearch?: () => void
+  notificationCount?: number
+  dismissingNotifications?: boolean
+  onDismissAllNotifications?: () => Promise<void> | void
   onCreate: () => void
   appMenuAction?: ReactNode
   variant?: 'full' | 'embedded'
@@ -37,6 +40,9 @@ export function SessionList({
   userSkillsSelected = false,
   onUserSkills,
   onSearch,
+  notificationCount = 0,
+  dismissingNotifications = false,
+  onDismissAllNotifications,
   onCreate,
   appMenuAction,
   variant = 'full',
@@ -107,6 +113,25 @@ export function SessionList({
           <span className="flex-1">Search</span>
           <ShortcutHint shortcut="K" />
         </button>
+        {notificationCount > 0 && onDismissAllNotifications ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label="Dismiss all notifications"
+            disabled={dismissingNotifications}
+            onClick={() => void onDismissAllNotifications()}
+            className="mt-1 w-full justify-start px-2.5 text-muted-foreground hover:text-foreground"
+          >
+            <BellOff aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate text-left">
+              {dismissingNotifications ? 'Dismissing notifications…' : 'Dismiss all notifications'}
+            </span>
+            <Badge variant="warning" className="min-h-5 px-1.5 py-0 text-[10px] tabular-nums">
+              {notificationCount}
+            </Badge>
+          </Button>
+        ) : null}
       </div>
 
       <ScrollArea className="flex-1">

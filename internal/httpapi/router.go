@@ -78,6 +78,7 @@ type Store interface {
 	ListEventTurnsBeforePageFiltered(ctx context.Context, sessionID string, beforeSeq int64, turns int, limit int, filter store.EventListFilter) ([]store.Event, error)
 	ListEventTurnsAfterFiltered(ctx context.Context, sessionID string, afterSeq int64, turns int, limit int, filter store.EventListFilter) ([]store.Event, error)
 	ClearNotificationAttention(ctx context.Context, sessionID string) error
+	ClearAllNotificationAttention(ctx context.Context) error
 }
 
 type DashboardStore interface {
@@ -316,6 +317,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	}
 	if api.store != nil {
 		r.Get("/api/sessions", api.listSessionsHandler)
+		r.Post("/api/sessions/notification-attention/clear", api.clearAllSessionNotificationAttentionHandler)
 		r.Get("/api/sessions/{sessionId}", api.getSessionHandler)
 		r.Post("/api/sessions/{sessionId}/notification-attention/clear", api.clearSessionNotificationAttentionHandler)
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)

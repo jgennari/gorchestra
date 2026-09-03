@@ -31,6 +31,7 @@ import {
   archiveSession,
   cancelSession,
   clearSession,
+  clearAllSessionNotificationAttention,
   clearSessionNotificationAttention,
   compactSession,
   createSession,
@@ -179,6 +180,7 @@ function App() {
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
   const [notificationAttentionRestored, setNotificationAttentionRestored] = useState(false)
+  const [dismissingNotifications, setDismissingNotifications] = useState(false)
   const [spotlightOpen, setSpotlightOpen] = useState(false)
   const [composerFocusRequest, setComposerFocusRequest] = useState(0)
   const [focusedEventSeq, setFocusedEventSeq] = useState(() => eventSequenceFromLocation())
@@ -220,6 +222,15 @@ function App() {
     () =>
       sessions.reduce(
         (count, session) => count + (sessionAttention(session, effectiveLastSeenSeqBySession) === null ? 0 : 1),
+        0,
+      ),
+    [effectiveLastSeenSeqBySession, sessions],
+  )
+  const dismissibleNotificationCount = useMemo(
+    () =>
+      sessions.reduce(
+        (count, session) =>
+          count + (sessionAttention(session, effectiveLastSeenSeqBySession) === 'unseen-idle' ? 1 : 0),
         0,
       ),
     [effectiveLastSeenSeqBySession, sessions],
@@ -814,6 +825,48 @@ function App() {
     [selectSession],
   )
 
+  const handleDismissAllNotifications = useCallback(async () => {
+    if (dismissingNotifications) return
+
+    setDismissingNotifications(true)
+    const currentSessions = sessionsRef.current
+    const notificationSessionIDs = Object.keys(effectiveNotificationAttentionSeqBySession)
+    const nextSeenSeqs = { ...lastSeenSeqBySession }
+    for (const session of currentSessions) {
+      const latestSeq = latestSessionSeq(session)
+      if (latestSeq > 0) nextSeenSeqs[session.id] = latestSeq
+    }
+    saveSessionSeenSeqs(nextSeenSeqs)
+    setLastSeenSeqBySession(nextSeenSeqs)
+    setNotificationAttentionSeqBySession({})
+
+    const clearedSessions = currentSessions.map((session) =>
+      session.notification_attention_seq
+        ? { ...session, notification_attention_seq: undefined }
+        : session,
+    )
+    sessionsRef.current = clearedSessions
+    setSessions(clearedSessions)
+    void writePersistentCachedSessions(clearedSessions)
+
+    try {
+      await Promise.all([
+        clearAllSessionNotificationAttention(),
+        ...notificationSessionIDs.map((sessionID) => clearNotificationAttention(sessionID)),
+      ])
+    } catch (dismissError) {
+      setError(messageFromError(dismissError))
+      void loadSessions({ showLoading: false })
+    } finally {
+      setDismissingNotifications(false)
+    }
+  }, [
+    dismissingNotifications,
+    effectiveNotificationAttentionSeqBySession,
+    lastSeenSeqBySession,
+    loadSessions,
+  ])
+
   useEffect(() => {
     let closed = false
     let source: EventSource | null = null
@@ -1245,6 +1298,9 @@ function App() {
       setMobileListOpen(false)
       setSpotlightOpen(true)
     },
+    notificationCount: dismissibleNotificationCount,
+    dismissingNotifications,
+    onDismissAllNotifications: handleDismissAllNotifications,
     onCreate: () => setCreateOpen(true),
     appMenuAction: renderAppMenu(),
   }
