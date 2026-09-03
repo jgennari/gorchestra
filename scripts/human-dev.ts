@@ -17,7 +17,7 @@ const dbPath = process.env.GORCHESTRA_HUMAN_DB ?? join(tmpDir, 'sessions.db')
 const workspacePath = process.env.GORCHESTRA_HUMAN_WORKSPACE ?? homedir()
 const stdoutPath = process.env.GORCHESTRA_HUMAN_STDOUT ?? join(tmpDir, 'launchd.out.log')
 const stderrPath = process.env.GORCHESTRA_HUMAN_STDERR ?? join(tmpDir, 'launchd.err.log')
-const tailnetURL = process.env.GORCHESTRA_HUMAN_TAILNET_URL ?? 'http://gorchestra.dev.gennari.industries'
+const tailnetURL = process.env.GORCHESTRA_HUMAN_TAILNET_URL ?? 'https://gorchestra-dev.coin-triceratops.ts.net'
 const command = Bun.argv[2] ?? 'start'
 
 type RunOptions = {
@@ -178,7 +178,32 @@ async function probe(url: string) {
     const response = await fetch(url, { signal: AbortSignal.timeout(1500) })
     return response.ok ? 'ok' : `http ${response.status}`
   } catch {
-    return 'offline'
+    const parsedURL = new URL(url)
+    if (parsedURL.protocol !== 'https:' || !parsedURL.hostname.endsWith('.ts.net')) {
+      return 'offline'
+    }
+
+    const dnsResult = run(['tailscale', 'dns', 'query', parsedURL.hostname])
+    const serviceIP = dnsResult.stdout.match(/TypeA\s+(\d+\.\d+\.\d+\.\d+)\s*$/m)?.[1]
+    if (!serviceIP) {
+      return 'offline'
+    }
+
+    const curlResult = run([
+      'curl',
+      '-fsS',
+      '--connect-timeout', '3',
+      '--max-time', '5',
+      '--resolve', `${parsedURL.hostname}:443:${serviceIP}`,
+      '-o', '/dev/null',
+      '-w', '%{http_code}',
+      url,
+    ])
+    if (curlResult.exitCode !== 0) {
+      return 'offline'
+    }
+    const statusCode = Number.parseInt(curlResult.stdout, 10)
+    return statusCode >= 200 && statusCode < 300 ? 'ok via Tailscale DNS' : `http ${statusCode}`
   }
 }
 

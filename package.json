@@ -17,6 +17,13 @@
     "dev:human:reset": "bun run scripts/human-dev.ts reset",
     "dev:human:restart": "bun run scripts/human-dev.ts restart",
     "dev:human:status": "bun run scripts/human-dev.ts status",
-    "dev:human:stop": "bun run scripts/human-dev.ts stop"
+    "dev:human:stop": "bun run scripts/human-dev.ts stop",
+    "prod:refresh": "bun run scripts/prod-refresh.ts",
+    "tailscale:sidecar": "bun run scripts/tailscale-sidecar.ts status",
+    "tailscale:sidecar:install": "bun run scripts/tailscale-sidecar.ts install",
+    "tailscale:sidecar:logs": "bun run scripts/tailscale-sidecar.ts logs",
+    "tailscale:sidecar:restart": "bun run scripts/tailscale-sidecar.ts restart",
+    "tailscale:sidecar:start": "bun run scripts/tailscale-sidecar.ts start",
+    "tailscale:sidecar:stop": "bun run scripts/tailscale-sidecar.ts stop"
   }
 }
