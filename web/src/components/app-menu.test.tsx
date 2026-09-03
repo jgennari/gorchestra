@@ -9,17 +9,14 @@ beforeAll(() => {
   Element.prototype.scrollIntoView = () => undefined
 })
 
-test('groups theme, notification, and version controls in the app menu', async () => {
+test('groups theme and version controls in the app menu', async () => {
   const user = userEvent.setup()
   const onThemeChange = vi.fn()
-  const onOpenNotifications = vi.fn()
 
   render(
     <AppMenu
       themePreference="system"
       onThemeChange={onThemeChange}
-      notificationStatus="enabled"
-      onOpenNotifications={onOpenNotifications}
       release={{
         currentVersion: '0.2.8',
         latestVersion: '0.3.0',
@@ -39,14 +36,10 @@ test('groups theme, notification, and version controls in the app menu', async (
     'href',
     'https://github.com/jgennari/gorchestra/releases/tag/v0.3.0',
   )
-  expect(screen.getByText('On')).toBeInTheDocument()
+  expect(screen.queryByText('Notifications')).not.toBeInTheDocument()
 
   await user.click(screen.getByRole('menuitemradio', { name: 'Dark' }))
   expect(onThemeChange).toHaveBeenCalledWith('dark')
-
-  await user.click(screen.getByRole('button', { name: 'App menu, update available' }))
-  await user.click(screen.getByRole('menuitem', { name: /Notifications/ }))
-  expect(onOpenNotifications).toHaveBeenCalledOnce()
 })
 
 test('labels unstamped builds clearly', async () => {
@@ -56,8 +49,6 @@ test('labels unstamped builds clearly', async () => {
     <AppMenu
       themePreference="dark"
       onThemeChange={() => undefined}
-      notificationStatus="default"
-      onOpenNotifications={() => undefined}
       release={{
         currentVersion: 'dev',
         latestVersion: null,

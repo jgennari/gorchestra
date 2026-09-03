@@ -77,7 +77,7 @@ import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { DashboardOverview } from '@/components/dashboard-overview'
 import { HostConsole } from '@/components/host-console'
 import { HostPreview } from '@/components/host-preview'
-import { NotificationsDialog } from '@/components/notifications-dialog'
+import { NotificationsPopover } from '@/components/notifications-popover'
 import { RunHealthRail } from '@/components/run-health-rail'
 import { ChatSessionHeader, SessionDetail } from '@/components/session-detail'
 import { SessionList } from '@/components/session-list'
@@ -161,7 +161,6 @@ function App() {
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileListOpen, setMobileListOpen] = useState(false)
   const [mobileRailOpen, setMobileRailOpen] = useState(false)
-  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(!initialSessionState.seededCachedSession)
   const [refreshingSessions, setRefreshingSessions] = useState(false)
   const [error, setError] = useState('')
@@ -226,12 +225,10 @@ function App() {
       ),
     [effectiveLastSeenSeqBySession, sessions],
   )
-  const dismissibleNotificationCount = useMemo(
+  const dismissibleNotifications = useMemo(
     () =>
-      sessions.reduce(
-        (count, session) =>
-          count + (sessionAttention(session, effectiveLastSeenSeqBySession) === 'unseen-idle' ? 1 : 0),
-        0,
+      sessions.filter(
+        (session) => sessionAttention(session, effectiveLastSeenSeqBySession) === 'unseen-idle',
       ),
     [effectiveLastSeenSeqBySession, sessions],
   )
@@ -1272,9 +1269,23 @@ function App() {
     <AppMenu
       themePreference={theme.preference}
       onThemeChange={theme.setPreference}
-      notificationStatus={pushNotifications.status}
-      onOpenNotifications={() => setNotificationsOpen(true)}
       release={release}
+    />
+  )
+
+  const renderNotificationsPopover = () => (
+    <NotificationsPopover
+      notifications={dismissibleNotifications}
+      supported={pushNotifications.supported}
+      status={pushNotifications.status}
+      error={pushNotifications.error}
+      soundEnabled={pushNotifications.soundEnabled}
+      dismissing={dismissingNotifications}
+      onSelectSession={(sessionID) => requestSessionSelection(sessionID, 'push')}
+      onDismissAll={handleDismissAllNotifications}
+      onEnable={() => void pushNotifications.enable()}
+      onDisable={() => void pushNotifications.disable()}
+      onSoundEnabledChange={pushNotifications.setSoundEnabled}
     />
   )
 
@@ -1298,10 +1309,8 @@ function App() {
       setMobileListOpen(false)
       setSpotlightOpen(true)
     },
-    notificationCount: dismissibleNotificationCount,
-    dismissingNotifications,
-    onDismissAllNotifications: handleDismissAllNotifications,
     onCreate: () => setCreateOpen(true),
+    notificationAction: renderNotificationsPopover(),
     appMenuAction: renderAppMenu(),
   }
   const list = <SessionList {...sessionListProps} />
@@ -1890,6 +1899,7 @@ function App() {
           session={selectedSession}
           resolvingSessionID={resolvingSelectedSessionID}
           events={events}
+          activityEvents={liveEvents}
           streamState={streamState}
           streamError={streamError}
           fileRefreshKey={fileRefreshKey}
@@ -1964,17 +1974,6 @@ function App() {
         }}
         onConfirm={() => void handleConfirmArchiveSession()}
       />
-      <NotificationsDialog
-        open={notificationsOpen}
-        onOpenChange={setNotificationsOpen}
-        supported={pushNotifications.supported}
-        status={pushNotifications.status}
-        error={pushNotifications.error}
-        soundEnabled={pushNotifications.soundEnabled}
-        onEnable={() => void pushNotifications.enable()}
-        onDisable={() => void pushNotifications.disable()}
-        onSoundEnabledChange={pushNotifications.setSoundEnabled}
-      />
       <Dialog open={mobileListOpen} onOpenChange={setMobileListOpen}>
         <DialogContent
           showClose={false}
@@ -1984,6 +1983,7 @@ function App() {
             <div className="flex items-center justify-between gap-3">
               <DialogTitle>Sessions</DialogTitle>
               <div className="flex shrink-0 items-center gap-2">
+                {renderNotificationsPopover()}
                 {renderAppMenu()}
                 <Button
                   type="button"

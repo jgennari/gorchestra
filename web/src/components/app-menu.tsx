@@ -1,6 +1,5 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import {
-  Bell,
   Check,
   ExternalLink,
   Info,
@@ -9,7 +8,6 @@ import {
   Settings2,
   Sun,
 } from 'lucide-react'
-import type { NotificationStatus } from '@/hooks/use-push-notifications'
 import type { ThemePreference } from '@/hooks/use-theme'
 import type { ReleaseUpdate } from '@/lib/releases'
 import { Badge } from '@/components/ui/badge'
@@ -19,8 +17,6 @@ import { cn } from '@/lib/utils'
 type Props = {
   themePreference: ThemePreference
   onThemeChange: (preference: ThemePreference) => void
-  notificationStatus: NotificationStatus
-  onOpenNotifications: () => void
   release: ReleaseUpdate & { checking: boolean }
 }
 
@@ -40,8 +36,6 @@ const themes: Array<{
 export function AppMenu({
   themePreference,
   onThemeChange,
-  notificationStatus,
-  onOpenNotifications,
   release,
 }: Props) {
   const versionLabel = release.currentVersion === 'dev' ? 'Development build' : `Version ${release.currentVersion}`
@@ -113,17 +107,6 @@ export function AppMenu({
 
           <DropdownMenu.Separator className="my-1.5 h-px bg-border/70" />
 
-          <DropdownMenu.Item className={menuItemClass} onSelect={onOpenNotifications}>
-            <Bell className="size-4 text-muted-foreground" aria-hidden="true" />
-            <span className="flex-1">Notifications</span>
-            <Badge
-              variant={notificationStatus === 'enabled' ? 'success' : 'secondary'}
-              className="min-h-5 px-1.5 py-0 text-[0.68rem]"
-            >
-              {notificationStatusLabel(notificationStatus)}
-            </Badge>
-          </DropdownMenu.Item>
-
           {release.updateAvailable && release.releaseURL ? (
             <DropdownMenu.Item className={menuItemClass} asChild>
               <a href={release.releaseURL} target="_blank" rel="noreferrer">
@@ -148,21 +131,4 @@ export function AppMenu({
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
   )
-}
-
-function notificationStatusLabel(status: NotificationStatus) {
-  switch (status) {
-    case 'enabled':
-      return 'On'
-    case 'enabling':
-      return 'Enabling'
-    case 'unsupported':
-      return 'Unavailable'
-    case 'denied':
-      return 'Blocked'
-    case 'error':
-      return 'Error'
-    default:
-      return 'Off'
-  }
 }

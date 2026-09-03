@@ -2,6 +2,7 @@ import { afterEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { PromptComposer } from '@/components/prompt-composer'
+import { subscribeComposerActivity } from '@/lib/composer-activity'
 
 afterEach(() => {
   window.localStorage.clear()
@@ -79,6 +80,19 @@ test('shift enter inserts a newline without submitting', async () => {
 
   expect(onSubmit).not.toHaveBeenCalled()
   expect(prompt).toHaveValue('Line one\nLine two')
+})
+
+test('publishes local activity while the user edits a session prompt', async () => {
+  const user = userEvent.setup()
+  const subscriber = vi.fn()
+  const unsubscribe = subscribeComposerActivity(subscriber)
+  render(<PromptComposer sessionID="sess_1" disabled={false} disabledReason="" onSubmit={async () => undefined} />)
+
+  await user.type(screen.getByLabelText('Prompt'), 'Hi')
+
+  expect(subscriber).toHaveBeenCalledTimes(2)
+  expect(subscriber).toHaveBeenLastCalledWith({ sessionID: 'sess_1', intensity: 0.5 })
+  unsubscribe()
 })
 
 test('cmd or ctrl shift enter queues the draft on the server', async () => {

@@ -1,7 +1,8 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AgentEvent, Session } from '@/lib/api'
 import { RunHealthRail } from '@/components/run-health-rail'
+import { publishComposerActivity } from '@/lib/composer-activity'
 
 const session: Session = {
   id: 'sess_1',
@@ -154,6 +155,90 @@ test('run health rail changes its configurable middle content from the activity 
   await user.click(screen.getByRole('menuitemradio', { name: 'Blocks' }))
 
   expect(onContentModeChange).toHaveBeenCalledWith('blocks')
+})
+
+test('run health rail picker offers the signal field', async () => {
+  const user = userEvent.setup()
+  const onContentModeChange = vi.fn()
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      contentMode="files"
+      onContentModeChange={onContentModeChange}
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Rail content: Files' }))
+  await user.click(screen.getByRole('menuitemradio', { name: 'Signal field' }))
+
+  expect(onContentModeChange).toHaveBeenCalledWith('signal-field')
+})
+
+test('signal field renders against the live activity window', () => {
+  const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      activityEvents={[event(42, 'tool.call.started', 'assistant', 'started', { command: 'bun test' })]}
+      streamState="connected"
+      streamError=""
+      contentMode="signal-field"
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  expect(screen.getByRole('region', { name: 'Signal field visualizer' })).toBeInTheDocument()
+  expect(screen.getByRole('img', { name: 'Ambient visualization of current session activity. Live.' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Refresh files' })).not.toBeInTheDocument()
+  getContext.mockRestore()
+})
+
+test('signal field reports and renders sustained thinking activity', () => {
+  const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      activityEvents={[event(42, 'agent.thinking.started', 'assistant', 'started', { item_id: 'thought_1' })]}
+      streamState="connected"
+      streamError=""
+      contentMode="signal-field"
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  expect(
+    screen.getByRole('img', { name: 'Ambient visualization of current session activity. Thinking.' }),
+  ).toBeInTheDocument()
+  expect(screen.getByText('Thinking')).toHaveAttribute('data-state', 'thinking')
+  getContext.mockRestore()
+})
+
+test('signal field reports local typing immediately', () => {
+  const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+  render(
+    <RunHealthRail
+      session={session}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      contentMode="signal-field"
+      onToggleArchive={async () => undefined}
+    />,
+  )
+
+  act(() => publishComposerActivity('sess_1', 1))
+
+  expect(
+    screen.getByRole('img', { name: 'Ambient visualization of current session activity. Typing.' }),
+  ).toBeInTheDocument()
+  expect(screen.getByText('Typing')).toHaveAttribute('data-state', 'typing')
+  getContext.mockRestore()
 })
 
 test('blank rail content keeps operational panels and removes the flexible utility', () => {

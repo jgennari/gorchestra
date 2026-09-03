@@ -48,6 +48,7 @@ import {
   type SubmitAgentOptions,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { publishComposerActivity } from '@/lib/composer-activity'
 
 const maxPromptRows = 5
 const fallbackLineHeight = 20
@@ -569,6 +570,7 @@ export function PromptComposer({
   function handleContentChange(event: ChangeEvent<HTMLTextAreaElement>) {
     const nextContent = event.target.value
     const caret = event.target.selectionStart ?? nextContent.length
+    publishComposerActivity(sessionID, Math.abs(nextContent.length - content.length))
     setContent(nextContent)
     promptSelectionRef.current = {
       start: caret,

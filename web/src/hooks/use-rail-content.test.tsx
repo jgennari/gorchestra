@@ -25,3 +25,11 @@ test('ignores an invalid stored mode', () => {
   expect(result.current.mode).toBe('files')
   expect(window.localStorage.getItem(railContentStorageKey)).toBe('files')
 })
+
+test('restores the signal field selection', () => {
+  window.localStorage.setItem(railContentStorageKey, 'signal-field')
+
+  const { result } = renderHook(() => useRailContentPreference())
+
+  expect(result.current.mode).toBe('signal-field')
+})

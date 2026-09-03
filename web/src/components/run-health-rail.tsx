@@ -11,6 +11,7 @@ import {
   Loader2,
   Map,
   Minimize2,
+  Orbit,
   Square,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -19,10 +20,11 @@ import type { AgentEvent, Session, WorkspaceFileContent } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
 import type { RailContentMode } from '@/hooks/use-rail-content'
 import type { TokenUsageSummary, TranscriptSequenceRange } from '@/lib/events'
-import { eventLabel, groupEvents, latestTokenUsage } from '@/lib/events'
+import { activeThinking, eventLabel, groupEvents, latestTokenUsage } from '@/lib/events'
 import { BlocksGame } from '@/components/blocks-game'
 import { Button } from '@/components/ui/button'
 import { ConversationMap } from '@/components/conversation-map'
+import { SignalField } from '@/components/signal-field'
 import { WorkspaceFileBrowser } from '@/components/workspace-files'
 import { cn } from '@/lib/utils'
 
@@ -30,6 +32,7 @@ type Props = {
   session: Session | null
   resolvingSessionID?: string | null
   events: AgentEvent[]
+  activityEvents?: AgentEvent[]
   streamState: StreamState
   streamError: string
   onClear?: () => Promise<void>
@@ -60,6 +63,7 @@ export function RunHealthRail({
   session,
   resolvingSessionID = null,
   events,
+  activityEvents = events,
   streamState,
   streamError,
   onClear = async () => undefined,
@@ -110,6 +114,7 @@ export function RunHealthRail({
   const compactDisabled = codexActionDisabled || !session?.provider_session_id
   const showCodexActions = session?.agent_type === 'codex'
   const showTokenPanel = Boolean(tokenUsage) || cumulativeTokenCount > 0 || showCodexActions
+  const thinkingActive = session?.status === 'running' && activeThinking(activityEvents)
 
   return (
     <aside className="command-rail flex h-full w-full shrink-0 flex-col px-3 py-4">
@@ -176,6 +181,16 @@ export function RunHealthRail({
               onSelectSeq={onSelectConversationSeq}
             />
           ) : null}
+          {desktopLayout && contentMode === 'signal-field' ? (
+            <SignalField
+              sessionID={session?.id ?? null}
+              events={activityEvents}
+              active={slotActive}
+              running={session?.status === 'running'}
+              thinking={thinkingActive}
+              streamState={streamState}
+            />
+          ) : null}
           {blocksMounted ? (
             <BlocksGame
               active={slotActive && contentMode === 'blocks'}
@@ -234,6 +249,7 @@ const railContentOptions: Array<{
 }> = [
   { mode: 'files', label: 'Files', icon: Folder },
   { mode: 'conversation-map', label: 'Conversation map', icon: Map },
+  { mode: 'signal-field', label: 'Signal field', icon: Orbit },
   { mode: 'blocks', label: 'Blocks', icon: Gamepad2 },
   { mode: 'blank', label: 'Blank', icon: Square },
 ]

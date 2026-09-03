@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export type RailContentMode = 'files' | 'conversation-map' | 'blocks' | 'blank'
+export type RailContentMode = 'files' | 'conversation-map' | 'signal-field' | 'blocks' | 'blank'
 
 export const railContentStorageKey = 'gorchestra.rail-content.v1'
 
@@ -15,7 +15,13 @@ export function useRailContentPreference() {
 }
 
 export function isRailContentMode(value: unknown): value is RailContentMode {
-  return value === 'files' || value === 'conversation-map' || value === 'blocks' || value === 'blank'
+  return (
+    value === 'files' ||
+    value === 'conversation-map' ||
+    value === 'signal-field' ||
+    value === 'blocks' ||
+    value === 'blank'
+  )
 }
 
 function storedRailContentMode(): RailContentMode {

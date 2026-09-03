@@ -177,7 +177,8 @@ test('dismiss all notifications clears every unseen session without opening them
   render(<App />)
 
   await waitFor(() => expect(screen.getAllByRole('img', { name: 'Session has unseen results' })).toHaveLength(2))
-  await user.click(screen.getByRole('button', { name: 'Dismiss all notifications' }))
+  await user.click(screen.getByRole('button', { name: 'Notifications, 2 unread' }))
+  await user.click(screen.getByRole('menuitem', { name: 'Dismiss all notifications' }))
 
   await waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
@@ -186,7 +187,7 @@ test('dismiss all notifications clears every unseen session without opening them
     ),
   )
   expect(screen.queryByRole('img', { name: 'Session has unseen results' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Dismiss all notifications' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('menuitem', { name: 'Dismiss all notifications' })).not.toBeInTheDocument()
   await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(0))
 })
 

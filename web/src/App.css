@@ -198,6 +198,77 @@
   aspect-ratio: 1 / 2;
 }
 
+.signal-field-stage {
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 50% 46%, hsl(var(--signal-user) / 0.14), transparent 40%),
+    radial-gradient(circle at 18% 82%, hsl(var(--signal-thinking) / 0.085), transparent 46%),
+    linear-gradient(hsl(var(--border) / 0.12) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--border) / 0.1) 1px, transparent 1px),
+    linear-gradient(180deg, hsl(var(--background) / 0.24), hsl(var(--surface) / 0.5));
+  background-size:
+    100% 100%,
+    100% 100%,
+    22px 22px,
+    22px 22px,
+    100% 100%;
+}
+
+.signal-field-stage::after {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    180deg,
+    transparent 0,
+    transparent 3px,
+    hsl(var(--foreground) / 0.014) 4px
+  );
+  content: '';
+  pointer-events: none;
+}
+
+.signal-field-status::before {
+  display: inline-block;
+  width: 0.35rem;
+  height: 0.35rem;
+  margin-right: 0.35rem;
+  border-radius: 999px;
+  background: hsl(var(--signal-user));
+  box-shadow: 0 0 8px hsl(var(--signal-user) / 0.42);
+  content: '';
+  vertical-align: 0.04rem;
+}
+
+.signal-field-status[data-state='quiet']::before {
+  background: hsl(var(--signal-ambient));
+  box-shadow: 0 0 6px hsl(var(--signal-ambient) / 0.28);
+}
+
+.signal-field-status[data-state='tuning']::before {
+  background: hsl(var(--signal-message));
+  box-shadow: 0 0 8px hsl(var(--signal-message) / 0.38);
+}
+
+.signal-field-status[data-state='thinking']::before {
+  background: hsl(var(--signal-thinking));
+  box-shadow: 0 0 10px hsl(var(--signal-thinking) / 0.52);
+}
+
+.signal-field-status[data-state='typing']::before {
+  background: hsl(var(--signal-typing));
+  box-shadow: 0 0 11px hsl(var(--signal-typing) / 0.62);
+}
+
+.signal-field-status[data-state='reconnecting']::before {
+  background: hsl(var(--signal-tool));
+  box-shadow: 0 0 8px hsl(var(--signal-tool) / 0.4);
+}
+
+.signal-field-status[data-state='offline']::before {
+  background: hsl(var(--signal-error));
+  box-shadow: 0 0 8px hsl(var(--signal-error) / 0.42);
+}
+
 .command-card {
   background: linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--surface) / 0.96));
   border-color: hsl(var(--border) / 0.72);
