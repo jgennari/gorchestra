@@ -98,6 +98,11 @@ type EventBlobStore interface {
 	GetEventBlob(context.Context, string, int64, string, int) (store.EventBlob, error)
 }
 
+type GlobalEventStore interface {
+	GlobalEventCursor(context.Context) (int64, error)
+	ListGlobalEventsFiltered(context.Context, int64, int, store.EventListFilter) ([]store.Event, error)
+}
+
 type EventService interface {
 	Append(ctx context.Context, params eventservice.AppendParams) (store.Event, error)
 	Subscribe(sessionID string) (<-chan store.Event, func())
@@ -214,6 +219,7 @@ type eventResponse struct {
 	ID        string          `json:"id"`
 	SessionID string          `json:"session_id"`
 	Seq       int64           `json:"seq"`
+	GlobalSeq int64           `json:"global_seq,omitempty"`
 	Type      string          `json:"type"`
 	Role      string          `json:"role"`
 	Status    string          `json:"status"`
@@ -1058,6 +1064,11 @@ func (api API) eventStreamHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Request) {
+	resumeRequested := r.URL.Query().Has("after_cursor") || strings.TrimSpace(r.Header.Get("Last-Event-ID")) != ""
+	afterCursor, ok := parseAfterCursor(w, r)
+	if !ok {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming is not supported")
@@ -1067,6 +1078,18 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 	excludedSessionID := strings.TrimSpace(r.URL.Query().Get("exclude_session_id"))
 	liveEvents, unsubscribe := api.events.SubscribeAll()
 	defer unsubscribe()
+
+	var replayedEvents []store.Event
+	resyncRequired := false
+	globalStore, hasGlobalStore := api.store.(GlobalEventStore)
+	if hasGlobalStore && resumeRequested {
+		var err error
+		replayedEvents, resyncRequired, err = api.replayGlobalEvents(r.Context(), globalStore, afterCursor)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to replay global events")
+			return
+		}
+	}
 
 	headers := w.Header()
 	headers.Set("Content-Type", "text/event-stream")
@@ -1078,6 +1101,34 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	flusher.Flush()
+	if resyncRequired {
+		cursor, err := globalStore.GlobalEventCursor(r.Context())
+		if err != nil {
+			return
+		}
+		if err := writeSSEControl(w, streamResyncEventType, map[string]any{
+			"reason":       "replay_window_exceeded",
+			"after_cursor": afterCursor,
+			"cursor":       cursor,
+		}); err == nil {
+			flusher.Flush()
+		}
+		return
+	}
+
+	highestCursorSent := afterCursor
+	for _, event := range replayedEvents {
+		if excludedSessionID != "" && event.SessionID == excludedSessionID {
+			continue
+		}
+		if err := writeGlobalSSE(w, event); err != nil {
+			return
+		}
+		flusher.Flush()
+		if event.GlobalSeq > highestCursorSent {
+			highestCursorSent = event.GlobalSeq
+		}
+	}
 
 	heartbeat := time.NewTicker(streamHeartbeat)
 	defer heartbeat.Stop()
@@ -1098,15 +1149,52 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 			if excludedSessionID != "" && event.SessionID == excludedSessionID {
 				continue
 			}
+			if event.GlobalSeq > 0 && event.GlobalSeq <= highestCursorSent {
+				continue
+			}
 			if !eventVisible(event, store.EventListFilter{}) {
 				continue
 			}
-			if err := writeSSE(w, event); err != nil {
+			if err := writeGlobalSSE(w, event); err != nil {
 				return
 			}
 			flusher.Flush()
+			if event.GlobalSeq > highestCursorSent {
+				highestCursorSent = event.GlobalSeq
+			}
 		}
 	}
+}
+
+func (api API) replayGlobalEvents(
+	ctx context.Context,
+	globalStore GlobalEventStore,
+	afterCursor int64,
+) ([]store.Event, bool, error) {
+	events, err := globalStore.ListGlobalEventsFiltered(
+		ctx,
+		afterCursor,
+		maxEventLimit+1,
+		store.EventListFilter{},
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(events) > maxEventLimit {
+		return nil, true, nil
+	}
+	usedBytes := 0
+	for _, event := range events {
+		encoded, err := json.Marshal(newEventResponse(event))
+		if err != nil {
+			return nil, false, fmt.Errorf("marshal global replay event: %w", err)
+		}
+		usedBytes += len(encoded)
+		if usedBytes > maxEventHistoryBytes {
+			return nil, true, nil
+		}
+	}
+	return events, false, nil
 }
 
 func (api API) replayEvents(
@@ -1184,6 +1272,23 @@ func parseAfterSeq(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	}
 
 	return afterSeq, true
+}
+
+func parseAfterCursor(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	raw := r.URL.Query().Get("after_cursor")
+	if raw == "" {
+		raw = strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+		if raw == "" {
+			return 0, true
+		}
+	}
+
+	afterCursor, err := parseNonNegativeInt64(raw, "after_cursor")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return 0, false
+	}
+	return afterCursor, true
 }
 
 func parseNonNegativeInt64(raw string, name string) (int64, error) {
@@ -1512,6 +1617,7 @@ func newEventResponse(event store.Event) eventResponse {
 		ID:        event.ID,
 		SessionID: event.SessionID,
 		Seq:       event.Seq,
+		GlobalSeq: event.GlobalSeq,
 		Type:      event.Type,
 		Role:      event.Role,
 		Status:    string(event.Status),
@@ -1792,6 +1898,27 @@ func writeSSE(w http.ResponseWriter, event store.Event) error {
 	}
 
 	return nil
+}
+
+func writeGlobalSSE(w http.ResponseWriter, event store.Event) error {
+	body, err := json.Marshal(newEventResponse(event))
+	if err != nil {
+		return fmt.Errorf("marshal global sse event: %w", err)
+	}
+	cursor := event.GlobalSeq
+	if cursor <= 0 {
+		// Compatibility for alternate EventService implementations that have not
+		// adopted the durable global cursor yet.
+		cursor = event.Seq
+	}
+	if _, err := fmt.Fprintf(w, "id: %d\n", cursor); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\n", event.Type); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "data: %s\n\n", body)
+	return err
 }
 
 func writeSSEControl(w http.ResponseWriter, eventType string, payload any) error {

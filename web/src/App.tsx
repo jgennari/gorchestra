@@ -36,8 +36,8 @@ import {
   compactSession,
   createSession,
   getSession,
+  getSessionSnapshot,
   getSessionFileContent,
-  listSessions,
   restoreSession,
   sessionActivityStreamURL,
   submitMessage,
@@ -110,6 +110,7 @@ import {
 } from '@/lib/session-cache'
 import { cn } from '@/lib/utils'
 import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
+import { ingestClientEvent } from '@/lib/client-event-store'
 
 type SessionRouteHistoryMode = 'push' | 'replace' | 'none'
 type PaneSide = 'left' | 'right'
@@ -178,6 +179,7 @@ function App() {
   const [fileRefreshKey, setFileRefreshKey] = useState(0)
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
   const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0)
+  const [activityCursorReady, setActivityCursorReady] = useState(false)
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
   const [notificationAttentionRestored, setNotificationAttentionRestored] = useState(false)
@@ -200,6 +202,7 @@ function App() {
   const selectedEventsRef = useRef<AgentEvent[]>([])
   const paneWidthsRef = useRef(paneWidths)
   const dashboardRefreshTimerRef = useRef<number | null>(null)
+  const activityCursorRef = useRef(0)
 
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionID) ?? null,
@@ -678,49 +681,29 @@ function App() {
     }
   }, [])
 
-  const handleSessionEvent = useCallback(
+  const applyIngestedSessionEvent = useCallback(
     (event: AgentEvent) => {
       applySessionActivityEvent(event)
-      selectedEventsRef.current = appendEvent(selectedEventsRef.current, event)
+      const selected = event.session_id === selectedSessionIDRef.current
+      if (selected) selectedEventsRef.current = appendEvent(selectedEventsRef.current, event)
       playSessionStopSound(event)
       showSessionStopNotification(
         event,
         notificationDetailsForEvent(
           event,
-          event.session_id === selectedSessionIDRef.current ? selectedEventsRef.current : [],
+          selected ? selectedEventsRef.current : [],
           sessionsRef.current,
         ),
       )
-      if (shouldRefreshWorkspaceFilesForEvent(event) && event.session_id === selectedSessionIDRef.current) {
+      if (shouldRefreshWorkspaceFilesForEvent(event) && selected) {
         setFileRefreshKey((value) => value + 1)
       }
-      if (isTerminalEvent(event.type)) {
-        window.setTimeout(() => {
-          void refreshSession(event.session_id)
-        }, 250)
-      }
-    },
-    [applySessionActivityEvent, playSessionStopSound, refreshSession, showSessionStopNotification],
-  )
-
-  const handleActivityEvent = useCallback(
-    (event: AgentEvent) => {
-      applySessionActivityEvent(event)
-      playSessionStopSound(event)
-      showSessionStopNotification(
-        event,
-        notificationDetailsForEvent(
-          event,
-          event.session_id === selectedSessionIDRef.current ? selectedEventsRef.current : [],
-          sessionsRef.current,
-        ),
-      )
       const knownSession = sessionsRef.current.find((session) => session.id === event.session_id)
-      const terminalUnselected = isTerminalEvent(event.type) && event.session_id !== selectedSessionIDRef.current
+      const terminalUnselected = isTerminalEvent(event.type) && !selected
       if (terminalUnselected && event.seq >= latestSessionSeq(knownSession ?? null)) {
         markSessionUnseenAfter(event.session_id, event.seq)
       }
-      if (!knownSession || terminalUnselected) {
+      if (!knownSession) {
         window.setTimeout(() => {
           void refreshSession(event.session_id)
         }, 250)
@@ -735,6 +718,28 @@ function App() {
       scheduleDashboardRefresh,
       showSessionStopNotification,
     ],
+  )
+
+  const handleSessionEvent = useCallback(
+    (event: AgentEvent) => {
+      if (isTransientEvent(event)) {
+        selectedEventsRef.current = appendEvent(selectedEventsRef.current, event)
+        return
+      }
+      applyIngestedSessionEvent(event)
+    },
+    [applyIngestedSessionEvent],
+  )
+
+  const handleActivityEvent = useCallback(
+    (event: AgentEvent) => {
+      if (isTransientEvent(event)) {
+        scheduleDashboardRefresh()
+        return
+      }
+      if (ingestClientEvent(event)) applyIngestedSessionEvent(event)
+    },
+    [applyIngestedSessionEvent, scheduleDashboardRefresh],
   )
 
   const {
@@ -812,7 +817,9 @@ function App() {
         setRefreshingSessions(true)
       }
       try {
-        const nextSessions = await listSessions()
+        const snapshot = await getSessionSnapshot()
+        const nextSessions = snapshot.sessions
+        activityCursorRef.current = Math.max(activityCursorRef.current, snapshot.eventCursor)
         const selectedID = selectedSessionIDRef.current
         const mergedSessions = await includeSelectedSession(nextSessions, selectedID)
         void writePersistentCachedSessions(mergedSessions)
@@ -831,6 +838,7 @@ function App() {
         const sortedSessions = sortSessions(preferFresherSessionSnapshots(mergedSessions, sessionsRef.current))
         sessionsRef.current = sortedSessions
         setSessions(sortedSessions)
+        setActivityCursorReady(true)
         if (isUserSkillsLocation()) {
           selectedSessionIDRef.current = null
           setSelectedSessionID(null)
@@ -840,10 +848,12 @@ function App() {
         } else {
           selectSession(nextSelectedID, preserveSlugRoute ? 'none' : 'replace')
         }
+        return true
       } catch (loadError) {
         if (showLoading) {
           setError(messageFromError(loadError))
         }
+        return false
       } finally {
         sessionListLoadedRef.current = true
         if (showLoading) {
@@ -899,11 +909,14 @@ function App() {
   ])
 
   useEffect(() => {
+    if (!activityCursorReady) {
+      return
+    }
     let closed = false
     let source: EventSource | null = null
     let reconnectTimer: number | undefined
     let reconnectAttempt = 0
-    let reconcileAfterOpen = false
+    let resyncing = false
 
     function closeSource() {
       source?.close()
@@ -912,39 +925,58 @@ function App() {
 
     function handleActivityMessage(message: MessageEvent<string>) {
       try {
-        handleActivityEvent(JSON.parse(message.data) as AgentEvent)
+        const event = JSON.parse(message.data) as AgentEvent
+        handleActivityEvent(event)
+        if (event.global_seq && event.global_seq > activityCursorRef.current) {
+          activityCursorRef.current = event.global_seq
+        }
       } catch {
         // A malformed sidebar event should not interrupt the selected transcript stream.
       }
     }
 
+    function handleResyncRequired() {
+      if (closed || resyncing) return
+      resyncing = true
+      closeSource()
+      void loadSessions({ showLoading: false }).then((synchronized) => {
+        resyncing = false
+        if (closed) return
+        if (synchronized) {
+          connect()
+        } else {
+          scheduleReconnect()
+        }
+      })
+    }
+
+    function scheduleReconnect() {
+      if (closed || reconnectTimer !== undefined) return
+      const delay = Math.min(1000 * 2 ** reconnectAttempt, maximumActivityReconnectDelayMs)
+      reconnectAttempt += 1
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = undefined
+        connect()
+      }, delay)
+    }
+
     function connect() {
-      if (closed) {
+      if (closed || typeof EventSource === 'undefined') {
         return
       }
-      source = new EventSource(sessionActivityStreamURL(selectedSessionID))
+      source = new EventSource(sessionActivityStreamURL(activityCursorRef.current))
       source.onopen = () => {
         if (closed) return
         reconnectAttempt = 0
-        if (reconcileAfterOpen) {
-          reconcileAfterOpen = false
-          void loadSessions({ showLoading: false })
-        }
       }
       source.onerror = () => {
-        if (closed || reconnectTimer !== undefined) return
-        reconcileAfterOpen = true
         closeSource()
-        const delay = Math.min(1000 * 2 ** reconnectAttempt, maximumActivityReconnectDelayMs)
-        reconnectAttempt += 1
-        reconnectTimer = window.setTimeout(() => {
-          reconnectTimer = undefined
-          connect()
-        }, delay)
+        scheduleReconnect()
       }
       for (const eventType of knownEventTypes) {
         source.addEventListener(eventType, handleActivityMessage)
       }
+      source.addEventListener('stream.resync.required', handleResyncRequired)
     }
 
     connect()
@@ -956,7 +988,7 @@ function App() {
       }
       closeSource()
     }
-  }, [handleActivityEvent, loadSessions, selectedSessionID])
+  }, [activityCursorReady, handleActivityEvent, loadSessions])
 
   useEffect(() => {
     void loadSessions()

@@ -186,14 +186,20 @@ export async function readCachedSessionEvents(
   const db = await openCacheDB()
   if (!db) return null
 
-  const hotWindow = await getRecord<CachedEventHotWindow>(db, eventHotWindowStore, sessionID)
-  if (isCachedEventHotWindow(hotWindow, sessionID)) {
+  const [hotWindow, currentMeta] = await Promise.all([
+    getRecord<CachedEventHotWindow>(db, eventHotWindowStore, sessionID),
+    getRecord<CachedEventMeta>(db, eventMetaStore, sessionID),
+  ])
+  if (
+    isCachedEventHotWindow(hotWindow, sessionID) &&
+    (!currentMeta || hotWindow.lastSeq >= currentMeta.lastSeq)
+  ) {
     const cached = cachedSessionEventsFromHotWindow(hotWindow)
     void touchCachedEventMeta(db, sessionID)
     return cached
   }
 
-  let meta = await getRecord<CachedEventMeta>(db, eventMetaStore, sessionID)
+  let meta = currentMeta
   if (!meta) {
     try {
       meta = await migrateLegacySessionEvents(db, sessionID)

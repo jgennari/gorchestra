@@ -10,6 +10,7 @@ import {
   readCachedSessionSnapshot,
   readCachedSessionSnapshotBySlug,
   writeCachedSession,
+  writeCachedSessionEvent,
   writeCachedSessionEvents,
   writeCachedSessionEventPage,
   writeCachedSessionSnapshot,
@@ -106,6 +107,16 @@ test('session cache restores the hot window without the paged event index', asyn
 
   expect(cached?.events.map((item) => item.seq)).toEqual([10, 11])
   expect(cached).toMatchObject({ lastSeq: 11, oldestSeq: 10, hasOlderEvents: true })
+})
+
+test('session cache bypasses a stale hot window after an incremental event write', async () => {
+  await writeCachedSessionEvents('sess_1', [event(1)], false)
+  await writeCachedSessionEvent('sess_1', event(2), 2)
+
+  const cached = await readCachedSessionEvents('sess_1')
+
+  expect(cached?.events.map((item) => item.seq)).toEqual([1, 2])
+  expect(cached).toMatchObject({ lastSeq: 2, oldestSeq: 1 })
 })
 
 test('session cache excludes transient deltas while retaining the stream cursor', async () => {

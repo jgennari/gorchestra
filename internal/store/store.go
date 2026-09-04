@@ -615,6 +615,20 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 	); err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
 	}
+	if !strings.HasSuffix(event.Type, ".delta") {
+		result, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO global_event_stream (event_id) VALUES (?)`,
+			event.ID,
+		)
+		if err != nil {
+			return Event{}, fmt.Errorf("index global event: %w", err)
+		}
+		event.GlobalSeq, err = result.LastInsertId()
+		if err != nil {
+			return Event{}, fmt.Errorf("read global event sequence: %w", err)
+		}
+	}
 	for index := range blobs {
 		blobs[index].EventID = event.ID
 		blobs[index].CreatedAt = event.CreatedAt
@@ -1150,6 +1164,61 @@ func (s *Store) ListEventsFiltered(
 	return events, nil
 }
 
+// GlobalEventCursor returns the latest server-wide durable event sequence. The
+// AUTOINCREMENT counter is intentionally used instead of MAX(global_seq): event
+// maintenance may delete the newest indexed event, but a previously issued
+// cursor must never move backwards.
+func (s *Store) GlobalEventCursor(ctx context.Context) (int64, error) {
+	var cursor int64
+	if err := s.db.QueryRowContext(
+		ctx,
+		`SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'global_event_stream'), 0)`,
+	).Scan(&cursor); err != nil {
+		return 0, fmt.Errorf("read global event cursor: %w", err)
+	}
+	return cursor, nil
+}
+
+func (s *Store) ListGlobalEventsFiltered(
+	ctx context.Context,
+	afterCursor int64,
+	limit int,
+	filter EventListFilter,
+) ([]Event, error) {
+	if limit <= 0 {
+		limit = defaultEventLimit
+	}
+
+	query := `SELECT e.id, e.session_id, e.seq, e.type, e.role, e.status, e.payload_json, e.created_at,
+			g.global_seq
+		 FROM global_event_stream AS g
+		 JOIN events AS e ON e.id = g.event_id
+		 WHERE g.global_seq > ? AND ` + durableEventSQL
+	if !filter.IncludeDebug {
+		query += ` ` + nonDebugEventSQL()
+	}
+	query += ` ORDER BY g.global_seq ASC LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, query, afterCursor, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list global events: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]Event, 0)
+	for rows.Next() {
+		event, err := scanGlobalEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list global event rows: %w", err)
+	}
+	return events, nil
+}
+
 func (s *Store) GetEvent(ctx context.Context, sessionID string, seq int64) (Event, error) {
 	row := s.db.QueryRowContext(
 		ctx,
@@ -1614,6 +1683,40 @@ func scanEvent(row rowScanner) (Event, error) {
 	event.Payload = json.RawMessage(payload)
 	event.CreatedAt = parsedCreatedAt
 
+	return event, nil
+}
+
+func scanGlobalEvent(row rowScanner) (Event, error) {
+	var event Event
+	var role sql.NullString
+	var status string
+	var payload string
+	var createdAt string
+
+	if err := row.Scan(
+		&event.ID,
+		&event.SessionID,
+		&event.Seq,
+		&event.Type,
+		&role,
+		&status,
+		&payload,
+		&createdAt,
+		&event.GlobalSeq,
+	); err != nil {
+		return Event{}, fmt.Errorf("scan global event: %w", err)
+	}
+
+	parsedCreatedAt, err := parseTime(createdAt)
+	if err != nil {
+		return Event{}, fmt.Errorf("parse global event created_at: %w", err)
+	}
+	event.Status = EventStatus(status)
+	if role.Valid {
+		event.Role = role.String
+	}
+	event.Payload = json.RawMessage(payload)
+	event.CreatedAt = parsedCreatedAt
 	return event, nil
 }
 

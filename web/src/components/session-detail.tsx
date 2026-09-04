@@ -135,7 +135,7 @@ export function SessionDetail({
       ? ({ kind: 'working', since: runActivity.lastVisibleActivityAt } as const)
       : null
   const latestTerminal = useMemo(() => latestTerminalEvent(statusEvents), [statusEvents])
-  const latestQueueEvent = useMemo(() => latestQueuedMessageEvent(statusEvents), [statusEvents])
+  const queueEvents = useMemo(() => queuedMessageEvents(statusEvents), [statusEvents])
 
   useEffect(() => {
     setOptimisticUserMessages([])
@@ -335,7 +335,7 @@ export function SessionDetail({
             sessionStatus={session.status}
             hasPendingUserInput={Boolean(userInputRequest)}
             latestTerminalEvent={latestTerminal}
-            latestQueueEvent={latestQueueEvent}
+            queueEvents={queueEvents}
             disabled={composerDisabled}
             disabledReason={disabledReason}
             onSubmit={handleSubmitPrompt}
@@ -413,18 +413,13 @@ export function ChatSessionHeader({
   )
 }
 
-function latestQueuedMessageEvent(events: AgentEvent[]) {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (
+function queuedMessageEvents(events: AgentEvent[]) {
+  return events.filter(
+    (event) =>
       event.type === 'user.message.queued' ||
       event.type === 'user.message.queue.removed' ||
-      queuedUserMessageCompleted(event)
-    ) {
-      return event
-    }
-  }
-  return null
+      queuedUserMessageCompleted(event),
+  )
 }
 
 function queuedUserMessageCompleted(event: AgentEvent) {

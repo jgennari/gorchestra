@@ -412,13 +412,54 @@ func TestConcurrentAppendsDeliverLiveEventsInSequenceOrder(t *testing.T) {
 	assertAscending(t, delivered)
 }
 
+func TestConcurrentSessionsBroadcastInGlobalSequenceOrder(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeStore()
+	firstPersisted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	fake.afterPersist = func(event store.Event) {
+		if event.GlobalSeq == 1 {
+			close(firstPersisted)
+			<-releaseFirst
+		}
+	}
+	service := newTestService(t, fake)
+	ch, unsubscribe := service.SubscribeAll()
+	defer unsubscribe()
+
+	errCh := make(chan error, 2)
+	go func() {
+		_, err := service.Append(ctx, appendParams("sess_one", "agent.message.completed"))
+		errCh <- err
+	}()
+	<-firstPersisted
+	go func() {
+		_, err := service.Append(ctx, appendParams("sess_two", "agent.message.completed"))
+		errCh <- err
+	}()
+
+	assertNoEvent(t, ch)
+	close(releaseFirst)
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	first := receiveEvent(t, ch)
+	second := receiveEvent(t, ch)
+	if first.GlobalSeq != 1 || second.GlobalSeq != 2 {
+		t.Fatalf("expected global seqs 1 then 2, got %d then %d", first.GlobalSeq, second.GlobalSeq)
+	}
+}
+
 type fakeStore struct {
-	mu           sync.Mutex
-	nextID       int
-	nextSeq      map[string]int64
-	persisted    []store.Event
-	err          error
-	afterPersist func(store.Event)
+	mu            sync.Mutex
+	nextID        int
+	nextGlobalSeq int64
+	nextSeq       map[string]int64
+	persisted     []store.Event
+	err           error
+	afterPersist  func(store.Event)
 }
 
 func newFakeStore() *fakeStore {
@@ -462,12 +503,14 @@ func (f *fakeStore) AppendEvent(ctx context.Context, params store.AppendEventPar
 		ID:        fmt.Sprintf("evt_%06d", f.nextID),
 		SessionID: params.SessionID,
 		Seq:       params.Seq,
+		GlobalSeq: f.nextGlobalSeq + 1,
 		Type:      params.Type,
 		Role:      params.Role,
 		Status:    params.Status,
 		Payload:   append(json.RawMessage(nil), params.Payload...),
 		CreatedAt: time.Now().UTC(),
 	}
+	f.nextGlobalSeq = event.GlobalSeq
 	f.persisted = append(f.persisted, event)
 	afterPersist := f.afterPersist
 	f.mu.Unlock()

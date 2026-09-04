@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -34,6 +36,7 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "schedule_occurrences")
 	assertTableExists(t, ctx, store, "event_blobs")
 	assertTableExists(t, ctx, store, "event_maintenance_state")
+	assertTableExists(t, ctx, store, "global_event_stream")
 	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
 	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
 	assertColumnExists(t, ctx, store, "sessions", "next_event_seq")
@@ -61,8 +64,78 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 20 {
-		t.Fatalf("expected twenty recorded migrations, got %d", count)
+	if count != 21 {
+		t.Fatalf("expected twenty-one recorded migrations, got %d", count)
+	}
+}
+
+func TestGlobalEventStreamMigrationBackfillsDurableEventsInCreationOrder(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "pre-global-stream.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, schemaMigrationsSQL); err != nil {
+		t.Fatalf("create migrations table: %v", err)
+	}
+	testStore := &Store{db: db, now: func() time.Time { return time.Now().UTC() }}
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	for _, migration := range migrations {
+		if migration.version >= 22 {
+			continue
+		}
+		if err := testStore.applyMigration(ctx, migration); err != nil {
+			t.Fatalf("apply migration %d: %v", migration.version, err)
+		}
+	}
+
+	createdAt := formatTime(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sessions (id, title, agent_type, status, created_at, updated_at)
+		VALUES ('sess_one', 'One', 'fake', 'idle', ?, ?), ('sess_two', 'Two', 'fake', 'idle', ?, ?);
+		INSERT INTO events (id, session_id, seq, type, role, status, payload_json, created_at)
+		VALUES
+			('evt_one', 'sess_one', 1, 'agent.message.completed', 'assistant', 'completed', '{}', ?),
+			('evt_delta', 'sess_one', 2, 'agent.message.delta', 'assistant', 'delta', '{}', ?),
+			('evt_two', 'sess_two', 1, 'agent.run.completed', 'assistant', 'completed', '{}', ?);`,
+		createdAt,
+		createdAt,
+		createdAt,
+		createdAt,
+		createdAt,
+		createdAt,
+		createdAt,
+	); err != nil {
+		t.Fatalf("seed pre-migration events: %v", err)
+	}
+	if err := testStore.Migrate(ctx); err != nil {
+		t.Fatalf("apply global stream migration: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, `SELECT global_seq, event_id FROM global_event_stream ORDER BY global_seq`)
+	if err != nil {
+		t.Fatalf("query global stream: %v", err)
+	}
+	defer rows.Close()
+	got := make([]string, 0, 2)
+	for rows.Next() {
+		var seq int64
+		var eventID string
+		if err := rows.Scan(&seq, &eventID); err != nil {
+			t.Fatalf("scan global stream: %v", err)
+		}
+		got = append(got, fmt.Sprintf("%d:%s", seq, eventID))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read global stream: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"1:evt_one", "2:evt_two"}) {
+		t.Fatalf("expected durable events backfilled in row order, got %#v", got)
 	}
 }
 
@@ -1321,6 +1394,41 @@ func TestAppendEventSequencesAreIndependentPerSession(t *testing.T) {
 	}
 	if secondEvent.Seq != 1 {
 		t.Fatalf("expected second session seq 1, got %d", secondEvent.Seq)
+	}
+}
+
+func TestGlobalEventSequencesOrderDurableEventsAcrossSessions(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	firstSession := createTestSession(t, ctx, store)
+	secondSession := createTestSession(t, ctx, store)
+
+	first := appendTestEvent(t, ctx, store, firstSession.ID, `{"text":"one"}`)
+	delta := appendTestEventWithType(t, ctx, store, firstSession.ID, "agent.message.delta", `{"text":"partial"}`)
+	second := appendTestEvent(t, ctx, store, secondSession.ID, `{"text":"two"}`)
+
+	if first.GlobalSeq != 1 || delta.GlobalSeq != 0 || second.GlobalSeq != 2 {
+		t.Fatalf(
+			"expected durable global seqs 1 and 2 with an unindexed delta, got %d, %d, %d",
+			first.GlobalSeq,
+			delta.GlobalSeq,
+			second.GlobalSeq,
+		)
+	}
+	cursor, err := store.GlobalEventCursor(ctx)
+	if err != nil {
+		t.Fatalf("read global event cursor: %v", err)
+	}
+	if cursor != 2 {
+		t.Fatalf("expected global event cursor 2, got %d", cursor)
+	}
+
+	events, err := store.ListGlobalEventsFiltered(ctx, 1, 10, EventListFilter{})
+	if err != nil {
+		t.Fatalf("list global events: %v", err)
+	}
+	if len(events) != 1 || events[0].ID != second.ID || events[0].GlobalSeq != 2 {
+		t.Fatalf("expected only the second durable event after cursor 1, got %#v", events)
 	}
 }
 

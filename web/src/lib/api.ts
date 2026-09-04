@@ -300,6 +300,7 @@ export type AgentEvent = {
   id: string
   session_id: string
   seq: number
+  global_seq?: number
   type: string
   role: string
   status: string
@@ -641,6 +642,7 @@ type ErrorResponse = {
 
 type ListSessionsResponse = {
   sessions: Session[]
+  event_cursor?: number
 }
 
 type WorkspaceRootsResponse = {
@@ -715,6 +717,8 @@ type ListSessionsOptions = {
   include_archived?: boolean
 }
 
+const sessionSnapshotRequests = new Map<string, Promise<ListSessionsResponse>>()
+
 export const defaultEventWindowLimit = 500
 export const defaultEventTurnPageSize = 2
 
@@ -736,7 +740,7 @@ export async function fetchHealth() {
   await requestJSON<{ status: string }>('/api/health')
 }
 
-export async function listSessions(options: ListSessionsOptions | number = {}) {
+export async function getSessionSnapshot(options: ListSessionsOptions | number = {}) {
   const limit = typeof options === 'number' ? options : (options.limit ?? 50)
   const status = typeof options === 'number' ? undefined : options.status
   const includeArchived = typeof options === 'number' ? false : (options.include_archived ?? false)
@@ -748,8 +752,24 @@ export async function listSessions(options: ListSessionsOptions | number = {}) {
     params.set('include_archived', 'true')
   }
 
-  const data = await requestJSON<ListSessionsResponse>(`/api/sessions?${params.toString()}`)
-  return data.sessions
+  const url = `/api/sessions?${params.toString()}`
+  let request = sessionSnapshotRequests.get(url)
+  if (!request) {
+    request = requestJSON<ListSessionsResponse>(url)
+    sessionSnapshotRequests.set(url, request)
+    void request.finally(() => {
+      if (sessionSnapshotRequests.get(url) === request) sessionSnapshotRequests.delete(url)
+    }).catch(() => undefined)
+  }
+  const data = await request
+  return {
+    sessions: data.sessions,
+    eventCursor: Math.max(0, data.event_cursor ?? 0),
+  }
+}
+
+export async function listSessions(options: ListSessionsOptions | number = {}) {
+  return (await getSessionSnapshot(options)).sessions
 }
 
 export async function getDashboard(range: DashboardRange = '30d', signal?: AbortSignal) {
@@ -1275,9 +1295,11 @@ export function eventStreamURL(sessionID: string, afterSeq: number, options: Eve
   return withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events/stream`, params)
 }
 
-export function sessionActivityStreamURL(excludedSessionID?: string | null) {
+export function sessionActivityStreamURL(afterCursor?: number | null) {
   const params = new URLSearchParams()
-  if (excludedSessionID) params.set('exclude_session_id', excludedSessionID)
+  if (afterCursor !== undefined && afterCursor !== null) {
+    params.set('after_cursor', String(Math.max(0, afterCursor)))
+  }
   return withQuery('/api/sessions/activity/stream', params)
 }
 

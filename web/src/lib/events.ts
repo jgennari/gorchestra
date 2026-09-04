@@ -2,6 +2,8 @@ import type { AgentEvent, PermissionRequest, SessionStatus, SkillReference, User
 
 export const knownEventTypes = [
   'user.message.completed',
+  'user.message.queued',
+  'user.message.queue.removed',
   'user.action.completed',
   'session.action.completed',
   'session.status.updated',

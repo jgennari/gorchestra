@@ -37,6 +37,7 @@ type Service struct {
 	store                Store
 	bufferSize           int
 	subscriberBufferSize int
+	durableAppendMu      sync.Mutex
 
 	mu               sync.Mutex
 	buffers          map[string][]store.Event
@@ -100,6 +101,13 @@ func (s *Service) Append(ctx context.Context, params AppendParams) (store.Event,
 	defer appendLock.Unlock()
 
 	transient := isTransientEventType(params.Type)
+	if !transient {
+		// SQLite serializes these writes already. Keep the persistence + broadcast
+		// boundary serialized too so global subscribers can never observe cursor
+		// N+1 before cursor N when different sessions append concurrently.
+		s.durableAppendMu.Lock()
+		defer s.durableAppendMu.Unlock()
+	}
 	var event store.Event
 	var err error
 

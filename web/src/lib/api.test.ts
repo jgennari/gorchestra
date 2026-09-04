@@ -9,6 +9,7 @@ import {
   fetchAgentOptions,
   fetchQueuedMessages,
   fetchSessionSkills,
+  getSessionSnapshot,
   getHostStatus,
   getSessionFileContent,
   isAgentType,
@@ -92,7 +93,7 @@ test('session API helpers build the expected URLs', async () => {
     '/api/sessions/sess_1/events/stream?after_seq=4&include_debug=true',
   )
   expect(sessionActivityStreamURL()).toBe('/api/sessions/activity/stream')
-  expect(sessionActivityStreamURL('sess_1')).toBe('/api/sessions/activity/stream?exclude_session_id=sess_1')
+  expect(sessionActivityStreamURL(42)).toBe('/api/sessions/activity/stream?after_cursor=42')
 })
 
 test('session list helper includes status filters', async () => {
@@ -103,6 +104,32 @@ test('session list helper includes status filters', async () => {
   vi.stubGlobal('fetch', fetchMock)
 
   await listSessions({ limit: 25, status: 'running' })
+})
+
+test('session snapshot returns the durable global event cursor', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ sessions: [], event_cursor: 73 })))
+
+  await expect(getSessionSnapshot()).resolves.toEqual({ sessions: [], eventCursor: 73 })
+})
+
+test('coalesces concurrent requests for the same session snapshot', async () => {
+  let resolveFetch: ((response: Response) => void) | undefined
+  const fetchMock = vi.fn(
+    () => new Promise<Response>((resolve) => {
+      resolveFetch = resolve
+    }),
+  )
+  vi.stubGlobal('fetch', fetchMock)
+
+  const first = getSessionSnapshot()
+  const second = getSessionSnapshot()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  resolveFetch?.(jsonResponse({ sessions: [], event_cursor: 81 }))
+  await expect(Promise.all([first, second])).resolves.toEqual([
+    { sessions: [], eventCursor: 81 },
+    { sessions: [], eventCursor: 81 },
+  ])
 })
 
 test('session list helper includes archived toggle', async () => {

@@ -281,11 +281,10 @@ export function ChatTranscript({
     paddingEnd: composerClearanceHeight,
     overscan: 6,
     directDomUpdates: true,
-    // Keep TanStack's synchronous resize commit enabled. Streaming messages and
-    // tool rows can grow by more than the reserved composer clearance in one
-    // ResizeObserver pass; committing the new sizer height with the scroll
-    // correction prevents the browser from clamping that correction to the
-    // previous (shorter) scroll range.
+    // ResizeObserver can report from React's layout phase. Avoid asking the
+    // virtualizer to nest flushSync in that lifecycle; the explicit tail frame
+    // below still performs the second scroll after the new height is committed.
+    useFlushSync: false,
     onChange: handleVirtualizerChange,
   })
 

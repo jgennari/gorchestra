@@ -444,6 +444,28 @@ func TestListSessionsFiltersByStatus(t *testing.T) {
 	}
 }
 
+func TestListSessionsIncludesGlobalEventCursor(t *testing.T) {
+	baseStore := newFakeHTTPStore()
+	baseStore.addSession(testSessionID)
+	fakeStore := &fakeGlobalHTTPStore{fakeHTTPStore: baseStore, cursor: 37}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: fakeStore}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response listSessionsResponse
+	decodeJSON(t, rec, &response)
+	if response.EventCursor != 37 {
+		t.Fatalf("expected event cursor 37, got %d", response.EventCursor)
+	}
+	if !reflect.DeepEqual(fakeStore.calls, []string{"cursor", "sessions"}) {
+		t.Fatalf("expected cursor capture before session snapshot, got calls %#v", fakeStore.calls)
+	}
+}
+
 func TestListSessionsCanIncludeArchived(t *testing.T) {
 	fakeStore := newFakeHTTPStore()
 	archivedAt := testCreatedAt.Add(10 * time.Minute)
@@ -1967,6 +1989,105 @@ func TestSessionActivityStreamSendsAllLiveSessionEvents(t *testing.T) {
 	}
 }
 
+func TestSessionActivityStreamReplaysAfterGlobalCursor(t *testing.T) {
+	baseStore := newFakeHTTPStore()
+	baseStore.addSession(testSessionID)
+	first := testEvent(8, "agent.message.completed")
+	first.GlobalSeq = 21
+	second := testEvent(9, "agent.run.completed")
+	second.GlobalSeq = 22
+	fakeStore := &fakeGlobalHTTPStore{
+		fakeHTTPStore: baseStore,
+		cursor:        22,
+		globalEvents:  []store.Event{first, second},
+	}
+	subscriber := &fakeSubscriber{}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/activity/stream?after_cursor=21", nil)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewRouter(Dependencies{Store: fakeStore, Events: subscriber}).ServeHTTP(rec, req)
+	}()
+	waitFor(t, func() bool { return subscriber.subscribeAllCount() == 1 })
+	subscriber.closeAll()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("activity stream did not exit")
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, `"global_seq":21`) || !strings.Contains(body, `"global_seq":22`) {
+		t.Fatalf("expected replay strictly after global cursor 21:\n%s", body)
+	}
+	if !strings.Contains(body, "id: 22\n") {
+		t.Fatalf("expected global cursor as SSE id:\n%s", body)
+	}
+}
+
+func TestSessionActivityStreamWithoutCursorRemainsLiveOnlyForLegacyClients(t *testing.T) {
+	baseStore := newFakeHTTPStore()
+	baseStore.addSession(testSessionID)
+	replayed := testEvent(8, "agent.message.completed")
+	replayed.GlobalSeq = 21
+	fakeStore := &fakeGlobalHTTPStore{
+		fakeHTTPStore: baseStore,
+		cursor:        21,
+		globalEvents:  []store.Event{replayed},
+	}
+	subscriber := &fakeSubscriber{}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/activity/stream", nil)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewRouter(Dependencies{Store: fakeStore, Events: subscriber}).ServeHTTP(rec, req)
+	}()
+	waitFor(t, func() bool { return subscriber.subscribeAllCount() == 1 })
+	subscriber.closeAll()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("activity stream did not exit")
+	}
+
+	if strings.Contains(rec.Body.String(), `"global_seq":21`) {
+		t.Fatalf("expected a cursorless legacy connection to remain live-only:\n%s", rec.Body.String())
+	}
+}
+
+func TestSessionActivityStreamRequestsSnapshotWhenReplayWindowIsExceeded(t *testing.T) {
+	baseStore := newFakeHTTPStore()
+	baseStore.addSession(testSessionID)
+	events := make([]store.Event, maxEventLimit+1)
+	for index := range events {
+		events[index] = testEvent(int64(index+1), "agent.message.completed")
+		events[index].GlobalSeq = int64(index + 1)
+	}
+	fakeStore := &fakeGlobalHTTPStore{
+		fakeHTTPStore: baseStore,
+		cursor:        int64(len(events)),
+		globalEvents:  events,
+	}
+	subscriber := &fakeSubscriber{}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/activity/stream?after_cursor=0", nil)
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{Store: fakeStore, Events: subscriber}).ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: "+streamResyncEventType+"\n") ||
+		!strings.Contains(body, `"cursor":1001`) {
+		t.Fatalf("expected an explicit resync at the current cursor:\n%s", body)
+	}
+	if strings.Contains(body, `"global_seq":1`) {
+		t.Fatalf("expected no partial replay before resync:\n%s", body)
+	}
+}
+
 func TestSessionActivityStreamExcludesSelectedSession(t *testing.T) {
 	store := newFakeHTTPStore()
 	store.addSession(testSessionID)
@@ -2155,6 +2276,41 @@ type fakeHTTPStore struct {
 	onList            func(sessionID string, afterSeq int64, limit int)
 	getErr            error
 	listErr           error
+}
+
+type fakeGlobalHTTPStore struct {
+	*fakeHTTPStore
+	cursor       int64
+	globalEvents []store.Event
+	calls        []string
+}
+
+func (s *fakeGlobalHTTPStore) GlobalEventCursor(context.Context) (int64, error) {
+	s.calls = append(s.calls, "cursor")
+	return s.cursor, nil
+}
+
+func (s *fakeGlobalHTTPStore) ListSessions(ctx context.Context, params store.ListSessionsParams) ([]store.Session, error) {
+	s.calls = append(s.calls, "sessions")
+	return s.fakeHTTPStore.ListSessions(ctx, params)
+}
+
+func (s *fakeGlobalHTTPStore) ListGlobalEventsFiltered(
+	_ context.Context,
+	afterCursor int64,
+	limit int,
+	filter store.EventListFilter,
+) ([]store.Event, error) {
+	events := make([]store.Event, 0, len(s.globalEvents))
+	for _, event := range s.globalEvents {
+		if event.GlobalSeq > afterCursor && eventVisible(event, filter) {
+			events = append(events, event)
+		}
+	}
+	if limit > 0 && len(events) > limit {
+		events = events[:limit]
+	}
+	return append([]store.Event(nil), events...), nil
 }
 
 type listCall struct {

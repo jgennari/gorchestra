@@ -77,6 +77,7 @@ type Event struct {
 	ID        string
 	SessionID string
 	Seq       int64
+	GlobalSeq int64
 	Type      string
 	Role      string
 	Status    EventStatus

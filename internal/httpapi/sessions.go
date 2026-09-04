@@ -81,7 +81,8 @@ type sessionResponse struct {
 }
 
 type listSessionsResponse struct {
-	Sessions []sessionResponse `json:"sessions"`
+	Sessions    []sessionResponse `json:"sessions"`
+	EventCursor int64             `json:"event_cursor"`
 }
 
 type submitMessageRequest struct {
@@ -192,6 +193,16 @@ func (api API) listSessionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var eventCursor int64
+	if globalStore, ok := api.store.(GlobalEventStore); ok {
+		var err error
+		eventCursor, err = globalStore.GlobalEventCursor(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to capture event cursor")
+			return
+		}
+	}
+
 	sessions, err := api.store.ListSessions(r.Context(), store.ListSessionsParams{
 		Limit:           limit,
 		Status:          status,
@@ -208,7 +219,7 @@ func (api API) listSessionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, listSessionsResponse{Sessions: responses})
+	writeJSON(w, http.StatusOK, listSessionsResponse{Sessions: responses, EventCursor: eventCursor})
 }
 
 func (api API) getSessionHandler(w http.ResponseWriter, r *http.Request) {

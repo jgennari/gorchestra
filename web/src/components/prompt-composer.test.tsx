@@ -634,6 +634,33 @@ test('reconciles queued messages from queue lifecycle events without refetching'
   expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/queued-messages')).toHaveLength(1)
 })
 
+test('hydrates all cached queue lifecycle events at mount', async () => {
+  vi.stubGlobal('fetch', queueFetchMock([]))
+
+  render(
+    <PromptComposer
+      sessionID="sess_1"
+      disabled={false}
+      disabledReason=""
+      queueEvents={[
+        {
+          id: 'evt_9',
+          session_id: 'sess_1',
+          seq: 9,
+          type: 'user.message.queued',
+          role: 'user',
+          status: 'completed',
+          payload: { queue_item_id: 'queue_1', text: 'Cached follow-up' },
+          created_at: '2026-06-12T16:00:00Z',
+        },
+      ]}
+      onSubmit={async () => undefined}
+    />,
+  )
+
+  expect(await screen.findByText('Cached follow-up')).toBeInTheDocument()
+})
+
 test('does not auto-submit server queued messages after failed or completed runs', async () => {
   const onSubmit = vi.fn(async () => undefined)
   vi.stubGlobal('fetch', queueFetchMock([queuedMessage('queue_1', 'Queued follow-up')]))

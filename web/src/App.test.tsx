@@ -68,11 +68,88 @@ test('uses a selected session from the initial list without refetching its detai
   expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1')).toHaveLength(0)
 })
 
-test('global activity excludes the selected session', async () => {
+test('global activity stays connected when the selected session changes', async () => {
+  const user = userEvent.setup()
   render(<App />)
 
   const activitySource = await findEventSource('/api/sessions/activity/stream')
-  expect(activitySource.url).toBe('/api/sessions/activity/stream?exclude_session_id=sess_1')
+  expect(activitySource.url).toBe('/api/sessions/activity/stream?after_cursor=0')
+
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+  expect(FakeEventSource.instances.filter((source) => source.url.startsWith('/api/sessions/activity/stream')))
+    .toHaveLength(1)
+})
+
+test('selecting a background session hydrates its global events without fetching a tail', async () => {
+  const user = userEvent.setup()
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit({
+      ...event(5, 'agent.message.completed', { text: 'Background answer' }, 'sess_2'),
+      global_seq: 45,
+    })
+  })
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+
+  expect(await screen.findByText('Background answer')).toBeInTheDocument()
+  expect(
+    fetch.mock.calls.filter(
+      ([url]) => String(url) === '/api/sessions/sess_2/events?tail=true&turns=50&max_bytes=2097152',
+    ),
+  ).toHaveLength(0)
+  await findEventSource('/api/sessions/sess_2/events/stream?after_seq=5')
+})
+
+test('background queue lifecycle is current when its session is selected', async () => {
+  const user = userEvent.setup()
+  const baseFetch = fetchMock()
+  const fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions/sess_2/queued-messages') {
+      return Promise.resolve(jsonResponse({ messages: [] }))
+    }
+    return baseFetch(url, init)
+  })
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit({
+      ...event(5, 'user.message.queued', { queue_item_id: 'queue_1', text: 'Background follow-up' }, 'sess_2'),
+      global_seq: 45,
+    })
+  })
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+
+  await findEventSource('/api/sessions/sess_2/events/stream?after_seq=5')
+  expect(await screen.findByText('Background follow-up')).toBeInTheDocument()
+  act(() => {
+    activitySource.emit({
+      ...event(6, 'user.message.queue.removed', { queue_item_id: 'queue_1' }, 'sess_2'),
+      global_seq: 46,
+    })
+  })
+  await waitFor(() => expect(screen.queryByText('Background follow-up')).not.toBeInTheDocument())
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_2/queued-messages')).toHaveLength(1)
+})
+
+test('known terminal activity does not refetch session details', async () => {
+  const runningSecondSession: Session = { ...secondSession, status: 'running', last_event_seq: 4, event_count: 4 }
+  const fetch = fetchMock({ sessions: [firstSession, runningSecondSession] })
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit({ ...event(5, 'agent.run.completed', {}, 'sess_2'), global_seq: 46 })
+  })
+
+  await waitFor(() => expect(screen.getByRole('img', { name: 'Session has unseen results' })).toBeInTheDocument())
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_2')).toHaveLength(0)
 })
 
 test('overview coalesces an activity burst into one dashboard refresh', async () => {
@@ -103,7 +180,7 @@ test('overview coalesces an activity burst into one dashboard refresh', async ()
   )
 })
 
-test('global activity reconnects before reconciling the session list once', async () => {
+test('global activity reconnects from its latest cursor without refetching the session list', async () => {
   const fetch = fetchMock()
   vi.stubGlobal('fetch', fetch)
 
@@ -114,17 +191,47 @@ test('global activity reconnects before reconciling the session list once', asyn
     expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(1),
   )
 
-  act(() => activitySource.fail())
+  act(() => {
+    activitySource.emit({ ...event(10, 'agent.message.completed', { text: 'update' }, 'sess_2'), global_seq: 42 })
+    activitySource.fail()
+  })
   expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(1)
 
   await waitFor(
     () => {
       expect(FakeEventSource.instances.filter((source) => source.url.startsWith('/api/sessions/activity/stream')))
         .toHaveLength(2)
-      expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(2)
+      expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(1)
+      expect(FakeEventSource.instances.at(-1)?.url).toBe('/api/sessions/activity/stream?after_cursor=42')
     },
     { timeout: 2500 },
   )
+})
+
+test('global activity reloads its snapshot only when replay requests a resync', async () => {
+  const baseFetch = fetchMock()
+  let snapshots = 0
+  const fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions?limit=50') {
+      snapshots += 1
+      return Promise.resolve(jsonResponse({
+        sessions: [firstSession, secondSession],
+        event_cursor: snapshots === 1 ? 12 : 80,
+      }))
+    }
+    return baseFetch(url, init)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream?after_cursor=12')
+  act(() => activitySource.emitControl('stream.resync.required', { cursor: 79 }))
+
+  await waitFor(() => {
+    expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(2)
+    expect(FakeEventSource.instances.at(-1)?.url).toBe('/api/sessions/activity/stream?after_cursor=80')
+  })
 })
 
 test('notification launch keeps the selected finished session unseen until deliberately selected', async () => {
@@ -996,6 +1103,42 @@ test('initial session load fetches the recent event window and streams after the
     expect(FakeEventSource.instances.some((source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=40'))
       .toBe(true),
   )
+})
+
+test('a global event arriving during tail load cannot be replaced by the older response', async () => {
+  const baseFetch = fetchMock()
+  let resolveTail: ((response: Response) => void) | undefined
+  const fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152') {
+      return new Promise<Response>((resolve) => {
+        resolveTail = resolve
+      })
+    }
+    return baseFetch(url, init)
+  })
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit({
+      ...event(41, 'agent.message.completed', { text: 'Racing global answer' }),
+      global_seq: 71,
+    })
+  })
+  expect(await screen.findByText('Racing global answer')).toBeInTheDocument()
+
+  await act(async () => {
+    resolveTail?.(jsonResponse({
+      events: [event(40, 'agent.message.completed', { text: 'Older tail answer' })],
+      page: { server_last_seq: 40 },
+    }))
+    await Promise.resolve()
+  })
+
+  expect(await screen.findByText('Older tail answer')).toBeInTheDocument()
+  expect(screen.getByText('Racing global answer')).toBeInTheDocument()
+  await findEventSource('/api/sessions/sess_1/events/stream?after_seq=41')
 })
 
 test('successful prompt submit renders immediately and reconciles with the live stream', async () => {
@@ -1897,6 +2040,13 @@ class FakeEventSource {
   emit(event: AgentEvent) {
     const message = new MessageEvent(event.type, { data: JSON.stringify(event) })
     for (const listener of this.listeners.get(event.type) ?? []) {
+      listener(message)
+    }
+  }
+
+  emitControl(type: string, payload: unknown) {
+    const message = new MessageEvent(type, { data: JSON.stringify(payload) })
+    for (const listener of this.listeners.get(type) ?? []) {
       listener(message)
     }
   }

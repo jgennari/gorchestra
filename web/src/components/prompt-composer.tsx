@@ -60,6 +60,7 @@ const maxImageAttachmentCount = 8
 const maxQueuedMessages = 5
 const queueShortcutLabel = 'Cmd/Ctrl+Shift+Enter'
 const composerAutoFocusMediaQuery = '(hover: hover) and (pointer: fine)'
+const noQueueEvents: AgentEvent[] = []
 const claudeModelOptions = [
   { value: '', label: 'Default' },
   { value: 'opus', label: 'Opus' },
@@ -73,6 +74,7 @@ type Props = {
   sessionStatus?: 'idle' | 'running' | 'failed'
   hasPendingUserInput?: boolean
   latestTerminalEvent?: AgentEvent | null
+  queueEvents?: AgentEvent[]
   latestQueueEvent?: AgentEvent | null
   disabled: boolean
   disabledReason: string
@@ -135,6 +137,7 @@ export function PromptComposer({
   sessionID,
   agentType = 'fake',
   sessionStatus = 'idle',
+  queueEvents = noQueueEvents,
   latestQueueEvent = null,
   disabled,
   disabledReason,
@@ -419,25 +422,15 @@ export function PromptComposer({
   }, [sessionID, onError])
 
   useEffect(() => {
-    if (!sessionID || !latestQueueEvent || latestQueueEvent.session_id !== sessionID) {
-      return
+    if (!sessionID) return
+    const incoming = latestQueueEvent ? [...queueEvents, latestQueueEvent] : queueEvents
+    for (const event of incoming) {
+      if (event.session_id !== sessionID) continue
+      const queueItemID = queuedMessageID(event)
+      if (queueItemID) queueEventsRef.current.set(queueItemID, event)
     }
-    const queueItemID = queuedMessageID(latestQueueEvent)
-    if (!queueItemID) {
-      return
-    }
-    queueEventsRef.current.set(queueItemID, latestQueueEvent)
-    if (latestQueueEvent.type === 'user.message.queued') {
-      setQueuedMessages((current) => {
-        if (current.some((message) => message.id === queueItemID)) {
-          return current
-        }
-        return upsertQueuedMessage(current, queuedMessageFromEvent(latestQueueEvent, queueItemID))
-      })
-      return
-    }
-    setQueuedMessages((current) => current.filter((message) => message.id !== queueItemID))
-  }, [latestQueueEvent, sessionID])
+    setQueuedMessages((current) => reconcileQueuedMessages(current, queueEventsRef.current.values()))
+  }, [latestQueueEvent, queueEvents, sessionID])
 
   useEffect(() => {
     saveCodexSelection(sessionID, codexSelection)
