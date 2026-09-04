@@ -44,6 +44,7 @@ import {
   type QueuedMessage,
   type SkillReference,
   type SkillScope,
+  type SubmitMessageResponse,
   removeQueuedMessage as deleteQueuedMessage,
   type SubmitAgentOptions,
 } from '@/lib/api'
@@ -81,7 +82,7 @@ type Props = {
     attachments?: MessageAttachment[],
     queue?: boolean,
     skills?: SkillReference[],
-  ) => Promise<void>
+  ) => Promise<SubmitMessageResponse | void>
   onCancel?: () => Promise<void>
   onError?: (message: string) => void
   onFocus?: () => void
@@ -134,7 +135,6 @@ export function PromptComposer({
   sessionID,
   agentType = 'fake',
   sessionStatus = 'idle',
-  latestTerminalEvent = null,
   latestQueueEvent = null,
   disabled,
   disabledReason,
@@ -146,6 +146,7 @@ export function PromptComposer({
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const queueEventsRef = useRef<Map<string, AgentEvent>>(new Map())
   const [content, setContent] = useState(() =>
     ensureInlineSkillTokens(loadDraft(sessionID), loadSelectedSkills(sessionID)),
   )
@@ -384,14 +385,19 @@ export function PromptComposer({
 
   useEffect(() => {
     if (!sessionID) {
+      queueEventsRef.current.clear()
       setQueuedMessages([])
       return
     }
 
+    queueEventsRef.current.clear()
     let cancelled = false
     void fetchQueuedMessages(sessionID)
       .then((response) => {
-        if (!cancelled) setQueuedMessages(Array.isArray(response.messages) ? response.messages : [])
+        if (!cancelled) {
+          const messages = Array.isArray(response.messages) ? response.messages : []
+          setQueuedMessages(reconcileQueuedMessages(messages, queueEventsRef.current.values()))
+        }
       })
       .catch((queueError) => {
         if (!cancelled) onError?.(queueError instanceof Error ? queueError.message : 'Failed to load queued messages')
@@ -400,7 +406,28 @@ export function PromptComposer({
     return () => {
       cancelled = true
     }
-  }, [latestQueueEvent?.seq, latestTerminalEvent?.seq, sessionID, onError])
+  }, [sessionID, onError])
+
+  useEffect(() => {
+    if (!sessionID || !latestQueueEvent || latestQueueEvent.session_id !== sessionID) {
+      return
+    }
+    const queueItemID = queuedMessageID(latestQueueEvent)
+    if (!queueItemID) {
+      return
+    }
+    queueEventsRef.current.set(queueItemID, latestQueueEvent)
+    if (latestQueueEvent.type === 'user.message.queued') {
+      setQueuedMessages((current) => {
+        if (current.some((message) => message.id === queueItemID)) {
+          return current
+        }
+        return upsertQueuedMessage(current, queuedMessageFromEvent(latestQueueEvent, queueItemID))
+      })
+      return
+    }
+    setQueuedMessages((current) => current.filter((message) => message.id !== queueItemID))
+  }, [latestQueueEvent, sessionID])
 
   useEffect(() => {
     saveCodexSelection(sessionID, codexSelection)
@@ -439,33 +466,28 @@ export function PromptComposer({
     const submitSkills = selectedSkills.map(({ name, path }) => ({ name, path }))
 
     if (submitSkills.length > 0) {
-      await onSubmit(
+      return onSubmit(
         contentToSend,
         submitOptions,
         submitAttachments.length > 0 ? submitAttachments : undefined,
         queue,
         submitSkills,
       )
-      return
     }
 
     if (queue) {
-      await onSubmit(contentToSend, submitOptions, submitAttachments.length > 0 ? submitAttachments : undefined, true)
-      return
+      return onSubmit(contentToSend, submitOptions, submitAttachments.length > 0 ? submitAttachments : undefined, true)
     }
     if (submitOptions && submitAttachments.length > 0) {
-      await onSubmit(contentToSend, submitOptions, submitAttachments)
-      return
+      return onSubmit(contentToSend, submitOptions, submitAttachments)
     }
     if (submitOptions) {
-      await onSubmit(contentToSend, submitOptions)
-      return
+      return onSubmit(contentToSend, submitOptions)
     }
     if (submitAttachments.length > 0) {
-      await onSubmit(contentToSend, undefined, submitAttachments)
-      return
+      return onSubmit(contentToSend, undefined, submitAttachments)
     }
-    await onSubmit(contentToSend)
+    return onSubmit(contentToSend)
   }
 
   function restoreTextareaFocus() {
@@ -498,7 +520,11 @@ export function PromptComposer({
         data_url: attachment.data_url,
         size_bytes: attachment.size_bytes,
       }))
-      await submitText(submittedContent.trim(), submitAttachments)
+      const response = await submitText(submittedContent.trim(), submitAttachments)
+      if (response?.queued_message) {
+        const queuedMessage = response.queued_message
+        setQueuedMessages((current) => upsertQueuedMessage(current, queuedMessage))
+      }
     } catch (submitError) {
       setContent(submittedContent)
       setAttachments(submittedAttachments)
@@ -685,11 +711,14 @@ export function PromptComposer({
     setSubmitting(true)
     onError?.('')
     try {
-      await submitText(trimmed, [], true)
+      const response = await submitText(trimmed, [], true)
       setContent('')
       setSelectedSkills([])
       setSkillTypeahead(null)
-      if (sessionID) {
+      if (response?.queued_message) {
+        const queuedMessage = response.queued_message
+        setQueuedMessages((current) => upsertQueuedMessage(current, queuedMessage))
+      } else if (sessionID) {
         const response = await fetchQueuedMessages(sessionID)
         setQueuedMessages(Array.isArray(response.messages) ? response.messages : [])
       }
@@ -709,9 +738,8 @@ export function PromptComposer({
     }
     onError?.('')
     try {
-      await deleteQueuedMessage(sessionID, queuedMessageID)
-      const response = await fetchQueuedMessages(sessionID)
-      setQueuedMessages(Array.isArray(response.messages) ? response.messages : [])
+      const removed = await deleteQueuedMessage(sessionID, queuedMessageID)
+      setQueuedMessages((current) => current.filter((message) => message.id !== removed.id))
     } catch (removeError) {
       onError?.(removeError instanceof Error ? removeError.message : 'Failed to remove queued prompt')
     }
@@ -1086,6 +1114,52 @@ export function PromptComposer({
       </div>
     </form>
   )
+}
+
+function upsertQueuedMessage(messages: QueuedMessage[], queuedMessage: QueuedMessage) {
+  return [...messages.filter((message) => message.id !== queuedMessage.id), queuedMessage]
+    .sort((left, right) => left.seq - right.seq)
+}
+
+function queuedMessageID(event: AgentEvent) {
+  if (typeof event.payload !== 'object' || event.payload === null || !('queue_item_id' in event.payload)) {
+    return ''
+  }
+  return typeof event.payload.queue_item_id === 'string' ? event.payload.queue_item_id : ''
+}
+
+function queuedMessageFromEvent(event: AgentEvent, id: string): QueuedMessage {
+  const payload = typeof event.payload === 'object' && event.payload !== null ? event.payload : {}
+  const skills = 'skills' in payload && Array.isArray(payload.skills) ? (payload.skills as SkillReference[]) : undefined
+  const agentOptions =
+    'agent_options' in payload && typeof payload.agent_options === 'object' && payload.agent_options !== null
+      ? (payload.agent_options as SubmitAgentOptions)
+      : undefined
+  return {
+    id,
+    session_id: event.session_id,
+    seq: event.seq,
+    content: 'text' in payload && typeof payload.text === 'string' ? payload.text : '',
+    agent_options: agentOptions,
+    skills,
+    created_at: event.created_at,
+  }
+}
+
+function reconcileQueuedMessages(messages: QueuedMessage[], events: Iterable<AgentEvent>) {
+  let next = messages
+  for (const event of events) {
+    const id = queuedMessageID(event)
+    if (!id) continue
+    if (event.type === 'user.message.queued') {
+      if (!next.some((message) => message.id === id)) {
+        next = upsertQueuedMessage(next, queuedMessageFromEvent(event, id))
+      }
+    } else {
+      next = next.filter((message) => message.id !== id)
+    }
+  }
+  return next
 }
 
 function ImageAttachmentPreview({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove: () => void }) {

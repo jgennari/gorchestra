@@ -1,6 +1,7 @@
 import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { basename, join, relative } from 'node:path'
+import { gzipSync } from 'node:zlib'
+import { basename, extname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
@@ -47,8 +48,35 @@ async function stageAssets() {
   await rm(embedDist, { force: true, recursive: true })
   await mkdir(join(repoRoot, 'internal', 'webassets'), { recursive: true })
   await cp(webDist, embedDist, { recursive: true })
+  const compressed = await precompressHashedAssets(join(embedDist, 'assets'))
   console.log(`[build] staged ${relative(repoRoot, webDist)} -> ${relative(repoRoot, embedDist)}`)
+  console.log(`[build] precompressed ${compressed} hashed frontend assets`)
 }
+
+async function precompressHashedAssets(directory: string): Promise<number> {
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => [])
+  let compressedCount = 0
+  for (const entry of entries) {
+    const file = join(directory, entry.name)
+    if (entry.isDirectory()) {
+      compressedCount += await precompressHashedAssets(file)
+      continue
+    }
+    if (!entry.isFile() || !compressibleAssetExtensions.has(extname(entry.name))) {
+      continue
+    }
+    const content = await readFile(file)
+    const compressed = gzipSync(content, { level: 9 })
+    if (compressed.byteLength >= content.byteLength) {
+      continue
+    }
+    await writeFile(`${file}.gz`, compressed)
+    compressedCount += 1
+  }
+  return compressedCount
+}
+
+const compressibleAssetExtensions = new Set(['.css', '.js', '.json', '.svg', '.wasm'])
 
 async function clean() {
   await Promise.all([

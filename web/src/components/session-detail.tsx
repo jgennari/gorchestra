@@ -1,11 +1,12 @@
 import { Loader2 } from 'lucide-react'
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
   MessageAttachment,
   Session,
   SkillReference,
   SubmitAgentOptions,
+  SubmitMessageResponse,
   UserInputAnswers,
 } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
@@ -22,6 +23,7 @@ import {
   latestTerminalEvent,
   pendingUserInputRequest,
   pendingPermissionRequests,
+  type ChatTranscriptMessage,
   type TranscriptSequenceRange,
 } from '@/lib/events'
 import { cn } from '@/lib/utils'
@@ -48,7 +50,8 @@ type Props = {
     attachments?: MessageAttachment[],
     queue?: boolean,
     skills?: SkillReference[],
-  ) => Promise<void>
+    clientSubmissionID?: string,
+  ) => Promise<SubmitMessageResponse | void>
   onAnswerUserInput: (requestID: string, answers: UserInputAnswers) => Promise<void>
   onResolvePermission?: (requestID: string, optionID: string) => Promise<void>
   onCancel: () => Promise<void>
@@ -95,7 +98,13 @@ export function SessionDetail({
 }: Props) {
   const bottomInsetRef = useRef<HTMLDivElement>(null)
   const [bottomInsetHeight, setBottomInsetHeight] = useState(0)
+  const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatTranscriptMessage[]>([])
   const statusEvents = liveEvents ?? events
+  const persistedClientSubmissionIDs = useMemo(() => clientSubmissionIDs(events), [events])
+  const visibleOptimisticUserMessages = useMemo(
+    () => optimisticUserMessages.filter((message) => !persistedClientSubmissionIDs.has(message.id)),
+    [optimisticUserMessages, persistedClientSubmissionIDs],
+  )
   const userInputRequest = useMemo(
     () => (session?.status === 'running' ? pendingUserInputRequest(statusEvents) : null),
     [session?.status, statusEvents],
@@ -127,6 +136,75 @@ export function SessionDetail({
       : null
   const latestTerminal = useMemo(() => latestTerminalEvent(statusEvents), [statusEvents])
   const latestQueueEvent = useMemo(() => latestQueuedMessageEvent(statusEvents), [statusEvents])
+
+  useEffect(() => {
+    setOptimisticUserMessages([])
+  }, [session?.id])
+
+  useEffect(() => {
+    if (persistedClientSubmissionIDs.size === 0) return
+    setOptimisticUserMessages((current) => {
+      const next = current.filter((message) => !persistedClientSubmissionIDs.has(message.id))
+      return next.length === current.length ? current : next
+    })
+  }, [persistedClientSubmissionIDs])
+
+  const handleSubmitPrompt = useCallback(async (
+    content: string,
+    agentOptions?: SubmitAgentOptions,
+    attachments: MessageAttachment[] = [],
+    queue = false,
+    skills: SkillReference[] = [],
+  ) => {
+    if (queue) {
+      return onSubmitPrompt(content, agentOptions, attachments, true, skills)
+    }
+
+    const clientSubmissionID = newClientSubmissionID()
+    const submittedAt = new Date().toISOString()
+    const optimisticMessage: ChatTranscriptMessage = {
+      id: clientSubmissionID,
+      role: 'user',
+      label: 'You',
+      variant: 'default',
+      text: content,
+      attachments: attachments.map((attachment) => ({
+        name: attachment.name,
+        mediaType: attachment.media_type,
+        dataURL: attachment.data_url,
+        sourceURL: attachment.data_url,
+        sizeBytes: attachment.size_bytes,
+      })),
+      skills,
+      status: 'pending',
+      createdAt: submittedAt,
+      completedAt: '',
+      durationMs: null,
+      tools: [],
+      streaming: false,
+      startSeq: 0,
+      endSeq: 0,
+    }
+    setOptimisticUserMessages((current) => [...current, optimisticMessage])
+
+    try {
+      const response = await onSubmitPrompt(
+        content,
+        agentOptions,
+        attachments,
+        false,
+        skills,
+        clientSubmissionID,
+      )
+      if (response?.accepted_as === 'queued') {
+        setOptimisticUserMessages((current) => current.filter((message) => message.id !== clientSubmissionID))
+      }
+      return response
+    } catch (error) {
+      setOptimisticUserMessages((current) => current.filter((message) => message.id !== clientSubmissionID))
+      throw error
+    }
+  }, [onSubmitPrompt])
 
   useLayoutEffect(() => {
     const element = bottomInsetRef.current
@@ -201,6 +279,7 @@ export function SessionDetail({
         <ChatTranscript
           key={session.id}
           events={events}
+          optimisticUserMessages={visibleOptimisticUserMessages}
           loading={streamState === 'loading'}
           error={errorMessage}
           topInset="sessionHeader"
@@ -259,7 +338,7 @@ export function SessionDetail({
             latestQueueEvent={latestQueueEvent}
             disabled={composerDisabled}
             disabledReason={disabledReason}
-            onSubmit={onSubmitPrompt}
+            onSubmit={handleSubmitPrompt}
             onCancel={session.status === 'running' ? onCancel : undefined}
             onError={onErrorMessageChange}
             onFocus={onComposerFocus}
@@ -273,6 +352,28 @@ export function SessionDetail({
 
 function measureBottomStackHeight(element: HTMLElement) {
   return Math.ceil(element.getBoundingClientRect().height)
+}
+
+let clientSubmissionSequence = 0
+
+function newClientSubmissionID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  clientSubmissionSequence += 1
+  return `client-${Date.now()}-${clientSubmissionSequence}`
+}
+
+function clientSubmissionIDs(events: AgentEvent[]) {
+  const ids = new Set<string>()
+  for (const event of events) {
+    if (event.type !== 'user.message.completed' || typeof event.payload !== 'object' || event.payload === null) {
+      continue
+    }
+    const value = (event.payload as Record<string, unknown>).client_submission_id
+    if (typeof value === 'string' && value) ids.add(value)
+  }
+  return ids
 }
 
 export function ChatSessionHeader({

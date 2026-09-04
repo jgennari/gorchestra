@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"mime"
 	"net/http"
 	"os"
 	"path"
@@ -441,7 +442,20 @@ func serveStaticFile(assets fs.FS, name string, w http.ResponseWriter, r *http.R
 		http.NotFound(w, r)
 		return
 	}
-	content, err := fs.ReadFile(assets, name)
+	servedName := name
+	precompressedName := name + ".gz"
+	precompressed := staticAssetExists(assets, precompressedName)
+	if precompressed {
+		w.Header().Add("Vary", "Accept-Encoding")
+		if r.Header.Get("Range") == "" && acceptsEncoding(r.Header.Get("Accept-Encoding"), "gzip") {
+			servedName = precompressedName
+			w.Header().Set("Content-Encoding", "gzip")
+			if contentType := mime.TypeByExtension(path.Ext(name)); contentType != "" {
+				w.Header().Set("Content-Type", contentType)
+			}
+		}
+	}
+	content, err := fs.ReadFile(assets, servedName)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -942,6 +956,7 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	excludedSessionID := strings.TrimSpace(r.URL.Query().Get("exclude_session_id"))
 	liveEvents, unsubscribe := api.events.SubscribeAll()
 	defer unsubscribe()
 
@@ -971,6 +986,9 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 		case event, ok := <-liveEvents:
 			if !ok {
 				return
+			}
+			if excludedSessionID != "" && event.SessionID == excludedSessionID {
+				continue
 			}
 			if !eventVisible(event, store.EventListFilter{}) {
 				continue

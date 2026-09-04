@@ -58,6 +58,75 @@ beforeEach(() => {
   vi.stubGlobal('matchMedia', matchMediaMock)
 })
 
+test('uses a selected session from the initial list without refetching its detail', async () => {
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1')).toHaveLength(0)
+})
+
+test('global activity excludes the selected session', async () => {
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  expect(activitySource.url).toBe('/api/sessions/activity/stream?exclude_session_id=sess_1')
+})
+
+test('overview coalesces an activity burst into one dashboard refresh', async () => {
+  window.history.replaceState({}, '', '/')
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  await waitFor(() => {
+    expect(fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/dashboard?'))).toHaveLength(1)
+    expect(fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/dashboard/runs?'))).toHaveLength(1)
+  })
+
+  act(() => {
+    for (let seq = 10; seq < 20; seq += 1) {
+      activitySource.emit(event(seq, 'agent.message.delta', { text: `chunk ${seq}` }, 'sess_2'))
+    }
+  })
+
+  await waitFor(
+    () => {
+      expect(fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/dashboard?'))).toHaveLength(2)
+      expect(fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/dashboard/runs?'))).toHaveLength(2)
+    },
+    { timeout: 2000 },
+  )
+})
+
+test('global activity reconnects before reconciling the session list once', async () => {
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  await waitFor(() =>
+    expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(1),
+  )
+
+  act(() => activitySource.fail())
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(1)
+
+  await waitFor(
+    () => {
+      expect(FakeEventSource.instances.filter((source) => source.url.startsWith('/api/sessions/activity/stream')))
+        .toHaveLength(2)
+      expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(2)
+    },
+    { timeout: 2500 },
+  )
+})
+
 test('notification launch keeps the selected finished session unseen until deliberately selected', async () => {
   const user = userEvent.setup()
   const setAppBadge = vi.fn(() => Promise.resolve())
@@ -929,10 +998,19 @@ test('initial session load fetches the recent event window and streams after the
   )
 })
 
-test('successful prompt submit relies on the existing live stream without refreshing history', async () => {
+test('successful prompt submit renders immediately and reconciles with the live stream', async () => {
   const user = userEvent.setup()
-  const fetch = fetchMock({
+  const baseFetch = fetchMock({
     events: [event(40, 'agent.message.completed', { text: 'Previous answer' })],
+  })
+  let resolveSubmit: ((response: Response) => void) | undefined
+  const fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions/sess_1/messages' && init?.method === 'POST') {
+      return new Promise<Response>((resolve) => {
+        resolveSubmit = resolve
+      })
+    }
+    return baseFetch(url, init)
   })
   vi.stubGlobal('fetch', fetch)
 
@@ -955,11 +1033,22 @@ test('successful prompt submit relies on the existing live stream without refres
       expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
+  expect(screen.getAllByText('Fresh prompt')).toHaveLength(1)
+  const submitCall = fetch.mock.calls.find(([url]) => String(url) === '/api/sessions/sess_1/messages')
+  const submitBody = JSON.parse(String(submitCall?.[1]?.body)) as { client_submission_id: string }
+  expect(submitBody.client_submission_id).toBeTruthy()
   expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152')).toHaveLength(1)
-  act(() => {
-    source.emit(event(41, 'user.message.completed', { text: 'Fresh prompt' }))
+  await act(async () => {
+    resolveSubmit?.(jsonResponse({ session_id: 'sess_1', status: 'running', accepted_as: 'run' }))
+    await Promise.resolve()
   })
-  expect(await screen.findByText('Fresh prompt')).toBeInTheDocument()
+  act(() => {
+    source.emit(event(41, 'user.message.completed', {
+      text: 'Fresh prompt',
+      client_submission_id: submitBody.client_submission_id,
+    }))
+  })
+  await waitFor(() => expect(screen.getAllByText('Fresh prompt')).toHaveLength(1))
   expect(FakeEventSource.instances.filter((source) => source.url.includes('/api/sessions/sess_1/events/stream')))
     .toHaveLength(1)
 })
@@ -1003,11 +1092,17 @@ test('successful prompt submit keeps the current transcript visible while awaiti
   expect(tailRequests).toBe(1)
   expect(screen.getByText('Previous prompt')).toBeInTheDocument()
   expect(screen.queryByText('Loading chat history...')).not.toBeInTheDocument()
+  expect(screen.getAllByText('Fresh prompt')).toHaveLength(1)
+  const submitCall = fetch.mock.calls.find(([url]) => String(url) === '/api/sessions/sess_1/messages')
+  const submitBody = JSON.parse(String(submitCall?.[1]?.body)) as { client_submission_id: string }
 
   act(() => {
-    source.emit(event(41, 'user.message.completed', { text: 'Fresh prompt' }))
+    source.emit(event(41, 'user.message.completed', {
+      text: 'Fresh prompt',
+      client_submission_id: submitBody.client_submission_id,
+    }))
   })
-  expect(await screen.findByText('Fresh prompt')).toBeInTheDocument()
+  await waitFor(() => expect(screen.getAllByText('Fresh prompt')).toHaveLength(1))
 })
 
 test('switching back to a cached session restores transcript before replaying stream updates', async () => {
@@ -1275,12 +1370,18 @@ test('loaded older turns remain visible after submitting a new prompt', async ()
   await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
 
   expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152')).toHaveLength(1)
+  expect(screen.getAllByText('Fresh prompt')).toHaveLength(1)
+  const submitCall = fetch.mock.calls.find(([url]) => String(url) === '/api/sessions/sess_1/messages')
+  const submitBody = JSON.parse(String(submitCall?.[1]?.body)) as { client_submission_id: string }
   act(() => {
-    source.emit(event(9, 'user.message.completed', { text: 'Fresh prompt' }))
+    source.emit(event(9, 'user.message.completed', {
+      text: 'Fresh prompt',
+      client_submission_id: submitBody.client_submission_id,
+    }))
   })
-  expect(screen.queryByText('Fresh prompt')).not.toBeInTheDocument()
+  expect(screen.getAllByText('Fresh prompt')).toHaveLength(1)
   await user.click(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' }))
-  await waitFor(() => expect(screen.getByText('Fresh prompt')).toBeInTheDocument())
+  await waitFor(() => expect(screen.getAllByText('Fresh prompt')).toHaveLength(1))
   expect(screen.getByText('Prompt one')).toBeInTheDocument()
   expect(screen.getByText('Prompt two')).toBeInTheDocument()
   expect(screen.getByText('Prompt three')).toBeInTheDocument()
@@ -1798,6 +1899,10 @@ class FakeEventSource {
     for (const listener of this.listeners.get(event.type) ?? []) {
       listener(message)
     }
+  }
+
+  fail() {
+    this.onerror?.(new Event('error'))
   }
 
   close() {}

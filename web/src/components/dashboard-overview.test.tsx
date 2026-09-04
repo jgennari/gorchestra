@@ -68,6 +68,47 @@ test('dashboard drilldowns update the URL and refetch the ledger', async () => {
   )
 })
 
+test('dashboard aborts superseded summary and ledger requests', async () => {
+  const signals: AbortSignal[] = []
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(url)
+    const signal = init?.signal
+    if (signal) signals.push(signal)
+    if (signals.length <= 2) {
+      await new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+      })
+    }
+    if (path.startsWith('/api/dashboard/runs?')) return jsonResponse({ runs: [], total: 0 })
+    if (path.startsWith('/api/dashboard?')) return jsonResponse(dashboardResponse())
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetch)
+
+  const { rerender } = render(
+    <DashboardOverview
+      refreshKey={0}
+      onOpenSession={vi.fn()}
+      onOpenSessions={vi.fn()}
+      onCreate={vi.fn()}
+    />,
+  )
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+
+  rerender(
+    <DashboardOverview
+      refreshKey={1}
+      onOpenSession={vi.fn()}
+      onOpenSessions={vi.fn()}
+      onCreate={vi.fn()}
+    />,
+  )
+
+  await screen.findByRole('heading', { name: 'Workspaces' })
+  expect(signals.slice(0, 2).every((signal) => signal.aborted)).toBe(true)
+  expect(fetch).toHaveBeenCalledTimes(4)
+})
+
 function dashboardFetch() {
   return vi.fn(async (url: RequestInfo | URL) => {
     const path = String(url)

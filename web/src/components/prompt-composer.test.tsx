@@ -98,12 +98,21 @@ test('publishes local activity while the user edits a session prompt', async () 
 test('cmd or ctrl shift enter queues the draft on the server', async () => {
   const user = userEvent.setup()
   const queued = [] as ReturnType<typeof queuedMessage>[]
-  vi.stubGlobal('fetch', queueFetchMock(queued))
+  const fetch = queueFetchMock(queued)
+  vi.stubGlobal('fetch', fetch)
   const onSubmit = vi.fn(async (content: string) => {
-    queued.push(queuedMessage(`queue_${queued.length + 1}`, content, queued.length + 1))
+    const message = queuedMessage(`queue_${queued.length + 1}`, content, queued.length + 1)
+    queued.push(message)
+    return {
+      session_id: 'sess_1',
+      status: 'running' as const,
+      accepted_as: 'queued' as const,
+      queued_message: message,
+    }
   })
 
   render(<PromptComposer sessionID="sess_1" disabled={false} disabledReason="" onSubmit={onSubmit} />)
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
 
   const prompt = screen.getByLabelText('Prompt')
   await user.type(prompt, 'Queued prompt')
@@ -112,13 +121,15 @@ test('cmd or ctrl shift enter queues the draft on the server', async () => {
   expect(onSubmit).toHaveBeenCalledWith('Queued prompt', undefined, undefined, true)
   expect(prompt).toHaveValue('')
   expect(await screen.findByText('Queued prompt')).toBeInTheDocument()
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/queued-messages')).toHaveLength(1)
   await waitFor(() => expect(prompt).toHaveFocus())
 })
 
 test('queue button enqueues up to five server drafts and allows removal', async () => {
   const user = userEvent.setup()
   const queued = [] as ReturnType<typeof queuedMessage>[]
-  vi.stubGlobal('fetch', queueFetchMock(queued))
+  const fetch = queueFetchMock(queued)
+  vi.stubGlobal('fetch', fetch)
   const onSubmit = vi.fn(async (content: string) => {
     queued.push(queuedMessage(`queue_${queued.length + 1}`, content, queued.length + 1))
   })
@@ -136,10 +147,16 @@ test('queue button enqueues up to five server drafts and allows removal', async 
   expect(screen.getByText('Queued 5')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: /queue message/i })).toBeDisabled()
 
+  const queueReadsBeforeRemoval = fetch.mock.calls.filter(
+    ([url]) => String(url) === '/api/sessions/sess_1/queued-messages',
+  ).length
   await user.click(screen.getByRole('button', { name: 'Remove queued message 3' }))
 
   await waitFor(() => expect(screen.queryByText('Queued 3')).not.toBeInTheDocument())
   expect(screen.getAllByRole('button', { name: /remove queued message/i })).toHaveLength(4)
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/queued-messages')).toHaveLength(
+    queueReadsBeforeRemoval,
+  )
 })
 
 test('attaches image files with previews, removal, and submit payloads', async () => {
@@ -554,9 +571,9 @@ test('draft messages persist per session', async () => {
   expect(screen.getByLabelText('Prompt')).toHaveValue('First draft')
 })
 
-test('refreshes server queued messages after queue lifecycle events', async () => {
-  const queued = [] as ReturnType<typeof queuedMessage>[]
-  vi.stubGlobal('fetch', queueFetchMock(queued))
+test('reconciles queued messages from queue lifecycle events without refetching', async () => {
+  const fetch = queueFetchMock([])
+  vi.stubGlobal('fetch', fetch)
   const { rerender } = render(
     <PromptComposer
       sessionID="sess_1"
@@ -567,8 +584,6 @@ test('refreshes server queued messages after queue lifecycle events', async () =
   )
 
   expect(screen.queryByText('Queued follow-up')).not.toBeInTheDocument()
-  queued.push(queuedMessage('queue_1', 'Queued follow-up', 1))
-
   rerender(
     <PromptComposer
       sessionID="sess_1"
@@ -582,7 +597,7 @@ test('refreshes server queued messages after queue lifecycle events', async () =
         type: 'user.message.queued',
         role: 'user',
         status: 'completed',
-        payload: {},
+        payload: { queue_item_id: 'queue_1', text: 'Queued follow-up', agent_options: {}, skills: [] },
         created_at: '2026-06-12T16:00:00Z',
       }}
       onSubmit={async () => undefined}
@@ -590,6 +605,30 @@ test('refreshes server queued messages after queue lifecycle events', async () =
   )
 
   expect(await screen.findByText('Queued follow-up')).toBeInTheDocument()
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/queued-messages')).toHaveLength(1)
+
+  rerender(
+    <PromptComposer
+      sessionID="sess_1"
+      disabled={false}
+      disabledReason=""
+      sessionStatus="idle"
+      latestQueueEvent={{
+        id: 'evt_10',
+        session_id: 'sess_1',
+        seq: 10,
+        type: 'user.message.queue.removed',
+        role: 'user',
+        status: 'completed',
+        payload: { queue_item_id: 'queue_1', text: 'Queued follow-up' },
+        created_at: '2026-06-12T16:00:01Z',
+      }}
+      onSubmit={async () => undefined}
+    />,
+  )
+
+  await waitFor(() => expect(screen.queryByText('Queued follow-up')).not.toBeInTheDocument())
+  expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/queued-messages')).toHaveLength(1)
 })
 
 test('does not auto-submit server queued messages after failed or completed runs', async () => {

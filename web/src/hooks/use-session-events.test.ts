@@ -218,6 +218,69 @@ test('older network pages are reused after switching away and back', async () =>
   vi.unstubAllGlobals()
 })
 
+test('ordinary reconnect resumes from the accepted cursor without refetching history', async () => {
+  HookEventSource.instances = []
+  vi.stubGlobal('EventSource', HookEventSource)
+  clearSessionEventCacheForTest()
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/sessions/sess_test/events?tail=true&turns=50&max_bytes=2097152') {
+      return jsonResponse({
+        events: [event(1, 'user.message.completed')],
+        page: { ...historyPage(1, 1, false), server_last_seq: 1 },
+      })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const { unmount } = renderHook(() => useSessionEvents('sess_test', { reconnectDelayMs: 5 }))
+  await waitFor(() => expect(HookEventSource.instances[0]?.url).toContain('after_seq=1'))
+
+  act(() => {
+    HookEventSource.instances[0].emit(event(2, 'agent.message.delta'))
+    HookEventSource.instances[0].fail()
+  })
+
+  await waitFor(() => expect(HookEventSource.instances).toHaveLength(2))
+  expect(HookEventSource.instances[1].url).toContain('after_seq=2')
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  unmount()
+  vi.unstubAllGlobals()
+})
+
+test('explicit stream resync reloads the bounded tail before reconnecting', async () => {
+  HookEventSource.instances = []
+  vi.stubGlobal('EventSource', HookEventSource)
+  clearSessionEventCacheForTest()
+  let historyRequests = 0
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/sessions/sess_test/events?tail=true&turns=50&max_bytes=2097152') {
+      historyRequests += 1
+      const last = historyRequests === 1 ? 1 : 3
+      return jsonResponse({
+        events: Array.from({ length: last }, (_, index) => event(index + 1, 'agent.message.completed')),
+        page: { ...historyPage(1, last, false), server_last_seq: last },
+      })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const { unmount } = renderHook(() => useSessionEvents('sess_test', { reconnectDelayMs: 5 }))
+  await waitFor(() => expect(HookEventSource.instances[0]?.url).toContain('after_seq=1'))
+
+  act(() => HookEventSource.instances[0].emitControl('stream.resync.required'))
+
+  await waitFor(() => expect(historyRequests).toBe(2))
+  await waitFor(() => expect(HookEventSource.instances[1]?.url).toContain('after_seq=3'))
+
+  unmount()
+  vi.unstubAllGlobals()
+})
+
 function event(seq: number, type: string): AgentEvent {
   return {
     id: `evt_${seq}`,
@@ -256,14 +319,44 @@ function historyPage(firstSeq: number, lastSeq: number, hasOlder: boolean, hasNe
 }
 
 class HookEventSource {
+  static instances: HookEventSource[] = []
+
+  url: string
   onopen: ((event: Event) => void) | null = null
   onerror: ((event: Event) => void) | null = null
+  private listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>()
 
   constructor(url: string) {
-    void url
+    this.url = url
+    HookEventSource.instances.push(this)
     window.setTimeout(() => this.onopen?.(new Event('open')), 0)
   }
 
-  addEventListener() {}
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+    const listeners = this.listeners.get(type) ?? new Set()
+    listeners.add((event) => {
+      if (typeof listener === 'function') listener(event)
+      else listener.handleEvent(event)
+    })
+    this.listeners.set(type, listeners)
+  }
+
+  emit(value: AgentEvent) {
+    this.dispatch(value.type, value)
+  }
+
+  emitControl(type: string) {
+    this.dispatch(type, {})
+  }
+
+  fail() {
+    this.onerror?.(new Event('error'))
+  }
+
+  private dispatch(type: string, value: unknown) {
+    const message = new MessageEvent(type, { data: JSON.stringify(value) })
+    for (const listener of this.listeners.get(type) ?? []) listener(message)
+  }
+
   close() {}
 }

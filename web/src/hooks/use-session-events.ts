@@ -49,6 +49,7 @@ type SessionEventCacheEntry = {
 
 const recentEventsRequestRetentionMs = 2000
 const streamResyncEventType = 'stream.resync.required'
+const maximumReconnectDelayMs = 15_000
 export const initialEventHistoryByteBudget = 2 * 1024 * 1024
 export const initialEventHistoryMaxTurns = 50
 const pagedEventHistoryByteBudget = 1024 * 1024
@@ -174,6 +175,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     let closed = false
     let source: EventSource | null = null
     let reconnectTimer: number | undefined
+    let reconnectAttempt = 0
     let loadingTail = false
 
     function closeSource() {
@@ -185,10 +187,12 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       if (closed || reconnectTimer !== undefined) return
       setStreamState('reconnecting')
       closeSource()
+      const delay = Math.min(reconnectDelayMs * 2 ** reconnectAttempt, maximumReconnectDelayMs)
+      reconnectAttempt += 1
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = undefined
-        void loadTail(true)
-      }, reconnectDelayMs)
+        connect(lastSeqRef.current)
+      }, delay)
     }
 
     function handleEvent(message: MessageEvent<string>) {
@@ -252,6 +256,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       )
       source.onopen = () => {
         if (!closed) {
+          reconnectAttempt = 0
           setStreamState('connected')
           setError('')
         }
@@ -262,7 +267,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       source.addEventListener(streamResyncEventType, () => {
         if (!closed) {
           closeSource()
-          void loadTail(true)
+          void loadTail(true, true)
         }
       })
       for (const eventType of knownEventTypes) {
@@ -319,7 +324,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       }
     }
 
-    async function loadTail(preserveVisible: boolean) {
+    async function loadTail(preserveVisible: boolean, force = false) {
       if (closed || loadingTail) return
       loadingTail = true
       if (!preserveVisible) setStreamState('loading')
@@ -329,6 +334,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           refreshKey,
           activeIncludeDebugEvents,
           selectionEpoch,
+          force,
         )
         if (closed) return
         applyTail(history, preserveVisible)
@@ -659,8 +665,10 @@ function listRecentEventsOnce(
   refreshKey: number,
   includeDebugEvents: boolean,
   selectionEpoch: number,
+  force = false,
 ) {
   const key = `${sessionID}:${refreshKey}:${includeDebugEvents ? 'debug' : 'normal'}:${selectionEpoch}`
+  if (force) recentEventsRequests.delete(key)
   const existing = recentEventsRequests.get(key)
   if (existing) return existing
 

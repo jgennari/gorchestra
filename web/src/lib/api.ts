@@ -751,12 +751,12 @@ export async function listSessions(options: ListSessionsOptions | number = {}) {
   return data.sessions
 }
 
-export async function getDashboard(range: DashboardRange = '30d') {
+export async function getDashboard(range: DashboardRange = '30d', signal?: AbortSignal) {
   const params = new URLSearchParams({
     range,
     time_zone: dashboardTimeZone(),
   })
-  return requestJSON<DashboardData>(`/api/dashboard?${params.toString()}`)
+  return requestJSON<DashboardData>(`/api/dashboard?${params.toString()}`, { signal })
 }
 
 export async function listDashboardRuns(
@@ -764,6 +764,7 @@ export async function listDashboardRuns(
   filters: DashboardRunFilters = {},
   cursor = '',
   limit = 25,
+  signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
     range,
@@ -774,7 +775,7 @@ export async function listDashboardRuns(
     if (value) params.set(key, value)
   }
   if (cursor) params.set('cursor', cursor)
-  return requestJSON<DashboardRunPage>(`/api/dashboard/runs?${params.toString()}`)
+  return requestJSON<DashboardRunPage>(`/api/dashboard/runs?${params.toString()}`, { signal })
 }
 
 export async function getSession(sessionID: string) {
@@ -949,6 +950,7 @@ export async function submitMessage(
   attachments: MessageAttachment[] = [],
   queue = false,
   skills: SkillReference[] = [],
+  clientSubmissionID = '',
 ) {
   const body: {
     content: string
@@ -956,6 +958,7 @@ export async function submitMessage(
     attachments?: MessageAttachment[]
     queue?: boolean
     skills?: SkillReference[]
+    client_submission_id?: string
   } = { content }
   if (agentOptions) {
     body.agent_options = agentOptions
@@ -968,6 +971,9 @@ export async function submitMessage(
   }
   if (skills.length > 0) {
     body.skills = skills
+  }
+  if (clientSubmissionID) {
+    body.client_submission_id = clientSubmissionID
   }
 
   return requestJSON<SubmitMessageResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/messages`, {
@@ -1268,8 +1274,10 @@ export function eventStreamURL(sessionID: string, afterSeq: number, options: Eve
   return withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events/stream`, params)
 }
 
-export function sessionActivityStreamURL() {
-  return '/api/sessions/activity/stream'
+export function sessionActivityStreamURL(excludedSessionID?: string | null) {
+  const params = new URLSearchParams()
+  if (excludedSessionID) params.set('exclude_session_id', excludedSessionID)
+  return withQuery('/api/sessions/activity/stream', params)
 }
 
 export async function fetchNotificationPublicKey() {

@@ -92,6 +92,7 @@ test('session API helpers build the expected URLs', async () => {
     '/api/sessions/sess_1/events/stream?after_seq=4&include_debug=true',
   )
   expect(sessionActivityStreamURL()).toBe('/api/sessions/activity/stream')
+  expect(sessionActivityStreamURL('sess_1')).toBe('/api/sessions/activity/stream?exclude_session_id=sess_1')
 })
 
 test('session list helper includes status filters', async () => {
@@ -461,12 +462,16 @@ test('submit message posts image attachments when provided', async () => {
   const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     expect(String(url)).toBe('/api/sessions/sess_1/messages')
     expect(init?.method).toBe('POST')
-    expect(init?.body).toBe(JSON.stringify({ content: '', attachments }))
+    expect(init?.body).toBe(JSON.stringify({
+      content: '',
+      attachments,
+      client_submission_id: 'client-submit-1',
+    }))
     return jsonResponse({ session_id: 'sess_1', status: 'running' })
   })
   vi.stubGlobal('fetch', fetchMock)
 
-  const response = await submitMessage('sess_1', '', undefined, attachments)
+  const response = await submitMessage('sess_1', '', undefined, attachments, false, [], 'client-submit-1')
 
   expect(response.status).toBe('running')
 })

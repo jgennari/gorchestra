@@ -1054,7 +1054,10 @@ func TestMessageSubmissionPersistsUserMessageAndMarksSessionRunning(t *testing.T
 		})
 	})
 
-	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"Inspect this repo"}`)
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{
+		"content":"Inspect this repo",
+		"client_submission_id":"client-submit-1"
+	}`)
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
@@ -1086,6 +1089,10 @@ func TestMessageSubmissionPersistsUserMessageAndMarksSessionRunning(t *testing.T
 		t.Fatalf("expected completed user event, got %q", events[0].Status)
 	}
 	assertPayloadText(t, events[0], "Inspect this repo")
+	payload := decodeEventPayload(t, events[0])
+	if payload["client_submission_id"] != "client-submit-1" {
+		t.Fatalf("expected client submission ID in user event payload, got %#v", payload)
+	}
 	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
 }
 

@@ -19,7 +19,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   getDashboard,
   listDashboardRuns,
@@ -62,27 +62,43 @@ export function DashboardOverview({ refreshKey = 0, onOpenSession, onOpenSession
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
+  const loadRequestRef = useRef(0)
+  const loadAbortControllerRef = useRef<AbortController | null>(null)
 
   const load = useCallback(async () => {
+    const requestID = loadRequestRef.current + 1
+    loadRequestRef.current = requestID
+    loadAbortControllerRef.current?.abort()
+    const controller = new AbortController()
+    loadAbortControllerRef.current = controller
     setLoading(true)
     setError('')
     try {
       const [nextDashboard, nextRuns] = await Promise.all([
-        getDashboard(range),
-        listDashboardRuns(range, filters),
+        getDashboard(range, controller.signal),
+        listDashboardRuns(range, filters, '', 25, controller.signal),
       ])
+      if (controller.signal.aborted || loadRequestRef.current !== requestID) return
       setDashboard(nextDashboard)
       setRunPage(nextRuns)
     } catch (loadError) {
+      if (controller.signal.aborted || loadRequestRef.current !== requestID) return
       setError(messageFromError(loadError))
     } finally {
-      setLoading(false)
+      if (loadRequestRef.current === requestID) {
+        loadAbortControllerRef.current = null
+        setLoading(false)
+      }
     }
   }, [filters, range])
 
   useEffect(() => {
     void load()
   }, [load, refreshKey])
+
+  useEffect(() => () => {
+    loadAbortControllerRef.current?.abort()
+  }, [])
 
   useEffect(() => {
     function handlePopState() {

@@ -101,10 +101,6 @@ export function usePushNotifications() {
   }, [supported])
 
   useEffect(() => {
-    void refreshDebug()
-  }, [refreshDebug])
-
-  useEffect(() => {
     if (!supported || Notification.permission !== 'granted') {
       return
     }

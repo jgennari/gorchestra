@@ -139,6 +139,98 @@ func TestStaticAssetsServeFilesWithContentTypes(t *testing.T) {
 	}
 }
 
+func TestStaticAssetsServePrecompressedHashedAssets(t *testing.T) {
+	assets := testStaticAssets()
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write(assets["assets/app.js"].Data); err != nil {
+		t.Fatalf("compress test asset: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close test compressor: %v", err)
+	}
+	assets["assets/app.js.gz"] = &fstest.MapFile{Data: compressed.Bytes()}
+	handler := NewRouter(Dependencies{StaticAssets: assets})
+
+	t.Run("accepted", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+		req.Header.Set("Accept-Encoding", "br, gzip")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+			t.Fatalf("expected gzip content encoding, got %q", got)
+		}
+		if got := rec.Header().Get("Vary"); !strings.Contains(got, "Accept-Encoding") {
+			t.Fatalf("expected Accept-Encoding vary header, got %q", got)
+		}
+		if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "javascript") {
+			t.Fatalf("expected javascript content type, got %q", got)
+		}
+		reader, err := gzip.NewReader(bytes.NewReader(rec.Body.Bytes()))
+		if err != nil {
+			t.Fatalf("open compressed asset: %v", err)
+		}
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("read compressed asset: %v", err)
+		}
+		if err := reader.Close(); err != nil {
+			t.Fatalf("close compressed asset: %v", err)
+		}
+		if got := string(body); got != string(assets["assets/app.js"].Data) {
+			t.Fatalf("expected original asset body, got %q", got)
+		}
+	})
+
+	t.Run("rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+		req.Header.Set("Accept-Encoding", "gzip;q=0")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Content-Encoding"); got != "" {
+			t.Fatalf("expected identity content, got encoding %q", got)
+		}
+		if got := rec.Body.String(); got != string(assets["assets/app.js"].Data) {
+			t.Fatalf("expected original asset body, got %q", got)
+		}
+	})
+
+	t.Run("range uses identity representation", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		req.Header.Set("Range", "bytes=0-6")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusPartialContent {
+			t.Fatalf("expected status %d, got %d", http.StatusPartialContent, rec.Code)
+		}
+		if got := rec.Header().Get("Content-Encoding"); got != "" {
+			t.Fatalf("expected identity ranged content, got encoding %q", got)
+		}
+		if got := rec.Body.String(); got != `console` {
+			t.Fatalf("expected ranged asset body %q, got %q", `console`, got)
+		}
+	})
+}
+
+func TestStaticAssetsFallBackWhenPrecompressedAssetIsUnavailable(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	NewRouter(Dependencies{StaticAssets: testStaticAssets()}).ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("expected identity content, got encoding %q", got)
+	}
+	if got := rec.Body.String(); got != `console.log("gorchestra")` {
+		t.Fatalf("expected original asset body, got %q", got)
+	}
+}
+
 func TestStaticAssetsDoNotFallbackForMissingAssetFiles(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)
 	rec := httptest.NewRecorder()
@@ -1739,6 +1831,50 @@ func TestSessionActivityStreamSendsAllLiveSessionEvents(t *testing.T) {
 	response := firstSSEData(t, body)
 	if response.SessionID != testSessionID || response.Type != "agent.input.requested" {
 		t.Fatalf("expected activity event for %s, got %#v", testSessionID, response)
+	}
+}
+
+func TestSessionActivityStreamExcludesSelectedSession(t *testing.T) {
+	store := newFakeHTTPStore()
+	store.addSession(testSessionID)
+
+	subscriber := &fakeSubscriber{}
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/sessions/activity/stream?exclude_session_id="+testSessionID,
+		nil,
+	)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewRouter(Dependencies{Store: store, Events: subscriber}).ServeHTTP(rec, req)
+	}()
+
+	waitFor(t, func() bool {
+		return subscriber.subscribeAllCount() == 1
+	})
+
+	excluded := testEvent(1, "agent.run.completed")
+	subscriber.sendAll(excluded)
+	included := testEvent(2, "agent.run.completed")
+	included.SessionID = "sess_other"
+	subscriber.sendAll(included)
+	subscriber.closeAll()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("activity stream did not exit")
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, `"session_id":"`+testSessionID+`"`) {
+		t.Fatalf("expected selected session to be excluded:\n%s", body)
+	}
+	if !strings.Contains(body, `"session_id":"sess_other"`) {
+		t.Fatalf("expected another session to remain visible:\n%s", body)
 	}
 }
 

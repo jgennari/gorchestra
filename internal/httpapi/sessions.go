@@ -85,11 +85,12 @@ type listSessionsResponse struct {
 }
 
 type submitMessageRequest struct {
-	Content      string                 `json:"content"`
-	AgentOptions *submitAgentOptions    `json:"agent_options,omitempty"`
-	Attachments  []submitAttachment     `json:"attachments,omitempty"`
-	Skills       []submitSkillReference `json:"skills,omitempty"`
-	Queue        bool                   `json:"queue,omitempty"`
+	Content            string                 `json:"content"`
+	AgentOptions       *submitAgentOptions    `json:"agent_options,omitempty"`
+	Attachments        []submitAttachment     `json:"attachments,omitempty"`
+	Skills             []submitSkillReference `json:"skills,omitempty"`
+	Queue              bool                   `json:"queue,omitempty"`
+	ClientSubmissionID string                 `json:"client_submission_id,omitempty"`
 }
 
 type submitSkillReference struct {
@@ -963,6 +964,11 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	content := strings.TrimSpace(request.Content)
+	clientSubmissionID := strings.TrimSpace(request.ClientSubmissionID)
+	if len(clientSubmissionID) > 128 {
+		writeError(w, http.StatusBadRequest, "client_submission_id must be 128 characters or fewer")
+		return
+	}
 	attachments, err := validateSubmitAttachments(request.Attachments)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1028,6 +1034,10 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if !api.agentAvailable(w, agent) {
 		return
 	}
+	var sourceMetadata map[string]any
+	if clientSubmissionID != "" {
+		sourceMetadata = map[string]any{"client_submission_id": clientSubmissionID}
+	}
 
 	updatedSession, ok := api.startSessionRun(
 		w,
@@ -1040,7 +1050,7 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 		metadata,
 		agents.AgentActionMessage,
 		func(ctx context.Context) error {
-			return api.appendUserMessage(ctx, session.ID, content, attachments, skills, eventOptions, nil, "")
+			return api.appendUserMessage(ctx, session.ID, content, attachments, skills, eventOptions, sourceMetadata, "")
 		},
 		"failed to persist user message",
 	)

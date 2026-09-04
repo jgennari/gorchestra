@@ -144,6 +144,8 @@ type InitialSessionState = {
 const debugStorageKeyPrefix = 'gorchestra.session-debug.'
 const paneWidthsStorageKey = 'gorchestra.pane-widths.v1'
 const sessionSeenSeqStorageKey = 'gorchestra.session-seen-seq.v1'
+const dashboardActivityRefreshDelayMs = 750
+const maximumActivityReconnectDelayMs = 15_000
 const defaultPaneWidths: PaneWidths = { left: 348, right: 344 }
 const paneLimits = {
   leftMin: 224,
@@ -194,8 +196,10 @@ function App() {
   const appViewRef = useRef<AppView>(appView)
   const openWorkspaceFileRef = useRef<WorkspaceFileContent | null>(openWorkspaceFile)
   const sessionsRef = useRef<Session[]>(initialSessionState.sessions)
+  const sessionListLoadedRef = useRef(initialSessionState.seededCachedSession)
   const selectedEventsRef = useRef<AgentEvent[]>([])
   const paneWidthsRef = useRef(paneWidths)
+  const dashboardRefreshTimerRef = useRef<number | null>(null)
 
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionID) ?? null,
@@ -632,18 +636,46 @@ function App() {
       setErroredSessionIDs((current) => removeSetValue(current, event.session_id))
     }
     setSessions((current) => {
+      let changed = false
       const next = sortSessions(
         current.map((session) => {
           if (session.id !== event.session_id) {
             return session
           }
           const updatedSession = applySessionEvent(session, event, status)
+          if (updatedSession === session) return session
+          changed = true
           void writePersistentCachedSession(updatedSession)
           return updatedSession
         }),
       )
-      return next
+      return changed ? next : current
     })
+  }, [])
+
+  const scheduleDashboardRefresh = useCallback((immediate = false) => {
+    if (!overviewSelectedRef.current) return
+
+    const refresh = () => {
+      dashboardRefreshTimerRef.current = null
+      setDashboardRefreshKey((value) => value + 1)
+    }
+    if (immediate) {
+      if (dashboardRefreshTimerRef.current !== null) {
+        window.clearTimeout(dashboardRefreshTimerRef.current)
+      }
+      refresh()
+      return
+    }
+    if (dashboardRefreshTimerRef.current === null) {
+      dashboardRefreshTimerRef.current = window.setTimeout(refresh, dashboardActivityRefreshDelayMs)
+    }
+  }, [])
+
+  useEffect(() => () => {
+    if (dashboardRefreshTimerRef.current !== null) {
+      window.clearTimeout(dashboardRefreshTimerRef.current)
+    }
   }, [])
 
   const handleSessionEvent = useCallback(
@@ -693,13 +725,14 @@ function App() {
           void refreshSession(event.session_id)
         }, 250)
       }
-      setDashboardRefreshKey((value) => value + 1)
+      scheduleDashboardRefresh(isTerminalEvent(event.type))
     },
     [
       applySessionActivityEvent,
       markSessionUnseenAfter,
       playSessionStopSound,
       refreshSession,
+      scheduleDashboardRefresh,
       showSessionStopNotification,
     ],
   )
@@ -795,7 +828,7 @@ function App() {
                 ? selectedID
                 : (nextSessions[0]?.id ?? mergedSessions[0]?.id ?? null)
 
-        const sortedSessions = sortSessions(mergedSessions)
+        const sortedSessions = sortSessions(preferFresherSessionSnapshots(mergedSessions, sessionsRef.current))
         sessionsRef.current = sortedSessions
         setSessions(sortedSessions)
         if (isUserSkillsLocation()) {
@@ -812,6 +845,7 @@ function App() {
           setError(messageFromError(loadError))
         }
       } finally {
+        sessionListLoadedRef.current = true
         if (showLoading) {
           setLoadingSessions(false)
         } else {
@@ -868,6 +902,8 @@ function App() {
     let closed = false
     let source: EventSource | null = null
     let reconnectTimer: number | undefined
+    let reconnectAttempt = 0
+    let reconcileAfterOpen = false
 
     function closeSource() {
       source?.close()
@@ -886,15 +922,25 @@ function App() {
       if (closed) {
         return
       }
-      source = new EventSource(sessionActivityStreamURL())
-      source.onerror = () => {
-        if (closed) {
-          return
+      source = new EventSource(sessionActivityStreamURL(selectedSessionID))
+      source.onopen = () => {
+        if (closed) return
+        reconnectAttempt = 0
+        if (reconcileAfterOpen) {
+          reconcileAfterOpen = false
+          void loadSessions({ showLoading: false })
         }
+      }
+      source.onerror = () => {
+        if (closed || reconnectTimer !== undefined) return
+        reconcileAfterOpen = true
         closeSource()
+        const delay = Math.min(1000 * 2 ** reconnectAttempt, maximumActivityReconnectDelayMs)
+        reconnectAttempt += 1
         reconnectTimer = window.setTimeout(() => {
-          void loadSessions({ showLoading: false }).finally(connect)
-        }, 1000)
+          reconnectTimer = undefined
+          connect()
+        }, delay)
       }
       for (const eventType of knownEventTypes) {
         source.addEventListener(eventType, handleActivityMessage)
@@ -910,20 +956,20 @@ function App() {
       }
       closeSource()
     }
-  }, [handleActivityEvent, loadSessions])
+  }, [handleActivityEvent, loadSessions, selectedSessionID])
 
   useEffect(() => {
     void loadSessions()
   }, [loadSessions])
 
   useEffect(() => {
-    if (!selectedSessionID) {
+    if (!selectedSessionID || selectedSession || loadingSessions || !sessionListLoadedRef.current) {
       return
     }
     void refreshSession(selectedSessionID).catch((refreshError) => {
       setError(messageFromError(refreshError))
     })
-  }, [refreshSession, selectedSessionID])
+  }, [loadingSessions, refreshSession, selectedSession, selectedSessionID])
 
   async function handleCreate(params: {
     agent_type: AgentType
@@ -946,11 +992,20 @@ function App() {
     attachments: MessageAttachment[] = [],
     queue = false,
     skills: SkillReference[] = [],
+    clientSubmissionID = '',
   ) {
     if (!selectedSessionID) {
       throw new Error('Select a session first.')
     }
-    const response = await submitMessage(selectedSessionID, content, agentOptions, attachments, queue, skills)
+    const response = await submitMessage(
+      selectedSessionID,
+      content,
+      agentOptions,
+      attachments,
+      queue,
+      skills,
+      clientSubmissionID,
+    )
     setSessions((current) =>
       current.map((session) => {
         if (session.id !== selectedSessionID) {
@@ -965,6 +1020,7 @@ function App() {
         return updatedSession
       }),
     )
+    return response
   }
 
   async function handleCancel() {
@@ -2472,6 +2528,14 @@ async function includeSelectedSession(sessions: Session[], selectedSessionID: st
   } catch {
     return sessions
   }
+}
+
+function preferFresherSessionSnapshots(incoming: Session[], current: Session[]) {
+  const currentByID = new Map(current.map((session) => [session.id, session]))
+  return incoming.map((session) => {
+    const existing = currentByID.get(session.id)
+    return existing && latestSessionSeq(existing) > latestSessionSeq(session) ? existing : session
+  })
 }
 
 function addSetValue(current: ReadonlySet<string>, value: string | null) {

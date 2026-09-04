@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ComponentProps, ReactNode } from 'react'
 import type { AgentEvent, Session } from '@/lib/api'
 import { SessionDetail } from '@/components/session-detail'
@@ -32,6 +32,32 @@ test('prompt composer remains enabled after a completed run returns to idle', ()
   renderDetail({ session: { ...baseSession, status: 'idle' } })
 
   expect(screen.getByLabelText('Prompt')).toBeEnabled()
+})
+
+test('optimistic user message rolls back when submission fails', async () => {
+  let rejectSubmit: ((error: Error) => void) | undefined
+  const onErrorMessageChange = vi.fn()
+  renderDetail({
+    onSubmitPrompt: () => new Promise((_resolve, reject) => {
+      rejectSubmit = reject
+    }),
+    onErrorMessageChange,
+  })
+
+  const prompt = screen.getByLabelText('Prompt')
+  fireEvent.change(prompt, { target: { value: 'Prompt that fails' } })
+  fireEvent.keyDown(prompt, { key: 'Enter' })
+
+  expect(within(screen.getByRole('log', { name: 'Chat messages' })).getByText('Prompt that fails')).toBeInTheDocument()
+
+  await act(async () => {
+    rejectSubmit?.(new Error('HTTP 502'))
+    await Promise.resolve()
+  })
+
+  await waitFor(() => expect(screen.queryByRole('log', { name: 'Chat messages' })).not.toBeInTheDocument())
+  expect(prompt).toHaveValue('Prompt that fails')
+  expect(onErrorMessageChange).toHaveBeenCalledWith('HTTP 502')
 })
 
 test('session detail shows loading while a routed session resolves', () => {

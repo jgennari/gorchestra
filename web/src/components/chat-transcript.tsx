@@ -57,6 +57,7 @@ type ChatActivityStatus = { kind: 'thinking' } | { kind: 'working'; since: strin
 
 type Props = {
   events: AgentEvent[]
+  optimisticUserMessages?: ChatTranscriptMessage[]
   loading?: boolean
   error?: string
   topInset?: 'none' | 'sessionHeader'
@@ -94,6 +95,7 @@ type TranscriptVirtualizer = Virtualizer<HTMLDivElement, HTMLDivElement>
 
 export function ChatTranscript({
   events,
+  optimisticUserMessages = [],
   loading = false,
   error = '',
   topInset = 'none',
@@ -115,7 +117,16 @@ export function ChatTranscript({
   focusRequest = 0,
   onVisibleSequenceRangeChange,
 }: Props) {
-  const timeline = useMemo(() => buildChatTimeline(events, showDebugEvents), [events, showDebugEvents])
+  const timeline = useMemo(() => [
+    ...buildChatTimeline(events, showDebugEvents),
+    ...optimisticUserMessages.map((message) => ({
+      kind: 'message' as const,
+      id: message.id,
+      startSeq: 0,
+      endSeq: 0,
+      message,
+    })),
+  ], [events, optimisticUserMessages, showDebugEvents])
   const scrollDebug = useMemo(transcriptScrollDebugEnabled, [])
   const scrollerElementRef = useRef<HTMLDivElement | null>(null)
   const scrollDebugReadoutRef = useRef<HTMLDivElement | null>(null)
