@@ -390,8 +390,6 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	}
 	if api.notifications != nil {
 		r.Get("/api/notifications/public-key", api.notificationPublicKeyHandler)
-		r.Get("/api/notifications/debug", api.notificationDebugHandler)
-		r.Post("/api/notifications/client-diagnostics", api.saveNotificationClientDiagnosticHandler)
 		r.Post("/api/notifications/subscriptions", api.saveNotificationSubscriptionHandler)
 		r.Delete("/api/notifications/subscriptions", api.deleteNotificationSubscriptionHandler)
 		r.Post("/api/notifications/test", api.testNotificationHandler)

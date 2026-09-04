@@ -589,53 +589,6 @@ export type PushSubscriptionPayload = {
   }
 }
 
-export type NotificationDebugSubscription = {
-  endpoint_hash: string
-  origin: string
-  user_agent: string
-  last_error?: string
-  created_at: string
-  updated_at: string
-  disabled_at?: string
-}
-
-export type NotificationDebugAttempt = {
-  id: number
-  endpoint_hash: string
-  origin: string
-  payload_kind: string
-  session_id?: string
-  event_type?: string
-  http_status?: number
-  response_status?: string
-  error?: string
-  created_at: string
-}
-
-export type NotificationClientDiagnostic = {
-  created_at: string
-  received_at: string
-  user_agent?: string
-  payload_web_push?: unknown
-  declarative: boolean
-  badge?: {
-    supported?: boolean
-    attempted?: boolean
-    ok?: boolean
-    count?: number
-    error?: string
-  }
-  attention_count?: number
-  show_notification?: {
-    attempted?: boolean
-    ok?: boolean
-    reason?: string
-    error?: string
-  }
-  session_id?: string
-  seq?: number
-}
-
 type ErrorResponse = {
   error?: string
 }
@@ -702,13 +655,6 @@ type NotificationStateResponse = {
 
 type NotificationTestResponse = {
   sent: boolean
-}
-
-export type NotificationDebugResponse = {
-  public_key_fingerprint: string
-  subscriptions: NotificationDebugSubscription[]
-  recent_attempts: NotificationDebugAttempt[]
-  client_diagnostics?: NotificationClientDiagnostic[]
 }
 
 export type ClientLongTask = {
@@ -1401,10 +1347,6 @@ export async function sendTestNotification() {
   return requestJSON<NotificationTestResponse>('/api/notifications/test', {
     method: 'POST',
   })
-}
-
-export async function fetchNotificationDebug() {
-  return requestJSON<NotificationDebugResponse>('/api/notifications/debug')
 }
 
 export async function getConsoleStatus(sessionID: string) {

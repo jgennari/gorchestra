@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import type { AgentEvent, NotificationDebugResponse, PushSubscriptionPayload } from '@/lib/api'
+import type { AgentEvent, PushSubscriptionPayload } from '@/lib/api'
 import {
   deletePushSubscription,
-  fetchNotificationDebug,
   fetchNotificationPublicKey,
   savePushSubscription,
   sendTestNotification,
 } from '@/lib/api'
-import { readNotificationWorkerDiagnostic, type NotificationWorkerDiagnostic } from '@/lib/notification-attention'
 
 export type NotificationStatus = 'unsupported' | 'default' | 'denied' | 'enabling' | 'enabled' | 'error'
 type NotificationTestState = 'idle' | 'sending' | 'sent'
@@ -16,26 +14,6 @@ type SessionStopNotificationDetails = {
   title?: string
   excerpt?: string
 }
-export type BrowserNotificationDebug = {
-  supported: boolean
-  secure_context: boolean
-  origin: string
-  display_mode: string
-  permission: string
-  service_worker_state: string
-  service_worker_controller: string
-  current_subscription_hash: string
-  window_push_manager: boolean
-  app_badge_supported: boolean
-}
-
-export type PushNotificationDebug = {
-  browser: BrowserNotificationDebug
-  worker: NotificationWorkerDiagnostic | null
-  server: NotificationDebugResponse | null
-  updated_at: string
-}
-
 type WindowWithWebkitAudio = Window & {
   webkitAudioContext?: typeof AudioContext
 }
@@ -50,7 +28,6 @@ export function usePushNotifications() {
   const [localTestState, setLocalTestState] = useState<NotificationTestState>('idle')
   const [badgeTestState, setBadgeTestState] = useState<BadgeTestState>('idle')
   const [badgeTestMessage, setBadgeTestMessage] = useState('')
-  const [debug, setDebug] = useState<PushNotificationDebug | null>(null)
   const [soundEnabled, setSoundEnabledState] = useState(() => readBooleanStorage(soundStorageKey, false))
   const playedEventsRef = useRef<Set<string>>(new Set())
   const shownTerminalNotificationsRef = useRef<Set<string>>(new Set())
@@ -60,29 +37,6 @@ export function usePushNotifications() {
   useEffect(() => {
     foregroundNotificationsStartedAtRef.current = Date.now()
   }, [])
-
-  const refreshDebug = useCallback(async () => {
-    const [browser, worker, server] = await Promise.all([
-      collectBrowserNotificationDebug(supported),
-      readNotificationWorkerDiagnostic().catch(() => null),
-      fetchNotificationDebug().catch(() => null),
-    ])
-    setDebug({
-      browser,
-      worker,
-      server,
-      updated_at: new Date().toISOString(),
-    })
-    if (
-      supported &&
-      browser.permission === 'granted' &&
-      browser.current_subscription_hash &&
-      server?.subscriptions.some((subscription) => subscription.endpoint_hash === browser.current_subscription_hash)
-    ) {
-      writeBooleanStorage(enabledStorageKey, true)
-      setStatus('enabled')
-    }
-  }, [supported])
 
   useEffect(() => {
     if (!supported) {
@@ -119,7 +73,6 @@ export function usePushNotifications() {
         }
         writeBooleanStorage(enabledStorageKey, true)
         setStatus('enabled')
-        void refreshDebug()
       } catch {
         // Keep the current UI state; explicit enable/test actions will surface API errors.
       }
@@ -129,7 +82,7 @@ export function usePushNotifications() {
     return () => {
       cancelled = true
     }
-  }, [refreshDebug, supported])
+  }, [supported])
 
   const enable = useCallback(async () => {
     if (!supported) {
@@ -158,13 +111,12 @@ export function usePushNotifications() {
       await ensurePushSubscription(false)
       writeBooleanStorage(enabledStorageKey, true)
       setStatus('enabled')
-      await refreshDebug()
     } catch (enableError) {
       writeBooleanStorage(enabledStorageKey, false)
       setError(messageFromUnknown(enableError))
       setStatus('error')
     }
-  }, [refreshDebug, supported])
+  }, [supported])
 
   const disable = useCallback(async () => {
     setError('')
@@ -177,12 +129,11 @@ export function usePushNotifications() {
       }
       writeBooleanStorage(enabledStorageKey, false)
       setStatus(supported && Notification.permission === 'denied' ? 'denied' : supported ? 'default' : 'unsupported')
-      await refreshDebug()
     } catch (disableError) {
       setError(messageFromUnknown(disableError))
       setStatus('error')
     }
-  }, [refreshDebug, supported])
+  }, [supported])
 
   const sendTest = useCallback(async () => {
     setError('')
@@ -193,7 +144,6 @@ export function usePushNotifications() {
         await ensurePushSubscription(true)
       }
       await sendTestNotification()
-      await refreshDebug()
       writeBooleanStorage(enabledStorageKey, true)
       setStatus('enabled')
       setTestState('sent')
@@ -202,7 +152,7 @@ export function usePushNotifications() {
       setStatus((current) => (current === 'enabled' ? current : 'error'))
       setTestState('idle')
     }
-  }, [refreshDebug, supported])
+  }, [supported])
 
   const sendLocalTest = useCallback(async () => {
     setError('')
@@ -210,13 +160,12 @@ export function usePushNotifications() {
     setTestState('idle')
     try {
       await showLocalTestNotification(supported)
-      await refreshDebug()
       setLocalTestState('sent')
     } catch (testError) {
       setError(messageFromUnknown(testError))
       setLocalTestState('idle')
     }
-  }, [refreshDebug, supported])
+  }, [supported])
 
   const setTestBadge = useCallback(async () => {
     setBadgeTestState('setting')
@@ -226,18 +175,16 @@ export function usePushNotifications() {
       if (!badgeNavigator.setAppBadge) {
         setBadgeTestState('unsupported')
         setBadgeTestMessage('Badging API is not available in this context.')
-        await refreshDebug()
         return
       }
       await badgeNavigator.setAppBadge(1)
       setBadgeTestState('set')
       setBadgeTestMessage('Badge set request succeeded.')
-      await refreshDebug()
     } catch (badgeError) {
       setBadgeTestState('error')
       setBadgeTestMessage(messageFromUnknown(badgeError))
     }
-  }, [refreshDebug])
+  }, [])
 
   const clearTestBadge = useCallback(async () => {
     setBadgeTestState('clearing')
@@ -254,17 +201,15 @@ export function usePushNotifications() {
       } else {
         setBadgeTestState('unsupported')
         setBadgeTestMessage('Badging API is not available in this context.')
-        await refreshDebug()
         return
       }
       setBadgeTestState('cleared')
       setBadgeTestMessage('Badge clear request succeeded.')
-      await refreshDebug()
     } catch (badgeError) {
       setBadgeTestState('error')
       setBadgeTestMessage(messageFromUnknown(badgeError))
     }
-  }, [refreshDebug])
+  }, [])
 
   const setSoundEnabled = useCallback((enabled: boolean) => {
     writeBooleanStorage(soundStorageKey, enabled)
@@ -332,7 +277,6 @@ export function usePushNotifications() {
     localTestState,
     badgeTestState,
     badgeTestMessage,
-    debug,
     soundEnabled,
     enable,
     disable,
@@ -340,83 +284,10 @@ export function usePushNotifications() {
     sendLocalTest,
     setTestBadge,
     clearTestBadge,
-    refreshDebug,
     setSoundEnabled,
     playSessionStopSound,
     showSessionStopNotification,
   }
-}
-
-async function collectBrowserNotificationDebug(supported: boolean): Promise<BrowserNotificationDebug> {
-  const debug: BrowserNotificationDebug = {
-    supported,
-    secure_context: typeof window !== 'undefined' ? window.isSecureContext : false,
-    origin: typeof window !== 'undefined' ? window.location.origin : '',
-    display_mode: displayMode(),
-    permission: typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
-    service_worker_state: 'unsupported',
-    service_worker_controller: 'none',
-    current_subscription_hash: '',
-    window_push_manager: typeof window !== 'undefined' && 'pushManager' in window,
-    app_badge_supported: typeof navigator !== 'undefined' && 'setAppBadge' in navigator,
-  }
-  if (!supported) {
-    return debug
-  }
-
-  try {
-    const registration = await navigator.serviceWorker.getRegistration('/')
-    const pushManager = await activePushManager()
-    debug.service_worker_state =
-      registration?.active?.state || registration?.installing?.state || registration?.waiting?.state || 'none'
-    debug.service_worker_controller = navigator.serviceWorker.controller?.state || 'none'
-    const subscription = pushManager ? await pushManager.getSubscription() : null
-    debug.current_subscription_hash = subscription?.endpoint ? await hashText(subscription.endpoint) : ''
-  } catch {
-    debug.service_worker_state = 'error'
-  }
-
-  return debug
-}
-
-function displayMode() {
-  if (typeof window === 'undefined') {
-    return 'unknown'
-  }
-  const standaloneNavigator = navigator as Navigator & { standalone?: boolean }
-  if (standaloneNavigator.standalone) {
-    return 'standalone'
-  }
-  if (window.matchMedia('(display-mode: standalone)').matches) {
-    return 'standalone'
-  }
-  if (window.matchMedia('(display-mode: fullscreen)').matches) {
-    return 'fullscreen'
-  }
-  if (window.matchMedia('(display-mode: minimal-ui)').matches) {
-    return 'minimal-ui'
-  }
-  return 'browser'
-}
-
-async function hashText(value: string) {
-  if (!window.crypto?.subtle) {
-    return fallbackHash(value)
-  }
-  const bytes = new TextEncoder().encode(value)
-  const digest = await window.crypto.subtle.digest('SHA-256', bytes)
-  return Array.from(new Uint8Array(digest))
-    .slice(0, 6)
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-function fallbackHash(value: string) {
-  let hash = 0
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0
-  }
-  return hash.toString(16).padStart(8, '0')
 }
 
 function supportsPushNotifications() {
