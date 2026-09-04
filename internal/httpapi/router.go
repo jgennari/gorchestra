@@ -109,6 +109,16 @@ type EventService interface {
 	SubscribeAll() (<-chan store.Event, func())
 }
 
+type SessionActivityEventService interface {
+	SubscribeSessionActivity(clientID string, watchedSessionID string, includeDebug bool) (<-chan store.Event, func())
+	WatchSessionActivity(clientID string, watchedSessionID string, includeDebug bool) bool
+	SessionActivityWatch(clientID string) (watchedSessionID string, includeDebug bool, ok bool)
+}
+
+type SessionActivityStatsService interface {
+	SessionActivityStats() eventservice.SessionActivityStats
+}
+
 type RecentEventService interface {
 	Recent(sessionID string) []store.Event
 }
@@ -202,6 +212,7 @@ type API struct {
 	schedules        *scheduler.Service
 	maintenance      MaintenanceService
 	repositorySkills *reposkills.Manager
+	performance      *performanceDiagnosticsStore
 	userHome         string
 }
 
@@ -249,7 +260,7 @@ type eventHistoryResult struct {
 }
 
 func NewRouter(deps ...Dependencies) http.Handler {
-	api := API{}
+	api := API{performance: &performanceDiagnosticsStore{}}
 	if len(deps) > 0 {
 		api.store = deps[0].Store
 		api.events = deps[0].Events
@@ -286,6 +297,8 @@ func NewRouter(deps ...Dependencies) http.Handler {
 
 	r := chi.NewRouter()
 	r.Get("/api/health", healthHandler)
+	r.Get("/api/diagnostics/performance", api.performanceDiagnosticsHandler)
+	r.Post("/api/diagnostics/performance", api.saveClientPerformanceHandler)
 	if api.maintenance != nil {
 		r.Get("/api/maintenance/events", api.eventMaintenanceStatusHandler)
 	}
@@ -373,6 +386,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	if api.store != nil && api.events != nil {
 		r.Get("/api/sessions/{sessionId}/events/stream", api.eventStreamHandler)
 		r.Get("/api/sessions/activity/stream", api.sessionActivityStreamHandler)
+		r.Put("/api/sessions/activity/watch", api.watchSessionActivityHandler)
 	}
 	if api.notifications != nil {
 		r.Get("/api/notifications/public-key", api.notificationPublicKeyHandler)
@@ -1069,6 +1083,10 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
+	filter, ok := parseEventListFilter(w, r)
+	if !ok {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming is not supported")
@@ -1076,8 +1094,26 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	excludedSessionID := strings.TrimSpace(r.URL.Query().Get("exclude_session_id"))
-	liveEvents, unsubscribe := api.events.SubscribeAll()
+	clientID := strings.TrimSpace(r.URL.Query().Get("client_id"))
+	watchedSessionID := strings.TrimSpace(r.URL.Query().Get("watch_session_id"))
+	if clientID != "" && !validActivityClientID(clientID) {
+		writeError(w, http.StatusBadRequest, "client_id is invalid")
+		return
+	}
+	activityEvents, multiplexed := api.events.(SessionActivityEventService)
+	var liveEvents <-chan store.Event
+	var unsubscribe func()
+	if multiplexed && clientID != "" {
+		liveEvents, unsubscribe = activityEvents.SubscribeSessionActivity(clientID, watchedSessionID, filter.IncludeDebug)
+	} else {
+		liveEvents, unsubscribe = api.events.SubscribeAll()
+	}
 	defer unsubscribe()
+	api.performance.streamConnected(
+		clientID,
+		clientID == "" && (afterCursor > 0 || strings.TrimSpace(r.Header.Get("Last-Event-ID")) != ""),
+	)
+	defer api.performance.streamDisconnected()
 
 	var replayedEvents []store.Event
 	resyncRequired := false
@@ -1102,6 +1138,7 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 	}
 	flusher.Flush()
 	if resyncRequired {
+		api.performance.streamResync()
 		cursor, err := globalStore.GlobalEventCursor(r.Context())
 		if err != nil {
 			return
@@ -1121,9 +1158,14 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 		if excludedSessionID != "" && event.SessionID == excludedSessionID {
 			continue
 		}
-		if err := writeGlobalSSE(w, event); err != nil {
+		if !sessionActivityEventVisible(event, filter, activityEvents, clientID, multiplexed) {
+			continue
+		}
+		eventBytes, err := writeGlobalSSE(w, event)
+		if err != nil {
 			return
 		}
+		api.performance.streamReplay(eventBytes)
 		flusher.Flush()
 		if event.GlobalSeq > highestCursorSent {
 			highestCursorSent = event.GlobalSeq
@@ -1152,18 +1194,89 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 			if event.GlobalSeq > 0 && event.GlobalSeq <= highestCursorSent {
 				continue
 			}
-			if !eventVisible(event, store.EventListFilter{}) {
+			if !sessionActivityEventVisible(event, filter, activityEvents, clientID, multiplexed) {
 				continue
 			}
-			if err := writeGlobalSSE(w, event); err != nil {
+			eventBytes, err := writeGlobalSSE(w, event)
+			if err != nil {
 				return
 			}
+			api.performance.streamLive(eventBytes, event.Transient, time.Since(event.CreatedAt))
 			flusher.Flush()
 			if event.GlobalSeq > highestCursorSent {
 				highestCursorSent = event.GlobalSeq
 			}
 		}
 	}
+}
+
+type watchSessionActivityRequest struct {
+	ClientID     string `json:"client_id"`
+	SessionID    string `json:"session_id"`
+	IncludeDebug bool   `json:"include_debug"`
+}
+
+func (api API) watchSessionActivityHandler(w http.ResponseWriter, r *http.Request) {
+	activityEvents, ok := api.events.(SessionActivityEventService)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "session activity multiplexing is unavailable")
+		return
+	}
+	var request watchSessionActivityRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4*1024))
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	request.ClientID = strings.TrimSpace(request.ClientID)
+	request.SessionID = strings.TrimSpace(request.SessionID)
+	if !validActivityClientID(request.ClientID) {
+		writeError(w, http.StatusBadRequest, "client_id is invalid")
+		return
+	}
+	connected := activityEvents.WatchSessionActivity(request.ClientID, request.SessionID, request.IncludeDebug)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"connected":  connected,
+		"session_id": request.SessionID,
+	})
+}
+
+func sessionActivityEventVisible(
+	event store.Event,
+	defaultFilter store.EventListFilter,
+	activityEvents SessionActivityEventService,
+	clientID string,
+	multiplexed bool,
+) bool {
+	if !multiplexed || clientID == "" {
+		return eventVisible(event, defaultFilter)
+	}
+	watchedSessionID, includeDebug, ok := activityEvents.SessionActivityWatch(clientID)
+	if !ok {
+		return false
+	}
+	if event.Transient && event.SessionID != watchedSessionID {
+		return false
+	}
+	return eventVisible(event, store.EventListFilter{
+		IncludeDebug: includeDebug && event.SessionID == watchedSessionID,
+	})
+}
+
+func validActivityClientID(clientID string) bool {
+	if len(clientID) < 1 || len(clientID) > 128 {
+		return false
+	}
+	for _, character := range clientID {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (api API) replayGlobalEvents(
@@ -1900,25 +2013,27 @@ func writeSSE(w http.ResponseWriter, event store.Event) error {
 	return nil
 }
 
-func writeGlobalSSE(w http.ResponseWriter, event store.Event) error {
+func writeGlobalSSE(w http.ResponseWriter, event store.Event) (int, error) {
 	body, err := json.Marshal(newEventResponse(event))
 	if err != nil {
-		return fmt.Errorf("marshal global sse event: %w", err)
+		return 0, fmt.Errorf("marshal global sse event: %w", err)
 	}
-	cursor := event.GlobalSeq
-	if cursor <= 0 {
-		// Compatibility for alternate EventService implementations that have not
-		// adopted the durable global cursor yet.
-		cursor = event.Seq
-	}
-	if _, err := fmt.Fprintf(w, "id: %d\n", cursor); err != nil {
-		return err
+	if !event.Transient {
+		cursor := event.GlobalSeq
+		if cursor <= 0 {
+			// Compatibility for alternate EventService implementations that have not
+			// adopted the durable global cursor yet.
+			cursor = event.Seq
+		}
+		if _, err := fmt.Fprintf(w, "id: %d\n", cursor); err != nil {
+			return 0, err
+		}
 	}
 	if _, err := fmt.Fprintf(w, "event: %s\n", event.Type); err != nil {
-		return err
+		return 0, err
 	}
 	_, err = fmt.Fprintf(w, "data: %s\n\n", body)
-	return err
+	return len(body), err
 }
 
 func writeSSEControl(w http.ResponseWriter, eventType string, payload any) error {

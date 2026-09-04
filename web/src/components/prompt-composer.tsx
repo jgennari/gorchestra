@@ -16,6 +16,7 @@ import {
   type DragEvent,
   type ChangeEvent,
   type CSSProperties,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -45,6 +46,7 @@ import {
   type SkillReference,
   type SkillScope,
   type SubmitMessageResponse,
+  updateQueuedMessagesCache,
   removeQueuedMessage as deleteQueuedMessage,
   type SubmitAgentOptions,
 } from '@/lib/api'
@@ -231,6 +233,16 @@ export function PromptComposer({
     [skillTypeahead, sortedSkills],
   )
 
+  const commitQueuedMessages = useCallback((
+    update: QueuedMessage[] | ((current: QueuedMessage[]) => QueuedMessage[]),
+  ) => {
+    setQueuedMessages((current) => {
+      const next = typeof update === 'function' ? update(current) : update
+      if (sessionID) updateQueuedMessagesCache(sessionID, next)
+      return next
+    })
+  }, [sessionID])
+
   useLayoutEffect(() => {
     resizePromptTextarea(textareaRef.current)
   }, [content])
@@ -409,7 +421,7 @@ export function PromptComposer({
       .then((response) => {
         if (!cancelled) {
           const messages = Array.isArray(response.messages) ? response.messages : []
-          setQueuedMessages(reconcileQueuedMessages(messages, queueEventsRef.current.values()))
+          commitQueuedMessages(reconcileQueuedMessages(messages, queueEventsRef.current.values()))
         }
       })
       .catch((queueError) => {
@@ -419,7 +431,7 @@ export function PromptComposer({
     return () => {
       cancelled = true
     }
-  }, [sessionID, onError])
+  }, [commitQueuedMessages, sessionID, onError])
 
   useEffect(() => {
     if (!sessionID) return
@@ -429,8 +441,8 @@ export function PromptComposer({
       const queueItemID = queuedMessageID(event)
       if (queueItemID) queueEventsRef.current.set(queueItemID, event)
     }
-    setQueuedMessages((current) => reconcileQueuedMessages(current, queueEventsRef.current.values()))
-  }, [latestQueueEvent, queueEvents, sessionID])
+    commitQueuedMessages((current) => reconcileQueuedMessages(current, queueEventsRef.current.values()))
+  }, [commitQueuedMessages, latestQueueEvent, queueEvents, sessionID])
 
   useEffect(() => {
     saveCodexSelection(sessionID, codexSelection)
@@ -526,7 +538,7 @@ export function PromptComposer({
       const response = await submitText(submittedContent.trim(), submitAttachments)
       if (response?.queued_message) {
         const queuedMessage = response.queued_message
-        setQueuedMessages((current) => upsertQueuedMessage(current, queuedMessage))
+        commitQueuedMessages((current) => upsertQueuedMessage(current, queuedMessage))
       }
     } catch (submitError) {
       setContent(submittedContent)
@@ -721,10 +733,10 @@ export function PromptComposer({
       setSkillTypeahead(null)
       if (response?.queued_message) {
         const queuedMessage = response.queued_message
-        setQueuedMessages((current) => upsertQueuedMessage(current, queuedMessage))
+        commitQueuedMessages((current) => upsertQueuedMessage(current, queuedMessage))
       } else if (sessionID) {
-        const response = await fetchQueuedMessages(sessionID)
-        setQueuedMessages(Array.isArray(response.messages) ? response.messages : [])
+        const response = await fetchQueuedMessages(sessionID, true)
+        commitQueuedMessages(Array.isArray(response.messages) ? response.messages : [])
       }
     } catch (queueError) {
       onError?.(queueError instanceof Error ? queueError.message : 'Failed to queue prompt')
@@ -743,7 +755,7 @@ export function PromptComposer({
     onError?.('')
     try {
       const removed = await deleteQueuedMessage(sessionID, queuedMessageID)
-      setQueuedMessages((current) => current.filter((message) => message.id !== removed.id))
+      commitQueuedMessages((current) => current.filter((message) => message.id !== removed.id))
     } catch (removeError) {
       onError?.(removeError instanceof Error ? removeError.message : 'Failed to remove queued prompt')
     }

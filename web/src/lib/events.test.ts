@@ -9,6 +9,7 @@ import {
   buildChatTranscript,
   buildChatTimeline,
   groupEvents,
+  isDebugOnlyEvent,
   lastSeq,
   latestTokenUsage,
   pendingUserInputRequest,
@@ -40,6 +41,21 @@ function failedEvent(seq: number, type = 'agent.run.failed', payload: Record<str
     status: 'failed',
   }
 }
+
+test('classifies provider diagnostics consistently with the server stream filter', () => {
+  expect(isDebugOnlyEvent(event(1, 'agent.log.delta'))).toBe(true)
+  expect(isDebugOnlyEvent(event(2, 'provider.codex.event', {
+    provider_event_type: 'thread/tokenUsage/updated',
+  }))).toBe(false)
+  expect(isDebugOnlyEvent(event(3, 'provider.codex.event', {
+    provider_event_type: 'item/completed',
+    raw: { item: { type: 'plan' } },
+  }))).toBe(false)
+  expect(isDebugOnlyEvent(event(4, 'provider.codex.event', {
+    provider_event_type: 'item/completed',
+    raw: { item: { type: 'commandExecution' } },
+  }))).toBe(true)
+})
 
 function timedEvent(seq: number, type: string, createdAt: string, payload: Record<string, unknown> = {}) {
   return {

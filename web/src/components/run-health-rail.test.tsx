@@ -769,11 +769,11 @@ test('run health rail file explorer dot folders hide at root and navigate from s
 
   await user.click(screen.getByRole('button', { name: 'Go to parent folder' }))
   await waitFor(() =>
-    expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files?path=src')).toHaveLength(2),
+    expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files?path=src')).toHaveLength(1),
   )
 
   await user.click(screen.getByRole('button', { name: 'Go to workspace root' }))
-  await waitFor(() => expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files')).toHaveLength(2))
+  await waitFor(() => expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files')).toHaveLength(1))
   expect(screen.queryByRole('button', { name: 'Go to parent folder' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Go to workspace root' })).not.toBeInTheDocument()
 })

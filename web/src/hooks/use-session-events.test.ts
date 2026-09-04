@@ -9,6 +9,7 @@ import {
 } from '@/hooks/use-session-events'
 import { readCachedSessionEvents, writeCachedSessionEvents } from '@/lib/session-cache'
 import { createFakeIndexedDB } from '@/test/fake-indexeddb'
+import { ingestClientEvent, publishClientSessionEvent } from '@/lib/client-event-store'
 
 test('turn trimming keeps the latest requested turns', () => {
   const trimmed = trimEventsToRecentTurns(
@@ -218,9 +219,7 @@ test('older network pages are reused after switching away and back', async () =>
   vi.unstubAllGlobals()
 })
 
-test('ordinary reconnect resumes from the accepted cursor without refetching history', async () => {
-  HookEventSource.instances = []
-  vi.stubGlobal('EventSource', HookEventSource)
+test('the shared activity store delivers durable events without opening another stream', async () => {
   clearSessionEventCacheForTest()
   const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
     const path = String(url)
@@ -234,26 +233,22 @@ test('ordinary reconnect resumes from the accepted cursor without refetching his
   })
   vi.stubGlobal('fetch', fetchMock)
 
-  const { unmount } = renderHook(() => useSessionEvents('sess_test', { reconnectDelayMs: 5 }))
-  await waitFor(() => expect(HookEventSource.instances[0]?.url).toContain('after_seq=1'))
-
+  const { result, unmount } = renderHook(() => useSessionEvents('sess_test'))
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([1]))
   act(() => {
-    HookEventSource.instances[0].emit(event(2, 'agent.message.delta'))
-    HookEventSource.instances[0].fail()
+    ingestClientEvent(event(2, 'agent.message.completed'))
   })
 
-  await waitFor(() => expect(HookEventSource.instances).toHaveLength(2))
-  expect(HookEventSource.instances[1].url).toContain('after_seq=2')
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([1, 2]))
+  expect(HookEventSource.instances).toHaveLength(0)
   expect(fetchMock).toHaveBeenCalledTimes(1)
 
   unmount()
   vi.unstubAllGlobals()
 })
 
-test('a reload resumes from the durable cursor instead of a transient delta', async () => {
+test('a reload persists the durable cursor but not a multiplexed transient delta', async () => {
   vi.stubGlobal('indexedDB', createFakeIndexedDB())
-  HookEventSource.instances = []
-  vi.stubGlobal('EventSource', HookEventSource)
   clearSessionEventCacheForTest()
   const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
     const path = String(url)
@@ -268,8 +263,8 @@ test('a reload resumes from the durable cursor instead of a transient delta', as
   vi.stubGlobal('fetch', fetchMock)
 
   const first = renderHook(() => useSessionEvents('sess_test'))
-  await waitFor(() => expect(HookEventSource.instances[0]?.url).toContain('after_seq=1'))
-  act(() => HookEventSource.instances[0].emit(event(2, 'agent.message.delta')))
+  await waitFor(() => expect(first.result.current.events.map((item) => item.seq)).toEqual([1]))
+  act(() => publishClientSessionEvent(event(2, 'agent.message.delta')))
   await waitFor(() => expect(first.result.current.events.map((item) => item.seq)).toEqual([1, 2]))
   first.unmount()
 
@@ -278,41 +273,70 @@ test('a reload resumes from the durable cursor instead of a transient delta', as
   expect(persisted?.events.map((item) => item.seq)).toEqual([1])
 
   clearSessionEventCacheForTest()
-  HookEventSource.instances = []
   const second = renderHook(() => useSessionEvents('sess_test'))
-  await waitFor(() => expect(HookEventSource.instances[0]?.url).toContain('after_seq=1'))
+  await waitFor(() => expect(second.result.current.events.map((item) => item.seq)).toEqual([1]))
   expect(fetchMock).toHaveBeenCalledTimes(1)
 
   second.unmount()
   vi.unstubAllGlobals()
 })
 
-test('explicit stream resync reloads the bounded tail before reconnecting', async () => {
-  HookEventSource.instances = []
-  vi.stubGlobal('EventSource', HookEventSource)
+test('selected history reports the browser-wide stream state', async () => {
   clearSessionEventCacheForTest()
-  let historyRequests = 0
   const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
     const path = String(url)
     if (path === '/api/sessions/sess_test/events?tail=true&turns=50&max_bytes=2097152') {
-      historyRequests += 1
-      const last = historyRequests === 1 ? 1 : 3
       return jsonResponse({
-        events: Array.from({ length: last }, (_, index) => event(index + 1, 'agent.message.completed')),
-        page: { ...historyPage(1, last, false), server_last_seq: last },
+        events: [event(1, 'agent.message.completed')],
+        page: { ...historyPage(1, 1, false), server_last_seq: 1 },
       })
     }
     throw new Error(`unexpected URL ${path}`)
   })
   vi.stubGlobal('fetch', fetchMock)
 
-  const { unmount } = renderHook(() => useSessionEvents('sess_test', { reconnectDelayMs: 5 }))
-  await waitFor(() => expect(HookEventSource.instances[0]?.url).toContain('after_seq=1'))
+  const initialProps: { liveStreamState: 'connected' | 'reconnecting' } = { liveStreamState: 'connected' }
+  const { result, rerender, unmount } = renderHook(
+    ({ liveStreamState }: { liveStreamState: 'connected' | 'reconnecting' }) =>
+      useSessionEvents('sess_test', { liveStreamState }),
+    { initialProps },
+  )
+  await waitFor(() => expect(result.current.streamState).toBe('connected'))
+  rerender({ liveStreamState: 'reconnecting' })
+  expect(result.current.streamState).toBe('reconnecting')
+  expect(HookEventSource.instances).toHaveLength(0)
 
-  act(() => HookEventSource.instances[0].emitControl('stream.resync.required'))
+  unmount()
+  vi.unstubAllGlobals()
+})
 
-  await waitFor(() => expect(historyRequests).toBe(2))
-  await waitFor(() => expect(HookEventSource.instances[1]?.url).toContain('after_seq=3'))
+test('jumping to the live tail reuses the connected global stream window', async () => {
+  clearSessionEventCacheForTest()
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/sessions/sess_test/events?tail=true&turns=50&max_bytes=2097152') {
+      return jsonResponse({
+        events: [event(1, 'user.message.completed')],
+        page: { ...historyPage(1, 1, false), server_last_seq: 1 },
+      })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const { result, unmount } = renderHook(() =>
+    useSessionEvents('sess_test', { liveStreamState: 'connected' }),
+  )
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([1]))
+
+  act(() => result.current.setFollowingTail(false))
+  act(() => ingestClientEvent(event(2, 'agent.message.completed')))
+  await waitFor(() => expect(result.current.hasNewerEvents).toBe(true))
+  await act(async () => result.current.jumpToLatest())
+
+  expect(result.current.events.map((item) => item.seq)).toEqual([1, 2])
+  expect(result.current.hasNewerEvents).toBe(false)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
 
   unmount()
   vi.unstubAllGlobals()

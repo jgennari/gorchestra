@@ -3,6 +3,7 @@ import {
   archiveSession,
   browseWorkspace,
   clearSession,
+  clearAPIRequestCachesForTest,
   compactSession,
   createSession,
   eventStreamURL,
@@ -37,9 +38,12 @@ import {
   updateSessionTitle,
   updateSessionWorkspace,
   validateHost,
+  watchSessionActivity,
   checkHost,
   hostLogStreamURL,
 } from '@/lib/api'
+
+beforeEach(() => clearAPIRequestCachesForTest())
 
 test('session API helpers build the expected URLs', async () => {
   const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
@@ -94,6 +98,11 @@ test('session API helpers build the expected URLs', async () => {
   )
   expect(sessionActivityStreamURL()).toBe('/api/sessions/activity/stream')
   expect(sessionActivityStreamURL(42)).toBe('/api/sessions/activity/stream?after_cursor=42')
+  expect(sessionActivityStreamURL(42, {
+    clientID: 'browser-one',
+    watchSessionID: 'sess_1',
+    includeDebug: true,
+  })).toBe('/api/sessions/activity/stream?after_cursor=42&client_id=browser-one&watch_session_id=sess_1&include_debug=true')
 })
 
 test('session list helper includes status filters', async () => {
@@ -450,8 +459,30 @@ test('agent options helper fetches codex options', async () => {
   vi.stubGlobal('fetch', fetchMock)
 
   const options = await fetchAgentOptions('codex')
+  const cached = await fetchAgentOptions('codex')
 
   expect(options.default_model).toBe('gpt-5.5')
+  expect(cached).toBe(options)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+test('activity watch helper updates the multiplexed session without reopening SSE', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/activity/watch')
+    expect(init?.method).toBe('PUT')
+    expect(JSON.parse(String(init?.body))).toEqual({
+      client_id: 'browser-one',
+      session_id: 'sess_2',
+      include_debug: true,
+    })
+    return jsonResponse({ connected: true, session_id: 'sess_2' })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(watchSessionActivity('browser-one', 'sess_2', true)).resolves.toEqual({
+    connected: true,
+    session_id: 'sess_2',
+  })
 })
 
 test('submit message posts codex agent options when provided', async () => {
@@ -599,9 +630,12 @@ test('queued message helpers use session queue endpoints', async () => {
   vi.stubGlobal('fetch', fetchMock)
 
   const response = await fetchQueuedMessages('sess_1')
+  const cached = await fetchQueuedMessages('sess_1')
   const removed = await removeQueuedMessage('sess_1', 'queue_1')
 
   expect(response.messages).toHaveLength(1)
+  expect(cached.messages).toHaveLength(1)
+  expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/queued-messages')).toHaveLength(1)
   expect(removed.id).toBe('queue_1')
 })
 

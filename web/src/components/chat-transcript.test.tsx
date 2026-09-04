@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import type { AgentEvent } from '@/lib/api'
 import { ChatTranscript as ChatTranscriptComponent } from '@/components/chat-transcript'
+import type { ChatTranscriptMessage } from '@/lib/events'
 
 function ChatTranscript(props: ComponentProps<typeof ChatTranscriptComponent>) {
   return <ChatTranscriptComponent autoScroll {...props} />
@@ -937,6 +938,38 @@ test('appended rows follow only while the viewport is pinned', async () => {
   expect(log.scrollTop).toBe(300)
 })
 
+test('a locally submitted user message resumes following from paused history', async () => {
+  const onFollowingTailChange = vi.fn()
+  const events = [event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]
+  const { rerender } = render(
+    <ChatTranscript events={events} onFollowingTailChange={onFollowingTailChange} />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  setScrollMetrics(log, { scrollTop: 900, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.wheel(log, { deltaY: -100 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+
+  expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+
+  rerender(
+    <ChatTranscript
+      events={events}
+      optimisticUserMessages={[optimisticUserMessage('client-1', 'New local prompt')]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+
+  expect(screen.getByText('New local prompt')).toBeInTheDocument()
+  expect(onFollowingTailChange).toHaveBeenLastCalledWith(true)
+  expect(log.scrollTop).toBe(2000)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
 test('a pinned transcript follows when the live tail is replaced without increasing the row count', async () => {
   const prompt = event(1, 'user.message.completed', 'user', 'completed', { text: 'Do the work' })
   const { rerender } = render(
@@ -1750,6 +1783,26 @@ function setScrollMetrics(
   Object.defineProperty(element, 'scrollTop', { configurable: true, writable: true, value: metrics.scrollTop })
   Object.defineProperty(element, 'scrollHeight', { configurable: true, writable: true, value: metrics.scrollHeight })
   Object.defineProperty(element, 'clientHeight', { configurable: true, writable: true, value: metrics.clientHeight })
+}
+
+function optimisticUserMessage(id: string, text: string): ChatTranscriptMessage {
+  return {
+    id,
+    role: 'user',
+    label: 'You',
+    variant: 'default',
+    text,
+    attachments: [],
+    skills: [],
+    status: 'pending',
+    createdAt: '2026-06-12T16:00:00Z',
+    completedAt: '',
+    durationMs: null,
+    tools: [],
+    streaming: false,
+    startSeq: 0,
+    endSeq: 0,
+  }
 }
 
 function event(seq: number, type: string, role: string, status: string, payload: Record<string, unknown>): AgentEvent {

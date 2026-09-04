@@ -19,6 +19,7 @@ import remarkGfm from 'remark-gfm'
 import type {
   Session,
   WorkspaceEntry,
+  WorkspaceBrowseResponse,
   WorkspaceFileContent,
   WorkspaceGitSummary,
   WorkspaceSearchResult,
@@ -36,6 +37,16 @@ import { cn } from '@/lib/utils'
 
 type FileSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error'
 type FileViewMode = 'preview' | 'edit'
+
+type WorkspaceFileListCacheEntry = {
+  response?: WorkspaceBrowseResponse
+  request?: Promise<WorkspaceBrowseResponse>
+  usedAt: number
+}
+
+const workspaceFileListCacheLimit = 100
+const workspaceFileListCache = new Map<string, WorkspaceFileListCacheEntry>()
+let workspaceFileListFetch = globalThis.fetch
 
 export function WorkspaceFilesView({
   session,
@@ -175,7 +186,7 @@ export function WorkspaceFileBrowser({
       setLoading(true)
       setError('')
       try {
-        const response = await listSessionFiles(sessionID, currentPath)
+        const response = await listSessionFilesOnce(sessionID, currentPath, refreshKey)
         if (cancelled) return
         setEntries(response.entries)
         setGitSummary(response.git_summary ?? null)
@@ -263,6 +274,7 @@ export function WorkspaceFileBrowser({
       await uploadSessionFiles(sessionID, selectedFiles, currentPath)
       setQuery('')
       setResults([])
+      invalidateWorkspaceFileListCache(sessionID, currentPath)
       setReloadKey((value) => value + 1)
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : 'Failed to upload files')
@@ -314,7 +326,10 @@ export function WorkspaceFileBrowser({
             size="icon"
             className="size-7 border-transparent text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
             disabled={!sessionID || refreshing || uploading}
-            onClick={() => setReloadKey((value) => value + 1)}
+            onClick={() => {
+              invalidateWorkspaceFileListCache(sessionID, currentPath)
+              setReloadKey((value) => value + 1)
+            }}
             aria-label="Refresh files"
             title="Refresh files"
           >
@@ -1111,4 +1126,49 @@ function formatBytes(value: number) {
   if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${value} B`
+}
+
+function workspaceFileListCacheKey(sessionID: string, path: string, refreshKey: number) {
+  return `${sessionID}:${refreshKey}:${path}`
+}
+
+function listSessionFilesOnce(sessionID: string, path: string, refreshKey: number) {
+  if (workspaceFileListFetch !== globalThis.fetch) {
+    workspaceFileListCache.clear()
+    workspaceFileListFetch = globalThis.fetch
+  }
+  const key = workspaceFileListCacheKey(sessionID, path, refreshKey)
+  const existing = workspaceFileListCache.get(key)
+  if (existing?.response) {
+    existing.usedAt = Date.now()
+    return Promise.resolve(existing.response)
+  }
+  if (existing?.request) return existing.request
+
+  const request = listSessionFiles(sessionID, path)
+    .then((response) => {
+      workspaceFileListCache.set(key, { response, usedAt: Date.now() })
+      evictWorkspaceFileListCache()
+      return response
+    })
+    .catch((error) => {
+      workspaceFileListCache.delete(key)
+      throw error
+    })
+  workspaceFileListCache.set(key, { request, usedAt: Date.now() })
+  return request
+}
+
+function invalidateWorkspaceFileListCache(sessionID: string, path: string) {
+  for (const key of workspaceFileListCache.keys()) {
+    if (key.startsWith(`${sessionID}:`) && key.endsWith(`:${path}`)) workspaceFileListCache.delete(key)
+  }
+}
+
+function evictWorkspaceFileListCache() {
+  if (workspaceFileListCache.size <= workspaceFileListCacheLimit) return
+  const oldest = [...workspaceFileListCache.entries()]
+    .sort((left, right) => left[1].usedAt - right[1].usedAt)
+    .slice(0, workspaceFileListCache.size - workspaceFileListCacheLimit)
+  for (const [key] of oldest) workspaceFileListCache.delete(key)
 }

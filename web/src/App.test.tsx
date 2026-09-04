@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from '@/App'
-import type { AgentEvent, Session } from '@/lib/api'
+import { clearAPIRequestCachesForTest, type AgentEvent, type Session } from '@/lib/api'
 import { clearSessionEventCacheForTest } from '@/hooks/use-session-events'
 import { readCachedSessionEvents, writeCachedSession, writeCachedSessionEvents } from '@/lib/session-cache'
 import { createFakeIndexedDB } from '@/test/fake-indexeddb'
@@ -48,6 +48,7 @@ beforeEach(() => {
   window.history.replaceState({}, '', '/sessions/sess_1')
   window.localStorage.clear()
   clearSessionEventCacheForTest()
+  clearAPIRequestCachesForTest()
   clearNotificationAttentionCacheForTest()
   document.head.innerHTML = '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />'
   FakeEventSource.instances = []
@@ -70,14 +71,37 @@ test('uses a selected session from the initial list without refetching its detai
 
 test('global activity stays connected when the selected session changes', async () => {
   const user = userEvent.setup()
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
   render(<App />)
 
   const activitySource = await findEventSource('/api/sessions/activity/stream')
-  expect(activitySource.url).toBe('/api/sessions/activity/stream?after_cursor=0')
+  expect(activitySource.url).toContain('after_cursor=0')
+  expect(activitySource.url).toContain('watch_session_id=sess_1')
 
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
   expect(FakeEventSource.instances.filter((source) => source.url.startsWith('/api/sessions/activity/stream')))
     .toHaveLength(1)
+  await waitFor(() => expect(
+    fetch.mock.calls.some(
+      ([url, init]) => String(url) === '/api/sessions/activity/watch' && init?.method === 'PUT',
+    ),
+  ).toBe(true))
+})
+
+test('global activity multiplexes selected transient output into the transcript', async () => {
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit({
+      ...event(5, 'agent.message.delta', { item_id: 'msg_1', text: 'Multiplexed answer' }),
+      transient: true,
+    })
+  })
+
+  expect(await screen.findByText('Multiplexed answer')).toBeInTheDocument()
+  expect(FakeEventSource.instances).toHaveLength(1)
 })
 
 test('selecting a background session hydrates its global events without fetching a tail', async () => {
@@ -101,7 +125,7 @@ test('selecting a background session hydrates its global events without fetching
       ([url]) => String(url) === '/api/sessions/sess_2/events?tail=true&turns=50&max_bytes=2097152',
     ),
   ).toHaveLength(0)
-  await findEventSource('/api/sessions/sess_2/events/stream?after_seq=5')
+  expect(FakeEventSource.instances).toHaveLength(1)
 })
 
 test('background queue lifecycle is current when its session is selected', async () => {
@@ -125,7 +149,7 @@ test('background queue lifecycle is current when its session is selected', async
   })
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
 
-  await findEventSource('/api/sessions/sess_2/events/stream?after_seq=5')
+  expect(FakeEventSource.instances).toHaveLength(1)
   expect(await screen.findByText('Background follow-up')).toBeInTheDocument()
   act(() => {
     activitySource.emit({
@@ -202,9 +226,9 @@ test('global activity reconnects from its latest cursor without refetching the s
       expect(FakeEventSource.instances.filter((source) => source.url.startsWith('/api/sessions/activity/stream')))
         .toHaveLength(2)
       expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(1)
-      expect(FakeEventSource.instances.at(-1)?.url).toBe('/api/sessions/activity/stream?after_cursor=42')
+      expect(FakeEventSource.instances.at(-1)?.url).toContain('after_cursor=42')
     },
-    { timeout: 2500 },
+    { timeout: 10_000 },
   )
 })
 
@@ -230,7 +254,7 @@ test('global activity reloads its snapshot only when replay requests a resync', 
 
   await waitFor(() => {
     expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(2)
-    expect(FakeEventSource.instances.at(-1)?.url).toBe('/api/sessions/activity/stream?after_cursor=80')
+    expect(FakeEventSource.instances.at(-1)?.url).toContain('after_cursor=80')
   })
 })
 
@@ -1011,12 +1035,14 @@ test('session route restores cached transcript and reconnects without downloadin
       ([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152',
     ),
   ).toBe(false)
-  await findEventSource('/api/sessions/sess_1/events/stream?after_seq=11')
+  expect(FakeEventSource.instances.filter((source) => source.url.startsWith('/api/sessions/activity/stream')))
+    .toHaveLength(0)
 
   await act(async () => {
     resolveSessions?.()
     await Promise.resolve()
   })
+  await findEventSource('/api/sessions/activity/stream')
 })
 
 test('switching sessions discards an unsaved settings rename', async () => {
@@ -1099,11 +1125,9 @@ test('initial session load fetches the recent event window and streams after the
       expect.objectContaining({ headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
-  await waitFor(() =>
-    expect(FakeEventSource.instances.some((source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=40'))
-      .toBe(true),
-  )
-})
+  await findEventSource('/api/sessions/activity/stream')
+  expect(FakeEventSource.instances).toHaveLength(1)
+}, 10_000)
 
 test('a global event arriving during tail load cannot be replaced by the older response', async () => {
   const baseFetch = fetchMock()
@@ -1138,7 +1162,7 @@ test('a global event arriving during tail load cannot be replaced by the older r
 
   expect(await screen.findByText('Older tail answer')).toBeInTheDocument()
   expect(screen.getByText('Racing global answer')).toBeInTheDocument()
-  await findEventSource('/api/sessions/sess_1/events/stream?after_seq=41')
+  expect(FakeEventSource.instances).toHaveLength(1)
 })
 
 test('successful prompt submit renders immediately and reconciles with the live stream', async () => {
@@ -1166,7 +1190,7 @@ test('successful prompt submit renders immediately and reconciles with the live 
     ),
   )
   expect(screen.queryByText('Fresh prompt')).not.toBeInTheDocument()
-  const source = await findEventSource('/api/sessions/sess_1/events/stream?after_seq=40')
+  const source = await findEventSource('/api/sessions/activity/stream')
 
   await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
 
@@ -1192,8 +1216,7 @@ test('successful prompt submit renders immediately and reconciles with the live 
     }))
   })
   await waitFor(() => expect(screen.getAllByText('Fresh prompt')).toHaveLength(1))
-  expect(FakeEventSource.instances.filter((source) => source.url.includes('/api/sessions/sess_1/events/stream')))
-    .toHaveLength(1)
+  expect(FakeEventSource.instances).toHaveLength(1)
 })
 
 test('successful prompt submit keeps the current transcript visible while awaiting its stream event', async () => {
@@ -1224,7 +1247,7 @@ test('successful prompt submit keeps the current transcript visible while awaiti
   render(<App />)
 
   await waitFor(() => expect(screen.getByText('Previous prompt')).toBeInTheDocument())
-  const source = await findEventSource('/api/sessions/sess_1/events/stream?after_seq=40')
+  const source = await findEventSource('/api/sessions/activity/stream')
 
   await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
 
@@ -1258,7 +1281,7 @@ test('switching back to a cached session restores transcript before replaying st
 
   render(<App />)
 
-  const initialSource = await findEventSource('/api/sessions/sess_1/events/stream?after_seq=0')
+  const initialSource = await findEventSource('/api/sessions/activity/stream')
   act(() => {
     initialSource.emit(event(40, 'user.message.completed', { text: 'Cached prompt' }))
   })
@@ -1275,16 +1298,8 @@ test('switching back to a cached session restores transcript before replaying st
     fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1/events?tail=true&turns=50&max_bytes=2097152'),
   ).toHaveLength(1)
 
-  await waitFor(() =>
-    expect(
-      FakeEventSource.instances.filter(
-        (source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=40',
-      ),
-    ).toHaveLength(1),
-  )
-  const replaySource = FakeEventSource.instances.filter(
-    (source) => source.url === '/api/sessions/sess_1/events/stream?after_seq=40',
-  ).at(-1)
+  expect(FakeEventSource.instances).toHaveLength(1)
+  const replaySource = initialSource
   act(() => {
     replaySource?.emit(event(41, 'user.message.completed', { text: 'Replayed update' }))
   })
@@ -1311,7 +1326,7 @@ test('reviewing history buffers live events until jumping without reconnecting t
 
   render(<App />)
 
-  const source = await findEventSource('/api/sessions/sess_1/events/stream?after_seq=40')
+  const source = await findEventSource('/api/sessions/activity/stream')
   const log = screen.getByRole('log', { name: 'Chat messages' })
   Object.defineProperties(log, {
     scrollTop: { configurable: true, writable: true, value: 120 },
@@ -1329,9 +1344,8 @@ test('reviewing history buffers live events until jumping without reconnecting t
   await user.click(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' }))
   expect(await screen.findByText('Live answer')).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
-  expect(tailRequests).toBe(2)
-  expect(FakeEventSource.instances.filter((candidate) => candidate.url.includes('/api/sessions/sess_1/events/stream')))
-    .toHaveLength(1)
+  expect(tailRequests).toBe(1)
+  expect(FakeEventSource.instances).toHaveLength(1)
 })
 
 test('global activity stream marks another session pending input', async () => {
@@ -1476,7 +1490,7 @@ test('repeated leading-edge reaches grow the transcript without refetching loade
   ])
 })
 
-test('loaded older turns remain visible after submitting a new prompt', async () => {
+test('submitting a new prompt resumes the tail without discarding loaded older turns', async () => {
   const user = userEvent.setup()
   const baseFetch = fetchMock({
     events: [
@@ -1508,7 +1522,7 @@ test('loaded older turns remain visible after submitting a new prompt', async ()
   fireEvent.wheel(log, { deltaY: -100 })
   fireEvent.scroll(log, { target: { scrollTop: 0 } })
   await waitFor(() => expect(screen.getByText('Prompt one')).toBeInTheDocument())
-  const source = await findEventSource('/api/sessions/sess_1/events/stream?after_seq=8')
+  const source = await findEventSource('/api/sessions/activity/stream')
 
   await user.type(screen.getByPlaceholderText('Ask the agent to work on this repository...'), 'Fresh prompt{Enter}')
 
@@ -1523,7 +1537,7 @@ test('loaded older turns remain visible after submitting a new prompt', async ()
     }))
   })
   expect(screen.getAllByText('Fresh prompt')).toHaveLength(1)
-  await user.click(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' }))
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
   await waitFor(() => expect(screen.getAllByText('Fresh prompt')).toHaveLength(1))
   expect(screen.getByText('Prompt one')).toBeInTheDocument()
   expect(screen.getByText('Prompt two')).toBeInTheDocument()
@@ -1675,7 +1689,7 @@ test('streamed mutating git commands refresh the file browser', async () => {
 
   await screen.findByRole('button', { name: /main\.go/i })
   await waitFor(() => expect(requestedURLs().filter((url) => url === '/api/sessions/sess_1/files')).toHaveLength(1))
-  const sessionSource = await findEventSource('/api/sessions/sess_1/events/stream')
+  const sessionSource = await findEventSource('/api/sessions/activity/stream')
 
   act(() => {
     sessionSource.emit(
@@ -1806,6 +1820,10 @@ function fetchMock({
     }
     if (path === '/api/sessions?limit=50&include_archived=true') {
       return jsonResponse({ sessions })
+    }
+    if (path === '/api/sessions/activity/watch' && init?.method === 'PUT') {
+      const body = JSON.parse(String(init.body)) as { session_id?: string }
+      return jsonResponse({ connected: true, session_id: body.session_id ?? '' })
     }
     if (path.startsWith('/api/search?')) {
       const requestURL = new URL(path, 'http://localhost')

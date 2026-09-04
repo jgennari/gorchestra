@@ -158,6 +158,71 @@ func TestTransientDeltasBroadcastOnlyToSessionSubscribers(t *testing.T) {
 	}
 }
 
+func TestSessionActivitySubscriberReceivesDurableEventsAndOnlyWatchedTransientEvents(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t, newFakeStore())
+	ch, unsubscribe := service.SubscribeSessionActivity("browser-one", "sess_one", false)
+	defer unsubscribe()
+
+	if _, err := service.Append(ctx, appendParams("sess_two", "agent.message.delta")); err != nil {
+		t.Fatalf("append unwatched delta: %v", err)
+	}
+	assertNoEvent(t, ch)
+
+	watched, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	if err != nil {
+		t.Fatalf("append watched delta: %v", err)
+	}
+	if delivered := receiveEvent(t, ch); delivered.ID != watched.ID {
+		t.Fatalf("expected watched delta %q, got %q", watched.ID, delivered.ID)
+	}
+
+	if !service.WatchSessionActivity("browser-one", "sess_two", true) {
+		t.Fatal("expected connected activity watch to update")
+	}
+	next, err := service.Append(ctx, appendParams("sess_two", "agent.thinking.delta"))
+	if err != nil {
+		t.Fatalf("append newly watched delta: %v", err)
+	}
+	if delivered := receiveEvent(t, ch); delivered.ID != next.ID {
+		t.Fatalf("expected newly watched delta %q, got %q", next.ID, delivered.ID)
+	}
+
+	durable, err := service.Append(ctx, appendParams("sess_three", "agent.run.completed"))
+	if err != nil {
+		t.Fatalf("append background durable event: %v", err)
+	}
+	if delivered := receiveEvent(t, ch); delivered.ID != durable.ID {
+		t.Fatalf("expected background durable event %q, got %q", durable.ID, delivered.ID)
+	}
+
+	watchedSessionID, includeDebug, ok := service.SessionActivityWatch("browser-one")
+	if !ok || watchedSessionID != "sess_two" || !includeDebug {
+		t.Fatalf("unexpected activity watch: session=%q debug=%t ok=%t", watchedSessionID, includeDebug, ok)
+	}
+	stats := service.SessionActivityStats()
+	if stats.ActiveSubscribers != 1 || stats.TransientDeliveries != 2 || stats.DurableDeliveries != 1 {
+		t.Fatalf("unexpected activity stats: %#v", stats)
+	}
+}
+
+func TestReplacingSessionActivitySubscriberDoesNotLetStaleCleanupRemoveReplacement(t *testing.T) {
+	service := newTestService(t, newFakeStore())
+	first, unsubscribeFirst := service.SubscribeSessionActivity("browser-one", "sess_one", false)
+	second, unsubscribeSecond := service.SubscribeSessionActivity("browser-one", "sess_two", false)
+	defer unsubscribeSecond()
+
+	assertClosed(t, first)
+	unsubscribeFirst()
+	if !service.WatchSessionActivity("browser-one", "sess_three", false) {
+		t.Fatal("stale cleanup removed the replacement subscriber")
+	}
+	if _, _, ok := service.SessionActivityWatch("browser-one"); !ok {
+		t.Fatal("expected replacement subscriber to remain registered")
+	}
+	_ = second
+}
+
 func TestDurableEventAfterTransientUsesNextSequence(t *testing.T) {
 	ctx := context.Background()
 	fake := newFakeStore()

@@ -2,13 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentEvent, EventHistoryResponse } from '@/lib/api'
 import {
   defaultEventTurnPageSize,
-  eventStreamURL,
   listEventTurnsAfter,
   listEventTurnsAround,
   listEventTurnsBefore,
   listRecentEventTurns,
 } from '@/lib/api'
-import { appendEvents, isTransientEvent, knownEventTypes, lastSeq } from '@/lib/events'
+import { appendEvents, isTransientEvent, lastSeq } from '@/lib/events'
 import {
   appendBoundedEvent,
   boundEventWindow,
@@ -28,7 +27,6 @@ import {
 } from '@/lib/session-cache'
 import {
   clearClientEventStoreForTest,
-  ingestClientEvent,
   readClientSessionEvents,
   seedClientSessionEvents,
   subscribeClientSessionEvents,
@@ -37,11 +35,10 @@ import {
 export type StreamState = 'idle' | 'loading' | 'connected' | 'reconnecting' | 'disconnected'
 
 type Options = {
-  onEvent?: (event: AgentEvent) => void
-  reconnectDelayMs?: number
   refreshKey?: number
   includeDebugEvents?: boolean
   targetSeq?: number
+  liveStreamState?: StreamState
 }
 
 type SessionEventCacheEntry = {
@@ -54,8 +51,6 @@ type SessionEventCacheEntry = {
 }
 
 const recentEventsRequestRetentionMs = 2000
-const streamResyncEventType = 'stream.resync.required'
-const maximumReconnectDelayMs = 15_000
 export const initialEventHistoryByteBudget = 2 * 1024 * 1024
 export const initialEventHistoryMaxTurns = 50
 const pagedEventHistoryByteBudget = 1024 * 1024
@@ -97,22 +92,20 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const hasNewerEventsRef = useRef(false)
   const liveEventsRef = useRef<AgentEvent[]>([])
   const persistentHotWindowSeqRef = useRef(0)
-  const onEventRef = useRef(options.onEvent)
-  const reconnectDelayMs = options.reconnectDelayMs ?? 1000
   const refreshKey = options.refreshKey ?? 0
   const includeDebugEvents = options.includeDebugEvents ?? false
   const targetSeq = options.targetSeq ?? 0
-  const effectiveStreamState: StreamState =
-    sessionID !== streamSessionID ? (sessionID ? 'loading' : 'idle') : streamState
+  const globalStreamConnected = options.liveStreamState === 'connected'
+  const effectiveStreamState: StreamState = sessionID !== streamSessionID
+    ? (sessionID ? 'loading' : 'idle')
+    : streamState === 'loading' || streamState === 'disconnected'
+      ? streamState
+      : (options.liveStreamState ?? streamState)
 
   const setHasNewerEvents = useCallback((value: boolean) => {
     hasNewerEventsRef.current = value
     setHasNewerEventsState(value)
   }, [])
-
-  useEffect(() => {
-    onEventRef.current = options.onEvent
-  }, [options.onEvent])
 
   useEffect(() => {
     const sameSessionRefresh =
@@ -183,27 +176,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     const activeIncludeDebugEvents = includeDebugEvents
     if (!activeIncludeDebugEvents) void ensurePersistentSessionStorage()
     let closed = false
-    let source: EventSource | null = null
-    let reconnectTimer: number | undefined
-    let reconnectAttempt = 0
     let loadingTail = false
-
-    function closeSource() {
-      source?.close()
-      source = null
-    }
-
-    function scheduleReconnect() {
-      if (closed || reconnectTimer !== undefined) return
-      setStreamState('reconnecting')
-      closeSource()
-      const delay = Math.min(reconnectDelayMs * 2 ** reconnectAttempt, maximumReconnectDelayMs)
-      reconnectAttempt += 1
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = undefined
-        connect(lastSeqRef.current)
-      }, delay)
-    }
 
     function applyEvent(event: AgentEvent) {
       lastSeqRef.current = Math.max(lastSeqRef.current, event.seq)
@@ -229,66 +202,20 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       }
     }
 
-    const unsubscribeSharedEvents = activeIncludeDebugEvents
-      ? () => undefined
-      : subscribeClientSessionEvents(activeSessionID, (event) => {
-          if (closed) return
-          applyEvent(event)
-        })
-
-    function handleEvent(message: MessageEvent<string>) {
-      try {
-        const event = JSON.parse(message.data) as AgentEvent
-        if (!activeIncludeDebugEvents && !isTransientEvent(event)) {
-          if (ingestClientEvent(event)) onEventRef.current?.(event)
-          return
-        }
-
-        applyEvent(event)
-        if (!isTransientEvent(event)) {
-          writeCachedSessionEvents(
-            activeSessionID,
-            liveEventsRef.current,
-            firstSeq(liveEventsRef.current) > 1,
-            false,
-            activeIncludeDebugEvents,
-            lastDurableSeqRef.current,
-          )
-        }
-        onEventRef.current?.(event)
-      } catch (eventError) {
-        setError(eventError instanceof Error ? eventError.message : 'Failed to parse event')
-      }
-    }
-
-    function connect(afterSeq: number) {
+    const unsubscribeSharedEvents = subscribeClientSessionEvents(activeSessionID, (event) => {
       if (closed) return
-      closeSource()
-      source = new EventSource(
-        eventStreamURL(activeSessionID, afterSeq, {
-          includeDebug: activeIncludeDebugEvents,
-        }),
-      )
-      source.onopen = () => {
-        if (!closed) {
-          reconnectAttempt = 0
-          setStreamState('connected')
-          setError('')
-        }
+      applyEvent(event)
+      if (activeIncludeDebugEvents && !isTransientEvent(event)) {
+        writeCachedSessionEvents(
+          activeSessionID,
+          liveEventsRef.current,
+          firstSeq(liveEventsRef.current) > 1,
+          false,
+          true,
+          lastDurableSeqRef.current,
+        )
       }
-      source.onerror = () => {
-        if (!closed) scheduleReconnect()
-      }
-      source.addEventListener(streamResyncEventType, () => {
-        if (!closed) {
-          closeSource()
-          void loadTail(true, true)
-        }
-      })
-      for (const eventType of knownEventTypes) {
-        source.addEventListener(eventType, handleEvent)
-      }
-    }
+    })
 
     function applyTail(history: EventHistoryResponse, preserveVisible: boolean) {
       const sharedEvents = activeIncludeDebugEvents
@@ -361,7 +288,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         )
         if (closed) return
         applyTail(history, preserveVisible)
-        connect(lastSeqRef.current)
+        setStreamState('connected')
       } catch (loadError) {
         if (closed) return
         setError(loadError instanceof Error ? loadError.message : 'Failed to load events')
@@ -442,7 +369,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
             updateHotWindow: false,
           })
         }
-        connect(lastSeqRef.current)
+        setStreamState('connected')
       } catch (loadError) {
         if (closed) return
         setError(loadError instanceof Error ? loadError.message : 'Failed to load the selected event')
@@ -484,7 +411,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           activeIncludeDebugEvents,
           hydratedLastSeq,
         )
-        connect(lastSeqRef.current)
+        setStreamState('connected')
         return
       }
       await loadTail(false)
@@ -495,15 +422,13 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     } else if (sameSessionRefresh) {
       void loadTail(true)
     } else if (cachedSession) {
-      connect(lastSeqRef.current)
+      setStreamState('connected')
     } else {
       void hydratePersistentCacheOrLoad()
     }
 
     return () => {
       closed = true
-      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
-      closeSource()
       unsubscribeSharedEvents()
       if (
         !activeIncludeDebugEvents &&
@@ -521,7 +446,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       if (activeSessionIDRef.current === activeSessionID) activeSessionIDRef.current = null
       setStreamState('disconnected')
     }
-  }, [includeDebugEvents, reconnectDelayMs, refreshKey, sessionID, setHasNewerEvents, targetSeq])
+  }, [includeDebugEvents, refreshKey, sessionID, setHasNewerEvents, targetSeq])
 
   const loadOlderEvents = useCallback(async () => {
     if (!sessionID || loadingOlderEventsRef.current) return
@@ -663,6 +588,11 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     })
     setHasNewerEvents(false)
 
+    // While the browser-wide stream is connected, liveEventsRef already contains
+    // every event admitted after the selected tail was loaded. Avoid downloading
+    // that same tail again when the transcript reattaches after the user scrolls.
+    if (globalStreamConnected) return
+
     try {
       const history = await listAdaptiveRecentEventTurns(sessionID, includeDebugEvents)
       if (activeSessionIDRef.current !== sessionID) return
@@ -693,7 +623,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setError(loadError instanceof Error ? loadError.message : 'Failed to refresh the latest events')
       }
     }
-  }, [includeDebugEvents, sessionID, setHasNewerEvents])
+  }, [globalStreamConnected, includeDebugEvents, sessionID, setHasNewerEvents])
 
   const setFollowingTail = useCallback((following: boolean) => {
     if (!following) {

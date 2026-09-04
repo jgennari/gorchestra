@@ -52,6 +52,17 @@ export function ingestClientEvent(event: AgentEvent) {
   return true
 }
 
+// Selected-session events that must not enter the normal durable cache (live
+// deltas and opt-in provider diagnostics) still use the same listener path.
+export function publishClientSessionEvent(event: AgentEvent) {
+  if (!event.session_id) return false
+  const snapshot = readClientSessionEvents(event.session_id) ?? emptySnapshot()
+  for (const listener of listeners.get(event.session_id) ?? []) {
+    listener(event, snapshot)
+  }
+  return true
+}
+
 export function seedClientSessionEvents(
   sessionID: string,
   events: AgentEvent[],
@@ -137,6 +148,16 @@ function snapshotFromEntry(entry: ClientSessionEventEntry): ClientSessionEventSn
     oldestSeq: entry.oldestSeq,
     hasOlderEvents: entry.hasOlderEvents,
     hasNewerEvents: entry.hasNewerEvents,
+  }
+}
+
+function emptySnapshot(): ClientSessionEventSnapshot {
+  return {
+    events: [],
+    lastSeq: 0,
+    oldestSeq: 0,
+    hasOlderEvents: false,
+    hasNewerEvents: false,
   }
 }
 

@@ -127,6 +127,8 @@ export function ChatTranscript({
       message,
     })),
   ], [events, optimisticUserMessages, showDebugEvents])
+  const latestOptimisticMessageID = optimisticUserMessages.at(-1)?.id ?? ''
+  const previousOptimisticMessageIDRef = useRef(latestOptimisticMessageID)
   const scrollDebug = useMemo(transcriptScrollDebugEnabled, [])
   const scrollerElementRef = useRef<HTMLDivElement | null>(null)
   const scrollDebugReadoutRef = useRef<HTMLDivElement | null>(null)
@@ -287,6 +289,13 @@ export function ChatTranscript({
     useFlushSync: false,
     onChange: handleVirtualizerChange,
   })
+
+  useLayoutEffect(() => {
+    if (previousOptimisticMessageIDRef.current === latestOptimisticMessageID) return
+    previousOptimisticMessageIDRef.current = latestOptimisticMessageID
+    if (!latestOptimisticMessageID) return
+    void resumeFollowing(virtualizer)
+  }, [latestOptimisticMessageID, resumeFollowing, virtualizer])
 
   function handleVirtualizerChange(instance: TranscriptVirtualizer, sync: boolean) {
     updateVisibleSequenceRange(instance)

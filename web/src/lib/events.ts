@@ -43,6 +43,42 @@ export const knownEventTypes = [
   'agent.run.cancelled',
 ] as const
 
+export function isDebugOnlyEvent(event: AgentEvent) {
+  switch (event.type) {
+    case 'agent.log.delta':
+    case 'provider.codex.request':
+    case 'provider.codex.parse_error':
+    case 'provider.claude.parse_error':
+    case 'provider.opencode.request':
+    case 'provider.opencode.parse_error':
+    case 'provider.pi.parse_error':
+    case 'provider.pi.event':
+      return true
+    case 'provider.codex.event': {
+      const providerEventType = debugPayloadStringAt(event.payload, 'provider_event_type')
+      if (providerEventType === 'thread/tokenUsage/updated' || providerEventType === 'item/plan/delta') {
+        return false
+      }
+      return providerEventType !== 'item/completed' || debugPayloadStringAt(event.payload, 'raw', 'item', 'type') !== 'plan'
+    }
+    case 'provider.claude.event':
+      return !isRecord(event.payload) || !('usage' in event.payload)
+    case 'provider.opencode.event':
+      return debugPayloadStringAt(event.payload, 'provider_event_type') !== 'usage_update'
+    default:
+      return false
+  }
+}
+
+function debugPayloadStringAt(payload: unknown, ...path: string[]) {
+  let value = payload
+  for (const key of path) {
+    if (!isRecord(value)) return ''
+    value = value[key]
+  }
+  return typeof value === 'string' ? value : ''
+}
+
 export type DisplayEvent = AgentEvent & {
   display_type?: string
 }

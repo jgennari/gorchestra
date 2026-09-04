@@ -43,9 +43,25 @@ type Service struct {
 	buffers          map[string][]store.Event
 	subscribers      map[string]map[uint64]chan store.Event
 	allSubscribers   map[uint64]chan store.Event
+	activityClients  map[string]activityClient
 	appendLocks      map[string]*sync.Mutex
 	sequenceBlocks   map[string]sequenceBlock
 	nextSubscriberID uint64
+	activityStats    SessionActivityStats
+}
+
+type activityClient struct {
+	id               uint64
+	ch               chan store.Event
+	watchedSessionID string
+	includeDebug     bool
+}
+
+type SessionActivityStats struct {
+	ActiveSubscribers   int   `json:"active_subscribers"`
+	DroppedSubscribers  int64 `json:"dropped_subscribers"`
+	DurableDeliveries   int64 `json:"durable_deliveries"`
+	TransientDeliveries int64 `json:"transient_deliveries"`
 }
 
 type sequenceBlock struct {
@@ -65,6 +81,7 @@ func NewService(eventStore Store, options ...Option) (*Service, error) {
 		buffers:              make(map[string][]store.Event),
 		subscribers:          make(map[string]map[uint64]chan store.Event),
 		allSubscribers:       make(map[uint64]chan store.Event),
+		activityClients:      make(map[string]activityClient),
 		appendLocks:          make(map[string]*sync.Mutex),
 		sequenceBlocks:       make(map[string]sequenceBlock),
 	}
@@ -138,7 +155,7 @@ func (s *Service) Append(ctx context.Context, params AppendParams) (store.Event,
 	defer s.mu.Unlock()
 
 	s.appendToBufferLocked(event)
-	s.broadcastLocked(event, !event.Transient)
+	s.broadcastLocked(event)
 
 	return event, nil
 }
@@ -253,6 +270,74 @@ func (s *Service) SubscribeAll() (<-chan store.Event, func()) {
 	return ch, unsubscribe
 }
 
+// SubscribeSessionActivity creates the browser-wide subscription used by the
+// global activity stream. Durable events from every session are delivered,
+// while transient deltas are delivered only for the currently watched
+// session. Reusing clientID replaces a stale connection without allowing its
+// later cleanup to remove the replacement.
+func (s *Service) SubscribeSessionActivity(
+	clientID string,
+	watchedSessionID string,
+	includeDebug bool,
+) (<-chan store.Event, func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.nextSubscriberID++
+	id := s.nextSubscriberID
+	ch := make(chan store.Event, s.subscriberBufferSize)
+	if previous, ok := s.activityClients[clientID]; ok {
+		close(previous.ch)
+	}
+	s.activityClients[clientID] = activityClient{
+		id:               id,
+		ch:               ch,
+		watchedSessionID: watchedSessionID,
+		includeDebug:     includeDebug,
+	}
+
+	var once sync.Once
+	unsubscribe := func() {
+		once.Do(func() {
+			s.unsubscribeSessionActivity(clientID, id)
+		})
+	}
+	return ch, unsubscribe
+}
+
+// WatchSessionActivity changes the transient session routed to an existing
+// browser subscription without reconnecting its SSE transport.
+func (s *Service) WatchSessionActivity(clientID string, watchedSessionID string, includeDebug bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	client, ok := s.activityClients[clientID]
+	if !ok {
+		return false
+	}
+	client.watchedSessionID = watchedSessionID
+	client.includeDebug = includeDebug
+	s.activityClients[clientID] = client
+	return true
+}
+
+func (s *Service) SessionActivityWatch(clientID string) (string, bool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	client, ok := s.activityClients[clientID]
+	return client.watchedSessionID, client.includeDebug, ok
+}
+
+func (s *Service) SessionActivityStats() SessionActivityStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stats := s.activityStats
+	stats.ActiveSubscribers = len(s.activityClients)
+	return stats
+}
+
 func (s *Service) Recent(sessionID string) []store.Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -281,7 +366,7 @@ func (s *Service) appendToBufferLocked(event store.Event) {
 	s.buffers[event.SessionID] = buffer
 }
 
-func (s *Service) broadcastLocked(event store.Event, includeAllSubscribers bool) {
+func (s *Service) broadcastLocked(event store.Event) {
 	sessionSubscribers := s.subscribers[event.SessionID]
 	if len(sessionSubscribers) > 0 {
 		for id, ch := range sessionSubscribers {
@@ -298,18 +383,46 @@ func (s *Service) broadcastLocked(event store.Event, includeAllSubscribers bool)
 		}
 	}
 
-	if !includeAllSubscribers {
-		return
-	}
-
-	for id, ch := range s.allSubscribers {
-		select {
-		case ch <- event:
-		default:
-			close(ch)
-			delete(s.allSubscribers, id)
+	if !event.Transient {
+		for id, ch := range s.allSubscribers {
+			select {
+			case ch <- event:
+			default:
+				close(ch)
+				delete(s.allSubscribers, id)
+			}
 		}
 	}
+
+	for clientID, client := range s.activityClients {
+		if event.Transient && event.SessionID != client.watchedSessionID {
+			continue
+		}
+		select {
+		case client.ch <- event:
+			if event.Transient {
+				s.activityStats.TransientDeliveries++
+			} else {
+				s.activityStats.DurableDeliveries++
+			}
+		default:
+			close(client.ch)
+			delete(s.activityClients, clientID)
+			s.activityStats.DroppedSubscribers++
+		}
+	}
+}
+
+func (s *Service) unsubscribeSessionActivity(clientID string, id uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	client, ok := s.activityClients[clientID]
+	if !ok || client.id != id {
+		return
+	}
+	close(client.ch)
+	delete(s.activityClients, clientID)
 }
 
 func (s *Service) unsubscribe(sessionID string, id uint64) {

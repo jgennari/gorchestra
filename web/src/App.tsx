@@ -44,9 +44,11 @@ import {
   updateSessionAgentOptions,
   updateSessionTitle,
   updateSessionWorkspace,
+  watchSessionActivity,
 } from '@/lib/api'
 import {
   appendEvent,
+  isDebugOnlyEvent,
   isTransientEvent,
   isTerminalEvent,
   knownEventTypes,
@@ -56,11 +58,12 @@ import {
   statusFromEvent,
 } from '@/lib/events'
 import { nextSessionIDAfterArchive } from '@/lib/sessions'
-import { useSessionEvents } from '@/hooks/use-session-events'
+import { useSessionEvents, type StreamState } from '@/hooks/use-session-events'
 import { useAppBadge } from '@/hooks/use-app-badge'
 import { useFavicon } from '@/hooks/use-favicon'
 import { usePushNotifications } from '@/hooks/use-push-notifications'
 import { useReleaseUpdate } from '@/hooks/use-release-update'
+import { useClientPerformanceTelemetry } from '@/hooks/use-client-performance-telemetry'
 import { useRailContentPreference } from '@/hooks/use-rail-content'
 import { useTheme } from '@/hooks/use-theme'
 import { Button } from '@/components/ui/button'
@@ -110,7 +113,7 @@ import {
 } from '@/lib/session-cache'
 import { cn } from '@/lib/utils'
 import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
-import { ingestClientEvent } from '@/lib/client-event-store'
+import { ingestClientEvent, publishClientSessionEvent } from '@/lib/client-event-store'
 
 type SessionRouteHistoryMode = 'push' | 'replace' | 'none'
 type PaneSide = 'left' | 'right'
@@ -180,6 +183,7 @@ function App() {
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
   const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0)
   const [activityCursorReady, setActivityCursorReady] = useState(false)
+  const [activityStreamState, setActivityStreamState] = useState<StreamState>('loading')
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
   const [notificationAttentionRestored, setNotificationAttentionRestored] = useState(false)
@@ -203,6 +207,9 @@ function App() {
   const paneWidthsRef = useRef(paneWidths)
   const dashboardRefreshTimerRef = useRef<number | null>(null)
   const activityCursorRef = useRef(0)
+  const activityClientIDRef = useRef(createActivityClientID())
+  const activityWatchRef = useRef(`${selectedSessionID ?? ''}:false`)
+  const showDebugEventsRef = useRef(showDebugEvents)
 
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionID) ?? null,
@@ -247,6 +254,7 @@ function App() {
   const showSessionStopNotification = pushNotifications.showSessionStopNotification
   useFavicon(hasFaviconAttention)
   useAppBadge(appBadgeCount)
+  useClientPerformanceTelemetry(selectedSessionID)
 
   useEffect(() => {
     let cancelled = false
@@ -476,6 +484,21 @@ function App() {
     selectedSessionIDRef.current = selectedSessionID
     setTranscriptVisibleRange(null)
   }, [selectedSessionID])
+
+  useEffect(() => {
+    showDebugEventsRef.current = showDebugEvents
+  }, [showDebugEvents])
+
+  useEffect(() => {
+    const watchKey = `${selectedSessionID ?? ''}:${showDebugEvents}`
+    if (!activityCursorReady || activityWatchRef.current === watchKey) return
+    activityWatchRef.current = watchKey
+    void watchSessionActivity(
+      activityClientIDRef.current,
+      selectedSessionID,
+      showDebugEvents,
+    ).catch(() => undefined)
+  }, [activityCursorReady, selectedSessionID, showDebugEvents])
 
   useEffect(() => {
     overviewSelectedRef.current = overviewSelected
@@ -720,20 +743,11 @@ function App() {
     ],
   )
 
-  const handleSessionEvent = useCallback(
-    (event: AgentEvent) => {
-      if (isTransientEvent(event)) {
-        selectedEventsRef.current = appendEvent(selectedEventsRef.current, event)
-        return
-      }
-      applyIngestedSessionEvent(event)
-    },
-    [applyIngestedSessionEvent],
-  )
-
   const handleActivityEvent = useCallback(
     (event: AgentEvent) => {
-      if (isTransientEvent(event)) {
+      if (isTransientEvent(event) || isDebugOnlyEvent(event)) {
+        publishClientSessionEvent(event)
+        if (!isTransientEvent(event)) applyIngestedSessionEvent(event)
         scheduleDashboardRefresh()
         return
       }
@@ -756,10 +770,10 @@ function App() {
     jumpToLatest,
     setFollowingTail,
   } = useSessionEvents(selectedSessionID, {
-    onEvent: handleSessionEvent,
     refreshKey: eventRefreshKey,
     includeDebugEvents: showDebugEvents,
     targetSeq: focusedEventSeq,
+    liveStreamState: activityStreamState,
   })
 
   const handleJumpToLatest = useCallback(() => {
@@ -938,6 +952,7 @@ function App() {
     function handleResyncRequired() {
       if (closed || resyncing) return
       resyncing = true
+      setActivityStreamState('loading')
       closeSource()
       void loadSessions({ showLoading: false }).then((synchronized) => {
         resyncing = false
@@ -952,6 +967,7 @@ function App() {
 
     function scheduleReconnect() {
       if (closed || reconnectTimer !== undefined) return
+      setActivityStreamState('reconnecting')
       const delay = Math.min(1000 * 2 ** reconnectAttempt, maximumActivityReconnectDelayMs)
       reconnectAttempt += 1
       reconnectTimer = window.setTimeout(() => {
@@ -962,12 +978,18 @@ function App() {
 
     function connect() {
       if (closed || typeof EventSource === 'undefined') {
+        if (typeof EventSource === 'undefined') setActivityStreamState('disconnected')
         return
       }
-      source = new EventSource(sessionActivityStreamURL(activityCursorRef.current))
+      source = new EventSource(sessionActivityStreamURL(activityCursorRef.current, {
+        clientID: activityClientIDRef.current,
+        watchSessionID: selectedSessionIDRef.current,
+        includeDebug: showDebugEventsRef.current,
+      }))
       source.onopen = () => {
         if (closed) return
         reconnectAttempt = 0
+        setActivityStreamState('connected')
       }
       source.onerror = () => {
         closeSource()
@@ -979,6 +1001,7 @@ function App() {
       source.addEventListener('stream.resync.required', handleResyncRequired)
     }
 
+    setActivityStreamState('loading')
     connect()
 
     return () => {
@@ -987,6 +1010,7 @@ function App() {
         window.clearTimeout(reconnectTimer)
       }
       closeSource()
+      setActivityStreamState('disconnected')
     }
   }, [activityCursorReady, handleActivityEvent, loadSessions])
 
@@ -3113,6 +3137,13 @@ function writeSpotlightResultRoute(
   const url = params.size > 0 ? `${path}?${params}` : path
   if (`${window.location.pathname}${window.location.search}` === url) return
   window.history.pushState({}, '', url)
+}
+
+function createActivityClientID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
 }
 
 export default App

@@ -3,6 +3,7 @@ import {
   clearClientEventStoreForTest,
   clientEventStoreStats,
   ingestClientEvent,
+  publishClientSessionEvent,
   readClientSessionEvents,
   seedClientSessionEvents,
   subscribeClientSessionEvents,
@@ -40,6 +41,18 @@ test('hydrates a transcript tail and merges newer global events', () => {
 
   expect(ingestClientEvent(event('sess_1', 10))).toBe(true)
   expect(readClientSessionEvents('sess_1')?.events.map((item) => item.seq)).toEqual([8, 9, 10])
+})
+
+test('publishes transient events without caching or advancing the durable cursor', () => {
+  const listener = vi.fn()
+  subscribeClientSessionEvents('sess_1', listener)
+  seedClientSessionEvents('sess_1', [event('sess_1', 8)], { lastSeq: 8, replace: true })
+  const transient = { ...event('sess_1', 9), type: 'agent.message.delta', transient: true }
+
+  expect(publishClientSessionEvent(transient)).toBe(true)
+  expect(listener).toHaveBeenCalledWith(transient, expect.objectContaining({ lastSeq: 8 }))
+  expect(readClientSessionEvents('sess_1')?.events.map((item) => item.seq)).toEqual([8])
+  expect(readClientSessionEvents('sess_1')?.lastSeq).toBe(8)
 })
 
 test('evicts cold transcript windows while retaining their sequence cursors', () => {

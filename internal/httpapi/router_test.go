@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/jgennari/gorchestra/internal/agents/fake"
 	eventservice "github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/store"
 )
@@ -1986,6 +1987,70 @@ func TestSessionActivityStreamSendsAllLiveSessionEvents(t *testing.T) {
 	response := firstSSEData(t, body)
 	if response.SessionID != testSessionID || response.Type != "agent.input.requested" {
 		t.Fatalf("expected activity event for %s, got %#v", testSessionID, response)
+	}
+}
+
+func TestSessionActivityStreamUpdatesItsTransientWatchWithoutReconnecting(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dbStore, events, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	first := createIntegrationSession(t, ctx, dbStore)
+	second := createIntegrationSession(t, ctx, dbStore)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/sessions/activity/stream?after_cursor=0&client_id=browser-one&watch_session_id="+first.ID,
+		nil,
+	).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(rec, req)
+	}()
+	waitFor(t, func() bool { return events.SessionActivityStats().ActiveSubscribers == 1 })
+
+	watchBody := bytes.NewBufferString(fmt.Sprintf(
+		`{"client_id":"browser-one","session_id":"%s","include_debug":false}`,
+		second.ID,
+	))
+	watchReq := httptest.NewRequest(http.MethodPut, "/api/sessions/activity/watch", watchBody)
+	watchRec := httptest.NewRecorder()
+	handler.ServeHTTP(watchRec, watchReq)
+	if watchRec.Code != http.StatusOK || !strings.Contains(watchRec.Body.String(), `"connected":true`) {
+		t.Fatalf("expected connected watch update, got %d: %s", watchRec.Code, watchRec.Body.String())
+	}
+
+	transient, err := events.Append(ctx, eventservice.AppendParams{
+		SessionID: second.ID,
+		Type:      "agent.message.delta",
+		Role:      "assistant",
+		Status:    store.EventStatusDelta,
+		Payload:   json.RawMessage(`{"text":"multiplexed"}`),
+	})
+	if err != nil {
+		t.Fatalf("append transient event: %v", err)
+	}
+	waitFor(t, func() bool { return events.SessionActivityStats().TransientDeliveries == 1 })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("activity stream did not close after cancellation")
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: agent.message.delta\n") {
+		t.Fatalf("expected watched transient event in body:\n%s", body)
+	}
+	if strings.Contains(body, fmt.Sprintf("id: %d\n", transient.Seq)) {
+		t.Fatalf("transient event must not advance the durable SSE cursor:\n%s", body)
+	}
+	diagnostics := httptest.NewRecorder()
+	handler.ServeHTTP(diagnostics, httptest.NewRequest(http.MethodGet, "/api/diagnostics/performance", nil))
+	if !strings.Contains(diagnostics.Body.String(), `"live_transient_events":1`) ||
+		!strings.Contains(diagnostics.Body.String(), `"active_connections":0`) {
+		t.Fatalf("expected completed transient stream diagnostics: %s", diagnostics.Body.String())
 	}
 }
 

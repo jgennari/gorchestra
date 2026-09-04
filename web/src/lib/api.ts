@@ -711,6 +711,11 @@ export type NotificationDebugResponse = {
   client_diagnostics?: NotificationClientDiagnostic[]
 }
 
+export type ClientLongTask = {
+  start_time: number
+  duration_ms: number
+}
+
 type ListSessionsOptions = {
   limit?: number
   status?: SessionStatus
@@ -718,6 +723,8 @@ type ListSessionsOptions = {
 }
 
 const sessionSnapshotRequests = new Map<string, Promise<ListSessionsResponse>>()
+const agentOptionsRequests = new Map<AgentType, Promise<CodexAgentOptions | OpenCodeAgentOptions | PiAgentOptions>>()
+const queuedMessagesRequests = new Map<string, Promise<{ messages: QueuedMessage[] }>>()
 
 export const defaultEventWindowLimit = 500
 export const defaultEventTurnPageSize = 2
@@ -883,13 +890,23 @@ export async function compactSession(sessionID: string) {
   })
 }
 
-export async function fetchAgentOptions(agentType: AgentType) {
+export function fetchAgentOptions(agentType: 'codex'): Promise<CodexAgentOptions>
+export function fetchAgentOptions(agentType: 'opencode'): Promise<OpenCodeAgentOptions>
+export function fetchAgentOptions(agentType: 'pi'): Promise<PiAgentOptions>
+export function fetchAgentOptions(agentType: AgentType) {
   if (agentType !== 'codex' && agentType !== 'opencode' && agentType !== 'pi') {
     throw new Error(`No options API for ${agentType}`)
   }
-  return requestJSON<CodexAgentOptions | OpenCodeAgentOptions | PiAgentOptions>(
+  const existing = agentOptionsRequests.get(agentType)
+  if (existing) return existing
+  const request = requestJSON<CodexAgentOptions | OpenCodeAgentOptions | PiAgentOptions>(
     `/api/agents/${encodeURIComponent(agentType)}/options`,
-  )
+  ).catch((error) => {
+    agentOptionsRequests.delete(agentType)
+    throw error
+  })
+  agentOptionsRequests.set(agentType, request)
+  return request
 }
 
 export async function fetchSessionSkills(sessionID: string, refresh = false) {
@@ -1003,8 +1020,29 @@ export async function submitMessage(
   })
 }
 
-export async function fetchQueuedMessages(sessionID: string) {
-  return requestJSON<{ messages: QueuedMessage[] }>(`/api/sessions/${encodeURIComponent(sessionID)}/queued-messages`)
+export async function fetchQueuedMessages(sessionID: string, refresh = false) {
+  if (refresh) queuedMessagesRequests.delete(sessionID)
+  const existing = queuedMessagesRequests.get(sessionID)
+  if (existing) return existing
+  const request = requestJSON<{ messages: QueuedMessage[] }>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/queued-messages`,
+  ).then((response) => ({ messages: Array.isArray(response.messages) ? [...response.messages] : [] }))
+    .catch((error) => {
+      queuedMessagesRequests.delete(sessionID)
+      throw error
+    })
+  queuedMessagesRequests.set(sessionID, request)
+  return request
+}
+
+export function updateQueuedMessagesCache(sessionID: string, messages: QueuedMessage[]) {
+  queuedMessagesRequests.set(sessionID, Promise.resolve({ messages: [...messages] }))
+}
+
+export function clearAPIRequestCachesForTest() {
+  agentOptionsRequests.clear()
+  queuedMessagesRequests.clear()
+  sessionSnapshotRequests.clear()
 }
 
 export async function removeQueuedMessage(sessionID: string, queuedMessageID: string) {
@@ -1295,12 +1333,50 @@ export function eventStreamURL(sessionID: string, afterSeq: number, options: Eve
   return withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/events/stream`, params)
 }
 
-export function sessionActivityStreamURL(afterCursor?: number | null) {
+export function sessionActivityStreamURL(
+  afterCursor?: number | null,
+  options: { clientID?: string; watchSessionID?: string | null; includeDebug?: boolean } = {},
+) {
   const params = new URLSearchParams()
   if (afterCursor !== undefined && afterCursor !== null) {
     params.set('after_cursor', String(Math.max(0, afterCursor)))
   }
+  if (options.clientID) params.set('client_id', options.clientID)
+  if (options.watchSessionID) params.set('watch_session_id', options.watchSessionID)
+  if (options.includeDebug) params.set('include_debug', 'true')
   return withQuery('/api/sessions/activity/stream', params)
+}
+
+export async function watchSessionActivity(
+  clientID: string,
+  sessionID: string | null,
+  includeDebug = false,
+) {
+  return requestJSON<{ connected: boolean; session_id: string }>('/api/sessions/activity/watch', {
+    method: 'PUT',
+    body: JSON.stringify({
+      client_id: clientID,
+      session_id: sessionID ?? '',
+      include_debug: includeDebug,
+    }),
+  })
+}
+
+export async function saveClientPerformance(
+  route: string,
+  sessionID: string | null,
+  longTasks: ClientLongTask[],
+) {
+  return requestJSON<{ saved: boolean }>('/api/diagnostics/performance', {
+    method: 'POST',
+    keepalive: true,
+    body: JSON.stringify({
+      captured_at: Date.now(),
+      route,
+      session_id: sessionID ?? '',
+      long_tasks: longTasks,
+    }),
+  })
 }
 
 export async function fetchNotificationPublicKey() {

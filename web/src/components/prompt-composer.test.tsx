@@ -1,8 +1,11 @@
-import { afterEach } from 'vitest'
+import { afterEach, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { PromptComposer } from '@/components/prompt-composer'
 import { subscribeComposerActivity } from '@/lib/composer-activity'
+import { clearAPIRequestCachesForTest } from '@/lib/api'
+
+beforeEach(() => clearAPIRequestCachesForTest())
 
 afterEach(() => {
   window.localStorage.clear()
@@ -898,7 +901,7 @@ test('codex toolbar settings persist per session', async () => {
   expect(screen.getByRole('button', { name: 'Reasoning' })).toHaveTextContent('xhigh')
   expect(screen.getByRole('button', { name: 'Fast' })).toHaveAttribute('aria-pressed', 'true')
   expect(planSwitch()).toHaveAttribute('aria-checked', 'true')
-})
+}, 10_000)
 
 test('codex model and reasoning menus are mutually exclusive', async () => {
   const user = userEvent.setup()

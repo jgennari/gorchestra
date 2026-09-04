@@ -1,6 +1,6 @@
 # Global event stream plan
 
-Status: Stages 1–2 complete; Stage 3 pending
+Status: Stages 1–3 complete
 
 Last updated: 2026-09-04
 
@@ -21,8 +21,8 @@ individual sessions as a normal part of operation.
   per-session sequence makes the duplicate harmless.
 - Subscribe before replaying on SSE connect, then discard live events at or below
   the highest replayed cursor.
-- Keep transient token deltas out of durable replay. During the compatibility
-  stages they continue over the selected-session stream.
+- Keep transient token deltas out of durable replay and route them only to the
+  browser currently watching their session.
 - Treat an exceeded replay window as an explicit resync, never as silent loss.
 
 ## Stage 1 — durable global backbone
@@ -122,7 +122,7 @@ Validation checkpoint (2026-09-04):
 
 ## Stage 3 — transient multiplexing and old-stream retirement
 
-Status: pending
+Status: complete (2026-09-04)
 
 - Multiplex transient deltas for actively watched sessions onto the global
   connection using explicit watch/unwatch control, or a bounded server policy.
@@ -134,10 +134,54 @@ Status: pending
 Exit criteria: each browser normally holds one SSE connection and no feature
 depends on the legacy selected-session stream.
 
+Checkpoint: the activity connection now identifies one browser client and its
+currently watched session. A small `PUT /api/sessions/activity/watch` control
+request changes that watch without reconnecting SSE. The event service sends
+all durable events plus only that session's transient deltas to the subscriber,
+retaining per-browser bounded queues and slow-consumer eviction. Transient SSE
+frames intentionally omit `id`, so they cannot advance or corrupt the durable
+global replay cursor.
+
+The React session hook no longer constructs an EventSource. Both durable and
+transient selected-session activity enter through the shared client event bus;
+debug-only events take an uncached path so normal transcript caches remain
+clean. The old selected-session endpoint remains server-side for compatibility,
+but the application has no dependency on it.
+
+Operational diagnostics now expose connection/reconnect, replay event/byte,
+live durable/transient event/byte, resync, delivery latency, subscriber
+pressure, and slow-consumer drop counters at
+`GET /api/diagnostics/performance`. Chromium long tasks are batched only after
+a 50 ms stall and retained in a bounded in-memory diagnostic history. Reconnects
+are identified by the stable browser client id rather than by a nonzero snapshot
+cursor, and the remembered-client set is bounded.
+
+Provider option requests are cached for the browser lifetime, queued-message
+snapshots are coalesced and updated from authoritative mutations/events, and
+workspace directory listings use a bounded cache with explicit refresh and
+upload invalidation. Reattaching a transcript to the live tail also reuses the
+connected global-stream window instead of downloading the same tail again.
+
+Validation checkpoint (2026-09-04):
+
+- A live Chromium run against the persistent human stack reached an interactive
+  composer in 353–428 ms; DOM content loaded in 138–154 ms.
+- Selecting another session and returning issued two small watch-control PUTs
+  while the browser retained exactly one EventSource.
+- Thinking, tool-start, tool-delta, tool-completion, and provider events from an
+  active run all arrived on that same connection. Server diagnostics counted
+  both durable and transient deliveries with zero dropped subscribers.
+- The initial provider-options, queue, workspace-files, and selected-tail reads
+  each occurred once. Returning to the original session reused its file and
+  transcript windows without another GET.
+- Forced browser stalls were reported through the bounded long-task telemetry
+  path. The browser recorded no console errors or uncaught page errors.
+
 ## Rollout and rollback
 
 Stage 1 is wire-compatible: the endpoint path and event payload retain their
 existing fields, while `global_seq`, `event_cursor`, and `after_cursor` are
-additive. The selected-session stream remains the rollback path until Stage 3.
+additive. The selected-session endpoint remains available as a rollback path,
+although the shipped client no longer opens it.
 If replay pressure is unexpectedly high, lower the reconnect window and force an
 explicit snapshot resync rather than dropping or silently truncating events.
