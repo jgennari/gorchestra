@@ -81,6 +81,7 @@ export type ChatTranscriptTool = {
   text: string
   error: string
   content: ChatTranscriptToolContent[]
+  fullOutputURL: string
   paths: string[]
   startSeq: number
   endSeq: number
@@ -1556,6 +1557,10 @@ function mergeAssistantMessage(message: ChatTranscriptMessage, group: EventGroup
 
 function chatToolFromGroup(group: EventGroup): ChatTranscriptTool {
   const text = chatToolText(group)
+  const fullOutputEvent = group.events.find((event) => {
+    if (!isRecord(event.payload) || !isRecord(event.payload._gorchestra_tool_output)) return false
+    return event.payload._gorchestra_tool_output.truncated === true
+  })
   return {
     id: group.id,
     kind: group.kind as ChatTranscriptTool['kind'],
@@ -1564,6 +1569,9 @@ function chatToolFromGroup(group: EventGroup): ChatTranscriptTool {
     text,
     error: group.error || (group.status === 'failed' ? text : ''),
     content: chatToolContentFromGroup(group),
+    fullOutputURL: fullOutputEvent
+      ? `/api/sessions/${encodeURIComponent(fullOutputEvent.session_id)}/events/${fullOutputEvent.seq}/tool-output`
+      : '',
     paths: group.paths,
     startSeq: group.startSeq,
     endSeq: group.endSeq,

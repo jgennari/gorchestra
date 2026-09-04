@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -811,6 +812,9 @@ func TestEventHistoryTruncatesLargePayloadStrings(t *testing.T) {
 	if got, want := len(response.Events), 1; got != want {
 		t.Fatalf("expected %d event, got %d", want, got)
 	}
+	if got := len(response.Events[0].Payload); got > maxToolEventPayloadBytes {
+		t.Fatalf("expected tool payload below %d bytes, got %d", maxToolEventPayloadBytes, got)
+	}
 
 	var payload map[string]any
 	if err := json.Unmarshal(response.Events[0].Payload, &payload); err != nil {
@@ -825,6 +829,9 @@ func TestEventHistoryTruncatesLargePayloadStrings(t *testing.T) {
 	}
 	if !strings.Contains(output, "gorchestra truncated") {
 		t.Fatal("expected truncation marker in output")
+	}
+	if strings.Contains(output, "truncated -") {
+		t.Fatalf("expected a valid truncation marker, got %q", output)
 	}
 	if payload["_gorchestra_truncated"] != true {
 		t.Fatalf("expected truncation marker flag, got %#v", payload["_gorchestra_truncated"])
@@ -996,6 +1003,101 @@ func TestEventToolContentServesBinaryResultBlocks(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEventToolOutputServesExternalizedStoreBlob(t *testing.T) {
+	ctx := context.Background()
+	dbStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = dbStore.Close() })
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{AgentType: "codex"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	output := strings.Repeat("externalized output\n", 2000)
+	payload, err := json.Marshal(map[string]any{"output": output})
+	if err != nil {
+		t.Fatalf("marshal output: %v", err)
+	}
+	event, err := dbStore.AppendEvent(ctx, store.AppendEventParams{
+		SessionID: session.ID,
+		Type:      "tool.call.completed",
+		Role:      "assistant",
+		Status:    store.EventStatusCompleted,
+		Payload:   payload,
+	})
+	if err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	NewRouter(Dependencies{Store: dbStore}).ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/sessions/%s/events/%d/tool-output", session.ID, event.Seq), nil),
+	)
+	if response.Code != http.StatusOK || response.Body.String() != output {
+		t.Fatalf("expected full externalized output, got status %d and %d bytes", response.Code, response.Body.Len())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/plain; charset=utf-8" {
+		t.Fatalf("expected text output content type, got %q", contentType)
+	}
+}
+
+func TestFiftyTurnHistoryKeepsLargeToolResultsBelowWireBudget(t *testing.T) {
+	ctx := context.Background()
+	dbStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = dbStore.Close() })
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{AgentType: "codex"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	for turn := 0; turn < 50; turn++ {
+		for _, item := range []struct {
+			eventType string
+			role      string
+			payload   map[string]any
+		}{
+			{"user.message.completed", "user", map[string]any{"text": fmt.Sprintf("turn %d", turn)}},
+			{"tool.call.started", "assistant", map[string]any{"item_id": fmt.Sprintf("tool_%d", turn), "command": "large-command"}},
+			{"tool.call.completed", "assistant", map[string]any{"item_id": fmt.Sprintf("tool_%d", turn), "output": strings.Repeat(fmt.Sprintf("turn-%d-output ", turn), 10_000)}},
+		} {
+			payload, marshalErr := json.Marshal(item.payload)
+			if marshalErr != nil {
+				t.Fatalf("marshal turn event: %v", marshalErr)
+			}
+			if _, appendErr := dbStore.AppendEvent(ctx, store.AppendEventParams{
+				SessionID: session.ID,
+				Type:      item.eventType,
+				Role:      item.role,
+				Status:    store.EventStatusCompleted,
+				Payload:   payload,
+			}); appendErr != nil {
+				t.Fatalf("append turn event: %v", appendErr)
+			}
+		}
+	}
+
+	response := httptest.NewRecorder()
+	NewRouter(Dependencies{Store: dbStore}).ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/sessions/%s/events?tail=true&turns=50&max_bytes=%d", session.ID, maxEventHistoryBytes), nil),
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected history status 200, got %d: %s", response.Code, response.Body.String())
+	}
+	if response.Body.Len() >= 512*1024 {
+		t.Fatalf("expected compact 50-turn response below 512 KiB, got %d bytes", response.Body.Len())
+	}
+	var history eventHistoryResponse
+	decodeJSON(t, response, &history)
+	if len(history.Events) != 150 {
+		t.Fatalf("expected complete 50-turn history, got %d events", len(history.Events))
 	}
 }
 
@@ -1582,6 +1684,37 @@ func TestSSEReplaySendsMissedEventsBeforeLiveEvents(t *testing.T) {
 
 	body := rec.Body.String()
 	assertSeqOrder(t, body, 1, 2)
+}
+
+func TestSSEReplayMergesBufferedTransientEvents(t *testing.T) {
+	fakeStore := newFakeHTTPStore()
+	fakeStore.addSession(testSessionID)
+	fakeStore.setEvents(testSessionID, testEvent(1, "agent.run.started"))
+	transient := testEvent(2, "agent.message.delta")
+	transient.Transient = true
+	subscriber := &recentFakeSubscriber{
+		recent: []store.Event{
+			testEvent(1, "agent.run.started"),
+			transient,
+		},
+	}
+	fakeStore.onList = func(string, int64, int) {
+		subscriber.closeAll()
+	}
+
+	recorder := httptest.NewRecorder()
+	NewRouter(Dependencies{Store: fakeStore, Events: subscriber}).ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/api/sessions/"+testSessionID+"/events/stream?after_seq=0", nil),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	assertSeqOrder(t, body, 1, 2)
+	if !strings.Contains(body, `"transient":true`) {
+		t.Fatalf("expected buffered transient event in replay:\n%s", body)
+	}
 }
 
 func TestSSERequestsBoundedTailResyncWhenReplayExceedsLimit(t *testing.T) {
@@ -2784,6 +2917,15 @@ type fakeSubscriber struct {
 	allSubscribes   int
 	unsubscribes    int
 	allUnsubscribes int
+}
+
+type recentFakeSubscriber struct {
+	fakeSubscriber
+	recent []store.Event
+}
+
+func (s *recentFakeSubscriber) Recent(string) []store.Event {
+	return append([]store.Event(nil), s.recent...)
 }
 
 func (s *fakeSubscriber) Subscribe(string) (<-chan store.Event, func()) {

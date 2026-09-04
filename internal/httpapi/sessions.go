@@ -546,16 +546,11 @@ func (api API) sessionResponses(ctx context.Context, sessions []store.Session) (
 }
 
 func (api API) sessionResponse(ctx context.Context, session store.Session) (sessionResponse, error) {
-	pendingInput := false
-	pendingPermissionCount := 0
-	if session.Status == store.SessionStatusRunning {
-		var err error
-		pendingInput, pendingPermissionCount, err = api.sessionPendingActivity(ctx, session.ID)
-		if err != nil {
-			return sessionResponse{}, err
-		}
-	}
-	return sessionResponseFromStore(session, pendingInput, pendingPermissionCount), nil
+	return sessionResponseFromStore(
+		session,
+		session.PendingInputCount > 0,
+		int(session.PendingPermissionCount),
+	), nil
 }
 
 func sessionResponseFromStore(session store.Session, pendingInput bool, pendingPermissionCount int) sessionResponse {
@@ -595,94 +590,6 @@ func sessionResponseFromStore(session store.Session, pendingInput bool, pendingP
 		CompletedAt:              completedAt,
 		ArchivedAt:               archivedAt,
 	}
-}
-
-func (api API) sessionPendingActivity(ctx context.Context, sessionID string) (bool, int, error) {
-	events, err := api.eventsSinceLatestTerminal(ctx, sessionID)
-	if err != nil {
-		return false, 0, err
-	}
-
-	pendingInput := make(map[string]bool)
-	pendingPermissions := make(map[string]bool)
-	for _, event := range events {
-		switch event.Type {
-		case "agent.input.requested":
-			requestID := rawPayloadString(event.Payload, "request_id")
-			if requestID != "" {
-				pendingInput[requestID] = true
-			}
-		case "agent.input.answered":
-			requestID := rawPayloadString(event.Payload, "request_id")
-			if requestID != "" {
-				delete(pendingInput, requestID)
-			}
-		case "agent.permission.requested":
-			requestID := rawPayloadString(event.Payload, "request_id")
-			if requestID != "" {
-				pendingPermissions[requestID] = true
-			}
-		case "agent.permission.resolved", "agent.permission.cancelled":
-			requestID := rawPayloadString(event.Payload, "request_id")
-			if requestID != "" {
-				delete(pendingPermissions, requestID)
-			}
-		default:
-			if isTerminalRunEvent(event.Type) {
-				clear(pendingInput)
-				clear(pendingPermissions)
-			}
-		}
-	}
-
-	return len(pendingInput) > 0, len(pendingPermissions), nil
-}
-
-func (api API) eventsSinceLatestTerminal(ctx context.Context, sessionID string) ([]store.Event, error) {
-	collected := make([]store.Event, 0)
-	beforeSeq := int64(0)
-
-	for {
-		var (
-			page []store.Event
-			err  error
-		)
-		if beforeSeq == 0 {
-			page, err = api.store.ListRecentEvents(ctx, sessionID, maxEventLimit)
-		} else {
-			page, err = api.store.ListEventsBefore(ctx, sessionID, beforeSeq, maxEventLimit)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if len(page) == 0 {
-			return collected, nil
-		}
-
-		for i := len(page) - 1; i >= 0; i-- {
-			if isTerminalRunEvent(page[i].Type) {
-				return append(append([]store.Event(nil), page[i+1:]...), collected...), nil
-			}
-		}
-
-		collected = append(append([]store.Event(nil), page...), collected...)
-		if page[0].Seq <= 1 {
-			return collected, nil
-		}
-		beforeSeq = page[0].Seq
-	}
-}
-
-func rawPayloadString(payload json.RawMessage, key string) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return ""
-	}
-	value, _ := decoded[key].(string)
-	return strings.TrimSpace(value)
 }
 
 func createSessionAgentOptions(agentType string, options *createAgentOptions) (json.RawMessage, error) {

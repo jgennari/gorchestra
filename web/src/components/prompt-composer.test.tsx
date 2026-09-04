@@ -369,7 +369,8 @@ test('codex options remain editable while a run is active', async () => {
 test('codex skill browser discovers metadata and submits a structured skill reference', async () => {
   const user = userEvent.setup()
   const onSubmit = vi.fn(async () => undefined)
-  vi.stubGlobal('fetch', codexSkillFetchMock())
+  const fetchMock = codexSkillFetchMock()
+  vi.stubGlobal('fetch', fetchMock)
 
   render(
     <PromptComposer
@@ -382,9 +383,11 @@ test('codex skill browser discovers metadata and submits a structured skill refe
   )
 
   expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5.5')
+  expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/skills'))).toBe(false)
   const prompt = screen.getByLabelText('Prompt')
   await user.type(prompt, 'Use my ')
   await user.click(screen.getByRole('button', { name: 'Skills' }))
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/skills'))).toBe(true))
   const browser = screen.getByRole('dialog', { name: 'Available skills' })
   expect(within(browser).getByText('Official product guidance')).toBeInTheDocument()
   expect(within(browser).getByText('user')).toBeInTheDocument()

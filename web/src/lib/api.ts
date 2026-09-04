@@ -403,6 +403,7 @@ export type AgentSkillError = {
 export type AgentSkillCatalog = {
   skills: AgentSkill[]
   errors: AgentSkillError[]
+  revision?: string
 }
 
 export type QueuedMessage = {

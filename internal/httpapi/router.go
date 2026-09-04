@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -32,20 +33,22 @@ import (
 )
 
 const (
-	defaultEventLimit        = 500
-	maxEventLimit            = 1000
-	maxEventTurnLimit        = 50
-	maxEventTurnPageLimit    = 5000
-	eventHistoryBackfillStep = 250
-	maxEventPayloadStringLen = 64 * 1024
-	maxEventHistoryBytes     = 2 * 1024 * 1024
-	defaultSessionLimit      = 50
-	maxSessionLimit          = 100
-	streamHeartbeat          = 15 * time.Second
-	streamResyncEventType    = "stream.resync.required"
-	immutableAssetCache      = "public, max-age=31536000, immutable"
-	revalidatingCache        = "no-cache"
-	staticShellCache         = "public, max-age=3600"
+	defaultEventLimit         = 500
+	maxEventLimit             = 1000
+	maxEventTurnLimit         = 50
+	maxEventTurnPageLimit     = 5000
+	eventHistoryBackfillStep  = 250
+	maxEventPayloadStringLen  = 64 * 1024
+	maxToolEventPayloadBytes  = 24 * 1024
+	maxOtherEventPayloadBytes = 64 * 1024
+	maxEventHistoryBytes      = 2 * 1024 * 1024
+	defaultSessionLimit       = 50
+	maxSessionLimit           = 100
+	streamHeartbeat           = 15 * time.Second
+	streamResyncEventType     = "stream.resync.required"
+	immutableAssetCache       = "public, max-age=31536000, immutable"
+	revalidatingCache         = "no-cache"
+	staticShellCache          = "public, max-age=3600"
 )
 
 type Store interface {
@@ -91,10 +94,22 @@ type SearchStore interface {
 	Search(context.Context, string, int) ([]store.SearchResult, error)
 }
 
+type EventBlobStore interface {
+	GetEventBlob(context.Context, string, int64, string, int) (store.EventBlob, error)
+}
+
 type EventService interface {
 	Append(ctx context.Context, params eventservice.AppendParams) (store.Event, error)
 	Subscribe(sessionID string) (<-chan store.Event, func())
 	SubscribeAll() (<-chan store.Event, func())
+}
+
+type RecentEventService interface {
+	Recent(sessionID string) []store.Event
+}
+
+type MaintenanceService interface {
+	Status(context.Context) (store.EventMaintenanceStatus, error)
 }
 
 type AgentRegistry interface {
@@ -159,6 +174,7 @@ type Dependencies struct {
 	Hosting        HostingManager
 	HostStore      HostRuntimeStore
 	Schedules      *scheduler.Service
+	Maintenance    MaintenanceService
 	UserHome       string
 }
 
@@ -179,6 +195,7 @@ type API struct {
 	dashboard        DashboardStore
 	search           SearchStore
 	schedules        *scheduler.Service
+	maintenance      MaintenanceService
 	repositorySkills *reposkills.Manager
 	userHome         string
 }
@@ -242,6 +259,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.hosting = deps[0].Hosting
 		api.hostStore = deps[0].HostStore
 		api.schedules = deps[0].Schedules
+		api.maintenance = deps[0].Maintenance
 		api.userHome = strings.TrimSpace(deps[0].UserHome)
 		if dashboard, ok := deps[0].Store.(DashboardStore); ok {
 			api.dashboard = dashboard
@@ -262,6 +280,9 @@ func NewRouter(deps ...Dependencies) http.Handler {
 
 	r := chi.NewRouter()
 	r.Get("/api/health", healthHandler)
+	if api.maintenance != nil {
+		r.Get("/api/maintenance/events", api.eventMaintenanceStatusHandler)
+	}
 
 	if api.store != nil && api.events != nil && api.agents != nil && api.runs != nil {
 		r.Get("/api/agents/{agentType}/options", api.agentOptionsHandler)
@@ -324,6 +345,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
 		r.Get("/api/sessions/{sessionId}/events/{seq}/attachments/{attachmentIndex}", api.eventAttachmentHandler)
 		r.Get("/api/sessions/{sessionId}/events/{seq}/tool-content/{contentIndex}", api.eventToolContentHandler)
+		r.Get("/api/sessions/{sessionId}/events/{seq}/tool-output", api.eventToolOutputHandler)
 	}
 	if api.search != nil {
 		r.Get("/api/search", api.searchHandler)
@@ -533,6 +555,12 @@ func (api API) eventAttachmentHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid attachment index")
 		return
 	}
+	if blob, found, failed := api.loadEventBlob(w, r, sessionID, seq, "attachment", attachmentIndex); failed {
+		return
+	} else if found {
+		serveEventBlob(w, blob, true)
+		return
+	}
 
 	event, err := api.store.GetEvent(r.Context(), sessionID, seq)
 	if err != nil {
@@ -577,6 +605,12 @@ func (api API) eventToolContentHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid tool content index")
 		return
 	}
+	if blob, found, failed := api.loadEventBlob(w, r, sessionID, seq, "tool-content", contentIndex); failed {
+		return
+	} else if found {
+		serveEventBlob(w, blob, true)
+		return
+	}
 
 	event, err := api.store.GetEvent(r.Context(), sessionID, seq)
 	if err != nil {
@@ -604,6 +638,80 @@ func (api API) eventToolContentHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", sanitizeAttachmentFilename(content.Name)))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(data)
+}
+
+func (api API) eventToolOutputHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	if !api.sessionExists(w, r, sessionID) {
+		return
+	}
+	seq, err := strconv.ParseInt(chi.URLParam(r, "seq"), 10, 64)
+	if err != nil || seq <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid event sequence")
+		return
+	}
+	if blob, found, failed := api.loadEventBlob(w, r, sessionID, seq, "tool-output", 0); failed {
+		return
+	} else if found {
+		serveEventBlob(w, blob, false)
+		return
+	}
+
+	event, err := api.store.GetEvent(r.Context(), sessionID, seq)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "event not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load event")
+		return
+	}
+	output := legacyEventToolOutput(event)
+	if output == "" {
+		writeError(w, http.StatusNotFound, "tool output not found")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = io.WriteString(w, output)
+}
+
+func (api API) loadEventBlob(
+	w http.ResponseWriter,
+	r *http.Request,
+	sessionID string,
+	seq int64,
+	kind string,
+	itemIndex int,
+) (store.EventBlob, bool, bool) {
+	blobs, ok := api.store.(EventBlobStore)
+	if !ok {
+		return store.EventBlob{}, false, false
+	}
+	blob, err := blobs.GetEventBlob(r.Context(), sessionID, seq, kind, itemIndex)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.EventBlob{}, false, false
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load event content")
+		return store.EventBlob{}, false, true
+	}
+	return blob, true, false
+}
+
+func serveEventBlob(w http.ResponseWriter, blob store.EventBlob, contentDisposition bool) {
+	mediaType := strings.TrimSpace(blob.MediaType)
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if contentDisposition {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", sanitizeAttachmentFilename(blob.Name)))
+	}
+	_, _ = w.Write(blob.Data)
 }
 
 var errInvalidEventHistoryCursor = errors.New("invalid event history cursor")
@@ -1014,6 +1122,28 @@ func (api API) replayEvents(
 	if len(events) > maxEventLimit {
 		return nil, true, nil
 	}
+	if recent, ok := api.events.(RecentEventService); ok {
+		bySeq := make(map[int64]store.Event, len(events))
+		for _, event := range events {
+			bySeq[event.Seq] = event
+		}
+		for _, event := range recent.Recent(sessionID) {
+			if event.Seq <= afterSeq || !eventVisible(event, filter) {
+				continue
+			}
+			bySeq[event.Seq] = event
+		}
+		events = events[:0]
+		for _, event := range bySeq {
+			events = append(events, event)
+		}
+		sort.Slice(events, func(left int, right int) bool {
+			return events[left].Seq < events[right].Seq
+		})
+		if len(events) > maxEventLimit {
+			return nil, true, nil
+		}
+	}
 	usedBytes := 0
 	for _, event := range events {
 		encoded, err := json.Marshal(newEventResponse(event))
@@ -1385,14 +1515,18 @@ func newEventResponse(event store.Event) eventResponse {
 		Type:      event.Type,
 		Role:      event.Role,
 		Status:    string(event.Status),
-		Payload:   responseEventPayload(event.Payload),
+		Payload:   responseEventPayload(event.Type, event.Payload),
 		CreatedAt: event.CreatedAt.UTC().Format(time.RFC3339Nano),
 		Transient: event.Transient,
 	}
 }
 
-func responseEventPayload(payload json.RawMessage) json.RawMessage {
-	if len(payload) <= maxEventPayloadStringLen && !bytes.Contains(payload, []byte(`"data_url"`)) {
+func responseEventPayload(eventType string, payload json.RawMessage) json.RawMessage {
+	budget := maxOtherEventPayloadBytes
+	if strings.HasPrefix(eventType, "tool.call") || strings.HasPrefix(eventType, "file.change") {
+		budget = maxToolEventPayloadBytes
+	}
+	if len(payload) <= budget && !bytes.Contains(payload, []byte(`"data_url"`)) && !bytes.Contains(payload, []byte(`"blob"`)) {
 		return payload
 	}
 
@@ -1401,18 +1535,30 @@ func responseEventPayload(payload json.RawMessage) json.RawMessage {
 		return payload
 	}
 
-	truncated, changed := truncatePayloadValue(decoded)
-	if !changed {
-		return payload
+	stringLimit := min(maxEventPayloadStringLen, budget/2)
+	for stringLimit >= 128 {
+		truncated, changed := truncatePayloadValue(decoded, stringLimit)
+		encoded, err := json.Marshal(truncated)
+		if err != nil {
+			return payload
+		}
+		if len(encoded) <= budget {
+			if changed {
+				return encoded
+			}
+			return payload
+		}
+		decoded = truncated
+		stringLimit /= 2
 	}
-	encoded, err := json.Marshal(truncated)
-	if err != nil {
-		return payload
-	}
-	return encoded
+	fallback, _ := json.Marshal(map[string]any{
+		"_gorchestra_truncated":      true,
+		"_gorchestra_original_bytes": len(payload),
+	})
+	return fallback
 }
 
-func truncatePayloadValue(value any) (any, bool) {
+func truncatePayloadValue(value any, stringLimit int) (any, bool) {
 	switch typed := value.(type) {
 	case map[string]any:
 		next := make(map[string]any, len(typed)+1)
@@ -1426,7 +1572,7 @@ func truncatePayloadValue(value any) (any, bool) {
 					continue
 				}
 			}
-			truncatedChild, childChanged := truncatePayloadValue(child)
+			truncatedChild, childChanged := truncatePayloadValue(child, stringLimit)
 			next[key] = truncatedChild
 			changed = changed || childChanged
 		}
@@ -1438,28 +1584,28 @@ func truncatePayloadValue(value any) (any, bool) {
 		next := make([]any, len(typed))
 		changed := false
 		for index, child := range typed {
-			truncatedChild, childChanged := truncatePayloadValue(child)
+			truncatedChild, childChanged := truncatePayloadValue(child, stringLimit)
 			next[index] = truncatedChild
 			changed = changed || childChanged
 		}
 		return next, changed
 	case string:
-		truncated, changed := truncatePayloadString(typed)
+		truncated, changed := truncatePayloadString(typed, stringLimit)
 		return truncated, changed
 	default:
 		return value, false
 	}
 }
 
-func truncatePayloadString(value string) (string, bool) {
-	if len(value) <= maxEventPayloadStringLen {
+func truncatePayloadString(value string, stringLimit int) (string, bool) {
+	if len(value) <= stringLimit {
 		return value, false
 	}
 
-	suffix := fmt.Sprintf("\n\n[gorchestra truncated %d bytes from this field for browser display]", len(value)-maxEventPayloadStringLen)
-	limit := maxEventPayloadStringLen - len(suffix)
+	suffix := fmt.Sprintf("\n\n[gorchestra truncated from %d bytes for browser display]", len(value))
+	limit := stringLimit - len(suffix)
 	if limit < 0 {
-		limit = maxEventPayloadStringLen
+		limit = stringLimit
 		suffix = ""
 	}
 	for limit > 0 && !utf8.ValidString(value[:limit]) {
@@ -1547,6 +1693,39 @@ func eventToolContent(event store.Event, contentIndex int) (storedToolContent, b
 	default:
 		return storedToolContent{}, false
 	}
+}
+
+func legacyEventToolOutput(event store.Event) string {
+	if event.Type != "tool.call.completed" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return ""
+	}
+	for _, key := range []string{"output", "aggregated_output", "text", "error"} {
+		if output, ok := payload[key].(string); ok && output != "" {
+			return output
+		}
+	}
+	result, _ := payload["result"].(map[string]any)
+	if result == nil {
+		return ""
+	}
+	if structured, ok := result["structuredContent"].(map[string]any); ok {
+		if output, ok := structured["output"].(string); ok && output != "" {
+			return output
+		}
+	}
+	content, _ := result["content"].([]any)
+	parts := make([]string, 0, len(content))
+	for _, raw := range content {
+		block, _ := raw.(map[string]any)
+		if text, ok := block["text"].(string); ok && text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func decodeToolContentData(encoded string, mediaType string) ([]byte, error) {

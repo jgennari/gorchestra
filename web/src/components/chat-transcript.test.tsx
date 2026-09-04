@@ -1266,6 +1266,34 @@ test('shows codex command aggregated output in expandable tool output', async ()
   expect(screen.getByText(/ls -la\s+total 56\s+README\.md\s+web/)).toBeInTheDocument()
 })
 
+test('loads externalized tool output only when requested', async () => {
+  const user = userEvent.setup()
+  const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('complete output\nsecond line'))
+
+  render(
+    <ChatTranscript
+      events={[
+        event(1, 'tool.call.started', 'assistant', 'started', {
+          item_id: 'tool_1',
+          command: 'run-report',
+        }),
+        event(2, 'tool.call.completed', 'assistant', 'completed', {
+          item_id: 'tool_1',
+          output: 'preview… output truncated; load full output',
+          _gorchestra_tool_output: { truncated: true, original_bytes: 100000 },
+        }),
+      ]}
+    />,
+  )
+
+  await user.click(screen.getByRole('button', { name: /expand run-report/i }))
+  expect(request).not.toHaveBeenCalled()
+  await user.click(screen.getByRole('button', { name: 'Load full output' }))
+  expect(await screen.findByText(/complete output\s+second line/)).toBeInTheDocument()
+  expect(request).toHaveBeenCalledWith('/api/sessions/sess_1/events/2/tool-output')
+  request.mockRestore()
+})
+
 test('expands historical nested MCP tool output', async () => {
   const user = userEvent.setup()
 

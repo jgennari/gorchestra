@@ -29,6 +29,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/hosting"
 	"github.com/jgennari/gorchestra/internal/httpapi"
+	"github.com/jgennari/gorchestra/internal/maintenance"
 	"github.com/jgennari/gorchestra/internal/notifications"
 	"github.com/jgennari/gorchestra/internal/scheduler"
 	runcontrol "github.com/jgennari/gorchestra/internal/session"
@@ -59,6 +60,7 @@ type config struct {
 	piBin              string
 	pushSubject        string
 	previewURLTemplate string
+	debugRetention     time.Duration
 	open               bool
 	showVersion        bool
 }
@@ -111,6 +113,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("event service startup failed: %v", err)
 	}
+	maintenanceService := maintenance.New(dbStore, cfg.debugRetention)
+	maintenanceService.Start(ctx)
 	notificationService := notifications.NewService(dbStore, notifications.WithSubscriber(cfg.pushSubject))
 	notificationService.Start(ctx, eventService)
 	if err := recoverInterruptedRuns(ctx, dbStore, eventService); err != nil {
@@ -191,7 +195,7 @@ func main() {
 	if err != nil {
 		log.Printf("resolve gorchestra executable failed: %v", err)
 	}
-	handler := httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets, AgentAPIURL: listeningURL("127.0.0.1", cfg.port), Executable: executable, Hosting: hostingManager, HostStore: dbStore, Schedules: scheduleService})
+	handler := httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets, AgentAPIURL: listeningURL("127.0.0.1", cfg.port), Executable: executable, Hosting: hostingManager, HostStore: dbStore, Schedules: scheduleService, Maintenance: maintenanceService})
 	if err := scheduleService.Start(ctx); err != nil {
 		log.Fatalf("schedule service startup failed: %v", err)
 	}
@@ -269,6 +273,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	flags.StringVar(&cfg.piBin, "pi-bin", "", "path to the Pi CLI binary")
 	flags.StringVar(&cfg.pushSubject, "push-subject", "", "VAPID subject for Web Push notifications")
 	flags.StringVar(&cfg.previewURLTemplate, "preview-url-template", "", "hosted preview URL template containing {slug}")
+	flags.DurationVar(&cfg.debugRetention, "debug-retention", 7*24*time.Hour, "retention window for raw debug events; 0 disables expiry")
 	flags.BoolVar(&cfg.open, "open", false, "open the app in the default browser after startup")
 	flags.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -291,6 +296,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	piBinFlag := flagWasSet(flags, "pi-bin")
 	pushSubjectFlag := flagWasSet(flags, "push-subject")
 	previewURLTemplateFlag := flagWasSet(flags, "preview-url-template")
+	debugRetentionFlag := flagWasSet(flags, "debug-retention")
 	openFlag := flagWasSet(flags, "open")
 	workspaceRootsFlag := flagWasSet(flags, "workspace-root")
 	if cfg.showVersion {
@@ -356,6 +362,16 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	}
 	if !previewURLTemplateFlag {
 		cfg.previewURLTemplate = envOr(configGetenv, "GORCHESTRA_PREVIEW_URL_TEMPLATE", "http://{slug}.localhost:"+cfg.port)
+	}
+	if !debugRetentionFlag {
+		retention, err := time.ParseDuration(envOr(configGetenv, "GORCHESTRA_DEBUG_RETENTION", "168h"))
+		if err != nil {
+			return config{}, fmt.Errorf("debug retention: %w", err)
+		}
+		cfg.debugRetention = retention
+	}
+	if cfg.debugRetention < 0 {
+		return config{}, fmt.Errorf("debug retention must not be negative")
 	}
 	if !openFlag {
 		cfg.open = envBool(configGetenv, "GORCHESTRA_OPEN", false)

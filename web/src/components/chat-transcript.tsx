@@ -1475,8 +1475,11 @@ function ToolCallRow({
   onOpenFilePath?: (path: string) => Promise<void> | void
   focused?: boolean
 }) {
-  const output = tool.error || tool.text
-  const hasDetails = Boolean(output || tool.content.length > 0)
+  const [loadedOutput, setLoadedOutput] = useState('')
+  const [loadingFullOutput, setLoadingFullOutput] = useState(false)
+  const [fullOutputError, setFullOutputError] = useState('')
+  const output = loadedOutput || tool.error || tool.text
+  const hasDetails = Boolean(output || tool.content.length > 0 || tool.fullOutputURL)
   const [outputOpen, setOutputOpen] = useState(false)
   const name = tool.label.replace(/^Tool:\s*/, '')
   const statusDotClassName = toolStatusDotClassName(tool)
@@ -1534,6 +1537,34 @@ function ToolCallRow({
                 actionPadding={showFileEditorAction}
               />
             ) : null}
+            {tool.fullOutputURL && !loadedOutput ? (
+              <button
+                type="button"
+                className="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-primary hover:bg-primary/10 disabled:opacity-60"
+                disabled={loadingFullOutput}
+                onClick={async () => {
+                  setLoadingFullOutput(true)
+                  setFullOutputError('')
+                  try {
+                    const response = await fetch(tool.fullOutputURL)
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+                    setLoadedOutput(await response.text())
+                  } catch {
+                    setFullOutputError('Could not load full output')
+                  } finally {
+                    setLoadingFullOutput(false)
+                  }
+                }}
+              >
+                {loadingFullOutput ? (
+                  <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Download className="size-3" aria-hidden="true" />
+                )}
+                {loadingFullOutput ? 'Loading…' : 'Load full output'}
+              </button>
+            ) : null}
+            {fullOutputError ? <p className="mt-1 text-[11px] text-destructive">{fullOutputError}</p> : null}
             {tool.content.length > 0 ? (
               <ToolResultContent content={tool.content} className={output ? 'mt-2' : ''} />
             ) : null}

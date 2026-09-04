@@ -128,10 +128,8 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 	row := s.db.QueryRowContext(
 		ctx,
 		`SELECT id, title, agent_type, status, provider_session_id, workspace_path, agent_options_json,
-		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND `+durableEventSQL+`) AS event_count,
-		        COALESCE((SELECT MAX(seq) FROM events WHERE events.session_id = sessions.id AND `+durableEventSQL+`), 0) AS last_event_seq,
-		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND type IN ('tool.call.started', 'file.change.started')) AS tool_count,
-		        COALESCE((SELECT SUM(token_count) FROM session_token_usage WHERE session_token_usage.session_id = sessions.id), 0) AS token_count,
+		        durable_event_count, last_durable_event_seq, materialized_tool_count, materialized_token_count,
+		        pending_input_count, pending_permission_count,
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
 		        created_at, updated_at, completed_at, archived_at
 		 FROM sessions
@@ -154,10 +152,8 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 	}
 
 	query := `SELECT id, title, agent_type, status, provider_session_id, workspace_path, agent_options_json,
-		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND ` + durableEventSQL + `) AS event_count,
-		        COALESCE((SELECT MAX(seq) FROM events WHERE events.session_id = sessions.id AND ` + durableEventSQL + `), 0) AS last_event_seq,
-		        (SELECT COUNT(*) FROM events WHERE events.session_id = sessions.id AND type IN ('tool.call.started', 'file.change.started')) AS tool_count,
-		        COALESCE((SELECT SUM(token_count) FROM session_token_usage WHERE session_token_usage.session_id = sessions.id), 0) AS token_count,
+		        durable_event_count, last_durable_event_seq, materialized_tool_count, materialized_token_count,
+		        pending_input_count, pending_permission_count,
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
 		        created_at, updated_at, completed_at, archived_at
 		 FROM sessions`
@@ -570,11 +566,13 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 	}
 
 	payload := append(json.RawMessage(nil), params.Payload...)
+	var sessionTotalTokens *int64
 	if usage, ok := normalizedSessionTokenUsage(payload); ok {
 		sessionTotal, err := upsertSessionTokenUsage(ctx, tx, params.SessionID, params.Seq, usage)
 		if err != nil {
 			return Event{}, err
 		}
+		sessionTotalTokens = &sessionTotal
 		payload, err = payloadWithSessionTotalTokens(payload, sessionTotal)
 		if err != nil {
 			return Event{}, err
@@ -586,6 +584,11 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 		return Event{}, err
 	}
 
+	projectionPayload := append(json.RawMessage(nil), payload...)
+	compactPayload, blobs, err := prepareEventPayload(params.Type, payload)
+	if err != nil {
+		return Event{}, err
+	}
 	event := Event{
 		ID:        id,
 		SessionID: params.SessionID,
@@ -593,7 +596,7 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 		Type:      params.Type,
 		Role:      params.Role,
 		Status:    params.Status,
-		Payload:   payload,
+		Payload:   compactPayload,
 		CreatedAt: s.now(),
 	}
 
@@ -612,11 +615,23 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 	); err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
 	}
-
-	if err := projectDashboardEvent(ctx, tx, event); err != nil {
+	for index := range blobs {
+		blobs[index].EventID = event.ID
+		blobs[index].CreatedAt = event.CreatedAt
+		if err := insertEventBlob(ctx, tx, blobs[index]); err != nil {
+			return Event{}, err
+		}
+	}
+	if err := updateSessionEventSummary(ctx, tx, event, sessionTotalTokens); err != nil {
 		return Event{}, err
 	}
-	if err := projectSearchEvent(ctx, tx, event); err != nil {
+
+	projectionEvent := event
+	projectionEvent.Payload = projectionPayload
+	if err := projectDashboardEvent(ctx, tx, projectionEvent); err != nil {
+		return Event{}, err
+	}
+	if err := projectSearchEvent(ctx, tx, projectionEvent); err != nil {
 		return Event{}, err
 	}
 
@@ -625,6 +640,89 @@ func (s *Store) AppendEvent(ctx context.Context, params AppendEventParams) (Even
 	}
 
 	return event, nil
+}
+
+func insertEventBlob(ctx context.Context, tx *sql.Tx, blob EventBlob) error {
+	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO event_blobs
+		 (event_id, kind, item_index, name, media_type, encoding, original_bytes, data, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		blob.EventID,
+		blob.Kind,
+		blob.ItemIndex,
+		blob.Name,
+		blob.MediaType,
+		blob.Encoding,
+		blob.OriginalBytes,
+		blob.Data,
+		formatTime(blob.CreatedAt),
+	); err != nil {
+		return fmt.Errorf("insert event blob: %w", err)
+	}
+	return nil
+}
+
+func updateSessionEventSummary(ctx context.Context, tx *sql.Tx, event Event, sessionTotalTokens *int64) error {
+	durableIncrement := 1
+	if strings.HasSuffix(event.Type, ".delta") {
+		durableIncrement = 0
+	}
+	toolIncrement := 0
+	if event.Type == "tool.call.started" || event.Type == "file.change.started" {
+		toolIncrement = 1
+	}
+
+	pendingInputDelta := 0
+	pendingPermissionDelta := 0
+	resetPending := false
+	switch event.Type {
+	case "agent.input.requested":
+		pendingInputDelta = 1
+	case "agent.input.answered":
+		pendingInputDelta = -1
+	case "agent.permission.requested":
+		pendingPermissionDelta = 1
+	case "agent.permission.resolved", "agent.permission.cancelled":
+		pendingPermissionDelta = -1
+	case "agent.run.completed", "agent.run.failed", "agent.run.cancelled":
+		resetPending = true
+	}
+
+	tokenCount := int64(-1)
+	if sessionTotalTokens != nil {
+		tokenCount = *sessionTotalTokens
+	}
+	resetPendingInt := 0
+	if resetPending {
+		resetPendingInt = 1
+	}
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE sessions
+		 SET durable_event_count = durable_event_count + ?,
+		     last_durable_event_seq = CASE WHEN ? = 1 THEN MAX(last_durable_event_seq, ?) ELSE last_durable_event_seq END,
+		     materialized_tool_count = materialized_tool_count + ?,
+		     materialized_token_count = CASE WHEN ? >= 0 THEN ? ELSE materialized_token_count END,
+		     pending_input_count = CASE WHEN ? = 1 THEN 0 ELSE MAX(0, pending_input_count + ?) END,
+		     pending_permission_count = CASE WHEN ? = 1 THEN 0 ELSE MAX(0, pending_permission_count + ?) END
+		 WHERE id = ?`,
+		durableIncrement,
+		durableIncrement,
+		event.Seq,
+		toolIncrement,
+		tokenCount,
+		tokenCount,
+		resetPendingInt,
+		pendingInputDelta,
+		resetPendingInt,
+		pendingPermissionDelta,
+		event.SessionID,
+	); err != nil {
+		return fmt.Errorf("update session event summary: %w", err)
+	}
+	return nil
 }
 
 type sessionTokenUsage struct {
@@ -1399,6 +1497,8 @@ func scanSession(row rowScanner) (Session, error) {
 	var lastEventSeq int64
 	var toolCount int64
 	var tokenCount int64
+	var pendingInputCount int64
+	var pendingPermissionCount int64
 	var notificationAttentionSeq int64
 	var createdAt string
 	var updatedAt string
@@ -1417,6 +1517,8 @@ func scanSession(row rowScanner) (Session, error) {
 		&lastEventSeq,
 		&toolCount,
 		&tokenCount,
+		&pendingInputCount,
+		&pendingPermissionCount,
 		&notificationAttentionSeq,
 		&createdAt,
 		&updatedAt,
@@ -1456,6 +1558,8 @@ func scanSession(row rowScanner) (Session, error) {
 	session.LastEventSeq = lastEventSeq
 	session.ToolCount = toolCount
 	session.TokenCount = tokenCount
+	session.PendingInputCount = pendingInputCount
+	session.PendingPermissionCount = pendingPermissionCount
 	session.NotificationAttentionSeq = notificationAttentionSeq
 	session.CreatedAt = parsedCreatedAt
 	session.UpdatedAt = parsedUpdatedAt

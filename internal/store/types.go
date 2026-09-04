@@ -64,6 +64,8 @@ type Session struct {
 	LastEventSeq             int64
 	ToolCount                int64
 	TokenCount               int64
+	PendingInputCount        int64
+	PendingPermissionCount   int64
 	NotificationAttentionSeq int64
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
@@ -81,6 +83,38 @@ type Event struct {
 	Payload   json.RawMessage
 	CreatedAt time.Time
 	Transient bool
+}
+
+type EventBlob struct {
+	EventID       string
+	Kind          string
+	ItemIndex     int
+	Name          string
+	MediaType     string
+	Encoding      string
+	OriginalBytes int64
+	Data          []byte
+	CreatedAt     time.Time
+}
+
+type EventMaintenanceStatus struct {
+	Running             bool
+	LastStartedAt       *time.Time
+	LastCompletedAt     *time.Time
+	LastError           string
+	DeletedDeltaEvents  int64
+	DeletedDebugEvents  int64
+	ExtractedBlobEvents int64
+	ReclaimedBytes      int64
+	RetainedDebugAfter  *time.Time
+}
+
+type EventMaintenanceBatch struct {
+	DeletedDeltaEvents  int64
+	DeletedDebugEvents  int64
+	ExtractedBlobEvents int64
+	ReclaimedBytes      int64
+	More                bool
 }
 
 type EventListFilter struct {

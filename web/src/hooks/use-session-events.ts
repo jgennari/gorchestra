@@ -77,6 +77,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const [loadingOlderEvents, setLoadingOlderEvents] = useState(false)
   const [loadingNewerEvents, setLoadingNewerEvents] = useState(false)
   const lastSeqRef = useRef(0)
+  const lastDurableSeqRef = useRef(0)
   const oldestSeqRef = useRef(0)
   const newestSeqRef = useRef(0)
   const activeSessionIDRef = useRef<string | null>(null)
@@ -128,6 +129,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
 
     if (!sessionID) {
       lastSeqRef.current = 0
+      lastDurableSeqRef.current = 0
       oldestSeqRef.current = 0
       newestSeqRef.current = 0
       liveEventsRef.current = []
@@ -146,6 +148,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     if (!sameSessionRefresh) {
       if (cachedSession) {
         lastSeqRef.current = cachedSession.lastSeq
+        lastDurableSeqRef.current = cachedSession.lastSeq
         oldestSeqRef.current = cachedSession.oldestSeq
         newestSeqRef.current = lastSeq(cachedSession.events)
         liveEventsRef.current = cachedSession.events
@@ -158,6 +161,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setHasNewerEvents(cachedSession.hasNewerEvents)
       } else {
         lastSeqRef.current = 0
+        lastDurableSeqRef.current = 0
         oldestSeqRef.current = 0
         newestSeqRef.current = 0
         liveEventsRef.current = []
@@ -199,6 +203,9 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       try {
         const event = JSON.parse(message.data) as AgentEvent
         lastSeqRef.current = Math.max(lastSeqRef.current, event.seq)
+        if (!isTransientEvent(event)) {
+          lastDurableSeqRef.current = Math.max(lastDurableSeqRef.current, event.seq)
+        }
 
         const nextLive = appendBoundedEvent(liveEventsRef.current, event, liveEventWindowPolicy)
         liveEventsRef.current = nextLive.events
@@ -223,20 +230,20 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           nextLive.trimmedStart || firstSeq(nextLive.events) > 1,
           false,
           activeIncludeDebugEvents,
-          lastSeqRef.current,
+          lastDurableSeqRef.current,
         )
         if (!activeIncludeDebugEvents && !isTransientEvent(event)) {
-          void writePersistentCachedSessionEvent(activeSessionID, event, lastSeqRef.current)
+          void writePersistentCachedSessionEvent(activeSessionID, event, lastDurableSeqRef.current)
           if (
             isTerminalEvent(event.type) ||
-            lastSeqRef.current - persistentHotWindowSeqRef.current >= persistentHotWindowCheckpointSeqs
+            lastDurableSeqRef.current - persistentHotWindowSeqRef.current >= persistentHotWindowCheckpointSeqs
           ) {
-            persistentHotWindowSeqRef.current = lastSeqRef.current
+            persistentHotWindowSeqRef.current = lastDurableSeqRef.current
             void writePersistentCachedSessionEventWindow(
               activeSessionID,
               nextLive.events,
               nextLive.trimmedStart || firstSeq(nextLive.events) > 1,
-              lastSeqRef.current,
+              lastDurableSeqRef.current,
             )
           }
         }
@@ -279,6 +286,11 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       const historyLastSeq = lastSeq(history.events)
       const normalizedHistoryEvents = appendEvents([], history.events)
       lastSeqRef.current = Math.max(lastSeqRef.current, history.page?.server_last_seq ?? 0, historyLastSeq)
+      lastDurableSeqRef.current = Math.max(
+        lastDurableSeqRef.current,
+        history.page?.server_last_seq ?? 0,
+        lastDurableSeq(normalizedHistoryEvents),
+      )
       const boundedLive = boundEventWindow(normalizedHistoryEvents, 'latest', liveEventWindowPolicy)
       liveEventsRef.current = boundedLive.events
       setLiveEvents(boundedLive.events)
@@ -307,10 +319,10 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         pageHasOlder || boundedLive.trimmedStart,
         history.page?.has_newer ?? false,
         activeIncludeDebugEvents,
-        lastSeqRef.current,
+        lastDurableSeqRef.current,
       )
       if (!activeIncludeDebugEvents) {
-        persistentHotWindowSeqRef.current = lastSeqRef.current
+        persistentHotWindowSeqRef.current = lastDurableSeqRef.current
         void writePersistentCachedSessionEventPage(activeSessionID, normalizedHistoryEvents, {
           coverageFirstSeq:
             history.page === undefined
@@ -318,7 +330,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
               : history.page.first_seq ||
                 (history.events.length === 0 && history.page.server_last_seq ? 1 : 0),
           coverageLastSeq: history.page?.server_last_seq ?? history.page?.last_seq ?? historyLastSeq,
-          serverLastSeq: history.page?.server_last_seq ?? lastSeqRef.current,
+          serverLastSeq: history.page?.server_last_seq ?? lastDurableSeqRef.current,
           hasOlderEvents: pageHasOlder,
         })
       }
@@ -374,6 +386,12 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           lastSeq(tail.events),
           newestSeqRef.current,
         )
+        lastDurableSeqRef.current = Math.max(
+          lastDurableSeqRef.current,
+          tail.page?.server_last_seq ?? 0,
+          lastDurableSeq(tail.events),
+          lastDurableSeq(history.events),
+        )
         setHasOlderEvents((history.page?.has_older ?? oldestSeqRef.current > 1) || visible.trimmedStart)
         setHasNewerEvents((history.page?.has_newer ?? false) || visible.trimmedEnd)
         loadedSessionIDRef.current = activeSessionID
@@ -384,27 +402,27 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           (tail.page?.has_older ?? firstSeq(tail.events) > 1) || boundedLive.trimmedStart,
           false,
           activeIncludeDebugEvents,
-          lastSeqRef.current,
+          lastDurableSeqRef.current,
         )
         if (!activeIncludeDebugEvents) {
-          persistentHotWindowSeqRef.current = lastSeqRef.current
+          persistentHotWindowSeqRef.current = lastDurableSeqRef.current
           void writePersistentCachedSessionEventWindow(
             activeSessionID,
             boundedLive.events,
             (tail.page?.has_older ?? firstSeq(tail.events) > 1) || boundedLive.trimmedStart,
-            lastSeqRef.current,
+            lastDurableSeqRef.current,
           )
           void writePersistentCachedSessionEventPage(activeSessionID, history.events, {
             coverageFirstSeq: history.page?.first_seq ?? firstSeq(history.events),
             coverageLastSeq: history.page?.last_seq ?? lastSeq(history.events),
-            serverLastSeq: tail.page?.server_last_seq ?? lastSeqRef.current,
+            serverLastSeq: tail.page?.server_last_seq ?? lastDurableSeqRef.current,
             hasOlderEvents: history.page?.has_older,
             updateHotWindow: false,
           })
           void writePersistentCachedSessionEventPage(activeSessionID, tail.events, {
             coverageFirstSeq: tail.page?.first_seq ?? firstSeq(tail.events),
             coverageLastSeq: tail.page?.server_last_seq ?? tail.page?.last_seq ?? lastSeq(tail.events),
-            serverLastSeq: tail.page?.server_last_seq ?? lastSeqRef.current,
+            serverLastSeq: tail.page?.server_last_seq ?? lastDurableSeqRef.current,
             hasOlderEvents: tail.page?.has_older,
             updateHotWindow: false,
           })
@@ -427,6 +445,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       if (persistentSession) {
         const bounded = boundEventWindow(persistentSession.events, 'latest', cachedEventWindowPolicy)
         lastSeqRef.current = persistentSession.lastSeq
+        lastDurableSeqRef.current = persistentSession.lastSeq
         oldestSeqRef.current = firstSeq(bounded.events)
         newestSeqRef.current = lastSeq(bounded.events)
         liveEventsRef.current = bounded.events
@@ -460,14 +479,14 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       if (
         !activeIncludeDebugEvents &&
         liveEventsRef.current.length > 0 &&
-        lastSeqRef.current > persistentHotWindowSeqRef.current
+        lastDurableSeqRef.current > persistentHotWindowSeqRef.current
       ) {
-        persistentHotWindowSeqRef.current = lastSeqRef.current
+        persistentHotWindowSeqRef.current = lastDurableSeqRef.current
         void writePersistentCachedSessionEventWindow(
           activeSessionID,
           liveEventsRef.current,
           firstSeq(liveEventsRef.current) > 1,
-          lastSeqRef.current,
+          lastDurableSeqRef.current,
         )
       }
       if (activeSessionIDRef.current === activeSessionID) activeSessionIDRef.current = null
@@ -517,6 +536,11 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setHasOlderEvents(false)
         return
       }
+      lastDurableSeqRef.current = Math.max(
+        lastDurableSeqRef.current,
+        history.page?.server_last_seq ?? 0,
+        lastDurableSeq(history.events),
+      )
       setEvents((current) => {
         const next = mergeBoundedEvents(current, history.events, 'oldest', residentEventWindowPolicy)
         oldestSeqRef.current = firstSeq(next.events)
@@ -529,7 +553,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         void writePersistentCachedSessionEventPage(sessionID, history.events, {
           coverageFirstSeq: history.page?.first_seq ?? firstSeq(history.events),
           coverageLastSeq: beforeSeq - 1,
-          serverLastSeq: history.page?.server_last_seq ?? lastSeqRef.current,
+          serverLastSeq: history.page?.server_last_seq ?? lastDurableSeqRef.current,
           hasOlderEvents: history.page?.has_older,
         })
       }
@@ -562,6 +586,11 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         followingTailRef.current = true
         return
       }
+      lastDurableSeqRef.current = Math.max(
+        lastDurableSeqRef.current,
+        history.page?.server_last_seq ?? 0,
+        lastDurableSeq(history.events),
+      )
       setEvents((current) => {
         const next = mergeBoundedEvents(current, history.events, 'latest', residentEventWindowPolicy)
         oldestSeqRef.current = firstSeq(next.events)
@@ -576,7 +605,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         void writePersistentCachedSessionEventPage(sessionID, history.events, {
           coverageFirstSeq: history.page?.first_seq ?? afterSeq + 1,
           coverageLastSeq: history.page?.last_seq ?? lastSeq(history.events),
-          serverLastSeq: history.page?.server_last_seq ?? lastSeqRef.current,
+          serverLastSeq: history.page?.server_last_seq ?? lastDurableSeqRef.current,
           hasOlderEvents: history.page?.has_older,
         })
       }
@@ -609,6 +638,11 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       const history = await listAdaptiveRecentEventTurns(sessionID, includeDebugEvents)
       if (activeSessionIDRef.current !== sessionID) return
       const combined = appendEvents([], [...history.events, ...liveEventsRef.current])
+      lastDurableSeqRef.current = Math.max(
+        lastDurableSeqRef.current,
+        history.page?.server_last_seq ?? 0,
+        lastDurableSeq(history.events),
+      )
       setEvents((current) => {
         const next = mergeBoundedEvents(current, combined, 'latest', residentEventWindowPolicy)
         oldestSeqRef.current = firstSeq(next.events)
@@ -621,7 +655,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         void writePersistentCachedSessionEventPage(sessionID, history.events, {
           coverageFirstSeq: history.page?.first_seq ?? firstSeq(history.events),
           coverageLastSeq: history.page?.last_seq ?? lastSeq(history.events),
-          serverLastSeq: history.page?.server_last_seq ?? lastSeqRef.current,
+          serverLastSeq: history.page?.server_last_seq ?? lastDurableSeqRef.current,
           hasOlderEvents: history.page?.has_older,
         })
       }
@@ -718,6 +752,13 @@ function writeCachedSessionEvents(
     usedAt: Date.now(),
   })
   evictOldSessionEventCaches()
+}
+
+function lastDurableSeq(events: AgentEvent[]) {
+  return events.reduce(
+    (max, event) => (isTransientEvent(event) ? max : Math.max(max, event.seq)),
+    0,
+  )
 }
 
 function sessionEventCacheKey(sessionID: string, includeDebugEvents: boolean) {

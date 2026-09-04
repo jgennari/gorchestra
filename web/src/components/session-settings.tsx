@@ -134,7 +134,7 @@ export function SessionSettings({
             ) : null}
             <MenuSwitchRow
               label="Debug events"
-              description="Stream and load provider debug events for this session."
+                description="Stream and load provider diagnostics. Raw debug history is retained for 7 days."
               active={showDebugEvents}
               onClick={() => onShowDebugEventsChange(!showDebugEvents)}
             />

@@ -42,8 +42,9 @@ type SkillQuery struct {
 }
 
 type SkillCatalog struct {
-	Skills []Skill      `json:"skills"`
-	Errors []SkillError `json:"errors"`
+	Skills   []Skill      `json:"skills"`
+	Errors   []SkillError `json:"errors"`
+	Revision string       `json:"revision,omitempty"`
 }
 
 type Skill struct {

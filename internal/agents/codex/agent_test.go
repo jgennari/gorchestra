@@ -642,6 +642,38 @@ func TestAgentSkillsListsWorkspaceCatalogAndMetadata(t *testing.T) {
 	if !reflect.DeepEqual(catalog.Errors, wantErrors) {
 		t.Fatalf("unexpected skill errors: %#v", catalog.Errors)
 	}
+	if catalog.Revision == "" {
+		t.Fatal("expected skill catalog revision")
+	}
+}
+
+func TestAgentSkillsCachesByWorkspaceUntilForced(t *testing.T) {
+	countPath := filepath.Join(t.TempDir(), "starts")
+	t.Setenv("GORCHESTRA_FAKE_CODEX_APP_SERVER_START_COUNT", countPath)
+	agent := fakeAppServerAgent(t, "skills")
+	workdir := t.TempDir()
+
+	first, err := agent.Skills(context.Background(), agents.SkillQuery{Workdir: workdir, ForceReload: true})
+	if err != nil {
+		t.Fatalf("list skills: %v", err)
+	}
+	first.Skills[0].Name = "mutated"
+	second, err := agent.Skills(context.Background(), agents.SkillQuery{Workdir: workdir})
+	if err != nil {
+		t.Fatalf("list cached skills: %v", err)
+	}
+	if second.Skills[0].Name == "mutated" {
+		t.Fatal("expected cached skill catalog to be cloned")
+	}
+	if starts := fakeAppServerStartCount(t, countPath); starts != 1 {
+		t.Fatalf("expected one app-server probe for cached catalog, got %d", starts)
+	}
+	if _, err := agent.Skills(context.Background(), agents.SkillQuery{Workdir: workdir, ForceReload: true}); err != nil {
+		t.Fatalf("force reload skills: %v", err)
+	}
+	if starts := fakeAppServerStartCount(t, countPath); starts != 2 {
+		t.Fatalf("expected force reload to start a second probe, got %d", starts)
+	}
 }
 
 func TestStartTurnAppliesRunOptions(t *testing.T) {

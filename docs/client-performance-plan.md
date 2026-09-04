@@ -1,6 +1,6 @@
 # Client and Wire Performance Plan
 
-Status: Phase 1 implementation complete; Phase 2 not started  
+Status: Phase 1 and Phase 2 implementation complete
 Created: 2026-09-04  
 Scope: Gorchestra browser client, HTTP/SSE wire protocol, embedded frontend delivery, and the SQLite read paths that directly affect UI latency.
 
@@ -104,40 +104,52 @@ Completion summary:
 - The final staged build produced 84 precompressed hashed assets. The main bundle is 1,288,718 bytes identity and 357,424 bytes gzip, a 72.3% wire reduction. An isolated production binary served the gzip representation with the original JavaScript content type, immutable caching, and `Vary: Accept-Encoding`; identity and ranged fallbacks also pass.
 - Verification passed: 432 frontend tests, frontend lint, production frontend build, `go test ./...`, and `git diff --check`.
 - The live Vite Overview rendered successfully and recovered from one transient 502 with a single retry. No manual human-stack restart or `prod:refresh` was performed while a run was active.
-- Commit checkpoint remains pending because the worktree already contains the preceding optimistic-send work and generated embedded bundle changes; no unrelated user changes were discarded or overwritten.
+- Phase 1 was checkpointed in commit `c230c4e` (`Improve client responsiveness and streaming efficiency`).
 
 ## Phase 2: Make durable history cheaper
 
 Goal: reduce the size and query cost of long-lived event history while keeping completed session reconstruction reliable.
 
+Completion summary:
+
+- [x] Externalize large textual tool output and binary event content transactionally.
+- [x] Bound ordinary event projections to 64 KiB and tool/file projections to 24 KiB.
+- [x] Restore full text, image, audio, resource, and attachment content on demand.
+- [x] Materialize lifetime session counts and pending activity in the session row.
+- [x] Replay buffered transient events while persisting only durable browser cursors.
+- [x] Run idle-only bounded retention and legacy compaction with observable status.
+- [x] Retain raw provider/debug events for seven days by default, with a configurable opt-out.
+- [x] Load skill catalogs only when needed and cache them per workspace for 60 seconds.
+
 ### 1. Lightweight tool-result projections
 
-- Keep full tool results in durable server-owned storage.
-- Project completion metadata and a bounded preview into standard history and SSE responses.
-- Add on-demand retrieval for complete textual tool output, extending the existing tool-content pattern.
-- Apply a total projected-event byte cap rather than only a per-string cap.
-- Ensure a reconnect during a live tool call can reconstruct the visible accumulated result.
+- [x] Keep full tool results in durable server-owned storage.
+- [x] Project completion metadata and a 4 KiB preview into standard history and SSE responses.
+- [x] Add on-demand retrieval for complete textual tool output, extending the existing tool-content pattern.
+- [x] Apply a total projected-event byte cap rather than only a per-string cap.
+- [x] Ensure a reconnect during a live tool call can reconstruct the visible accumulated result.
 
 ### 2. Materialized session summaries
 
-- Store event count, last durable sequence, tool count, and token totals in server-owned summary state maintained transactionally with event/session updates.
-- Backfill existing sessions in a migration.
-- Replace correlated history scans in list/get session queries.
-- Verify counters against reconstructed values in migration and store tests.
+- [x] Store event count, last durable sequence, tool count, token totals, and pending activity in server-owned summary state maintained transactionally with event writes.
+- [x] Backfill existing sessions in a migration.
+- [x] Replace correlated history scans in list/get session queries.
+- [x] Verify counters against reconstructed values in migration and store tests.
 
 ### 3. Event retention and compaction
 
-- Define retention separately for canonical completed events, transient deltas, and raw provider/debug events.
-- Compact settled transient streams only after their completed canonical event is durable.
-- Move large binary attachments and debug payloads to referenced blob storage where appropriate.
-- Keep enough raw/debug material for a documented recent diagnostic window.
-- Add maintenance observability: reclaimable bytes, last compaction, retained ranges, and failures.
+- [x] Retain canonical completed events indefinitely, stop persisting new transient deltas, remove legacy deltas only for idle sessions, and expire raw provider/debug events after seven days by default.
+- [x] Process cleanup in 1,000-row transactions only while no session is running.
+- [x] Move large textual tool output and binary attachments/results to referenced, optionally gzip-compressed blob storage.
+- [x] Document the recent diagnostic window in session settings and expose `--debug-retention` / `GORCHESTRA_DEBUG_RETENTION`; `0` disables debug expiry.
+- [x] Add `GET /api/maintenance/events` with run times, failures, retained cutoff, deleted/extracted counts, and reclaimed logical bytes.
+- [x] Avoid automatic `VACUUM`; freed SQLite pages remain reusable without a long exclusive rewrite.
 
 ### 4. Lazy secondary metadata
 
-- Cache skill catalogs by workspace and revision; refresh explicitly or on detected filesystem changes.
-- Load skill data when the user opens Skills, invokes inline completion, or has saved skill references that require validation.
-- Replace full notification diagnostics on startup with a minimal status check; load diagnostics only in settings.
+- [x] Cache Codex skill catalogs by workspace for 60 seconds and return a content revision; explicit refresh bypasses the cache.
+- [x] Load skill data when the user opens Skills, invokes inline completion, or has saved skill references that require validation.
+- [x] Keep full notification diagnostics out of ordinary startup (completed in Phase 1).
 
 ### Phase 2 verification gate
 
@@ -145,6 +157,18 @@ Goal: reduce the size and query cost of long-lived event history while keeping c
 - Session-list latency is independent of historical event count within normal variance.
 - Compaction preserves transcript reconstruction, counts, replay boundaries, attachments, and debug-policy guarantees.
 - Database growth during a representative long agent run is measured and materially reduced.
+
+### Phase 2 verification results
+
+- The production migration and first idle maintenance pass completed without `VACUUM`: 425,956 legacy delta events and 72,543 expired debug events were deleted, 1,966 events were migrated to blob-backed content, and 1,040,286,067 bytes of event JSON became reclaimable.
+- Stored event rows fell from roughly 680,000 to 183,095. Remaining inline event payload JSON is 348.3 MiB; 214.2 MiB of original binary/text content occupies 103.4 MiB in compressed blobs.
+- SQLite exposes 347,338 free 4 KiB pages—about 1.36 GB immediately reusable by future writes—while the physical file remains about 2.3 GB as expected without an explicit maintenance-window vacuum.
+- The 50-session endpoint now returns in about 10 ms locally, down from roughly 330 ms, because list/get reads use session-row summaries rather than correlated event scans.
+- A migrated 1,048,607-byte tool result is represented by a 5,563-byte event payload and is restored byte-for-byte through `/tool-output`. A migrated 2.9 MB image attachment is likewise served through its existing attachment URL.
+- An integration fixture with 50 turns and 50 large tool results returns the complete 150-event transcript below 512 KiB without fetching any full tool output.
+- Browser inspection confirmed the active session renders normally after compaction and that its skill catalog is not needed for initial transcript rendering; opening the Skills chooser triggers discovery and displays the catalog.
+- Verification covers transactional materialized summaries, migration backfill, pending-state reset, blob round trips, legacy fallback endpoints, transient replay merging, retention behavior, configuration, lazy skill caching, and explicit full-output loading.
+- The final gate passed `go test ./...`, all 434 frontend tests, frontend lint, the production frontend build, and `git diff --check`.
 
 ## Checkpoint protocol
 
@@ -161,3 +185,4 @@ At the end of each phase:
 - 2026-09-04: Baseline audit completed using Chrome DevTools, live HTTP/SSE sampling, SQLite aggregation, and source review.
 - 2026-09-04: Phase 1 started.
 - 2026-09-04: Phase 1 implementation and verification completed. Phase 2 remains intentionally unstarted pending review of the durable-storage changes.
+- 2026-09-04: Phase 2 implemented and exercised against the human database. The initial idle maintenance pass reclaimed about 1.04 GB of logical event payload data and reduced session-list latency to roughly 10 ms.

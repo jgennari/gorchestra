@@ -7,7 +7,7 @@ import {
   trimEventsToRecentTurns,
   useSessionEvents,
 } from '@/hooks/use-session-events'
-import { writeCachedSessionEvents } from '@/lib/session-cache'
+import { readCachedSessionEvents, writeCachedSessionEvents } from '@/lib/session-cache'
 import { createFakeIndexedDB } from '@/test/fake-indexeddb'
 
 test('turn trimming keeps the latest requested turns', () => {
@@ -247,6 +247,43 @@ test('ordinary reconnect resumes from the accepted cursor without refetching his
   expect(fetchMock).toHaveBeenCalledTimes(1)
 
   unmount()
+  vi.unstubAllGlobals()
+})
+
+test('a reload resumes from the durable cursor instead of a transient delta', async () => {
+  vi.stubGlobal('indexedDB', createFakeIndexedDB())
+  HookEventSource.instances = []
+  vi.stubGlobal('EventSource', HookEventSource)
+  clearSessionEventCacheForTest()
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/sessions/sess_test/events?tail=true&turns=50&max_bytes=2097152') {
+      return jsonResponse({
+        events: [event(1, 'user.message.completed')],
+        page: { ...historyPage(1, 1, false), server_last_seq: 1 },
+      })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const first = renderHook(() => useSessionEvents('sess_test'))
+  await waitFor(() => expect(HookEventSource.instances[0]?.url).toContain('after_seq=1'))
+  act(() => HookEventSource.instances[0].emit(event(2, 'agent.message.delta')))
+  await waitFor(() => expect(first.result.current.events.map((item) => item.seq)).toEqual([1, 2]))
+  first.unmount()
+
+  const persisted = await readCachedSessionEvents('sess_test')
+  expect(persisted?.lastSeq).toBe(1)
+  expect(persisted?.events.map((item) => item.seq)).toEqual([1])
+
+  clearSessionEventCacheForTest()
+  HookEventSource.instances = []
+  const second = renderHook(() => useSessionEvents('sess_test'))
+  await waitFor(() => expect(HookEventSource.instances[0]?.url).toContain('after_seq=1'))
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  second.unmount()
   vi.unstubAllGlobals()
 })
 

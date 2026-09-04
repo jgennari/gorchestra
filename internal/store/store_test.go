@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -30,9 +32,17 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertTableExists(t, ctx, store, "dashboard_run_outcomes")
 	assertTableExists(t, ctx, store, "session_schedules")
 	assertTableExists(t, ctx, store, "schedule_occurrences")
+	assertTableExists(t, ctx, store, "event_blobs")
+	assertTableExists(t, ctx, store, "event_maintenance_state")
 	assertColumnExists(t, ctx, store, "sessions", "provider_session_id")
 	assertColumnExists(t, ctx, store, "sessions", "workspace_path")
 	assertColumnExists(t, ctx, store, "sessions", "next_event_seq")
+	assertColumnExists(t, ctx, store, "sessions", "durable_event_count")
+	assertColumnExists(t, ctx, store, "sessions", "last_durable_event_seq")
+	assertColumnExists(t, ctx, store, "sessions", "materialized_tool_count")
+	assertColumnExists(t, ctx, store, "sessions", "materialized_token_count")
+	assertColumnExists(t, ctx, store, "sessions", "pending_input_count")
+	assertColumnExists(t, ctx, store, "sessions", "pending_permission_count")
 	assertColumnExists(t, ctx, store, "push_subscriptions", "origin")
 	assertColumnExists(t, ctx, store, "queued_messages", "skills_json")
 	assertColumnExists(t, ctx, store, "queued_messages", "source_kind")
@@ -51,8 +61,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 19 {
-		t.Fatalf("expected nineteen recorded migrations, got %d", count)
+	if count != 20 {
+		t.Fatalf("expected twenty recorded migrations, got %d", count)
 	}
 }
 
@@ -131,6 +141,9 @@ INSERT INTO events (id, session_id, seq, type, role, status, payload_json, creat
 	}
 	if session.TokenCount != 140 {
 		t.Fatalf("expected migrated lifetime token count 140, got %d", session.TokenCount)
+	}
+	if session.EventCount != 4 || session.LastEventSeq != 4 {
+		t.Fatalf("expected migrated event summary 4/4, got %d/%d", session.EventCount, session.LastEventSeq)
 	}
 }
 
@@ -1372,6 +1385,204 @@ func TestSessionReadsIncludeActivityCounts(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].EventCount != 5 || sessions[0].ToolCount != 2 {
 		t.Fatalf("expected listed session activity counts, got %#v", sessions)
+	}
+}
+
+func TestSessionSummaryTracksPendingActivityAndTerminalReset(t *testing.T) {
+	ctx := context.Background()
+	testStore := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, testStore)
+
+	for _, eventType := range []string{
+		"agent.input.requested",
+		"agent.permission.requested",
+		"agent.permission.requested",
+		"agent.input.answered",
+		"agent.permission.resolved",
+	} {
+		appendTestEventWithType(t, ctx, testStore, session.ID, eventType, `{"request_id":"request"}`)
+	}
+	persisted, err := testStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session summary: %v", err)
+	}
+	if persisted.PendingInputCount != 0 || persisted.PendingPermissionCount != 1 {
+		t.Fatalf("expected zero pending inputs and one permission, got %#v", persisted)
+	}
+
+	appendTestEventWithType(t, ctx, testStore, session.ID, "agent.run.completed", `{}`)
+	persisted, err = testStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get terminal session summary: %v", err)
+	}
+	if persisted.PendingInputCount != 0 || persisted.PendingPermissionCount != 0 {
+		t.Fatalf("expected terminal event to clear pending activity, got %#v", persisted)
+	}
+}
+
+func TestAppendEventExternalizesLargeToolOutput(t *testing.T) {
+	ctx := context.Background()
+	testStore := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, testStore)
+	output := strings.Repeat("large tool output line\n", 2000)
+	payload, err := json.Marshal(map[string]any{
+		"item_id":           "tool_1",
+		"output":            output,
+		"aggregated_output": output,
+	})
+	if err != nil {
+		t.Fatalf("marshal tool output: %v", err)
+	}
+	event, err := testStore.AppendEvent(ctx, AppendEventParams{
+		SessionID: session.ID,
+		Type:      "tool.call.completed",
+		Role:      "assistant",
+		Status:    EventStatusCompleted,
+		Payload:   payload,
+	})
+	if err != nil {
+		t.Fatalf("append large tool output: %v", err)
+	}
+	if len(event.Payload) >= len(payload)/2 {
+		t.Fatalf("expected compact event payload, got %d bytes from %d", len(event.Payload), len(payload))
+	}
+	var compact map[string]any
+	if err := json.Unmarshal(event.Payload, &compact); err != nil {
+		t.Fatalf("decode compact tool payload: %v", err)
+	}
+	marker, _ := compact["_gorchestra_tool_output"].(map[string]any)
+	if marker["truncated"] != true {
+		t.Fatalf("expected truncated output marker, got %#v", compact)
+	}
+
+	blob, err := testStore.GetEventBlob(ctx, session.ID, event.Seq, "tool-output", 0)
+	if err != nil {
+		t.Fatalf("get tool output blob: %v", err)
+	}
+	if string(blob.Data) != output || blob.OriginalBytes != int64(len(output)) {
+		t.Fatalf("expected original tool output blob, got %d bytes", len(blob.Data))
+	}
+}
+
+func TestAppendEventExternalizesImageAttachment(t *testing.T) {
+	ctx := context.Background()
+	testStore := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, testStore)
+	image := []byte("test-image-bytes")
+	payload, err := json.Marshal(map[string]any{
+		"text": "inspect this",
+		"attachments": []any{map[string]any{
+			"name":       "image.png",
+			"media_type": "image/png",
+			"data_url":   "data:image/png;base64," + base64.StdEncoding.EncodeToString(image),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal attachment: %v", err)
+	}
+	event, err := testStore.AppendEvent(ctx, AppendEventParams{
+		SessionID: session.ID,
+		Type:      "user.message.completed",
+		Role:      "user",
+		Status:    EventStatusCompleted,
+		Payload:   payload,
+	})
+	if err != nil {
+		t.Fatalf("append attachment event: %v", err)
+	}
+	if bytes.Contains(event.Payload, []byte("base64")) {
+		t.Fatalf("expected inline image data removed, got %s", event.Payload)
+	}
+	blob, err := testStore.GetEventBlob(ctx, session.ID, event.Seq, "attachment", 0)
+	if err != nil {
+		t.Fatalf("get attachment blob: %v", err)
+	}
+	if !bytes.Equal(blob.Data, image) || blob.MediaType != "image/png" {
+		t.Fatalf("expected original image blob, got %#v", blob)
+	}
+}
+
+func TestEventMaintenanceExternalizesNestedLegacyToolOutput(t *testing.T) {
+	ctx := context.Background()
+	testStore := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, testStore)
+	event := appendTestEventWithType(t, ctx, testStore, session.ID, "tool.call.completed", `{"output":"small"}`)
+	output := strings.Repeat("nested legacy output\n", 2000)
+	payload, err := json.Marshal(map[string]any{
+		"result": map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": output}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal nested tool output: %v", err)
+	}
+	if _, err := testStore.db.ExecContext(
+		ctx,
+		`UPDATE events SET payload_json = ? WHERE id = ?`,
+		string(payload),
+		event.ID,
+	); err != nil {
+		t.Fatalf("seed legacy tool output: %v", err)
+	}
+
+	batch, err := testStore.RunEventMaintenanceBatch(ctx, nil, 1000)
+	if err != nil {
+		t.Fatalf("run event maintenance: %v", err)
+	}
+	if batch.ExtractedBlobEvents != 1 {
+		t.Fatalf("expected one migrated event, got %#v", batch)
+	}
+	blob, err := testStore.GetEventBlob(ctx, session.ID, event.Seq, "tool-output", 0)
+	if err != nil {
+		t.Fatalf("get migrated tool output: %v", err)
+	}
+	if string(blob.Data) != output {
+		t.Fatalf("expected full nested output, got %d bytes", len(blob.Data))
+	}
+}
+
+func TestEventMaintenanceDeletesIdleLegacyEventsWithoutChangingLifetimeSummary(t *testing.T) {
+	ctx := context.Background()
+	testStore := newTestStore(t, ctx)
+	testStore.now = func() time.Time { return time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC) }
+	session := createTestSession(t, ctx, testStore)
+	appendTestEventWithType(t, ctx, testStore, session.ID, "agent.message.delta", `{"text":"partial"}`)
+	appendTestEventWithType(t, ctx, testStore, session.ID, "provider.codex.request", `{"raw":"debug"}`)
+	appendTestEventWithType(t, ctx, testStore, session.ID, "agent.message.completed", `{"text":"complete"}`)
+	appendTestEventWithType(t, ctx, testStore, session.ID, "agent.message.delta", `{"text":"unsettled partial"}`)
+
+	cutoff := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)
+	batch, err := testStore.RunEventMaintenanceBatch(ctx, &cutoff, 1000)
+	if err != nil {
+		t.Fatalf("run maintenance: %v", err)
+	}
+	if batch.DeletedDeltaEvents != 1 || batch.DeletedDebugEvents != 1 {
+		t.Fatalf("expected one delta and one debug deletion, got %#v", batch)
+	}
+	events, err := testStore.ListEvents(ctx, session.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("list retained events: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != "agent.message.completed" {
+		t.Fatalf("expected canonical completed event, got %#v", events)
+	}
+	var unsettled int
+	if err := testStore.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM events WHERE session_id = ? AND type = 'agent.message.delta'`,
+		session.ID,
+	).Scan(&unsettled); err != nil {
+		t.Fatalf("count unsettled deltas: %v", err)
+	}
+	if unsettled != 1 {
+		t.Fatalf("expected one unsettled delta to remain, got %d", unsettled)
+	}
+	persisted, err := testStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session after maintenance: %v", err)
+	}
+	if persisted.EventCount != 2 || persisted.LastEventSeq != 3 {
+		t.Fatalf("expected durable lifetime summary to remain at two events, got %#v", persisted)
 	}
 }
 

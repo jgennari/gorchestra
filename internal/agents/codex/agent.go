@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ const (
 	defaultWebSearchMode   = "live"
 	defaultInterruptGrace  = 2 * time.Second
 	defaultOptionsCacheTTL = 5 * time.Minute
+	defaultSkillsCacheTTL  = time.Minute
 	defaultFastServiceTier = "priority"
 	maxJSONRPCLineBytes    = 64 * 1024 * 1024
 	maxStderrLineBytes     = 1024 * 1024
@@ -56,6 +58,14 @@ type Agent struct {
 	optionsCacheSet bool
 	optionsExpires  time.Time
 	optionsCacheTTL time.Duration
+	skillsMu        sync.Mutex
+	skillsCache     map[string]cachedSkillCatalog
+	skillsCacheTTL  time.Duration
+}
+
+type cachedSkillCatalog struct {
+	catalog   agents.SkillCatalog
+	expiresAt time.Time
 }
 
 func New(options ...Option) *Agent {
@@ -67,6 +77,8 @@ func New(options ...Option) *Agent {
 		webSearchMode:   defaultWebSearchMode,
 		interruptGrace:  defaultInterruptGrace,
 		optionsCacheTTL: defaultOptionsCacheTTL,
+		skillsCacheTTL:  defaultSkillsCacheTTL,
+		skillsCache:     make(map[string]cachedSkillCatalog),
 		versionChecker:  defaultVersionChecker,
 	}
 	for _, option := range options {
@@ -137,6 +149,14 @@ func WithOptionsCacheTTL(ttl time.Duration) Option {
 	return func(agent *Agent) {
 		if ttl >= 0 {
 			agent.optionsCacheTTL = ttl
+		}
+	}
+}
+
+func WithSkillsCacheTTL(ttl time.Duration) Option {
+	return func(agent *Agent) {
+		if ttl >= 0 {
+			agent.skillsCacheTTL = ttl
 		}
 	}
 }
@@ -229,6 +249,13 @@ func (a *Agent) Skills(ctx context.Context, query agents.SkillQuery) (agents.Ski
 	if err != nil {
 		return agents.SkillCatalog{}, err
 	}
+	a.skillsMu.Lock()
+	defer a.skillsMu.Unlock()
+	if !query.ForceReload {
+		if cached, ok := a.skillsCache[workdir]; ok && time.Now().Before(cached.expiresAt) {
+			return cloneSkillCatalog(cached.catalog), nil
+		}
+	}
 
 	probe, err := a.startProbe(workdir)
 	if err != nil {
@@ -239,7 +266,26 @@ func (a *Agent) Skills(ctx context.Context, query agents.SkillQuery) (agents.Ski
 	if err := probe.initialize(ctx); err != nil {
 		return agents.SkillCatalog{}, err
 	}
-	return probe.listSkills(ctx, workdir, query.ForceReload)
+	catalog, err := probe.listSkills(ctx, workdir, query.ForceReload)
+	if err != nil {
+		return agents.SkillCatalog{}, err
+	}
+	revisionSource, _ := json.Marshal(catalog)
+	catalog.Revision = fmt.Sprintf("%x", sha256.Sum256(revisionSource))
+	if a.skillsCacheTTL > 0 {
+		a.skillsCache[workdir] = cachedSkillCatalog{
+			catalog:   cloneSkillCatalog(catalog),
+			expiresAt: time.Now().Add(a.skillsCacheTTL),
+		}
+	}
+	return cloneSkillCatalog(catalog), nil
+}
+
+func cloneSkillCatalog(catalog agents.SkillCatalog) agents.SkillCatalog {
+	cloned := catalog
+	cloned.Skills = append([]agents.Skill(nil), catalog.Skills...)
+	cloned.Errors = append([]agents.SkillError(nil), catalog.Errors...)
+	return cloned
 }
 
 func (a *Agent) loadOptions(ctx context.Context) (agents.Options, error) {

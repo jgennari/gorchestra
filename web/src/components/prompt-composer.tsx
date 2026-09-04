@@ -147,6 +147,7 @@ export function PromptComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const queueEventsRef = useRef<Map<string, AgentEvent>>(new Map())
+  const skillsLoadedSessionRef = useRef('')
   const [content, setContent] = useState(() =>
     ensureInlineSkillTokens(loadDraft(sessionID), loadSelectedSkills(sessionID)),
   )
@@ -183,6 +184,7 @@ export function PromptComposer({
   const [closeSettingsSignal, setCloseSettingsSignal] = useState(0)
   const hasAttachments = attachments.length > 0
   const hasSelectedSkills = selectedSkills.length > 0
+  const shouldLoadSkills = hasSelectedSkills || skillsOpen || skillTypeahead !== null
   const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments || hasSelectedSkills)
   const queueBlockedByAttachments = hasAttachments
   const canQueue =
@@ -259,12 +261,19 @@ export function PromptComposer({
 
   useEffect(() => {
     if (agentType !== 'codex' || !sessionID) {
+      skillsLoadedSessionRef.current = ''
       setSkills([])
       setSkillErrors([])
       setSkillsError('')
       setSkillsOpen(false)
       setSkillScopeFilter(null)
       setSkillTypeahead(null)
+      return
+    }
+    if (!shouldLoadSkills) {
+      return
+    }
+    if (skillsLoadedSessionRef.current === sessionID) {
       return
     }
 
@@ -275,6 +284,7 @@ export function PromptComposer({
       .then((catalog) => {
         if (cancelled) return
         const available = Array.isArray(catalog.skills) ? catalog.skills : []
+        skillsLoadedSessionRef.current = sessionID
         setSkills(available)
         setSkillErrors(Array.isArray(catalog.errors) ? catalog.errors : [])
         setSkillScopeFilter((current) =>
@@ -304,7 +314,7 @@ export function PromptComposer({
     return () => {
       cancelled = true
     }
-  }, [agentType, sessionID, onError])
+  }, [agentType, sessionID, onError, shouldLoadSkills])
 
   useEffect(() => {
     if (agentType !== 'opencode') {
@@ -656,6 +666,7 @@ export function PromptComposer({
     try {
       const catalog = await fetchSessionSkills(sessionID, true)
       const available = Array.isArray(catalog.skills) ? catalog.skills : []
+      skillsLoadedSessionRef.current = sessionID
       setSkills(available)
       setSkillErrors(Array.isArray(catalog.errors) ? catalog.errors : [])
       setSkillScopeFilter((current) =>

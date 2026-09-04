@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	eventservice "github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/store"
@@ -48,6 +49,32 @@ func TestParseConfigUsesDataDirForDefaultDatabase(t *testing.T) {
 	}
 	if cfg.workspace != wantWorkspace {
 		t.Fatalf("expected workspace %q, got %q", wantWorkspace, cfg.workspace)
+	}
+}
+
+func TestParseConfigDebugRetention(t *testing.T) {
+	workspace := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	cfg, err := parseConfigArgs(
+		[]string{"--data-dir", dataDir, "--workspace", workspace},
+		envMap(map[string]string{"GORCHESTRA_DEBUG_RETENTION": "72h"}),
+	)
+	if err != nil {
+		t.Fatalf("parse environment retention: %v", err)
+	}
+	if cfg.debugRetention != 72*time.Hour {
+		t.Fatalf("expected 72h retention, got %s", cfg.debugRetention)
+	}
+
+	cfg, err = parseConfigArgs(
+		[]string{"--data-dir", dataDir, "--workspace", workspace, "--debug-retention", "0"},
+		envMap(map[string]string{"GORCHESTRA_DEBUG_RETENTION": "72h"}),
+	)
+	if err != nil {
+		t.Fatalf("parse flag retention: %v", err)
+	}
+	if cfg.debugRetention != 0 {
+		t.Fatalf("expected retention disabled by flag, got %s", cfg.debugRetention)
 	}
 }
 
