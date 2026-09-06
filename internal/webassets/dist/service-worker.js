@@ -208,6 +208,31 @@ async function cacheAppShellResponse(response) {
 
   const cache = await caches.open(appShellCacheName)
   await cache.put(appShellCacheKey, response.clone())
+  await cacheAppShellAssets(html)
+}
+
+async function cacheAppShellAssets(html) {
+  const assetPaths = new Set(
+    Array.from(html.matchAll(/(?:src|href)=["'](\/assets\/[^"']+)["']/g), (match) => match[1]),
+  )
+  if (assetPaths.size === 0) {
+    return
+  }
+
+  const cache = await caches.open(staticCacheName)
+  await Promise.all(
+    Array.from(assetPaths, async (path) => {
+      if (await cache.match(path)) return
+      try {
+        const response = await fetch(path, { cache: 'no-cache', credentials: 'same-origin' })
+        if (isCacheableResponse(response)) {
+          await cache.put(path, response)
+        }
+      } catch {
+        // A later online request will populate a missing entry through cacheFirst.
+      }
+    }),
+  )
 }
 
 function isHTMLResponse(response) {

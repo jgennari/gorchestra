@@ -46,6 +46,7 @@ const firstSession = session('sess_1', 'Inspect repo', '2026-06-12T16:02:00Z')
 const secondSession = session('sess_2', 'Write docs', '2026-06-12T16:01:00Z')
 
 beforeEach(() => {
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
   window.history.replaceState({}, '', '/sessions/sess_1')
   window.localStorage.clear()
   clearSessionEventCacheForTest()
@@ -68,6 +69,57 @@ test('uses a selected session from the initial list without refetching its detai
 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
   expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1')).toHaveLength(0)
+})
+
+test('offline root launch restores cached sessions, saved history, and a local-only draft', async () => {
+  const user = userEvent.setup()
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: false })
+  window.history.replaceState({}, '', '/')
+  vi.stubGlobal('indexedDB', createFakeIndexedDB())
+  await writeCachedSession(firstSession)
+  await writeCachedSession(secondSession)
+  await writeCachedSessionEvents('sess_2', [
+    event(1, 'user.message.completed', { text: 'Saved offline prompt' }, 'sess_2'),
+    event(2, 'agent.message.completed', { text: 'Saved offline answer' }, 'sess_2'),
+  ], false)
+  window.localStorage.setItem('gorchestra.last-selected-session.v1', 'sess_2')
+  const onlineFetch = fetchMock()
+  let networkAvailable = false
+  const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+    networkAvailable ? onlineFetch(input, init) : Promise.reject(new TypeError('Failed to fetch')),
+  )
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  expect(await screen.findByText('Saved offline answer')).toBeInTheDocument()
+  expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('Write docs').length).toBeGreaterThan(0)
+  expect(screen.getByTestId('offline-session-status')).toHaveTextContent('Showing saved history')
+  expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument()
+
+  const prompt = screen.getByRole('textbox', { name: 'Prompt' })
+  await user.type(prompt, 'Draft while disconnected')
+  expect(prompt).toHaveValue('Draft while disconnected')
+  expect(screen.getByRole('button', { name: 'Submit prompt' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: /Queue message/ })).toBeDisabled()
+  expect(window.localStorage.getItem('gorchestra.session-composer.sess_2')).toContain('Draft while disconnected')
+  expect(fetch).not.toHaveBeenCalled()
+  expect(FakeEventSource.instances).toHaveLength(0)
+
+  await user.click(screen.getAllByRole('button', { name: /Inspect repo/ })[0])
+  expect(await screen.findByText("This session's history hasn't been saved on this device yet.")).toBeInTheDocument()
+
+  networkAvailable = true
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
+  act(() => window.dispatchEvent(new Event('online')))
+  await waitFor(() =>
+    expect(fetch.mock.calls.some(([url]) => String(url) === '/api/sessions?limit=50')).toBe(true),
+  )
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+  expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveValue('Draft while disconnected')
+  expect(screen.getByRole('button', { name: 'Submit prompt' })).toBeEnabled()
+  expect(screen.queryByTestId('offline-session-status')).not.toBeInTheDocument()
 })
 
 test('global activity stays connected when the selected session changes', async () => {

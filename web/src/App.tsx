@@ -1,4 +1,4 @@
-import { Archive, BookOpen, CalendarClock, Eraser, Folder, Loader2, Menu, MessageSquare, Minimize2, MoreHorizontal, PanelRightOpen, Plus, Server, Settings, Terminal, X } from 'lucide-react'
+import { Archive, BookOpen, CalendarClock, Eraser, Folder, Loader2, Menu, MessageSquare, Minimize2, MoreHorizontal, PanelRightOpen, Plus, Server, Settings, Terminal, WifiOff, X } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -110,10 +110,17 @@ import {
 import {
   readCachedSessionSnapshot,
   readCachedSessionSnapshotBySlug,
+  readCachedSessionSnapshots,
   readCachedSession as readPersistentCachedSession,
   writeCachedSession as writePersistentCachedSession,
   writeCachedSessions as writePersistentCachedSessions,
 } from '@/lib/session-cache'
+import {
+  browserIsOnline,
+  isNetworkRequestError,
+  serverConnectivityEventName,
+  type ServerConnectivityDetail,
+} from '@/lib/server-connectivity'
 import { cn } from '@/lib/utils'
 import { applySessionEvent } from '@/lib/session-events'
 import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
@@ -147,13 +154,16 @@ type InitialSessionState = {
   sessions: Session[]
   selectedSessionID: string | null
   seededCachedSession: boolean
+  restoredOfflineSessionAtRoot: boolean
 }
 
 const debugStorageKeyPrefix = 'gorchestra.session-debug.'
 const paneWidthsStorageKey = 'gorchestra.pane-widths.v1'
 const sessionSeenSeqStorageKey = 'gorchestra.session-seen-seq.v1'
+const lastSelectedSessionStorageKey = 'gorchestra.last-selected-session.v1'
 const dashboardActivityRefreshDelayMs = 750
 const maximumActivityReconnectDelayMs = 15_000
+const offlineReconnectDelayMs = 5_000
 const defaultPaneWidths: PaneWidths = { left: 348, right: 344 }
 const paneLimits = {
   leftMin: 224,
@@ -189,6 +199,8 @@ function App() {
   const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0)
   const [activityCursorReady, setActivityCursorReady] = useState(false)
   const [activityStreamState, setActivityStreamState] = useState<StreamState>('loading')
+  const [serverReachable, setServerReachable] = useState(() => browserIsOnline())
+  const [connectivityRetryKey, setConnectivityRetryKey] = useState(0)
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
   const [notificationAttentionRestored, setNotificationAttentionRestored] = useState(false)
@@ -201,7 +213,9 @@ function App() {
   const [focusedFileLine, setFocusedFileLine] = useState(() => fileLineFromLocation())
   const [appView, setAppView] = useState<AppView>(() => selectedSessionRouteFromLocation().view)
   const [userSkillsSelected, setUserSkillsSelected] = useState(() => isUserSkillsLocation())
-  const [overviewSelected, setOverviewSelected] = useState(() => !isSessionLocation() && !isUserSkillsLocation())
+  const [overviewSelected, setOverviewSelected] = useState(
+    () => !initialSessionState.restoredOfflineSessionAtRoot && !isSessionLocation() && !isUserSkillsLocation(),
+  )
   const selectedSessionIDRef = useRef<string | null>(selectedSessionID)
   const overviewSelectedRef = useRef(overviewSelected)
   const appViewRef = useRef<AppView>(appView)
@@ -215,6 +229,7 @@ function App() {
   const activityClientIDRef = useRef(createActivityClientID())
   const activityWatchRef = useRef(`${selectedSessionID ?? ''}:false`)
   const showDebugEventsRef = useRef(showDebugEvents)
+  const offlineRootSelectionRestoredRef = useRef(initialSessionState.restoredOfflineSessionAtRoot)
 
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionID) ?? null,
@@ -260,6 +275,37 @@ function App() {
   useFavicon(hasFaviconAttention)
   useAppBadge(appBadgeCount)
   useClientPerformanceTelemetry(selectedSessionID)
+
+  useEffect(() => {
+    function handleConnectivity(event: Event) {
+      const detail = (event as CustomEvent<ServerConnectivityDetail>).detail
+      if (typeof detail?.reachable === 'boolean') setServerReachable(detail.reachable)
+    }
+
+    function handleOffline() {
+      setServerReachable(false)
+    }
+
+    function handleOnline() {
+      setConnectivityRetryKey((current) => current + 1)
+    }
+
+    window.addEventListener(serverConnectivityEventName, handleConnectivity)
+    window.addEventListener('offline', handleOffline)
+    window.addEventListener('online', handleOnline)
+    return () => {
+      window.removeEventListener(serverConnectivityEventName, handleConnectivity)
+      window.removeEventListener('offline', handleOffline)
+      window.removeEventListener('online', handleOnline)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!serverReachable) {
+      setCreateOpen(false)
+      setSpotlightOpen(false)
+    }
+  }, [serverReachable])
 
   useEffect(() => {
     let cancelled = false
@@ -353,6 +399,7 @@ function App() {
     setUserSkillsSelected(false)
     selectedSessionIDRef.current = sessionID
     setSelectedSessionID(sessionID)
+    if (sessionID) saveLastSelectedSessionID(sessionID)
     if (historyMode !== 'none') {
       setFocusedEventSeq(0)
       setFocusedFileLine(0)
@@ -779,6 +826,7 @@ function App() {
     includeDebugEvents: showDebugEvents,
     targetSeq: focusedEventSeq,
     liveStreamState: activityStreamState,
+    networkAvailable: serverReachable,
   })
 
   const handleJumpToLatest = useCallback(() => {
@@ -792,16 +840,16 @@ function App() {
   }, [focusedEventSeq, jumpToLatest])
 
   useEffect(() => {
-    if (error) {
+    if (serverReachable && error) {
       setErroredSessionIDs((current) => addSetValue(current, selectedSessionIDRef.current))
     }
-  }, [error])
+  }, [error, serverReachable])
 
   useEffect(() => {
-    if (streamError) {
+    if (serverReachable && streamError) {
       setErroredSessionIDs((current) => addSetValue(current, selectedSessionIDRef.current))
     }
-  }, [streamError])
+  }, [serverReachable, streamError])
 
   useEffect(() => {
     selectedEventsRef.current = liveEvents
@@ -837,6 +885,8 @@ function App() {
       }
       try {
         const snapshot = await getSessionSnapshot()
+        setServerReachable(true)
+        setError((current) => (isLikelyNetworkErrorMessage(current) ? '' : current))
         const nextSessions = snapshot.sessions
         activityCursorRef.current = Math.max(activityCursorRef.current, snapshot.eventCursor)
         const selectedID = selectedSessionIDRef.current
@@ -869,7 +919,19 @@ function App() {
         }
         return true
       } catch (loadError) {
-        if (showLoading) {
+        if (isNetworkRequestError(loadError)) {
+          setServerReachable(false)
+          if (
+            !offlineRootSelectionRestoredRef.current &&
+            !isSessionLocation() &&
+            !isUserSkillsLocation() &&
+            sessionsRef.current.length > 0
+          ) {
+            offlineRootSelectionRestoredRef.current = true
+            const offlineSessionID = preferredCachedSessionID(sessionsRef.current)
+            if (offlineSessionID) selectSession(offlineSessionID, 'none')
+          }
+        } else if (showLoading) {
           setError(messageFromError(loadError))
         }
         return false
@@ -928,7 +990,8 @@ function App() {
   ])
 
   useEffect(() => {
-    if (!activityCursorReady) {
+    if (!activityCursorReady || !serverReachable) {
+      setActivityStreamState('disconnected')
       return
     }
     let closed = false
@@ -994,10 +1057,12 @@ function App() {
       source.onopen = () => {
         if (closed) return
         reconnectAttempt = 0
+        setServerReachable(true)
         setActivityStreamState('connected')
       }
       source.onerror = () => {
         closeSource()
+        if (!browserIsOnline()) setServerReachable(false)
         scheduleReconnect()
       }
       for (const eventType of knownEventTypes) {
@@ -1017,20 +1082,45 @@ function App() {
       closeSource()
       setActivityStreamState('disconnected')
     }
-  }, [activityCursorReady, handleActivityEvent, loadSessions])
+  }, [activityCursorReady, handleActivityEvent, loadSessions, serverReachable])
 
   useEffect(() => {
+    if (!browserIsOnline()) {
+      sessionListLoadedRef.current = true
+      setLoadingSessions(false)
+      setActivityStreamState('disconnected')
+      return
+    }
     void loadSessions()
   }, [loadSessions])
 
   useEffect(() => {
-    if (!selectedSessionID || selectedSession || loadingSessions || !sessionListLoadedRef.current) {
+    if (serverReachable || !browserIsOnline()) return
+
+    let cancelled = false
+    let retryTimer: number | undefined
+    async function retry() {
+      const synchronized = await loadSessions({ showLoading: false })
+      if (!cancelled && !synchronized) {
+        retryTimer = window.setTimeout(() => void retry(), offlineReconnectDelayMs)
+      }
+    }
+
+    void retry()
+    return () => {
+      cancelled = true
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+    }
+  }, [connectivityRetryKey, loadSessions, serverReachable])
+
+  useEffect(() => {
+    if (!serverReachable || !selectedSessionID || selectedSession || loadingSessions || !sessionListLoadedRef.current) {
       return
     }
     void refreshSession(selectedSessionID).catch((refreshError) => {
       setError(messageFromError(refreshError))
     })
-  }, [loadingSessions, refreshSession, selectedSession, selectedSessionID])
+  }, [loadingSessions, refreshSession, selectedSession, selectedSessionID, serverReachable])
 
   async function handleCreate(params: {
     agent_type: AgentType
@@ -1464,7 +1554,7 @@ function App() {
     />
   )
 
-  const chatErrorMessage = error || streamError
+  const chatErrorMessage = serverReachable ? error || streamError : ''
   const visibleErrorSessionIDs = new Set(erroredSessionIDs)
   if (selectedSession && chatErrorMessage) {
     visibleErrorSessionIDs.add(selectedSession.id)
@@ -1477,21 +1567,27 @@ function App() {
     loading: loadingSessions || refreshingSessions,
     onSelect: (sessionID: string) => requestSessionSelection(sessionID, 'push'),
     pinningSessionIDs,
-    onPinChange: (sessionID: string, pinned: boolean) => void handlePinSession(sessionID, pinned),
+    onPinChange: serverReachable
+      ? (sessionID: string, pinned: boolean) => void handlePinSession(sessionID, pinned)
+      : undefined,
     overviewSelected,
     onOverview: () => selectOverview('push'),
     userSkillsSelected,
     onUserSkills: () => selectUserSkills('push'),
-    onSearch: () => {
-      setMobileListOpen(false)
-      setSpotlightOpen(true)
-    },
+    onSearch: serverReachable
+      ? () => {
+          setMobileListOpen(false)
+          setSpotlightOpen(true)
+        }
+      : undefined,
     onCreate: () => setCreateOpen(true),
+    createDisabled: !serverReachable,
     notificationAction: renderNotificationsPopover(),
     appMenuAction: renderAppMenu(),
   }
   const list = <SessionList {...sessionListProps} />
   const mobileList = <SessionList {...sessionListProps} variant="embedded" />
+  const displayedAppView: AppView = serverReachable ? appView : 'session'
   const confirmActionPending =
     pendingSessionAction !== null &&
     confirmSessionAction !== null &&
@@ -1504,8 +1600,10 @@ function App() {
   const viewToggle = (
     <SessionViewNavigation
       session={selectedSession}
-      view={appView}
-      onSelect={(view) => selectAppView(view)}
+      view={displayedAppView}
+      onSelect={(view) => {
+        if (serverReachable) selectAppView(view)
+      }}
       onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
       onClear={() => requestSessionAction('clear')}
       onCompact={() => requestSessionAction('compact')}
@@ -1545,7 +1643,7 @@ function App() {
           session={selectedSession}
           resolvingSessionID={selectedSession ? null : selectedSessionID}
           fallbackTitle="Skills"
-          errorMessage={error || streamError}
+          errorMessage={chatErrorMessage}
           leadingAction={openSessionsButton}
           headerActions={viewToggle}
           onUpdateTitle={handleUpdateTitle}
@@ -1588,7 +1686,7 @@ function App() {
           session={selectedSession}
           resolvingSessionID={selectedSession ? null : selectedSessionID}
           fallbackTitle="Skills"
-          errorMessage={error || streamError}
+          errorMessage={chatErrorMessage}
           headerActions={viewToggle}
           onUpdateTitle={handleUpdateTitle}
           onUpdateWorkspace={handleUpdateWorkspace}
@@ -1654,7 +1752,9 @@ function App() {
 
       <section className="command-workspace flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="relative min-h-0 flex-1 overflow-hidden">
-          {isOverview ? (
+          {!serverReachable && isGlobalView ? (
+            <OfflineGlobalView onOpenSessions={() => setMobileListOpen(true)} />
+          ) : isOverview ? (
             <DashboardOverview
               refreshKey={dashboardRefreshKey}
               onOpenSession={(sessionID) => requestSessionSelection(sessionID, 'push')}
@@ -1663,7 +1763,7 @@ function App() {
             />
           ) : isUserSkills ? (
             <RepositorySkills userScope onOpenSessions={() => setMobileListOpen(true)} />
-          ) : appView === 'settings' ? (
+          ) : displayedAppView === 'settings' ? (
             <>
               <div
                 data-testid="mobile-floating-settings-header"
@@ -1673,7 +1773,7 @@ function App() {
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
                   fallbackTitle="Settings"
-                  errorMessage={error || streamError}
+                  errorMessage={chatErrorMessage}
                   leadingAction={openSessionsButton}
                   headerActions={viewToggle}
                   onUpdateTitle={handleUpdateTitle}
@@ -1692,7 +1792,7 @@ function App() {
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
                   fallbackTitle="Settings"
-                  errorMessage={error || streamError}
+                  errorMessage={chatErrorMessage}
                   headerActions={viewToggle}
                   onUpdateTitle={handleUpdateTitle}
                   onUpdateWorkspace={handleUpdateWorkspace}
@@ -1713,7 +1813,7 @@ function App() {
                 onShowDebugEventsChange={handleShowDebugEventsChange}
               />
             </>
-          ) : appView === 'schedules' ? (
+          ) : displayedAppView === 'schedules' ? (
             <>
               <div
                 data-testid="mobile-floating-schedules-header"
@@ -1723,7 +1823,7 @@ function App() {
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
                   fallbackTitle="Schedules"
-                  errorMessage={error || streamError}
+                  errorMessage={chatErrorMessage}
                   leadingAction={openSessionsButton}
                   headerActions={viewToggle}
                   onUpdateTitle={handleUpdateTitle}
@@ -1768,7 +1868,7 @@ function App() {
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
                   fallbackTitle="Schedules"
-                  errorMessage={error || streamError}
+                  errorMessage={chatErrorMessage}
                   headerActions={viewToggle}
                   onUpdateTitle={handleUpdateTitle}
                   onUpdateWorkspace={handleUpdateWorkspace}
@@ -1810,7 +1910,7 @@ function App() {
                 refreshKey={events.filter((event) => event.type.startsWith('schedule.')).length}
               />
             </>
-          ) : appView === 'skills' ? (
+          ) : displayedAppView === 'skills' ? (
             <>
               {floatingRepositorySkillsHeader}
               <RepositorySkills
@@ -1819,7 +1919,7 @@ function App() {
                 onOpenFile={(path) => void handleOpenWorkspacePath(path)}
               />
             </>
-          ) : appView === 'console' ? (
+          ) : displayedAppView === 'console' ? (
             <HostConsole
               session={selectedSession}
               resolvingSessionID={resolvingSelectedSessionID}
@@ -1827,7 +1927,7 @@ function App() {
               headerActions={viewToggle}
               mobileLeadingAction={openSessionsButton}
             />
-          ) : appView === 'host' ? (
+          ) : displayedAppView === 'host' ? (
             <>
               <div
                 data-testid="mobile-floating-host-header"
@@ -1837,7 +1937,7 @@ function App() {
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
                   fallbackTitle="Preview"
-                  errorMessage={error || streamError}
+                  errorMessage={chatErrorMessage}
                   leadingAction={openSessionsButton}
                   headerActions={viewToggle}
                   onUpdateTitle={handleUpdateTitle}
@@ -1882,7 +1982,7 @@ function App() {
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
                   fallbackTitle="Preview"
-                  errorMessage={error || streamError}
+                  errorMessage={chatErrorMessage}
                   headerActions={viewToggle}
                   onUpdateTitle={handleUpdateTitle}
                   onUpdateWorkspace={handleUpdateWorkspace}
@@ -1920,7 +2020,7 @@ function App() {
               </div>
               <HostPreview session={selectedSession} resolvingSessionID={resolvingSelectedSessionID} />
             </>
-          ) : appView === 'files' ? (
+          ) : displayedAppView === 'files' ? (
             <>
               <div
                 data-testid="mobile-floating-files-header"
@@ -1929,7 +2029,7 @@ function App() {
                 <FilesWorkspaceHeader
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
-                  errorMessage={error || streamError}
+                  errorMessage={chatErrorMessage}
                   leadingAction={openSessionsButton}
                   headerActions={viewToggle}
                   onUpdateTitle={handleUpdateTitle}
@@ -1973,7 +2073,7 @@ function App() {
                 <FilesWorkspaceHeader
                   session={selectedSession}
                   resolvingSessionID={resolvingSelectedSessionID}
-                  errorMessage={error || streamError}
+                  errorMessage={chatErrorMessage}
                   headerActions={viewToggle}
                   onUpdateTitle={handleUpdateTitle}
                   onUpdateWorkspace={handleUpdateWorkspace}
@@ -2020,6 +2120,7 @@ function App() {
                 onCloseFile={handleCloseWorkspaceFile}
                 onDirtyChange={setWorkspaceFileDirty}
                 focusedLine={focusedFileLine}
+                offline={!serverReachable}
               />
             </>
           ) : (
@@ -2053,6 +2154,7 @@ function App() {
               onVisibleSequenceRangeChange={setTranscriptVisibleRange}
               headerActions={viewToggle}
               mobileLeadingAction={openSessionsButton}
+              offline={!serverReachable}
             />
           )}
         </div>
@@ -2079,7 +2181,7 @@ function App() {
           events={events}
           activityEvents={liveEvents}
           streamState={streamState}
-          streamError={streamError}
+          streamError={chatErrorMessage}
           fileRefreshKey={fileRefreshKey}
           contentMode={railContent.mode}
           onContentModeChange={railContent.setMode}
@@ -2118,6 +2220,7 @@ function App() {
               : false
           }
           archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+          offline={!serverReachable}
         />
       </div>
 
@@ -2167,6 +2270,7 @@ function App() {
                   type="button"
                   aria-label="Create session"
                   size="icon"
+                  disabled={!serverReachable}
                   onClick={() => {
                     setMobileListOpen(false)
                     setCreateOpen(true)
@@ -2219,7 +2323,7 @@ function App() {
               resolvingSessionID={resolvingSelectedSessionID}
               events={events}
               streamState={streamState}
-              streamError={streamError}
+              streamError={chatErrorMessage}
               fileRefreshKey={fileRefreshKey}
               showUtilityContent={false}
               onClear={() => {
@@ -2246,6 +2350,7 @@ function App() {
                   : false
               }
               archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+              offline={!serverReachable}
             />
           </div>
         </DialogContent>
@@ -2253,6 +2358,21 @@ function App() {
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
       {viewportDebug ? <ViewportDebugPanel /> : null}
     </main>
+  )
+}
+
+function OfflineGlobalView({ onOpenSessions }: { onOpenSessions: () => void }) {
+  return (
+    <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
+      <WifiOff className="mb-3 size-6 text-muted-foreground" aria-hidden="true" />
+      <h2 className="text-lg font-semibold">Gorchestra is offline</h2>
+      <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+        Saved sessions and chat history are still available on this device. New server activity will resume when the connection returns.
+      </p>
+      <Button type="button" variant="outline" className="mt-4 lg:hidden" onClick={onOpenSessions}>
+        Open saved sessions
+      </Button>
+    </section>
   )
 }
 
@@ -3017,18 +3137,46 @@ function round2(value: number) {
 function loadInitialSessionStateFromLocation(): InitialSessionState {
   const route = selectedSessionRouteFromLocation()
   const cachedSession = cachedSessionForRoute(route)
-  if (cachedSession) {
-    return {
-      sessions: [cachedSession],
-      selectedSessionID: cachedSession.id,
-      seededCachedSession: true,
+  const cachedSessions = sortSessions(
+    [...readCachedSessionSnapshots(), ...(cachedSession ? [cachedSession] : [])].filter(
+      (session, index, items) => items.findIndex((item) => item.id === session.id) === index,
+    ),
+  )
+  const rootOffline = !route.sessionID && !route.sessionSlug && !isUserSkillsLocation() && !browserIsOnline()
+  const rootOfflineSessionID = rootOffline ? preferredCachedSessionID(cachedSessions) : null
+
+  return {
+    sessions: cachedSessions,
+    selectedSessionID: cachedSession?.id ?? route.sessionID ?? rootOfflineSessionID,
+    seededCachedSession: cachedSessions.length > 0,
+    restoredOfflineSessionAtRoot: Boolean(rootOfflineSessionID),
+  }
+}
+
+function preferredCachedSessionID(sessions: Session[]) {
+  if (typeof window !== 'undefined') {
+    try {
+      const stored = window.localStorage.getItem(lastSelectedSessionStorageKey)
+      if (stored && sessions.some((session) => session.id === stored)) return stored
+    } catch {
+      // Fall back to the first cached session when storage is unavailable.
     }
   }
-  return {
-    sessions: [],
-    selectedSessionID: route.sessionID,
-    seededCachedSession: false,
+  return sessions[0]?.id ?? null
+}
+
+function saveLastSelectedSessionID(sessionID: string) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(lastSelectedSessionStorageKey, sessionID)
+  } catch {
+    // Session navigation should still work when storage is unavailable.
   }
+}
+
+function isLikelyNetworkErrorMessage(message: string) {
+  const normalized = message.trim().toLowerCase()
+  return normalized === 'failed to fetch' || normalized === 'load failed' || normalized.includes('networkerror')
 }
 
 function cachedSessionForRoute(route: SessionRoute) {

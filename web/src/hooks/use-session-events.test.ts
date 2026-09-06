@@ -161,6 +161,34 @@ test('warm reload waits for a slow persistent window instead of downloading the 
   vi.unstubAllGlobals()
 })
 
+test('offline session hydration reads persistent history without requesting the server', async () => {
+  const fakeIndexedDB = createFakeIndexedDB()
+  vi.stubGlobal('indexedDB', fakeIndexedDB)
+  clearSessionEventCacheForTest()
+  await writeCachedSessionEvents(
+    'sess_offline',
+    [
+      { ...event(20, 'user.message.completed'), session_id: 'sess_offline' },
+      { ...event(21, 'agent.message.completed'), session_id: 'sess_offline' },
+    ],
+    true,
+  )
+  clearSessionEventCacheForTest()
+  const fetchMock = vi.fn(() => Promise.reject(new TypeError('Failed to fetch')))
+  vi.stubGlobal('fetch', fetchMock)
+
+  const { result, unmount } = renderHook(() =>
+    useSessionEvents('sess_offline', { networkAvailable: false }),
+  )
+
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([20, 21]))
+  expect(result.current.streamState).toBe('disconnected')
+  expect(fetchMock).not.toHaveBeenCalled()
+
+  unmount()
+  vi.unstubAllGlobals()
+})
+
 test('older network pages are reused after switching away and back', async () => {
   vi.stubGlobal('indexedDB', createFakeIndexedDB())
   vi.stubGlobal('EventSource', HookEventSource)

@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react'
+import { Loader2, WifiOff } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
@@ -71,6 +71,7 @@ type Props = {
   focusedEventSeq?: number
   focusedEventRequest?: number
   onVisibleSequenceRangeChange?: (range: TranscriptSequenceRange | null) => void
+  offline?: boolean
 }
 
 export function SessionDetail({
@@ -103,11 +104,12 @@ export function SessionDetail({
   focusedEventSeq = 0,
   focusedEventRequest = 0,
   onVisibleSequenceRangeChange,
+  offline = false,
 }: Props) {
   const bottomInsetRef = useRef<HTMLDivElement>(null)
   const [bottomInsetHeight, setBottomInsetHeight] = useState(0)
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatTranscriptMessage[]>([])
-  const statusEvents = liveEvents ?? events
+  const statusEvents = useMemo(() => offline ? [] : (liveEvents ?? events), [events, liveEvents, offline])
   const persistedClientSubmissionIDs = useMemo(() => clientSubmissionIDs(events), [events])
   const visibleOptimisticUserMessages = useMemo(
     () => optimisticUserMessages.filter((message) => !persistedClientSubmissionIDs.has(message.id)),
@@ -239,10 +241,21 @@ export function SessionDetail({
     const observer = new ResizeObserver(() => updateHeight())
     observer.observe(target)
     return () => observer.disconnect()
-  }, [session?.id, userInputRequest, permissionRequests.length])
+  }, [offline, session?.id, userInputRequest, permissionRequests.length])
 
   if (!session) {
     if (resolvingSessionID) {
+      if (offline) {
+        return (
+          <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
+            <WifiOff className="mb-3 size-6 text-muted-foreground" aria-hidden="true" />
+            <h2 className="text-lg font-semibold">Session unavailable offline</h2>
+            <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+              This session has not been saved on this device yet. It will load when the server reconnects.
+            </p>
+          </section>
+        )
+      }
       return (
         <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
           <Loader2 className="mb-3 size-5 animate-spin text-muted-foreground" aria-hidden="true" />
@@ -288,12 +301,13 @@ export function SessionDetail({
           key={session.id}
           events={events}
           optimisticUserMessages={visibleOptimisticUserMessages}
-          loading={streamState === 'loading'}
+          loading={!offline && streamState === 'loading'}
           error={errorMessage}
+          emptyMessage={offline ? "This session's history hasn't been saved on this device yet." : undefined}
           topInset="sessionHeader"
           bottomInsetHeight={bottomInsetHeight}
           pinToLatestOnMount
-          autoScroll={session.status === 'running' && !userInputRequest}
+          autoScroll={!offline && session.status === 'running' && !userInputRequest}
           activityStatus={activityStatus}
           showDebugEvents={showDebugEvents}
           hasOlderEvents={hasOlderEvents}
@@ -334,6 +348,16 @@ export function SessionDetail({
         className="session-bottom-safe-area pointer-events-none absolute inset-x-0 bottom-0 z-20"
       >
         <div data-testid="session-bottom-stack" className="pointer-events-auto relative flex flex-col gap-3 pt-2">
+          {offline ? (
+            <div
+              role="status"
+              data-testid="offline-session-status"
+              className="mx-2 flex items-center justify-center gap-2 rounded-lg border border-border/80 bg-background/92 px-3 py-2 text-xs text-muted-foreground shadow-sm sm:mx-3"
+            >
+              <WifiOff className="size-3.5 shrink-0" aria-hidden="true" />
+              <span>Offline · Showing saved history. Drafts stay on this device.</span>
+            </div>
+          ) : null}
           <PermissionQueue requests={permissionRequests} onResolve={onResolvePermission} />
           <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
           <PromptComposer
@@ -354,6 +378,7 @@ export function SessionDetail({
             onError={onErrorMessageChange}
             onFocus={onComposerFocus}
             focusRequest={composerFocusRequest}
+            offline={offline}
           />
         </div>
       </div>

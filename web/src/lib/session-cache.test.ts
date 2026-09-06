@@ -9,11 +9,13 @@ import {
   readCachedSessionEventsBefore,
   readCachedSessionSnapshot,
   readCachedSessionSnapshotBySlug,
+  readCachedSessionSnapshots,
   writeCachedSession,
   writeCachedSessionEvent,
   writeCachedSessionEvents,
   writeCachedSessionEventPage,
   writeCachedSessionSnapshot,
+  writeCachedSessionSnapshots,
 } from '@/lib/session-cache'
 import { createFakeIndexedDB } from '@/test/fake-indexeddb'
 
@@ -40,6 +42,25 @@ test('session cache stores and reads sync session snapshots by slug', () => {
   writeCachedSessionSnapshot(session('sess_1', 'Write docs'))
 
   expect(readCachedSessionSnapshotBySlug('write-docs')).toMatchObject({ id: 'sess_1', title: 'Write docs' })
+})
+
+test('session cache restores the complete active session snapshot list', () => {
+  writeCachedSessionSnapshot(session('sess_1', 'First'))
+  writeCachedSessionSnapshot(session('sess_2', 'Second'))
+  writeCachedSessionSnapshot({
+    ...session('sess_archived', 'Archived'),
+    archived_at: '2026-06-12T17:00:00Z',
+  })
+
+  expect(readCachedSessionSnapshots().map((item) => item.id)).toEqual(['sess_2', 'sess_1'])
+})
+
+test('writing a server session snapshot replaces entries no longer in the active list', () => {
+  writeCachedSessionSnapshot(session('sess_stale', 'Stale'))
+  writeCachedSessionSnapshots([session('sess_current', 'Current')])
+
+  expect(readCachedSessionSnapshots().map((item) => item.id)).toEqual(['sess_current'])
+  expect(readCachedSessionSnapshot('sess_stale')).toBeNull()
 })
 
 test('session cache updates stale sync slug aliases when titles change', () => {

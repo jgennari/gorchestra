@@ -101,6 +101,7 @@ type Props = {
   onError?: (message: string) => void
   onFocus?: () => void
   focusRequest?: number
+  offline?: boolean
 }
 
 type CodexSelection = {
@@ -174,6 +175,7 @@ export function PromptComposer({
   onError,
   onFocus,
   focusRequest = 0,
+  offline = false,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -234,17 +236,20 @@ export function PromptComposer({
   const hasAttachments = attachments.length > 0
   const hasSelectedSkills = selectedSkills.length > 0
   const shouldLoadSkills = hasSelectedSkills || skillsOpen || skillTypeahead !== null
-  const canSubmit = !disabled && !submitting && (content.trim().length > 0 || hasAttachments || hasSelectedSkills)
+  const canSubmit = !offline && !disabled && !submitting && (content.trim().length > 0 || hasAttachments || hasSelectedSkills)
   const queueBlockedByAttachments = hasAttachments
   const canQueue =
+    !offline &&
     !submitting &&
     (content.trim().length > 0 || hasSelectedSkills) &&
     !queueBlockedByAttachments &&
     queuedMessages.length < maxQueuedMessages
-  const canCancel = disabled && Boolean(onCancel)
+  const canCancel = !offline && disabled && Boolean(onCancel)
   const inputDisabled = submitting
   const promptPlaceholder =
-    disabled && canCancel
+    offline
+      ? 'Offline — draft locally; sending resumes when connected.'
+      : disabled && canCancel
       ? 'Prepare your next message...'
       : disabled
         ? disabledReason
@@ -258,9 +263,9 @@ export function PromptComposer({
     [codexOptions, codexSelection.model],
   )
   const selectedFastTier = useMemo(() => fastTierForModel(selectedCodexModel), [selectedCodexModel])
-  const codexControlsDisabled = submitting || codexOptionsLoading || !codexOptions
-  const opencodeControlsDisabled = submitting || opencodeOptionsLoading || !opencodeOptions
-  const piControlsDisabled = submitting || piOptionsLoading || !piOptions
+  const codexControlsDisabled = offline || submitting || codexOptionsLoading || !codexOptions
+  const opencodeControlsDisabled = offline || submitting || opencodeOptionsLoading || !opencodeOptions
+  const piControlsDisabled = offline || submitting || piOptionsLoading || !piOptions
   const codexPlanAvailable = Boolean(codexOptions?.collaboration_modes.some((mode) => mode.mode === 'plan'))
   const openCodePlanAvailable = opencodeOptions?.collaboration_modes.some((mode) => mode.mode === 'plan') ?? false
   const currentRuntimeAgentOptions = useMemo(
@@ -329,7 +334,7 @@ export function PromptComposer({
     options: SessionRuntimeAgentOptions,
     initializeIfAbsent: boolean,
   ) => {
-    if (!sessionID || !onUpdateRuntimeAgentOptions) return
+    if (offline || !sessionID || !onUpdateRuntimeAgentOptions) return
     const sync = runtimeSyncRef.current
     const optionsKey = runtimeAgentOptionsKey(options)
     if (!sync.inFlight && sync.initialized && optionsKey === sync.confirmedKey) return
@@ -372,7 +377,7 @@ export function PromptComposer({
     })().finally(() => {
       sync.inFlight = false
     })
-  }, [agentType, applyRuntimeAgentOptions, onError, onUpdateRuntimeAgentOptions, sessionID])
+  }, [agentType, applyRuntimeAgentOptions, offline, onError, onUpdateRuntimeAgentOptions, sessionID])
 
   useEffect(() => {
     const serverOptions = runtimeAgentOptionsFromSession(agentType, sessionAgentOptions)
@@ -391,7 +396,7 @@ export function PromptComposer({
   }, [agentType, applyRuntimeAgentOptions, sessionAgentOptions, sessionAgentOptionsSeq, sessionID])
 
   useEffect(() => {
-    if (!onUpdateRuntimeAgentOptions || !sessionID || !runtimeAgentOptionsReady || !currentRuntimeAgentOptions) {
+    if (offline || !onUpdateRuntimeAgentOptions || !sessionID || !runtimeAgentOptionsReady || !currentRuntimeAgentOptions) {
       return
     }
     const sync = runtimeSyncRef.current
@@ -404,6 +409,7 @@ export function PromptComposer({
   }, [
     currentRuntimeAgentOptions,
     enqueueRuntimeAgentOptions,
+    offline,
     onUpdateRuntimeAgentOptions,
     runtimeAgentOptionsReady,
     sessionID,
@@ -424,7 +430,7 @@ export function PromptComposer({
   }, [content])
 
   useEffect(() => {
-    if (agentType !== 'codex') {
+    if (offline || agentType !== 'codex') {
       return
     }
 
@@ -448,7 +454,7 @@ export function PromptComposer({
     return () => {
       cancelled = true
     }
-  }, [agentType])
+  }, [agentType, offline])
 
   useEffect(() => {
     if (agentType !== 'codex' || !sessionID) {
@@ -464,6 +470,7 @@ export function PromptComposer({
     if (!shouldLoadSkills) {
       return
     }
+    if (offline) return
     if (skillsLoadedSessionRef.current === sessionID) {
       return
     }
@@ -505,10 +512,10 @@ export function PromptComposer({
     return () => {
       cancelled = true
     }
-  }, [agentType, sessionID, onError, shouldLoadSkills])
+  }, [agentType, offline, sessionID, onError, shouldLoadSkills])
 
   useEffect(() => {
-    if (agentType !== 'opencode') {
+    if (offline || agentType !== 'opencode') {
       return
     }
 
@@ -532,10 +539,10 @@ export function PromptComposer({
     return () => {
       cancelled = true
     }
-  }, [agentType])
+  }, [agentType, offline])
 
   useEffect(() => {
-    if (agentType !== 'pi') {
+    if (offline || agentType !== 'pi') {
       return
     }
 
@@ -559,7 +566,7 @@ export function PromptComposer({
     return () => {
       cancelled = true
     }
-  }, [agentType])
+  }, [agentType, offline])
 
   useEffect(() => {
     saveDraft(sessionID, content)
@@ -590,6 +597,7 @@ export function PromptComposer({
       setQueuedMessages([])
       return
     }
+    if (offline) return
 
     queueEventsRef.current.clear()
     let cancelled = false
@@ -607,7 +615,7 @@ export function PromptComposer({
     return () => {
       cancelled = true
     }
-  }, [commitQueuedMessages, sessionID, onError])
+  }, [commitQueuedMessages, offline, sessionID, onError])
 
   useEffect(() => {
     if (!sessionID) return
@@ -843,7 +851,7 @@ export function PromptComposer({
   }
 
   async function refreshSkills() {
-    if (!sessionID || agentType !== 'codex' || skillsLoading) {
+    if (offline || !sessionID || agentType !== 'codex' || skillsLoading) {
       return
     }
     setSkillsLoading(true)
@@ -872,7 +880,7 @@ export function PromptComposer({
   }
 
   async function handleCancel() {
-    if (!onCancel || cancelling) {
+    if (offline || !onCancel || cancelling) {
       return
     }
 
@@ -888,6 +896,7 @@ export function PromptComposer({
   }
 
   async function enqueueDraft(forceRestoreFocus = false) {
+    if (offline) return
     const trimmed = content.trim()
     if (!trimmed && selectedSkills.length === 0) {
       return
@@ -929,7 +938,7 @@ export function PromptComposer({
   }
 
   async function removeQueuedDraft(queuedMessageID: string) {
-    if (!sessionID) {
+    if (offline || !sessionID) {
       return
     }
     onError?.('')
@@ -1148,7 +1157,7 @@ export function PromptComposer({
                 <SwitchControl
                   label="Plan"
                   active={codexSelection.planning_mode && codexPlanAvailable}
-                  disabled={submitting || !codexPlanAvailable}
+                  disabled={offline || submitting || !codexPlanAvailable}
                   onClick={() =>
                     setCodexSelection({
                       ...codexSelection,
@@ -1163,14 +1172,14 @@ export function PromptComposer({
             <>
               <ClaudeToolbar
                 selection={claudeSelection}
-                disabled={submitting}
+                disabled={offline || submitting}
                 onChange={setClaudeSelection}
                 closeSettingsSignal={closeSettingsSignal}
                 className="composer-desktop-options"
               />
               <MobileClaudeOptions
                 selection={claudeSelection}
-                disabled={submitting}
+                disabled={offline || submitting}
                 onChange={setClaudeSelection}
                 closeSettingsSignal={closeSettingsSignal}
               />
@@ -1178,7 +1187,7 @@ export function PromptComposer({
                 <SwitchControl
                   label="Plan"
                   active={claudeSelection.planning_mode}
-                  disabled={submitting}
+                  disabled={offline || submitting}
                   onClick={() => setClaudeSelection({ ...claudeSelection, planning_mode: !claudeSelection.planning_mode })}
                 />
               </span>
@@ -1209,7 +1218,7 @@ export function PromptComposer({
                 <SwitchControl
                   label="Plan"
                   active={opencodeSelection.planning_mode && openCodePlanAvailable}
-                  disabled={submitting || !openCodePlanAvailable}
+                  disabled={offline || submitting || !openCodePlanAvailable}
                   onClick={() =>
                     setOpenCodeSelection({
                       ...opencodeSelection,

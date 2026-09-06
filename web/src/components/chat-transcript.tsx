@@ -60,6 +60,7 @@ type Props = {
   optimisticUserMessages?: ChatTranscriptMessage[]
   loading?: boolean
   error?: string
+  emptyMessage?: string
   topInset?: 'none' | 'sessionHeader'
   bottomInsetHeight?: number
   pinToLatestOnMount?: boolean
@@ -98,6 +99,7 @@ export function ChatTranscript({
   optimisticUserMessages = [],
   loading = false,
   error = '',
+  emptyMessage = 'No messages yet. Submit a prompt to start the chat.',
   topInset = 'none',
   bottomInsetHeight = 0,
   pinToLatestOnMount = false,
@@ -553,7 +555,7 @@ export function ChatTranscript({
   if (timeline.length === 0 && !activityStatus && !error) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
-        No messages yet. Submit a prompt to start the chat.
+        {emptyMessage}
       </div>
     )
   }

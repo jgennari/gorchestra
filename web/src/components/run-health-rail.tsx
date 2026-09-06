@@ -57,6 +57,7 @@ type Props = {
   clearPending?: boolean
   compactPending?: boolean
   archivePending?: boolean
+  offline?: boolean
 }
 
 export function RunHealthRail({
@@ -88,6 +89,7 @@ export function RunHealthRail({
   clearPending = false,
   compactPending = false,
   archivePending = false,
+  offline = false,
 }: Props) {
   const desktopLayout = useDesktopLayout()
   const [blocksMounted, setBlocksMounted] = useState(contentMode === 'blocks')
@@ -110,7 +112,7 @@ export function RunHealthRail({
   const totalToolCount = Math.max(session?.tool_count ?? 0, loadedToolCount)
   const actionPending = clearPending || compactPending
   const codexActionDisabled =
-    !session || session.agent_type !== 'codex' || session.status === 'running' || Boolean(session.archived_at) || actionPending
+    offline || !session || session.agent_type !== 'codex' || session.status === 'running' || Boolean(session.archived_at) || actionPending
   const compactDisabled = codexActionDisabled || !session?.provider_session_id
   const showCodexActions = session?.agent_type === 'codex'
   const showTokenPanel = Boolean(tokenUsage) || cumulativeTokenCount > 0 || showCodexActions
@@ -164,6 +166,7 @@ export function RunHealthRail({
               resolvingSessionID={resolvingSessionID}
               refreshKey={fileRefreshKey}
               onOpenFile={onOpenFile}
+              offline={offline}
             />
           ) : null}
           {desktopLayout && contentMode === 'conversation-map' ? (
@@ -230,7 +233,7 @@ export function RunHealthRail({
             session?.archived_at &&
               'border-[hsl(var(--warning)/0.32)] bg-[hsl(var(--warning)/0.10)] text-[hsl(var(--warning))] hover:bg-[hsl(var(--warning)/0.14)]',
           )}
-          disabled={!session || session.status === 'running' || archivePending}
+          disabled={offline || !session || session.status === 'running' || archivePending}
           onClick={() => void onToggleArchive()}
           aria-label={session?.archived_at ? 'Restore selected session' : 'Archive selected session'}
         >

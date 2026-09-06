@@ -39,6 +39,7 @@ type Options = {
   includeDebugEvents?: boolean
   targetSeq?: number
   liveStreamState?: StreamState
+  networkAvailable?: boolean
 }
 
 type SessionEventCacheEntry = {
@@ -97,8 +98,11 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const refreshKey = options.refreshKey ?? 0
   const includeDebugEvents = options.includeDebugEvents ?? false
   const targetSeq = options.targetSeq ?? 0
+  const networkAvailable = options.networkAvailable ?? true
   const globalStreamConnected = options.liveStreamState === 'connected'
-  const effectiveStreamState: StreamState = sessionID !== streamSessionID
+  const effectiveStreamState: StreamState = !networkAvailable && sessionID
+    ? 'disconnected'
+    : sessionID !== streamSessionID
     ? (sessionID ? 'loading' : 'idle')
     : streamState === 'loading' || streamState === 'disconnected'
       ? streamState
@@ -426,16 +430,28 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           setStreamState('connected')
           return
         }
+        if (!networkAvailable) {
+          setStreamState('disconnected')
+          return
+        }
         await loadTail(true)
+        return
+      }
+      if (!networkAvailable) {
+        setStreamState('disconnected')
         return
       }
       await loadTail(preserveVisible)
     }
 
-    if (targetSeq > 0) {
+    if (targetSeq > 0 && networkAvailable) {
       void loadTarget()
     } else if (sameSessionRefresh) {
-      void loadTail(true)
+      if (networkAvailable) {
+        void loadTail(true)
+      } else {
+        setStreamState('disconnected')
+      }
     } else if (cachedSession?.tailHydrated) {
       setStreamState('connected')
     } else {
@@ -463,7 +479,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       if (activeSessionIDRef.current === activeSessionID) activeSessionIDRef.current = null
       setStreamState('disconnected')
     }
-  }, [includeDebugEvents, refreshKey, sessionID, setHasNewerEvents, targetSeq])
+  }, [includeDebugEvents, networkAvailable, refreshKey, sessionID, setHasNewerEvents, targetSeq])
 
   const loadOlderEvents = useCallback(async () => {
     if (!sessionID || loadingOlderEventsRef.current) return
@@ -484,6 +500,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         pagedEventHistoryByteBudget,
         includeDebugEvents,
       )
+      if (!persistentHistory && !networkAvailable) return
       const history = persistentHistory
         ? {
             events: persistentHistory.events,
@@ -541,10 +558,10 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setLoadingOlderEvents(false)
       }
     }
-  }, [includeDebugEvents, sessionID, setHasNewerEvents])
+  }, [includeDebugEvents, networkAvailable, sessionID, setHasNewerEvents])
 
   const loadNewerEvents = useCallback(async () => {
-    if (!sessionID || loadingNewerEventsRef.current) return
+    if (!sessionID || loadingNewerEventsRef.current || !networkAvailable) return
     const afterSeq = newestSeqRef.current
     loadingNewerEventsRef.current = true
     setLoadingNewerEvents(true)
@@ -593,7 +610,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setLoadingNewerEvents(false)
       }
     }
-  }, [includeDebugEvents, sessionID, setHasNewerEvents])
+  }, [includeDebugEvents, networkAvailable, sessionID, setHasNewerEvents])
 
   const jumpToLatest = useCallback(async () => {
     if (!sessionID) return
@@ -607,6 +624,8 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       return immediate.events
     })
     setHasNewerEvents(false)
+
+    if (!networkAvailable) return
 
     // While the browser-wide stream is connected, liveEventsRef already contains
     // every event admitted after the selected tail was loaded. Avoid downloading
@@ -645,7 +664,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setError(loadError instanceof Error ? loadError.message : 'Failed to refresh the latest events')
       }
     }
-  }, [globalStreamConnected, includeDebugEvents, sessionID, setHasNewerEvents])
+  }, [globalStreamConnected, includeDebugEvents, networkAvailable, sessionID, setHasNewerEvents])
 
   const setFollowingTail = useCallback((following: boolean) => {
     if (!following) {

@@ -23,6 +23,7 @@ type Props = {
   onUserSkills?: () => void
   onSearch?: () => void
   onCreate: () => void
+  createDisabled?: boolean
   notificationAction?: ReactNode
   appMenuAction?: ReactNode
   variant?: 'full' | 'embedded'
@@ -43,6 +44,7 @@ export function SessionList({
   onUserSkills,
   onSearch,
   onCreate,
+  createDisabled = false,
   notificationAction,
   appMenuAction,
   variant = 'full',
@@ -70,7 +72,13 @@ export function SessionList({
           <div className="flex shrink-0 items-center gap-2">
             {notificationAction}
             {appMenuAction}
-            <Button aria-label="Create session" size="icon" onClick={onCreate} className="shadow-sm">
+            <Button
+              aria-label="Create session"
+              size="icon"
+              disabled={createDisabled}
+              onClick={onCreate}
+              className="shadow-sm"
+            >
               <Plus />
             </Button>
           </div>
@@ -107,8 +115,9 @@ export function SessionList({
         <button
           type="button"
           aria-label="Search"
+          disabled={!onSearch}
           onClick={onSearch}
-          className="group mt-1 flex w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left text-sm font-medium transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="group mt-1 flex w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left text-sm font-medium transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
         >
           <Search className="size-4 text-muted-foreground" />
           <span className="flex-1">Search</span>
@@ -211,15 +220,16 @@ function SessionRow({
         {shortcut ? (
           <ShortcutReveal shortcut={shortcut} trailingGap />
         ) : null}
-        {onPinChange && !archived ? (
+        {!archived && (pinned || onPinChange) ? (
           <button
             type="button"
-            aria-label={pinned ? 'Unpin session' : 'Pin session'}
-            title={pinned ? `Unpin ${title}` : `Pin ${title} to top`}
-            disabled={pinPending}
-            onClick={() => onPinChange(!pinned)}
+            aria-label={onPinChange ? (pinned ? 'Unpin session' : 'Pin session') : 'Pinned session'}
+            title={onPinChange ? (pinned ? `Unpin ${title}` : `Pin ${title} to top`) : `${title} is pinned`}
+            disabled={pinPending || !onPinChange}
+            onClick={() => onPinChange?.(!pinned)}
             className={cn(
-              'flex size-8 items-center justify-center rounded transition-all hover:bg-background/70 disabled:opacity-40',
+              'flex size-8 items-center justify-center rounded transition-all hover:bg-background/70',
+              pinPending && 'opacity-40',
               pinned
                 ? 'text-primary opacity-100'
                 : 'text-muted-foreground opacity-100 md:pointer-events-none md:opacity-0 md:group-hover:pointer-events-auto md:group-hover:opacity-100 md:group-focus-within:pointer-events-auto md:group-focus-within:opacity-100',

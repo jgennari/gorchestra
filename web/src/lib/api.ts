@@ -1,3 +1,5 @@
+import { fetchWithServerConnectivity } from '@/lib/server-connectivity'
+
 export type SessionStatus = 'idle' | 'running' | 'failed'
 export type AgentType = 'fake' | 'codex' | 'claude' | 'opencode' | 'pi'
 
@@ -101,7 +103,7 @@ export type Session = {
   updated_at: string
   completed_at: string | null
   archived_at: string | null
-	pinned_at?: string | null
+  pinned_at?: string | null
 }
 
 export type SpotlightSearchResultKind =
@@ -1487,7 +1489,7 @@ function withQuery(path: string, params: URLSearchParams) {
 
 async function requestJSON<T>(url: string, init: RequestInit = {}) {
   const multipart = typeof FormData !== 'undefined' && init.body instanceof FormData
-  const response = await fetch(url, {
+  const response = await fetchWithServerConnectivity(url, {
     ...init,
     headers: {
       Accept: 'application/json',
@@ -1513,7 +1515,7 @@ async function requestJSON<T>(url: string, init: RequestInit = {}) {
 }
 
 async function requestNoContent(url: string, init: RequestInit = {}) {
-  const response = await fetch(url, {
+  const response = await fetchWithServerConnectivity(url, {
     ...init,
     headers: {
       Accept: 'application/json',

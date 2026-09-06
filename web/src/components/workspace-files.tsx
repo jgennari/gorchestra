@@ -59,6 +59,7 @@ export function WorkspaceFilesView({
   onCloseFile,
   onDirtyChange,
   focusedLine = 0,
+  offline = false,
 }: {
   session: Session | null
   resolvingSessionID?: string | null
@@ -70,6 +71,7 @@ export function WorkspaceFilesView({
   onCloseFile: () => void
   onDirtyChange?: (dirty: boolean) => void
   focusedLine?: number
+  offline?: boolean
 }) {
   return (
     <section className="relative flex h-full min-h-0 w-full flex-col bg-transparent">
@@ -85,6 +87,7 @@ export function WorkspaceFilesView({
           refreshKey={refreshKey}
           onOpenFile={onOpenFile}
           selectedFilePath={selectedFile?.path ?? null}
+          offline={offline}
           className={cn('min-h-0', selectedFile && 'hidden')}
         />
         <section
@@ -127,6 +130,7 @@ export function WorkspaceFileBrowser({
   onOpenFile = () => undefined,
   selectedFilePath = null,
   className,
+  offline = false,
 }: {
   session: Session | null
   resolvingSessionID?: string | null
@@ -134,6 +138,7 @@ export function WorkspaceFileBrowser({
   onOpenFile?: (file: WorkspaceFileContent) => void
   selectedFilePath?: string | null
   className?: string
+  offline?: boolean
 }) {
   const [currentPath, setCurrentPath] = useState('')
   const [entries, setEntries] = useState<WorkspaceEntry[]>([])
@@ -177,7 +182,9 @@ export function WorkspaceFileBrowser({
   }, [sessionID])
 
   useEffect(() => {
-    if (!sessionID) {
+    if (!sessionID || offline) {
+      setLoading(false)
+      setError('')
       return
     }
 
@@ -205,11 +212,11 @@ export function WorkspaceFileBrowser({
     return () => {
       cancelled = true
     }
-  }, [currentPath, refreshKey, reloadKey, sessionID])
+  }, [currentPath, offline, refreshKey, reloadKey, sessionID])
 
   useEffect(() => {
     const trimmed = query.trim()
-    if (!sessionID || !trimmed) {
+    if (!sessionID || !trimmed || offline) {
       setResults([])
       setSearching(false)
       return
@@ -239,10 +246,10 @@ export function WorkspaceFileBrowser({
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [currentPath, query, refreshKey, reloadKey, sessionID])
+  }, [currentPath, offline, query, refreshKey, reloadKey, sessionID])
 
   async function openEntry(entry: WorkspaceEntry) {
-    if (!sessionID) {
+    if (!sessionID || offline) {
       return
     }
     if (entry.type === 'directory') {
@@ -264,7 +271,7 @@ export function WorkspaceFileBrowser({
 
   async function handleUpload(files: FileList | null) {
     const selectedFiles = files ? Array.from(files) : []
-    if (!sessionID || selectedFiles.length === 0) {
+    if (!sessionID || offline || selectedFiles.length === 0) {
       return
     }
 
@@ -305,7 +312,7 @@ export function WorkspaceFileBrowser({
             multiple
             className="sr-only"
             aria-label="Select files to upload"
-            disabled={!sessionID || uploading}
+            disabled={offline || !sessionID || uploading}
             onChange={(event) => void handleUpload(event.target.files)}
           />
           <Button
@@ -313,7 +320,7 @@ export function WorkspaceFileBrowser({
             variant="ghost"
             size="icon"
             className="size-7 border-transparent text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
-            disabled={!sessionID || loading || uploading}
+            disabled={offline || !sessionID || loading || uploading}
             onClick={() => uploadInputRef.current?.click()}
             aria-label="Upload files"
             title={`Upload files to ${currentPath || 'workspace root'}`}
@@ -325,7 +332,7 @@ export function WorkspaceFileBrowser({
             variant="ghost"
             size="icon"
             className="size-7 border-transparent text-muted-foreground hover:bg-surface-muted/70 hover:text-foreground"
-            disabled={!sessionID || refreshing || uploading}
+            disabled={offline || !sessionID || refreshing || uploading}
             onClick={() => {
               invalidateWorkspaceFileListCache(sessionID, currentPath)
               setReloadKey((value) => value + 1)
@@ -344,7 +351,7 @@ export function WorkspaceFileBrowser({
           ref={searchInputRef}
           aria-label="Search files and contents"
           value={query}
-          disabled={!sessionID}
+          disabled={offline || !sessionID}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search files and contents"
           className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
@@ -354,7 +361,7 @@ export function WorkspaceFileBrowser({
           <button
             type="button"
             className="inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-surface-muted/80 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-            disabled={!sessionID}
+            disabled={offline || !sessionID}
             onClick={clearSearch}
             aria-label="Clear file search"
             title="Clear file search"
@@ -369,7 +376,9 @@ export function WorkspaceFileBrowser({
       </p>
 
       <div data-testid="workspace-file-scroll-area" className="subtle-scrollbar mt-1 min-h-0 flex-1 overflow-auto">
-        {resolvingSessionID && !sessionID ? (
+        {offline ? (
+          <p className="py-3 text-xs text-muted-foreground">Workspace files are unavailable offline.</p>
+        ) : resolvingSessionID && !sessionID ? (
           <LoadingFiles label="Loading session" />
         ) : !sessionID ? (
           <p className="py-3 text-xs text-muted-foreground">Select a session to browse files.</p>

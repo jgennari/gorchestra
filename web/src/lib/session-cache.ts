@@ -106,12 +106,19 @@ export function readCachedSessionSnapshotBySlug(slug: string): Session | null {
   return cache.sessions.find((record) => record.id === sessionID)?.session ?? null
 }
 
+export function readCachedSessionSnapshots(): Session[] {
+  return readSyncSessionCache().sessions
+    .filter((record) => !record.session.archived_at)
+    .sort((left, right) => right.usedAt - left.usedAt)
+    .map((record) => record.session)
+}
+
 export function writeCachedSessionSnapshot(session: Session): void {
   writeSyncSessionCache(upsertSyncSession(readSyncSessionCache(), session))
 }
 
 export function writeCachedSessionSnapshots(sessions: Session[]): void {
-  let cache = readSyncSessionCache()
+  let cache: SyncCachedSessions = { sessions: [], aliases: {} }
   const usedAtBase = Date.now()
   for (const [index, session] of sessions.entries()) {
     cache = upsertSyncSession(cache, session, usedAtBase + sessions.length - index)
