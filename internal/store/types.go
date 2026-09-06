@@ -71,6 +71,7 @@ type Session struct {
 	UpdatedAt                time.Time
 	CompletedAt              *time.Time
 	ArchivedAt               *time.Time
+	PinnedAt                 *time.Time
 }
 
 type Event struct {
@@ -269,6 +270,11 @@ type UpdateSessionWorkspaceParams struct {
 type UpdateSessionAgentOptionsParams struct {
 	ID           string
 	AgentOptions json.RawMessage
+}
+
+type UpdateSessionPinParams struct {
+	ID     string
+	Pinned bool
 }
 
 type ArchiveSessionParams struct {

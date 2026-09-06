@@ -116,7 +116,16 @@ test('session cache bypasses a stale hot window after an incremental event write
   const cached = await readCachedSessionEvents('sess_1')
 
   expect(cached?.events.map((item) => item.seq)).toEqual([1, 2])
-  expect(cached).toMatchObject({ lastSeq: 2, oldestSeq: 1 })
+  expect(cached).toMatchObject({ lastSeq: 2, oldestSeq: 1, tailHydrated: true })
+})
+
+test('session cache marks incremental-only background events as an unhydrated tail', async () => {
+  await writeCachedSessionEvent('sess_1', event(8), 8)
+
+  const cached = await readCachedSessionEvents('sess_1')
+
+  expect(cached?.events.map((item) => item.seq)).toEqual([8])
+  expect(cached).toMatchObject({ lastSeq: 8, oldestSeq: 8, tailHydrated: false })
 })
 
 test('session cache excludes transient deltas while retaining the stream cursor', async () => {

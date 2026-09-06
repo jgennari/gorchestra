@@ -55,14 +55,20 @@ func TestManagerCancelsRunOnce(t *testing.T) {
 	}
 	defer cleanup()
 
-	if err := manager.Cancel("sess_one"); err != nil {
+	cancellation := Cancellation{Source: "web_ui", Reason: "stop_button"}
+	if err := manager.Cancel("sess_one", cancellation); err != nil {
 		t.Fatalf("cancel run: %v", err)
 	}
 	if !errors.Is(ctx.Err(), context.Canceled) {
 		t.Fatalf("expected canceled context, got %v", ctx.Err())
 	}
 
-	err = manager.Cancel("sess_one")
+	got, ok := manager.Cancellation("sess_one")
+	if !ok || got != cancellation {
+		t.Fatalf("expected cancellation %#v, got %#v, %t", cancellation, got, ok)
+	}
+
+	err = manager.Cancel("sess_one", cancellation)
 	if !errors.Is(err, ErrRunAlreadyCanceled) {
 		t.Fatalf("expected ErrRunAlreadyCanceled, got %v", err)
 	}
@@ -71,7 +77,7 @@ func TestManagerCancelsRunOnce(t *testing.T) {
 func TestManagerCancelMissingRun(t *testing.T) {
 	manager := NewManager()
 
-	err := manager.Cancel("sess_missing")
+	err := manager.Cancel("sess_missing", Cancellation{})
 	if !errors.Is(err, ErrRunNotActive) {
 		t.Fatalf("expected ErrRunNotActive, got %v", err)
 	}

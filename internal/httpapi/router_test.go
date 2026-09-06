@@ -23,6 +23,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents"
 	"github.com/jgennari/gorchestra/internal/agents/fake"
 	eventservice "github.com/jgennari/gorchestra/internal/events"
+	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 )
 
@@ -58,7 +59,11 @@ func (noopRunManager) Register(context.Context, string) (context.Context, func()
 	return context.Background(), func() {}, nil
 }
 
-func (noopRunManager) Cancel(string) error { return nil }
+func (noopRunManager) Cancel(string, runcontrol.Cancellation) error { return nil }
+
+func (noopRunManager) Cancellation(string) (runcontrol.Cancellation, bool) {
+	return runcontrol.Cancellation{}, false
+}
 
 func (noopRunManager) Active(string) bool { return false }
 
@@ -2583,6 +2588,28 @@ func (s *fakeHTTPStore) UpdateSessionAgentOptions(_ context.Context, params stor
 	return session, nil
 }
 
+func (s *fakeHTTPStore) UpdateSessionPin(_ context.Context, params store.UpdateSessionPinParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[params.ID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+	if params.Pinned && session.ArchivedAt != nil {
+		return store.Session{}, store.ErrInvalidArgument
+	}
+	if params.Pinned {
+		pinnedAt := testCreatedAt.Add(12 * time.Minute)
+		session.PinnedAt = &pinnedAt
+	} else {
+		session.PinnedAt = nil
+	}
+	s.sessions[params.ID] = session
+
+	return session, nil
+}
+
 func (s *fakeHTTPStore) ArchiveSession(_ context.Context, params store.ArchiveSessionParams) (store.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2594,6 +2621,7 @@ func (s *fakeHTTPStore) ArchiveSession(_ context.Context, params store.ArchiveSe
 
 	archivedAt := testCreatedAt
 	session.ArchivedAt = &archivedAt
+	session.PinnedAt = nil
 	session.UpdatedAt = archivedAt
 	s.sessions[params.ID] = session
 

@@ -903,6 +903,152 @@ test('codex toolbar settings persist per session', async () => {
   expect(planSwitch()).toHaveAttribute('aria-checked', 'true')
 }, 10_000)
 
+test('imports legacy composer settings into the server once and preserves the draft', async () => {
+  window.localStorage.setItem('gorchestra.session-composer.sess_codex_import', JSON.stringify({
+    draft: 'Keep this draft',
+    codexSelection: {
+      model: 'gpt-5-mini',
+      reasoning_effort: 'xhigh',
+      fast_mode: true,
+      planning_mode: true,
+    },
+  }))
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(codexOptionsResponse())))
+  const onUpdateRuntimeAgentOptions = vi.fn(async (
+    _sessionID: string,
+    options: Parameters<NonNullable<Parameters<typeof PromptComposer>[0]['onUpdateRuntimeAgentOptions']>>[1],
+  ) => runtimeOptionsUpdateResponse(options, 1))
+
+  render(
+    <PromptComposer
+      sessionID="sess_codex_import"
+      agentType="codex"
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+      onUpdateRuntimeAgentOptions={onUpdateRuntimeAgentOptions}
+    />,
+  )
+
+  await waitFor(() => {
+    expect(onUpdateRuntimeAgentOptions).toHaveBeenCalledWith('sess_codex_import', {
+      codex: {
+        model: 'gpt-5-mini',
+        reasoning_effort: 'xhigh',
+        fast_mode: true,
+        planning_mode: true,
+      },
+    }, true)
+  })
+  await waitFor(() => {
+    const stored = JSON.parse(window.localStorage.getItem('gorchestra.session-composer.sess_codex_import') ?? '{}')
+    expect(stored).toMatchObject({ draft: 'Keep this draft' })
+    expect(stored.codexSelection).toBeUndefined()
+  })
+  expect(screen.getByLabelText('Prompt')).toHaveValue('Keep this draft')
+})
+
+test('uses server settings and adopts a newer settings event without writing it back', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(codexOptionsResponse())))
+  const onUpdateRuntimeAgentOptions = vi.fn(async (
+    _sessionID: string,
+    options: Parameters<NonNullable<Parameters<typeof PromptComposer>[0]['onUpdateRuntimeAgentOptions']>>[1],
+  ) => runtimeOptionsUpdateResponse(options, 3))
+  const initialOptions = {
+    codex: {
+      model: 'gpt-5.5',
+      reasoning_effort: 'medium',
+      fast_mode: false,
+      planning_mode: false,
+    },
+  }
+  const view = render(
+    <PromptComposer
+      sessionID="sess_codex_server"
+      agentType="codex"
+      sessionAgentOptions={initialOptions}
+      sessionAgentOptionsSeq={1}
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+      onUpdateRuntimeAgentOptions={onUpdateRuntimeAgentOptions}
+    />,
+  )
+
+  expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5.5')
+  expect(onUpdateRuntimeAgentOptions).not.toHaveBeenCalled()
+
+  view.rerender(
+    <PromptComposer
+      sessionID="sess_codex_server"
+      agentType="codex"
+      sessionAgentOptions={{
+        codex: {
+          model: 'gpt-5-mini',
+          reasoning_effort: 'xhigh',
+          fast_mode: true,
+          planning_mode: true,
+        },
+      }}
+      sessionAgentOptionsSeq={2}
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+      onUpdateRuntimeAgentOptions={onUpdateRuntimeAgentOptions}
+    />,
+  )
+
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5 Mini')
+    expect(screen.getByRole('button', { name: 'Reasoning' })).toHaveTextContent('xhigh')
+    expect(screen.getByRole('button', { name: 'Fast' })).toHaveAttribute('aria-pressed', 'true')
+    expect(planSwitch()).toHaveAttribute('aria-checked', 'true')
+  })
+  expect(onUpdateRuntimeAgentOptions).not.toHaveBeenCalled()
+})
+
+test('persists a composer control change to the session', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(codexOptionsResponse())))
+  const onUpdateRuntimeAgentOptions = vi.fn(async (
+    _sessionID: string,
+    options: Parameters<NonNullable<Parameters<typeof PromptComposer>[0]['onUpdateRuntimeAgentOptions']>>[1],
+  ) => runtimeOptionsUpdateResponse(options, 2))
+
+  render(
+    <PromptComposer
+      sessionID="sess_codex_server"
+      agentType="codex"
+      sessionAgentOptions={{
+        codex: {
+          model: 'gpt-5.5',
+          reasoning_effort: 'medium',
+          fast_mode: false,
+          planning_mode: false,
+        },
+      }}
+      sessionAgentOptionsSeq={1}
+      disabled={false}
+      disabledReason=""
+      onSubmit={async () => undefined}
+      onUpdateRuntimeAgentOptions={onUpdateRuntimeAgentOptions}
+    />,
+  )
+
+  await user.click(await screen.findByRole('button', { name: 'Fast' }))
+
+  await waitFor(() => {
+    expect(onUpdateRuntimeAgentOptions).toHaveBeenCalledWith('sess_codex_server', {
+      codex: {
+        model: 'gpt-5.5',
+        reasoning_effort: 'medium',
+        fast_mode: true,
+        planning_mode: false,
+      },
+    }, false)
+  })
+})
+
 test('codex model and reasoning menus are mutually exclusive', async () => {
   const user = userEvent.setup()
   vi.stubGlobal(
@@ -1122,6 +1268,30 @@ function piOptionsResponse() {
       },
     ],
     collaboration_modes: [],
+  }
+}
+
+function runtimeOptionsUpdateResponse(
+  options: Parameters<NonNullable<Parameters<typeof PromptComposer>[0]['onUpdateRuntimeAgentOptions']>>[1],
+  sequence: number,
+) {
+  return {
+    applied: true,
+    session: {
+      id: 'sess_codex_server',
+      title: 'Codex',
+      agent_type: 'codex' as const,
+      status: 'idle' as const,
+      workspace_path: '/repo',
+      agent_options: options,
+      event_count: sequence,
+      last_event_seq: sequence,
+      tool_count: 0,
+      created_at: '2026-06-12T16:00:00Z',
+      updated_at: '2026-06-12T16:01:00Z',
+      completed_at: null,
+      archived_at: null,
+    },
   }
 }
 

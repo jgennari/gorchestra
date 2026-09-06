@@ -27,8 +27,19 @@ type Manager struct {
 type run struct {
 	cancel             context.CancelFunc
 	cancelled          bool
+	cancellation       Cancellation
 	inputRequests      map[string]*userInputRequest
 	permissionRequests map[string]*permissionRequest
+}
+
+type Cancellation struct {
+	Source string
+	Reason string
+}
+
+var defaultCancellation = Cancellation{
+	Source: "internal",
+	Reason: "requested",
 }
 
 type userInputRequest struct {
@@ -97,9 +108,17 @@ func (m *Manager) Register(parent context.Context, sessionID string) (context.Co
 	return ctx, cleanup, nil
 }
 
-func (m *Manager) Cancel(sessionID string) error {
+func (m *Manager) Cancel(sessionID string, cancellation Cancellation) error {
 	if strings.TrimSpace(sessionID) == "" {
 		return ErrInvalidSessionID
+	}
+	cancellation.Source = strings.TrimSpace(cancellation.Source)
+	cancellation.Reason = strings.TrimSpace(cancellation.Reason)
+	if cancellation.Source == "" {
+		cancellation.Source = defaultCancellation.Source
+	}
+	if cancellation.Reason == "" {
+		cancellation.Reason = defaultCancellation.Reason
 	}
 
 	m.mu.Lock()
@@ -113,11 +132,23 @@ func (m *Manager) Cancel(sessionID string) error {
 		return fmt.Errorf("%w: %s", ErrRunAlreadyCanceled, sessionID)
 	}
 	activeRun.cancelled = true
+	activeRun.cancellation = cancellation
 	cancel := activeRun.cancel
 	m.mu.Unlock()
 
 	cancel()
 	return nil
+}
+
+func (m *Manager) Cancellation(sessionID string) (Cancellation, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	activeRun, exists := m.runs[sessionID]
+	if !exists || !activeRun.cancelled {
+		return Cancellation{}, false
+	}
+	return activeRun.cancellation, true
 }
 
 func (m *Manager) Active(sessionID string) bool {

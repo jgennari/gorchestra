@@ -8,6 +8,7 @@ export type CachedSessionEvents = {
   lastSeq: number
   oldestSeq: number
   hasOlderEvents: boolean
+  tailHydrated: boolean
 }
 
 export type CachedSessionEventPageOptions = {
@@ -15,6 +16,7 @@ export type CachedSessionEventPageOptions = {
   coverageLastSeq?: number
   serverLastSeq?: number
   hasOlderEvents?: boolean
+  tailHydrated?: boolean
   updateHotWindow?: boolean
 }
 
@@ -48,6 +50,7 @@ type CachedEventMeta = {
   sessionID: string
   lastSeq: number
   hasOlderEvents: boolean
+  tailHydrated?: boolean
   usedAt: number
   bytes: number
   coverage: CachedEventCoverage[]
@@ -220,11 +223,18 @@ export async function readCachedSessionEvents(
     cachedEventWindowPolicy.maxBytes,
   )
   if (records.length === 0) {
-    const cached = { events: [], lastSeq: meta.lastSeq, oldestSeq: 0, hasOlderEvents: false }
+    const cached = {
+      events: [],
+      lastSeq: meta.lastSeq,
+      oldestSeq: 0,
+      hasOlderEvents: false,
+      tailHydrated: meta.tailHydrated === true,
+    }
     void Promise.all([
       putCachedEventHotWindow(db, sessionID, cached.events, {
         serverLastSeq: cached.lastSeq,
         hasOlderEvents: cached.hasOlderEvents,
+        tailHydrated: cached.tailHydrated,
       }),
       putRecord(db, eventMetaStore, { ...meta, usedAt: Date.now() }),
     ]).catch(() => undefined)
@@ -243,6 +253,7 @@ export async function readCachedSessionEvents(
     lastSeq: Math.max(meta.lastSeq, lastSeq(bounded.events)),
     oldestSeq,
     hasOlderEvents: meta.hasOlderEvents || bounded.trimmedStart || oldestSeq > 1,
+    tailHydrated: meta.tailHydrated === true,
   }
   void Promise.all([
     putCachedEventHotWindow(db, sessionID, cached.events, {
@@ -250,6 +261,7 @@ export async function readCachedSessionEvents(
       coverageLastSeq: cached.lastSeq,
       serverLastSeq: cached.lastSeq,
       hasOlderEvents: cached.hasOlderEvents,
+      tailHydrated: cached.tailHydrated,
     }),
     putRecord(db, eventMetaStore, { ...meta, usedAt: Date.now() }),
   ]).catch(() => undefined)
@@ -301,6 +313,7 @@ export async function readCachedSessionEventsBefore(
     lastSeq: meta.lastSeq,
     oldestSeq,
     hasOlderEvents: bounded.trimmedStart || oldestSeq > 1,
+    tailHydrated: meta.tailHydrated === true,
   }
 }
 
@@ -319,6 +332,7 @@ export async function writeCachedSessionEvents(
       coverageLastSeq: cursorSeq,
       serverLastSeq: cursorSeq,
       hasOlderEvents,
+      tailHydrated: true,
     },
     includeDebugEvents,
   )
@@ -380,6 +394,7 @@ export async function writeCachedSessionEventWindow(
   hasOlderEvents: boolean,
   cursorSeq = lastSeq(events),
   includeDebugEvents = false,
+  tailHydrated = true,
 ): Promise<void> {
   if (includeDebugEvents || !sessionID) return
   const db = await openCacheDB()
@@ -389,6 +404,7 @@ export async function writeCachedSessionEventWindow(
     coverageLastSeq: cursorSeq,
     serverLastSeq: cursorSeq,
     hasOlderEvents,
+    tailHydrated,
   }
   try {
     await putCachedEventHotWindow(db, sessionID, events, options)
@@ -441,6 +457,7 @@ function cachedSessionEventsFromHotWindow(hotWindow: CachedEventHotWindow): Cach
     lastSeq: Math.max(hotWindow.lastSeq, lastSeq(bounded.events)),
     oldestSeq,
     hasOlderEvents: hotWindow.hasOlderEvents || bounded.trimmedStart || oldestSeq > 1,
+    tailHydrated: hotWindow.tailHydrated === true,
   }
 }
 
@@ -493,6 +510,7 @@ async function putCachedEventHotWindow(
             oldestSeq > 0
               ? bounded.trimmedStart || oldestSeq > 1
               : previous?.hasOlderEvents === true || options.hasOlderEvents === true,
+          tailHydrated: previous?.tailHydrated === true || options.tailHydrated === true,
           usedAt: Date.now(),
           bytes: serializedEventsBytes(bounded.events),
         }
@@ -554,6 +572,7 @@ async function writeCachedSessionEventPageNow(
       coverage.length > 0
         ? coverage[0].firstSeq > 1
         : previous?.hasOlderEvents === true || options.hasOlderEvents === true,
+    tailHydrated: previous?.tailHydrated === true || options.tailHydrated === true,
     usedAt: Date.now(),
     bytes: Math.max(0, (previous?.bytes ?? 0) - replacedBytes + addedBytes),
     coverage,

@@ -17,10 +17,11 @@ import type {
   MessageAttachment,
   Session,
   SessionAgentOptions,
-  SessionStatus,
+  SessionRuntimeAgentOptions,
   SkillReference,
   SpotlightSearchResult,
   SubmitAgentOptions,
+  UpdateSessionRuntimeAgentOptionsResponse,
   UserInputAnswers,
   WorkspaceFileContent,
 } from '@/lib/api'
@@ -42,6 +43,8 @@ import {
   sessionActivityStreamURL,
   submitMessage,
   updateSessionAgentOptions,
+  updateSessionPin,
+  updateSessionRuntimeAgentOptions,
   updateSessionTitle,
   updateSessionWorkspace,
   watchSessionActivity,
@@ -112,6 +115,7 @@ import {
   writeCachedSessions as writePersistentCachedSessions,
 } from '@/lib/session-cache'
 import { cn } from '@/lib/utils'
+import { applySessionEvent } from '@/lib/session-events'
 import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
 import { ingestClientEvent, publishClientSessionEvent } from '@/lib/client-event-store'
 
@@ -173,6 +177,7 @@ function App() {
   const [erroredSessionIDs, setErroredSessionIDs] = useState<ReadonlySet<string>>(() => new Set())
   const [showDebugEvents, setShowDebugEvents] = useState(false)
   const [archivingSessionID, setArchivingSessionID] = useState<string | null>(null)
+  const [pinningSessionIDs, setPinningSessionIDs] = useState<ReadonlySet<string>>(() => new Set())
   const [confirmArchiveSessionID, setConfirmArchiveSessionID] = useState<string | null>(null)
   const [confirmSessionAction, setConfirmSessionAction] = useState<PendingSessionAction | null>(null)
   const [pendingSessionAction, setPendingSessionAction] = useState<PendingSessionAction | null>(null)
@@ -1138,6 +1143,48 @@ function App() {
     }
   }
 
+  async function handlePinSession(sessionID: string, pinned: boolean) {
+    if (pinningSessionIDs.has(sessionID)) return
+    const previous = sessionsRef.current.find((session) => session.id === sessionID)
+    if (!previous || (pinned && previous.archived_at)) return
+
+    const optimisticPinnedAt = pinned ? new Date().toISOString() : null
+    setPinningSessionIDs((current) => addSetValue(current, sessionID))
+    setSessions((current) => {
+      const next = sortSessions(
+        current.map((session) =>
+          session.id === sessionID ? { ...session, pinned_at: optimisticPinnedAt } : session,
+        ),
+      )
+      sessionsRef.current = next
+      const optimistic = next.find((session) => session.id === sessionID)
+      if (optimistic) void writePersistentCachedSession(optimistic)
+      return next
+    })
+
+    try {
+      const updated = await updateSessionPin(sessionID, pinned)
+      applySession(updated)
+    } catch (pinError) {
+      setError(messageFromError(pinError))
+      setSessions((current) => {
+        const next = sortSessions(
+          current.map((session) =>
+            session.id === sessionID && session.pinned_at === optimisticPinnedAt
+              ? { ...session, pinned_at: previous.pinned_at ?? null }
+              : session,
+          ),
+        )
+        sessionsRef.current = next
+        const restored = next.find((session) => session.id === sessionID)
+        if (restored) void writePersistentCachedSession(restored)
+        return next
+      })
+    } finally {
+      setPinningSessionIDs((current) => removeSetValue(current, sessionID))
+    }
+  }
+
   async function handleUpdateAgentOptions(agentOptions: SessionAgentOptions) {
     if (!selectedSessionID) {
       return
@@ -1150,6 +1197,22 @@ function App() {
       setError(messageFromError(optionsError))
     }
   }
+
+  const handleUpdateRuntimeAgentOptions = useCallback(async (
+    sessionID: string,
+    options: SessionRuntimeAgentOptions,
+    initializeIfAbsent = false,
+  ): Promise<UpdateSessionRuntimeAgentOptionsResponse> => {
+    try {
+      const response = await updateSessionRuntimeAgentOptions(sessionID, options, initializeIfAbsent)
+      applySession(response.session)
+      setError('')
+      return response
+    } catch (optionsError) {
+      setError(messageFromError(optionsError))
+      throw optionsError
+    }
+  }, [applySession])
 
   function requestArchiveSession() {
     if (!selectedSessionID) {
@@ -1413,6 +1476,8 @@ function App() {
     lastSeenSeqBySession: effectiveLastSeenSeqBySession,
     loading: loadingSessions || refreshingSessions,
     onSelect: (sessionID: string) => requestSessionSelection(sessionID, 'push'),
+    pinningSessionIDs,
+    onPinChange: (sessionID: string, pinned: boolean) => void handlePinSession(sessionID, pinned),
     overviewSelected,
     onOverview: () => selectOverview('push'),
     userSkillsSelected,
@@ -1975,6 +2040,7 @@ function App() {
               errorMessage={chatErrorMessage}
               showDebugEvents={showDebugEvents}
               onSubmitPrompt={handleSubmitPrompt}
+              onUpdateRuntimeAgentOptions={handleUpdateRuntimeAgentOptions}
               onAnswerUserInput={handleAnswerUserInput}
               onResolvePermission={handleResolvePermission}
               onCancel={handleCancel}
@@ -2610,89 +2676,15 @@ function removeSetValue(current: ReadonlySet<string>, value: string) {
   return next
 }
 
-function applySessionEvent(session: Session, event: AgentEvent, status: SessionStatus | null) {
-  const currentLastSeq = latestSessionSeq(session)
-  if (event.seq <= currentLastSeq) {
-    return session
-  }
-  const nextLastSeq = Math.max(currentLastSeq, event.seq)
-  const eventCount = (session.event_count ?? 0) + (isTransientEvent(event) ? 0 : 1)
-  const toolCount = (session.tool_count ?? 0) + (isToolActivityEvent(event) ? 1 : 0)
-  const tokenCount = Math.max(session.token_count ?? 0, payloadNumber(event.payload, 'session_total_tokens') ?? 0)
-  const pendingInput = pendingInputFromEvent(session.pending_input ?? false, event)
-  const pendingPermissionCount = pendingPermissionCountFromEvent(session.pending_permission_count ?? 0, event)
-  if (!status) {
-    return {
-      ...session,
-      event_count: eventCount,
-      last_event_seq: nextLastSeq,
-      tool_count: toolCount,
-      token_count: tokenCount,
-      pending_input: pendingInput,
-      pending_permission_count: pendingPermissionCount,
-    }
-  }
-
-  const updatedAt = payloadString(event.payload, 'updated_at') ?? event.created_at
-  const completedAt =
-    status === 'running' || status === 'idle'
-      ? null
-      : (payloadString(event.payload, 'completed_at') ?? event.created_at)
-
-  return {
-    ...session,
-    status,
-    event_count: eventCount,
-    last_event_seq: nextLastSeq,
-    tool_count: toolCount,
-    token_count: tokenCount,
-    pending_input: pendingInput,
-    pending_permission_count: pendingPermissionCount,
-    updated_at: updatedAt,
-    completed_at: completedAt,
-  }
-}
-
-function pendingPermissionCountFromEvent(current: number, event: AgentEvent) {
-  if (event.type === 'agent.permission.requested') return current + 1
-  if (event.type === 'agent.permission.resolved' || event.type === 'agent.permission.cancelled')
-    return Math.max(0, current - 1)
-  if (isTerminalEvent(event.type)) return 0
-  return current
-}
-
-function pendingInputFromEvent(current: boolean, event: AgentEvent) {
-  if (event.type === 'agent.input.requested') {
-    return true
-  }
-  if (event.type === 'agent.input.answered' || isTerminalEvent(event.type)) {
-    return false
-  }
-  return current
-}
-
-function isToolActivityEvent(event: AgentEvent) {
-  return event.type === 'tool.call.started' || event.type === 'file.change.started'
-}
-
-function payloadString(payload: unknown, key: string) {
-  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-    return null
-  }
-  const value = (payload as Record<string, unknown>)[key]
-  return typeof value === 'string' ? value : null
-}
-
-function payloadNumber(payload: unknown, key: string) {
-  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-    return null
-  }
-  const value = (payload as Record<string, unknown>)[key]
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
 function sortSessions(sessions: Session[]) {
   return [...sessions].sort((left, right) => {
+    const leftPinned = Boolean(left.pinned_at)
+    const rightPinned = Boolean(right.pinned_at)
+    if (leftPinned !== rightPinned) return rightPinned ? 1 : -1
+    if (leftPinned && rightPinned) {
+      const byPinned = new Date(right.pinned_at!).getTime() - new Date(left.pinned_at!).getTime()
+      if (byPinned !== 0) return byPinned
+    }
     const byUpdated = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
     return byUpdated !== 0 ? byUpdated : right.id.localeCompare(left.id)
   })

@@ -28,6 +28,7 @@ test('deduplicates transports by session sequence and notifies once', () => {
     lastSeq: 2,
     oldestSeq: 2,
     hasOlderEvents: true,
+    tailHydrated: false,
   })
   unsubscribe()
 })
@@ -36,11 +37,13 @@ test('hydrates a transcript tail and merges newer global events', () => {
   seedClientSessionEvents('sess_1', [event('sess_1', 8), event('sess_1', 9)], {
     lastSeq: 9,
     hasOlderEvents: true,
+    tailHydrated: true,
     replace: true,
   })
 
   expect(ingestClientEvent(event('sess_1', 10))).toBe(true)
   expect(readClientSessionEvents('sess_1')?.events.map((item) => item.seq)).toEqual([8, 9, 10])
+  expect(readClientSessionEvents('sess_1')?.tailHydrated).toBe(true)
 })
 
 test('publishes transient events without caching or advancing the durable cursor', () => {

@@ -1,4 +1,4 @@
-import { Archive, BookOpen, LayoutDashboard, Plus, Search } from 'lucide-react'
+import { Archive, BookOpen, LayoutDashboard, Pin, Plus, Search } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -15,6 +15,8 @@ type Props = {
   lastSeenSeqBySession?: Record<string, number>
   loading?: boolean
   onSelect: (sessionID: string) => void
+  pinningSessionIDs?: ReadonlySet<string>
+  onPinChange?: (sessionID: string, pinned: boolean) => void
   overviewSelected?: boolean
   onOverview?: () => void
   userSkillsSelected?: boolean
@@ -33,6 +35,8 @@ export function SessionList({
   lastSeenSeqBySession = {},
   loading = false,
   onSelect,
+  pinningSessionIDs = new Set(),
+  onPinChange,
   overviewSelected = false,
   onOverview,
   userSkillsSelected = false,
@@ -79,36 +83,36 @@ export function SessionList({
           onClick={onOverview}
           aria-current={overviewSelected ? 'page' : undefined}
           className={cn(
-            'flex w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left text-sm font-medium transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+            'group flex w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left text-sm font-medium transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
             overviewSelected && 'border-primary/30 bg-background/80 shadow-sm',
           )}
         >
           <LayoutDashboard className="size-4 text-muted-foreground" />
           <span className="flex-1">Overview</span>
-          <ShortcutHint shortcut="O" />
+          <ShortcutReveal shortcut="O" />
         </button>
         <button
           type="button"
           onClick={onUserSkills}
           aria-current={userSkillsSelected ? 'page' : undefined}
           className={cn(
-            'mt-1 flex w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left text-sm font-medium transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+            'group mt-1 flex w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left text-sm font-medium transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
             userSkillsSelected && 'border-primary/30 bg-background/80 shadow-sm',
           )}
         >
           <BookOpen className="size-4 text-muted-foreground" />
           <span className="flex-1">User skills</span>
-          <ShortcutHint shortcut="S" />
+          <ShortcutReveal shortcut="S" />
         </button>
         <button
           type="button"
           aria-label="Search"
           onClick={onSearch}
-          className="mt-1 flex w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left text-sm font-medium transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="group mt-1 flex w-full items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left text-sm font-medium transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
           <Search className="size-4 text-muted-foreground" />
           <span className="flex-1">Search</span>
-          <ShortcutHint shortcut="K" />
+          <ShortcutReveal shortcut="K" />
         </button>
       </div>
 
@@ -122,48 +126,17 @@ export function SessionList({
         ) : (
           <div className="session-list-rows space-y-1.5 p-2.5">
             {sessions.map((session, index) => (
-              <button
+              <SessionRow
                 key={session.id}
-                type="button"
-                onClick={() => onSelect(session.id)}
-                aria-current={selectedSessionID === session.id ? 'true' : undefined}
-                aria-label={session.archived_at ? `${session.title || 'Untitled session'} archived` : undefined}
-                className={cn(
-                  'session-row grid w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-border/70 hover:bg-background/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-                  selectedSessionID === session.id && 'border-primary/30 bg-background/80 shadow-sm',
-                  session.archived_at &&
-                    'border-dashed border-border/80 bg-surface-muted/65 text-muted-foreground hover:border-border hover:bg-surface-muted/80',
-                )}
-              >
-                <StatusBadge
-                  status={session.status}
-                  attention={sessionAttention(session, lastSeenSeqBySession)}
-                  hasError={errorSessionIDs.has(session.id)}
-                />
-                <span
-                  className={cn(
-                    'min-w-0 truncate text-sm font-medium',
-                    session.archived_at && 'text-muted-foreground line-through decoration-muted-foreground/60',
-                  )}
-                >
-                  {session.title || 'Untitled session'}
-                </span>
-                <span className="session-row-meta flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-                  {session.archived_at ? (
-                    <Badge
-                      variant="warning"
-                      className="min-h-5 gap-1 px-1.5 py-0 text-[10px] uppercase tracking-[0.08em]"
-                    >
-                      <Archive className="size-3" aria-hidden="true" />
-                      Archived
-                    </Badge>
-                  ) : null}
-                  <span className="rounded bg-surface-muted/72 px-1.5 py-0.5">
-                    {session.agent_type} / {formatShortTime(session.updated_at)}
-                  </span>
-                </span>
-                {index < 5 ? <ShortcutHint shortcut={String(index + 1)} /> : null}
-              </button>
+                session={session}
+                shortcut={index < 5 ? String(index + 1) : undefined}
+                selected={selectedSessionID === session.id}
+                hasError={errorSessionIDs.has(session.id)}
+                attention={sessionAttention(session, lastSeenSeqBySession)}
+                pinPending={pinningSessionIDs.has(session.id)}
+                onSelect={() => onSelect(session.id)}
+                onPinChange={onPinChange ? (pinned) => onPinChange(session.id, pinned) : undefined}
+              />
             ))}
           </div>
         )}
@@ -172,21 +145,115 @@ export function SessionList({
   )
 }
 
+function SessionRow({
+  session,
+  shortcut,
+  selected,
+  hasError,
+  attention,
+  pinPending,
+  onSelect,
+  onPinChange,
+}: {
+  session: Session
+  shortcut?: string
+  selected: boolean
+  hasError: boolean
+  attention: ReturnType<typeof sessionAttention>
+  pinPending: boolean
+  onSelect: () => void
+  onPinChange?: (pinned: boolean) => void
+}) {
+  const title = session.title || 'Untitled session'
+  const pinned = Boolean(session.pinned_at)
+  const archived = Boolean(session.archived_at)
+
+  return (
+    <div
+      data-session-id={session.id}
+      data-pinned={pinned ? 'true' : undefined}
+      className={cn(
+        'session-row group flex w-full items-center rounded-md border border-transparent transition-colors hover:border-border/70 hover:bg-background/54 focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring',
+        selected && 'border-primary/30 bg-background/80 shadow-sm',
+        archived &&
+          'border-dashed border-border/80 bg-surface-muted/65 text-muted-foreground hover:border-border hover:bg-surface-muted/80',
+      )}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-current={selected ? 'true' : undefined}
+        aria-label={archived ? `${title} archived` : title}
+        className="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-2.5 py-2 text-left focus-visible:outline-none"
+      >
+        <StatusBadge status={session.status} attention={attention} hasError={hasError} />
+        <span
+          className={cn(
+            'flex min-w-0 items-center gap-1.5 text-sm font-medium',
+            archived && 'text-muted-foreground line-through decoration-muted-foreground/60',
+          )}
+        >
+          <span className="truncate">{title}</span>
+        </span>
+        {archived ? (
+          <span className="session-row-meta flex shrink-0 items-center text-[11px] text-muted-foreground">
+            <Badge
+              variant="warning"
+              className="min-h-5 gap-1 px-1.5 py-0 text-[10px] uppercase tracking-[0.08em]"
+            >
+              <Archive className="size-3" aria-hidden="true" />
+              Archived
+            </Badge>
+          </span>
+        ) : null}
+      </button>
+      <div className="mr-1 flex h-8 shrink-0 items-center pr-2">
+        {shortcut ? (
+          <ShortcutReveal shortcut={shortcut} trailingGap />
+        ) : null}
+        {onPinChange && !archived ? (
+          <button
+            type="button"
+            aria-label={pinned ? 'Unpin session' : 'Pin session'}
+            title={pinned ? `Unpin ${title}` : `Pin ${title} to top`}
+            disabled={pinPending}
+            onClick={() => onPinChange(!pinned)}
+            className={cn(
+              'flex size-8 items-center justify-center rounded transition-all hover:bg-background/70 disabled:opacity-40',
+              pinned
+                ? 'text-primary opacity-100'
+                : 'text-muted-foreground opacity-100 md:pointer-events-none md:opacity-0 md:group-hover:pointer-events-auto md:group-hover:opacity-100 md:group-focus-within:pointer-events-auto md:group-focus-within:opacity-100',
+            )}
+          >
+            <Pin className={cn('size-4', pinned && 'fill-primary/20')} />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function ShortcutHint({ shortcut }: { shortcut: string }) {
   const modifier = navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl '
   return (
     <kbd
       aria-hidden="true"
-      className="rounded border border-border/70 bg-background/70 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+      className="inline-flex w-9 shrink-0 items-center justify-center rounded border border-border/70 bg-background/70 px-1 py-0.5 text-[10px] font-medium text-muted-foreground"
     >
       {modifier}{shortcut}
     </kbd>
   )
 }
 
-function formatShortTime(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(new Date(value))
+function ShortcutReveal({ shortcut, trailingGap = false }: { shortcut: string; trailingGap?: boolean }) {
+  return (
+    <span
+      className={cn(
+        'pointer-events-none hidden overflow-hidden opacity-0 transition-[width,margin,opacity] duration-150 md:inline-flex md:w-0 md:group-hover:w-9 md:group-hover:opacity-100 md:group-focus-within:w-9 md:group-focus-within:opacity-100',
+        trailingGap && 'md:group-hover:mr-1 md:group-focus-within:mr-1',
+      )}
+    >
+      <ShortcutHint shortcut={shortcut} />
+    </span>
+  )
 }

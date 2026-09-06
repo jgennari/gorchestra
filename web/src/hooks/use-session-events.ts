@@ -47,6 +47,7 @@ type SessionEventCacheEntry = {
   oldestSeq: number
   hasOlderEvents: boolean
   hasNewerEvents: boolean
+  tailHydrated: boolean
   usedAt: number
 }
 
@@ -92,6 +93,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const hasNewerEventsRef = useRef(false)
   const liveEventsRef = useRef<AgentEvent[]>([])
   const persistentHotWindowSeqRef = useRef(0)
+  const tailHydratedRef = useRef(false)
   const refreshKey = options.refreshKey ?? 0
   const includeDebugEvents = options.includeDebugEvents ?? false
   const targetSeq = options.targetSeq ?? 0
@@ -133,6 +135,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       newestSeqRef.current = 0
       liveEventsRef.current = []
       persistentHotWindowSeqRef.current = 0
+      tailHydratedRef.current = false
       loadedSessionIDRef.current = null
       selectedSessionIDRef.current = null
       loadedIncludeDebugEventsRef.current = false
@@ -152,6 +155,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         newestSeqRef.current = lastSeq(cachedSession.events)
         liveEventsRef.current = cachedSession.events
         persistentHotWindowSeqRef.current = 0
+        tailHydratedRef.current = cachedSession.tailHydrated
         loadedSessionIDRef.current = sessionID
         loadedIncludeDebugEventsRef.current = includeDebugEvents
         setEvents(cachedSession.events)
@@ -165,6 +169,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         newestSeqRef.current = 0
         liveEventsRef.current = []
         persistentHotWindowSeqRef.current = 0
+        tailHydratedRef.current = false
         setEvents([])
         setLiveEvents([])
         setHasOlderEvents(false)
@@ -251,6 +256,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
 
       loadedSessionIDRef.current = activeSessionID
       loadedIncludeDebugEventsRef.current = activeIncludeDebugEvents
+      tailHydratedRef.current = true
       writeCachedSessionEvents(
         activeSessionID,
         boundedLive.events,
@@ -270,6 +276,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           coverageLastSeq: history.page?.server_last_seq ?? history.page?.last_seq ?? historyLastSeq,
           serverLastSeq: history.page?.server_last_seq ?? lastDurableSeqRef.current,
           hasOlderEvents: pageHasOlder,
+          tailHydrated: true,
         })
       }
     }
@@ -338,6 +345,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setHasNewerEvents((history.page?.has_newer ?? false) || visible.trimmedEnd)
         loadedSessionIDRef.current = activeSessionID
         loadedIncludeDebugEventsRef.current = activeIncludeDebugEvents
+        tailHydratedRef.current = true
         writeCachedSessionEvents(
           activeSessionID,
           boundedLive.events,
@@ -366,6 +374,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
             coverageLastSeq: tail.page?.server_last_seq ?? tail.page?.last_seq ?? lastSeq(mergedTailEvents),
             serverLastSeq: tail.page?.server_last_seq ?? lastDurableSeqRef.current,
             hasOlderEvents: tail.page?.has_older,
+            tailHydrated: true,
             updateHotWindow: false,
           })
         }
@@ -377,7 +386,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       }
     }
 
-    async function hydratePersistentCacheOrLoad() {
+    async function hydratePersistentCacheOrLoad(preserveVisible: boolean) {
       setStreamState('loading')
       const persistentSession = await readPersistentCachedSessionEvents(
         activeSessionID,
@@ -397,6 +406,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         newestSeqRef.current = lastSeq(bounded.events)
         liveEventsRef.current = bounded.events
         persistentHotWindowSeqRef.current = hydratedLastSeq
+        tailHydratedRef.current = persistentSession.tailHydrated
         loadedSessionIDRef.current = activeSessionID
         loadedIncludeDebugEventsRef.current = activeIncludeDebugEvents
         setEvents(bounded.events)
@@ -410,21 +420,26 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           false,
           activeIncludeDebugEvents,
           hydratedLastSeq,
+          persistentSession.tailHydrated,
         )
-        setStreamState('connected')
+        if (persistentSession.tailHydrated) {
+          setStreamState('connected')
+          return
+        }
+        await loadTail(true)
         return
       }
-      await loadTail(false)
+      await loadTail(preserveVisible)
     }
 
     if (targetSeq > 0) {
       void loadTarget()
     } else if (sameSessionRefresh) {
       void loadTail(true)
-    } else if (cachedSession) {
+    } else if (cachedSession?.tailHydrated) {
       setStreamState('connected')
     } else {
-      void hydratePersistentCacheOrLoad()
+      void hydratePersistentCacheOrLoad(cachedSession !== null)
     }
 
     return () => {
@@ -441,6 +456,8 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           liveEventsRef.current,
           firstSeq(liveEventsRef.current) > 1,
           lastDurableSeqRef.current,
+          false,
+          tailHydratedRef.current,
         )
       }
       if (activeSessionIDRef.current === activeSessionID) activeSessionIDRef.current = null
@@ -457,7 +474,6 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     }
 
     loadingOlderEventsRef.current = true
-    followingTailRef.current = false
     setLoadingOlderEvents(true)
     setError('')
     try {
@@ -487,6 +503,10 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           })
       if (activeSessionIDRef.current !== sessionID) return
       if (history.events.length === 0) {
+        setHasOlderEvents(false)
+        return
+      }
+      if (firstSeq(history.events) >= beforeSeq) {
         setHasOlderEvents(false)
         return
       }
@@ -597,6 +617,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       const history = await listAdaptiveRecentEventTurns(sessionID, includeDebugEvents)
       if (activeSessionIDRef.current !== sessionID) return
       const combined = appendEvents([], [...history.events, ...liveEventsRef.current])
+      tailHydratedRef.current = true
       lastDurableSeqRef.current = Math.max(
         lastDurableSeqRef.current,
         history.page?.server_last_seq ?? 0,
@@ -616,6 +637,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           coverageLastSeq: history.page?.last_seq ?? lastSeq(history.events),
           serverLastSeq: history.page?.server_last_seq ?? lastDurableSeqRef.current,
           hasOlderEvents: history.page?.has_older,
+          tailHydrated: true,
         })
       }
     } catch (loadError) {
@@ -701,12 +723,14 @@ function writeCachedSessionEvents(
   hasNewerEvents: boolean,
   includeDebugEvents: boolean,
   cursorSeq = lastSeq(events),
+  tailHydrated = true,
 ) {
   if (!includeDebugEvents) {
     seedClientSessionEvents(sessionID, events, {
       lastSeq: cursorSeq,
       hasOlderEvents,
       hasNewerEvents,
+      tailHydrated,
       replace: true,
     })
     return
@@ -721,6 +745,7 @@ function writeCachedSessionEvents(
     oldestSeq,
     hasOlderEvents: hasOlderEvents || bounded.trimmedStart,
     hasNewerEvents,
+    tailHydrated,
     usedAt: Date.now(),
   })
   evictOldSessionEventCaches()

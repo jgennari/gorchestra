@@ -43,9 +43,12 @@ import {
   type OpenCodeAgentOptions,
   type PiAgentOptions,
   type QueuedMessage,
+  type SessionAgentOptions,
+  type SessionRuntimeAgentOptions,
   type SkillReference,
   type SkillScope,
   type SubmitMessageResponse,
+  type UpdateSessionRuntimeAgentOptionsResponse,
   updateQueuedMessagesCache,
   removeQueuedMessage as deleteQueuedMessage,
   type SubmitAgentOptions,
@@ -73,6 +76,8 @@ const claudeEffortOptions = ['low', 'medium', 'high', 'xhigh', 'max'].map((value
 type Props = {
   sessionID?: string
   agentType?: AgentType
+  sessionAgentOptions?: SessionAgentOptions
+  sessionAgentOptionsSeq?: number
   sessionStatus?: 'idle' | 'running' | 'failed'
   hasPendingUserInput?: boolean
   latestTerminalEvent?: AgentEvent | null
@@ -87,6 +92,11 @@ type Props = {
     queue?: boolean,
     skills?: SkillReference[],
   ) => Promise<SubmitMessageResponse | void>
+  onUpdateRuntimeAgentOptions?: (
+    sessionID: string,
+    options: SessionRuntimeAgentOptions,
+    initializeIfAbsent?: boolean,
+  ) => Promise<UpdateSessionRuntimeAgentOptionsResponse>
   onCancel?: () => Promise<void>
   onError?: (message: string) => void
   onFocus?: () => void
@@ -116,6 +126,19 @@ type PiSelection = {
   thinking_level: string
 }
 
+type RuntimeAgentOptionsSyncState = {
+  inFlight: boolean
+  queued: {
+    options: SessionRuntimeAgentOptions
+    initializeIfAbsent: boolean
+  } | null
+  initialized: boolean
+  confirmedKey: string
+  confirmedOptions: SessionRuntimeAgentOptions | null
+  latestServerSeq: number
+  adoptingServerKey: string
+}
+
 type ComposerStorageValue = {
   draft?: string
   selectedSkills?: SkillReference[]
@@ -138,12 +161,15 @@ type SkillTypeahead = {
 export function PromptComposer({
   sessionID,
   agentType = 'fake',
+  sessionAgentOptions,
+  sessionAgentOptionsSeq = 0,
   sessionStatus = 'idle',
   queueEvents = noQueueEvents,
   latestQueueEvent = null,
   disabled,
   disabledReason,
   onSubmit,
+  onUpdateRuntimeAgentOptions,
   onCancel,
   onError,
   onFocus,
@@ -182,10 +208,28 @@ export function PromptComposer({
   const [piOptions, setPiOptions] = useState<PiAgentOptions | null>(null)
   const [piOptionsLoading, setPiOptionsLoading] = useState(false)
   const [piOptionsError, setPiOptionsError] = useState('')
-  const [codexSelection, setCodexSelection] = useState<CodexSelection>(() => loadCodexSelection(sessionID))
-  const [claudeSelection, setClaudeSelection] = useState<ClaudeSelection>(() => loadClaudeSelection(sessionID))
-  const [opencodeSelection, setOpenCodeSelection] = useState<OpenCodeSelection>(() => loadOpenCodeSelection(sessionID))
-  const [piSelection, setPiSelection] = useState<PiSelection>(() => loadPiSelection(sessionID))
+  const initialServerRuntimeOptions = runtimeAgentOptionsFromSession(agentType, sessionAgentOptions)
+  const [codexSelection, setCodexSelection] = useState<CodexSelection>(() =>
+    loadCodexSelection(sessionID, initialServerRuntimeOptions),
+  )
+  const [claudeSelection, setClaudeSelection] = useState<ClaudeSelection>(() =>
+    loadClaudeSelection(sessionID, initialServerRuntimeOptions),
+  )
+  const [opencodeSelection, setOpenCodeSelection] = useState<OpenCodeSelection>(() =>
+    loadOpenCodeSelection(sessionID, initialServerRuntimeOptions),
+  )
+  const [piSelection, setPiSelection] = useState<PiSelection>(() =>
+    loadPiSelection(sessionID, initialServerRuntimeOptions),
+  )
+  const runtimeSyncRef = useRef<RuntimeAgentOptionsSyncState>({
+    inFlight: false,
+    queued: null,
+    initialized: initialServerRuntimeOptions !== null,
+    confirmedKey: runtimeAgentOptionsKey(initialServerRuntimeOptions),
+    confirmedOptions: initialServerRuntimeOptions,
+    latestServerSeq: sessionAgentOptionsSeq,
+    adoptingServerKey: '',
+  })
   const [closeSettingsSignal, setCloseSettingsSignal] = useState(0)
   const hasAttachments = attachments.length > 0
   const hasSelectedSkills = selectedSkills.length > 0
@@ -219,6 +263,21 @@ export function PromptComposer({
   const piControlsDisabled = submitting || piOptionsLoading || !piOptions
   const codexPlanAvailable = Boolean(codexOptions?.collaboration_modes.some((mode) => mode.mode === 'plan'))
   const openCodePlanAvailable = opencodeOptions?.collaboration_modes.some((mode) => mode.mode === 'plan') ?? false
+  const currentRuntimeAgentOptions = useMemo(
+    () => runtimeAgentOptionsFromSelections(
+      agentType,
+      codexSelection,
+      claudeSelection,
+      opencodeSelection,
+      piSelection,
+    ),
+    [agentType, claudeSelection, codexSelection, opencodeSelection, piSelection],
+  )
+  const runtimeAgentOptionsReady =
+    agentType === 'claude' ||
+    agentType === 'codex' && codexOptions !== null ||
+    agentType === 'opencode' && opencodeOptions !== null ||
+    agentType === 'pi' && piOptions !== null
   const sortedSkills = useMemo(() => sortSkills(skills), [skills])
   const skillScopes = useMemo(() => availableSkillScopes(sortedSkills), [sortedSkills])
   const browsedSkills = useMemo(
@@ -232,6 +291,123 @@ export function PromptComposer({
     () => (skillTypeahead ? filterSkills(sortedSkills, skillTypeahead.query).slice(0, 8) : []),
     [skillTypeahead, sortedSkills],
   )
+
+  const applyRuntimeAgentOptions = useCallback((options: SessionRuntimeAgentOptions) => {
+    if (options.codex) {
+      setCodexSelection(() => reconcileCodexSelection({
+        model: options.codex?.model ?? '',
+        reasoning_effort: options.codex?.reasoning_effort ?? '',
+        fast_mode: options.codex?.fast_mode ?? false,
+        planning_mode: options.codex?.planning_mode ?? false,
+      }, codexOptions))
+      return
+    }
+    if (options.claude) {
+      setClaudeSelection({
+        model: options.claude.model ?? '',
+        effort: options.claude.effort ?? 'medium',
+        planning_mode: options.claude.planning_mode ?? false,
+      })
+      return
+    }
+    if (options.opencode) {
+      setOpenCodeSelection(() => reconcileOpenCodeSelection({
+        model: options.opencode?.model ?? '',
+        planning_mode: options.opencode?.planning_mode ?? false,
+      }, opencodeOptions))
+      return
+    }
+    if (options.pi) {
+      setPiSelection(() => reconcilePiSelection({
+        model: options.pi?.model ?? '',
+        thinking_level: options.pi?.thinking_level ?? '',
+      }, piOptions))
+    }
+  }, [codexOptions, opencodeOptions, piOptions])
+
+  const enqueueRuntimeAgentOptions = useCallback((
+    options: SessionRuntimeAgentOptions,
+    initializeIfAbsent: boolean,
+  ) => {
+    if (!sessionID || !onUpdateRuntimeAgentOptions) return
+    const sync = runtimeSyncRef.current
+    const optionsKey = runtimeAgentOptionsKey(options)
+    if (!sync.inFlight && sync.initialized && optionsKey === sync.confirmedKey) return
+    sync.queued = { options, initializeIfAbsent }
+    if (sync.inFlight) return
+
+    sync.inFlight = true
+    void (async () => {
+      while (sync.queued) {
+        const pending = sync.queued
+        sync.queued = null
+        try {
+          const response = await onUpdateRuntimeAgentOptions(
+            sessionID,
+            pending.options,
+            pending.initializeIfAbsent && !sync.initialized,
+          )
+          const confirmed = runtimeAgentOptionsFromSession(agentType, response.session.agent_options)
+          const responseSeq = response.session.last_event_seq ?? 0
+          if (confirmed && responseSeq >= sync.latestServerSeq) {
+            sync.latestServerSeq = responseSeq
+            sync.confirmedOptions = confirmed
+            sync.confirmedKey = runtimeAgentOptionsKey(confirmed)
+          }
+          sync.initialized = confirmed !== null
+          clearStoredAgentSelections(sessionID)
+          if (!sync.queued && sync.confirmedOptions) {
+            sync.adoptingServerKey = sync.confirmedKey
+            applyRuntimeAgentOptions(sync.confirmedOptions)
+          }
+        } catch (updateError) {
+          sync.queued = null
+          if (sync.confirmedOptions) {
+            sync.adoptingServerKey = sync.confirmedKey
+            applyRuntimeAgentOptions(sync.confirmedOptions)
+          }
+          onError?.(updateError instanceof Error ? updateError.message : 'Failed to save agent settings')
+        }
+      }
+    })().finally(() => {
+      sync.inFlight = false
+    })
+  }, [agentType, applyRuntimeAgentOptions, onError, onUpdateRuntimeAgentOptions, sessionID])
+
+  useEffect(() => {
+    const serverOptions = runtimeAgentOptionsFromSession(agentType, sessionAgentOptions)
+    if (!serverOptions) return
+    const sync = runtimeSyncRef.current
+    if (sessionAgentOptionsSeq < sync.latestServerSeq) return
+    sync.latestServerSeq = sessionAgentOptionsSeq
+    sync.initialized = true
+    sync.confirmedOptions = serverOptions
+    sync.confirmedKey = runtimeAgentOptionsKey(serverOptions)
+    clearStoredAgentSelections(sessionID)
+    if (!sync.inFlight && !sync.queued) {
+      sync.adoptingServerKey = sync.confirmedKey
+      applyRuntimeAgentOptions(serverOptions)
+    }
+  }, [agentType, applyRuntimeAgentOptions, sessionAgentOptions, sessionAgentOptionsSeq, sessionID])
+
+  useEffect(() => {
+    if (!onUpdateRuntimeAgentOptions || !sessionID || !runtimeAgentOptionsReady || !currentRuntimeAgentOptions) {
+      return
+    }
+    const sync = runtimeSyncRef.current
+    const currentKey = runtimeAgentOptionsKey(currentRuntimeAgentOptions)
+    if (sync.adoptingServerKey) {
+      if (currentKey === sync.adoptingServerKey) sync.adoptingServerKey = ''
+      return
+    }
+    enqueueRuntimeAgentOptions(currentRuntimeAgentOptions, !sync.initialized)
+  }, [
+    currentRuntimeAgentOptions,
+    enqueueRuntimeAgentOptions,
+    onUpdateRuntimeAgentOptions,
+    runtimeAgentOptionsReady,
+    sessionID,
+  ])
 
   const commitQueuedMessages = useCallback((
     update: QueuedMessage[] | ((current: QueuedMessage[]) => QueuedMessage[]),
@@ -445,20 +621,24 @@ export function PromptComposer({
   }, [commitQueuedMessages, latestQueueEvent, queueEvents, sessionID])
 
   useEffect(() => {
+    if (onUpdateRuntimeAgentOptions) return
     saveCodexSelection(sessionID, codexSelection)
-  }, [codexSelection, sessionID])
+  }, [codexSelection, onUpdateRuntimeAgentOptions, sessionID])
 
   useEffect(() => {
+    if (onUpdateRuntimeAgentOptions) return
     saveClaudeSelection(sessionID, claudeSelection)
-  }, [claudeSelection, sessionID])
+  }, [claudeSelection, onUpdateRuntimeAgentOptions, sessionID])
 
   useEffect(() => {
+    if (onUpdateRuntimeAgentOptions) return
     saveOpenCodeSelection(sessionID, opencodeSelection)
-  }, [opencodeSelection, sessionID])
+  }, [onUpdateRuntimeAgentOptions, opencodeSelection, sessionID])
 
   useEffect(() => {
+    if (onUpdateRuntimeAgentOptions) return
     savePiSelection(sessionID, piSelection)
-  }, [piSelection, sessionID])
+  }, [onUpdateRuntimeAgentOptions, piSelection, sessionID])
 
   function currentSubmitOptions() {
     if (codexToolbarVisible) {
@@ -2893,7 +3073,18 @@ function validSkillColor(value: string | undefined) {
   return value && /^#[0-9a-f]{6}$/i.test(value) ? value : ''
 }
 
-function loadCodexSelection(sessionID: string | undefined): CodexSelection {
+function loadCodexSelection(
+  sessionID: string | undefined,
+  runtimeOptions: SessionRuntimeAgentOptions | null = null,
+): CodexSelection {
+  if (runtimeOptions?.codex) {
+    return {
+      model: runtimeOptions.codex.model ?? '',
+      reasoning_effort: runtimeOptions.codex.reasoning_effort ?? '',
+      fast_mode: runtimeOptions.codex.fast_mode,
+      planning_mode: runtimeOptions.codex.planning_mode,
+    }
+  }
   const stored = loadComposerStorage(sessionID).codexSelection ?? {}
   return {
     model: typeof stored.model === 'string' ? stored.model : '',
@@ -2910,7 +3101,17 @@ function saveCodexSelection(sessionID: string | undefined, selection: CodexSelec
   })
 }
 
-function loadClaudeSelection(sessionID: string | undefined): ClaudeSelection {
+function loadClaudeSelection(
+  sessionID: string | undefined,
+  runtimeOptions: SessionRuntimeAgentOptions | null = null,
+): ClaudeSelection {
+  if (runtimeOptions?.claude) {
+    return {
+      model: runtimeOptions.claude.model ?? '',
+      effort: runtimeOptions.claude.effort ?? 'medium',
+      planning_mode: runtimeOptions.claude.planning_mode,
+    }
+  }
   const stored = loadComposerStorage(sessionID).claudeSelection ?? {}
   return {
     model: typeof stored.model === 'string' ? stored.model : '',
@@ -2926,7 +3127,16 @@ function saveClaudeSelection(sessionID: string | undefined, selection: ClaudeSel
   })
 }
 
-function loadOpenCodeSelection(sessionID: string | undefined): OpenCodeSelection {
+function loadOpenCodeSelection(
+  sessionID: string | undefined,
+  runtimeOptions: SessionRuntimeAgentOptions | null = null,
+): OpenCodeSelection {
+  if (runtimeOptions?.opencode) {
+    return {
+      model: runtimeOptions.opencode.model ?? '',
+      planning_mode: runtimeOptions.opencode.planning_mode,
+    }
+  }
   const stored = loadComposerStorage(sessionID).opencodeSelection ?? {}
   return {
     model: typeof stored.model === 'string' ? stored.model : '',
@@ -2941,7 +3151,16 @@ function saveOpenCodeSelection(sessionID: string | undefined, selection: OpenCod
   })
 }
 
-function loadPiSelection(sessionID: string | undefined): PiSelection {
+function loadPiSelection(
+  sessionID: string | undefined,
+  runtimeOptions: SessionRuntimeAgentOptions | null = null,
+): PiSelection {
+  if (runtimeOptions?.pi) {
+    return {
+      model: runtimeOptions.pi.model ?? '',
+      thinking_level: runtimeOptions.pi.thinking_level ?? '',
+    }
+  }
   const stored = loadComposerStorage(sessionID).piSelection ?? {}
   return {
     model: typeof stored.model === 'string' ? stored.model : '',
@@ -2954,6 +3173,99 @@ function savePiSelection(sessionID: string | undefined, selection: PiSelection) 
     ...loadComposerStorage(sessionID),
     piSelection: selection,
   })
+}
+
+function clearStoredAgentSelections(sessionID: string | undefined) {
+  if (!sessionID) return
+  const remaining = loadComposerStorage(sessionID)
+  delete remaining.codexSelection
+  delete remaining.claudeSelection
+  delete remaining.opencodeSelection
+  delete remaining.piSelection
+  saveComposerStorage(sessionID, remaining)
+}
+
+function runtimeAgentOptionsFromSession(
+  agentType: AgentType,
+  options: SessionAgentOptions | undefined,
+): SessionRuntimeAgentOptions | null {
+  if (agentType === 'codex' && options?.codex && hasRuntimeOption(options.codex, [
+    'model',
+    'reasoning_effort',
+    'fast_mode',
+    'planning_mode',
+  ])) {
+    return {
+      codex: {
+        model: options.codex.model,
+        reasoning_effort: options.codex.reasoning_effort,
+        fast_mode: options.codex.fast_mode ?? false,
+        planning_mode: options.codex.planning_mode ?? false,
+      },
+    }
+  }
+  if (agentType === 'claude' && options?.claude && hasRuntimeOption(options.claude, [
+    'model',
+    'effort',
+    'planning_mode',
+  ])) {
+    return {
+      claude: {
+        model: options.claude.model,
+        effort: options.claude.effort,
+        planning_mode: options.claude.planning_mode ?? false,
+      },
+    }
+  }
+  if (agentType === 'opencode' && options?.opencode && hasRuntimeOption(options.opencode, [
+    'model',
+    'planning_mode',
+  ])) {
+    return {
+      opencode: {
+        model: options.opencode.model,
+        planning_mode: options.opencode.planning_mode ?? false,
+      },
+    }
+  }
+  if (agentType === 'pi' && options?.pi && hasRuntimeOption(options.pi, ['model', 'thinking_level'])) {
+    return {
+      pi: {
+        model: options.pi.model,
+        thinking_level: options.pi.thinking_level,
+      },
+    }
+  }
+  return null
+}
+
+function runtimeAgentOptionsFromSelections(
+  agentType: AgentType,
+  codex: CodexSelection,
+  claude: ClaudeSelection,
+  opencode: OpenCodeSelection,
+  pi: PiSelection,
+): SessionRuntimeAgentOptions | null {
+  switch (agentType) {
+    case 'codex':
+      return { codex: { ...codex } }
+    case 'claude':
+      return { claude: { ...claude } }
+    case 'opencode':
+      return { opencode: { ...opencode } }
+    case 'pi':
+      return { pi: { ...pi } }
+    default:
+      return null
+  }
+}
+
+function runtimeAgentOptionsKey(options: SessionRuntimeAgentOptions | null) {
+  return options ? JSON.stringify(options) : ''
+}
+
+function hasRuntimeOption(options: object, keys: string[]) {
+  return keys.some((key) => Object.prototype.hasOwnProperty.call(options, key))
 }
 
 function resizePromptTextarea(textarea: HTMLTextAreaElement | null) {

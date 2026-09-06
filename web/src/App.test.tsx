@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from '@/App'
+import { applySessionEvent } from '@/lib/session-events'
 import { clearAPIRequestCachesForTest, type AgentEvent, type Session } from '@/lib/api'
 import { clearSessionEventCacheForTest } from '@/hooks/use-session-events'
 import { readCachedSessionEvents, writeCachedSession, writeCachedSessionEvents } from '@/lib/session-cache'
@@ -104,7 +105,7 @@ test('global activity multiplexes selected transient output into the transcript'
   expect(FakeEventSource.instances).toHaveLength(1)
 })
 
-test('selecting a background session hydrates its global events without fetching a tail', async () => {
+test('selecting a background session keeps its global events while hydrating the server tail', async () => {
   const user = userEvent.setup()
   const fetch = fetchMock()
   vi.stubGlobal('fetch', fetch)
@@ -124,7 +125,7 @@ test('selecting a background session hydrates its global events without fetching
     fetch.mock.calls.filter(
       ([url]) => String(url) === '/api/sessions/sess_2/events?tail=true&turns=50&max_bytes=2097152',
     ),
-  ).toHaveLength(0)
+  ).toHaveLength(1)
   expect(FakeEventSource.instances).toHaveLength(1)
 })
 
@@ -1368,6 +1369,67 @@ test('global activity stream marks another session pending input', async () => {
   await waitFor(() => expect(faviconPath()).toBe('/favicon-notify.svg'))
 })
 
+test('session settings events update the cached session snapshot', () => {
+  const updated = applySessionEvent(
+    firstSession,
+    event(1, 'session.agent_options.updated', {
+      updated_at: '2026-06-12T16:04:00Z',
+      agent_options: {
+        codex: {
+          model: 'gpt-5.6',
+          reasoning_effort: 'xhigh',
+          fast_mode: true,
+          planning_mode: false,
+        },
+      },
+    }),
+    null,
+  )
+
+  expect(updated.agent_options).toEqual({
+    codex: {
+      model: 'gpt-5.6',
+      reasoning_effort: 'xhigh',
+      fast_mode: true,
+      planning_mode: false,
+    },
+  })
+  expect(updated.updated_at).toBe('2026-06-12T16:04:00Z')
+  expect(updated.event_count).toBe(1)
+  expect(updated.last_event_seq).toBe(1)
+})
+
+test('session pin events update pin state without changing activity recency', () => {
+  const updated = applySessionEvent(
+    firstSession,
+    event(1, 'session.pin.updated', { pinned_at: '2026-06-12T16:20:00Z' }),
+    null,
+  )
+
+  expect(updated.pinned_at).toBe('2026-06-12T16:20:00Z')
+  expect(updated.updated_at).toBe(firstSession.updated_at)
+  expect(updated.event_count).toBe(1)
+  expect(updated.last_event_seq).toBe(1)
+})
+
+test('global pin activity moves a background session above newer recent activity', async () => {
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit({
+      ...event(1, 'session.pin.updated', { pinned_at: '2026-06-12T16:20:00Z' }, 'sess_2'),
+      global_seq: 45,
+    })
+  })
+
+  await waitFor(() => {
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('.session-row'))
+    expect(rows[0]).toHaveAttribute('data-session-id', 'sess_2')
+    expect(rows[0]).toHaveAttribute('data-pinned', 'true')
+  })
+})
+
 test('global activity stream marks finished unselected sessions as unseen until selected', async () => {
   const runningSecondSession: Session = { ...secondSession, status: 'running', last_event_seq: 4, event_count: 4 }
   vi.stubGlobal('fetch', fetchMock({ sessions: [firstSession, runningSecondSession] }))
@@ -1848,6 +1910,15 @@ function fetchMock({
     if (sessionMatch) {
       const matchedSession = sessions.find((session) => session.id === decodeURIComponent(sessionMatch[1]))
       if (matchedSession) {
+				if (init?.method === 'PATCH') {
+					const body = JSON.parse(String(init.body)) as { pinned?: boolean }
+					if (typeof body.pinned === 'boolean') {
+						return jsonResponse({
+							...matchedSession,
+							pinned_at: body.pinned ? '2026-06-12T16:20:00Z' : null,
+						})
+					}
+				}
         return jsonResponse(matchedSession)
       }
     }

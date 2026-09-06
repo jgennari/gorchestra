@@ -184,7 +184,7 @@ export function ChatTranscript({
     if (!loadingNewerEvents) autoLoadNewerRef.current = false
   }, [loadingNewerEvents])
 
-  function requestOlderEvents() {
+  const requestOlderEvents = useCallback(() => {
     if (
       !hasOlderEvents ||
       loadingOlderEvents ||
@@ -197,7 +197,14 @@ export function ChatTranscript({
     return Promise.resolve(onLoadOlderEvents()).finally(() => {
       autoLoadOlderRef.current = false
     })
-  }
+  }, [hasOlderEvents, loadingOlderEvents, onLoadOlderEvents])
+
+  const requestOlderEventsIfUnderfilled = useCallback(() => {
+    const scroller = scrollerElementRef.current
+    if (!scroller || scroller.clientHeight <= 0) return
+    if (scroller.scrollHeight > scroller.clientHeight + PHYSICAL_TAIL_THRESHOLD_PX) return
+    void requestOlderEvents()
+  }, [requestOlderEvents])
 
   function requestNewerEvents() {
     if (
@@ -359,6 +366,7 @@ export function ChatTranscript({
     }
 
     if (!sync && !instance.isScrolling) {
+      if (!loading && !error) requestOlderEventsIfUnderfilled()
       const shouldSnap = snapToTailPendingRef.current
       lastScrollDirectionRef.current = null
       userScrollIntentRef.current = null
@@ -493,6 +501,19 @@ export function ChatTranscript({
   useLayoutEffect(() => {
     updateVisibleSequenceRange(virtualizer)
   })
+
+  useLayoutEffect(() => {
+    if (loading || error || !hasOlderEvents || loadingOlderEvents || virtualItems.length === 0) return
+    const frame = window.requestAnimationFrame(requestOlderEventsIfUnderfilled)
+    return () => window.cancelAnimationFrame(frame)
+  }, [
+    error,
+    hasOlderEvents,
+    loading,
+    loadingOlderEvents,
+    requestOlderEventsIfUnderfilled,
+    virtualItems.length,
+  ])
 
   useLayoutEffect(() => {
     if (loading || focusSeq <= 0 || focusedVirtualIndex < 0) return

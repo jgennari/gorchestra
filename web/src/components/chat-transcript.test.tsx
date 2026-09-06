@@ -514,6 +514,54 @@ test('does not request older history while an older request is already active', 
   expect(onLoadOlderEvents).not.toHaveBeenCalled()
 })
 
+test('automatically loads older history when the transcript cannot fill its viewport', async () => {
+  const onLoadOlderEvents = vi.fn()
+  const tail = event(251, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })
+  const { rerender } = render(
+    <ChatTranscript
+      onLoadOlderEvents={onLoadOlderEvents}
+      events={[tail]}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  setScrollMetrics(log, { scrollTop: 0, scrollHeight: 320, clientHeight: 500 })
+
+  rerender(
+    <ChatTranscript
+      hasOlderEvents
+      onLoadOlderEvents={onLoadOlderEvents}
+      events={[tail]}
+    />,
+  )
+  await act(async () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())))
+
+  expect(onLoadOlderEvents).toHaveBeenCalledOnce()
+})
+
+test('does not automatically load older history when the transcript is scrollable', async () => {
+  const onLoadOlderEvents = vi.fn()
+  const tail = event(251, 'agent.message.completed', 'assistant', 'completed', { text: 'Tail' })
+  const { rerender } = render(
+    <ChatTranscript
+      onLoadOlderEvents={onLoadOlderEvents}
+      events={[tail]}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  setScrollMetrics(log, { scrollTop: 0, scrollHeight: 1000, clientHeight: 500 })
+
+  rerender(
+    <ChatTranscript
+      hasOlderEvents
+      onLoadOlderEvents={onLoadOlderEvents}
+      events={[tail]}
+    />,
+  )
+  await act(async () => new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())))
+
+  expect(onLoadOlderEvents).not.toHaveBeenCalled()
+})
+
 test('stable timeline keys preserve the visible row when older history is prepended', async () => {
   const { rerender } = render(
     <ChatTranscript

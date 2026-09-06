@@ -15,6 +15,7 @@ export type ClientSessionEventSnapshot = {
   oldestSeq: number
   hasOlderEvents: boolean
   hasNewerEvents: boolean
+  tailHydrated: boolean
 }
 
 type ClientSessionEventEntry = ClientSessionEventSnapshot & {
@@ -42,6 +43,7 @@ export function ingestClientEvent(event: AgentEvent) {
     lastSeq: event.seq,
     hasOlderEvents: Boolean(current?.hasOlderEvents) || bounded.trimmedStart || firstSeq(bounded.events) > 1,
     hasNewerEvents: false,
+    tailHydrated: current?.tailHydrated === true,
   })
   cursors.set(event.session_id, event.seq)
   void writePersistentCachedSessionEvent(event.session_id, event, event.seq)
@@ -70,6 +72,7 @@ export function seedClientSessionEvents(
     lastSeq?: number
     hasOlderEvents?: boolean
     hasNewerEvents?: boolean
+    tailHydrated?: boolean
     replace?: boolean
   } = {},
 ) {
@@ -88,6 +91,7 @@ export function seedClientSessionEvents(
       bounded.trimmedStart ||
       firstSeq(bounded.events) > 1,
     hasNewerEvents: options.hasNewerEvents ?? (options.replace ? false : current?.hasNewerEvents ?? false),
+    tailHydrated: options.tailHydrated ?? (options.replace ? false : current?.tailHydrated ?? false),
   })
 }
 
@@ -125,7 +129,10 @@ export function clearClientEventStoreForTest() {
 function setEntry(
   sessionID: string,
   events: AgentEvent[],
-  options: Pick<ClientSessionEventSnapshot, 'lastSeq' | 'hasOlderEvents' | 'hasNewerEvents'>,
+  options: Pick<
+    ClientSessionEventSnapshot,
+    'lastSeq' | 'hasOlderEvents' | 'hasNewerEvents' | 'tailHydrated'
+  >,
 ) {
   const entry: ClientSessionEventEntry = {
     events,
@@ -133,6 +140,7 @@ function setEntry(
     oldestSeq: firstSeq(events),
     hasOlderEvents: options.hasOlderEvents,
     hasNewerEvents: options.hasNewerEvents,
+    tailHydrated: options.tailHydrated,
     usedAt: Date.now(),
     bytes: eventWindowStats(events).bytes,
   }
@@ -148,6 +156,7 @@ function snapshotFromEntry(entry: ClientSessionEventEntry): ClientSessionEventSn
     oldestSeq: entry.oldestSeq,
     hasOlderEvents: entry.hasOlderEvents,
     hasNewerEvents: entry.hasNewerEvents,
+    tailHydrated: entry.tailHydrated,
   }
 }
 
@@ -158,6 +167,7 @@ function emptySnapshot(): ClientSessionEventSnapshot {
     oldestSeq: 0,
     hasOlderEvents: false,
     hasNewerEvents: false,
+    tailHydrated: false,
   }
 }
 

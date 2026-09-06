@@ -2,6 +2,7 @@ import {
   answerUserInput,
   archiveSession,
   browseWorkspace,
+  cancelSession,
   clearSession,
   clearAPIRequestCachesForTest,
   compactSession,
@@ -25,6 +26,7 @@ import {
   listHostLogs,
   listWorkspaceRoots,
   restoreSession,
+	updateSessionPin,
   searchSessionFiles,
   sessionActivityStreamURL,
   sessionFileRawURL,
@@ -34,6 +36,7 @@ import {
   stopHost,
   submitMessage,
   updateSessionAgentOptions,
+  updateSessionRuntimeAgentOptions,
   updateSessionFileContent,
   updateSessionTitle,
   updateSessionWorkspace,
@@ -115,6 +118,18 @@ test('session list helper includes status filters', async () => {
   await listSessions({ limit: 25, status: 'running' })
 })
 
+test('cancel helper identifies the web stop button as its source', async () => {
+  const fetchMock = vi.fn(async () => jsonResponse({ session_id: 'sess_1', status: 'cancelling' }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await cancelSession('sess_1')
+
+  expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess_1/cancel', expect.objectContaining({
+    method: 'POST',
+    body: JSON.stringify({ source: 'web_ui', reason: 'stop_button' }),
+  }))
+})
+
 test('session snapshot returns the durable global event cursor', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ sessions: [], event_cursor: 73 })))
 
@@ -177,6 +192,33 @@ test('title update helper patches the session title', async () => {
   expect(session.title).toBe('New title')
 })
 
+test('pin update helper patches the server-owned pin state', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1')
+    expect(init?.method).toBe('PATCH')
+    expect(init?.body).toBe(JSON.stringify({ pinned: true }))
+    return jsonResponse({
+      id: 'sess_1',
+      title: 'Pinned session',
+      agent_type: 'fake',
+      status: 'idle',
+      workspace_path: '/repo',
+      event_count: 1,
+      tool_count: 0,
+      created_at: '2026-06-12T16:00:00Z',
+      updated_at: '2026-06-12T16:01:00Z',
+      completed_at: null,
+      archived_at: null,
+      pinned_at: '2026-06-12T16:20:00Z',
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const session = await updateSessionPin('sess_1', true)
+
+  expect(session.pinned_at).toBe('2026-06-12T16:20:00Z')
+})
+
 test('workspace update helper patches the session workspace', async () => {
   const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     expect(String(url)).toBe('/api/sessions/sess_1')
@@ -228,6 +270,46 @@ test('agent options update helper patches the session options', async () => {
   const session = await updateSessionAgentOptions('sess_1', { codex: { run_dangerously: true } })
 
   expect(session.agent_options?.codex?.run_dangerously).toBe(true)
+})
+
+test('runtime agent options helper updates the server-side session selection', async () => {
+  const options = {
+    codex: {
+      model: 'gpt-5.6',
+      reasoning_effort: 'xhigh',
+      fast_mode: true,
+      planning_mode: false,
+    },
+  }
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1/agent-options/runtime')
+    expect(init?.method).toBe('PUT')
+    expect(init?.body).toBe(JSON.stringify({ options, initialize_if_absent: true }))
+    return jsonResponse({
+      applied: true,
+      session: {
+        id: 'sess_1',
+        title: 'Codex',
+        agent_type: 'codex',
+        status: 'idle',
+        workspace_path: '/repo',
+        agent_options: options,
+        event_count: 1,
+        last_event_seq: 1,
+        tool_count: 0,
+        created_at: '2026-06-12T16:00:00Z',
+        updated_at: '2026-06-12T16:01:00Z',
+        completed_at: null,
+        archived_at: null,
+      },
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const response = await updateSessionRuntimeAgentOptions('sess_1', options, true)
+
+  expect(response.applied).toBe(true)
+  expect(response.session.agent_options).toEqual(options)
 })
 
 test('create session posts agent type and optional title', async () => {

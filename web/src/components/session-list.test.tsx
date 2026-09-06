@@ -62,7 +62,7 @@ test('session list exposes spotlight search without the old filter controls', as
   expect(onSearch).toHaveBeenCalledOnce()
 })
 
-test('session list shows navigation shortcuts and numbers the first five sessions', () => {
+test('session list shows hover-only shortcuts for the first five sessions', () => {
   const extraSessions = [
     sessionFixture('sess_3', 'Third'),
     sessionFixture('sess_4', 'Fourth'),
@@ -84,7 +84,15 @@ test('session list shows navigation shortcuts and numbers the first five session
     `${modifier}5`,
   ])
   const sessionRows = container.querySelectorAll('.session-row')
-  expect(sessionRows[0].querySelector('kbd')?.closest('.session-row-meta')).toBeNull()
+  expect(sessionRows[0].querySelector('kbd')?.parentElement).toHaveClass(
+    'hidden',
+    'overflow-hidden',
+    'opacity-0',
+    'md:inline-flex',
+    'md:w-0',
+    'md:group-hover:w-9',
+    'md:group-hover:opacity-100',
+  )
   expect(sessionRows[4].querySelector('kbd')).toHaveTextContent(`${modifier}5`)
   expect(sessionRows[5].querySelector('kbd')).toBeNull()
 })
@@ -95,7 +103,7 @@ test('session rows are keyboard selectable', async () => {
 
   render(<SessionListHarness onSelect={onSelect} />)
 
-  screen.getByRole('button', { name: /running work/i }).focus()
+  screen.getByRole('button', { name: 'Running work' }).focus()
   await user.keyboard('{Enter}')
 
   expect(onSelect).toHaveBeenCalledWith('sess_running')
@@ -109,6 +117,13 @@ test('session rows show status as a dot indicator', () => {
     'bg-[hsl(var(--success))]',
   )
   expect(screen.queryByText('running')).not.toBeInTheDocument()
+})
+
+test('session rows omit agent and update time metadata', () => {
+  const { container } = render(<SessionListHarness sessions={[sessions[0]]} />)
+
+  expect(screen.queryByText(/fake/)).not.toBeInTheDocument()
+  expect(container.querySelector('.session-row-meta')).not.toBeInTheDocument()
 })
 
 test('selected session row still shows the session status indicator', () => {
@@ -191,6 +206,89 @@ test('embedded session list hides desktop header controls', () => {
   expect(screen.queryByRole('button', { name: 'Theme: System' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Create session' })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument()
+})
+
+test('pinned sessions use only a persistent highlighted pin treatment', () => {
+  const pinned = { ...sessions[1], pinned_at: '2026-06-12T16:20:00Z' }
+  const { container } = render(
+    <SessionListHarness sessions={[pinned, sessions[0]]} onPinChange={() => undefined} />,
+  )
+
+  expect(container.querySelectorAll('.session-row')[0]).toHaveAttribute('data-session-id', pinned.id)
+  expect(container.querySelector(`[data-session-id="${pinned.id}"]`)).toHaveAttribute('data-pinned', 'true')
+  expect(screen.getByRole('button', { name: 'Unpin session' })).toHaveClass('text-primary', 'opacity-100')
+  expect(screen.getByRole('button', { name: 'Unpin session' })).toHaveClass('justify-center')
+  expect(screen.queryByText('Pinned')).not.toBeInTheDocument()
+  expect(screen.queryByText('Recent')).not.toBeInTheDocument()
+})
+
+test('right-side pin action pins and unpins without selecting the session', async () => {
+  const user = userEvent.setup()
+  const onPinChange = vi.fn()
+  const onSelect = vi.fn()
+  const pinned = { ...sessions[1], pinned_at: '2026-06-12T16:20:00Z' }
+
+  const { rerender } = render(
+    <SessionListHarness sessions={[sessions[0]]} onPinChange={onPinChange} onSelect={onSelect} />,
+  )
+  await user.click(screen.getByRole('button', { name: 'Pin session' }))
+  expect(onPinChange).toHaveBeenCalledWith('sess_running', true)
+  expect(onSelect).not.toHaveBeenCalled()
+
+  rerender(<SessionListHarness sessions={[pinned]} onPinChange={onPinChange} onSelect={onSelect} />)
+  await user.click(screen.getByRole('button', { name: 'Unpin session' }))
+  expect(onPinChange).toHaveBeenCalledWith('sess_failed', false)
+})
+
+test('unpinned session action stays visible on mobile and becomes hover-only on desktop', () => {
+  render(<SessionListHarness sessions={[sessions[0]]} onPinChange={() => undefined} />)
+
+  expect(screen.getByRole('button', { name: 'Pin session' })).toHaveClass(
+    'size-8',
+    'justify-center',
+    'opacity-100',
+    'md:pointer-events-none',
+    'md:opacity-0',
+    'md:group-hover:pointer-events-auto',
+    'md:group-hover:opacity-100',
+  )
+})
+
+test('session shortcuts consume row width only while hovered or focused', () => {
+  const { container } = render(
+    <SessionListHarness sessions={[sessions[0]]} onPinChange={() => undefined} />,
+  )
+
+  expect(screen.getByText(/O$/, { selector: 'kbd' })).toHaveClass('inline-flex', 'w-9', 'justify-center')
+  expect(container.querySelector('.session-row kbd')).toHaveClass('inline-flex', 'w-9', 'justify-center')
+  expect(container.querySelector('.session-row kbd')?.parentElement).toHaveClass(
+    'md:w-0',
+    'md:group-hover:w-9',
+    'md:group-focus-within:w-9',
+  )
+  expect(screen.getByRole('button', { name: 'Pin session' })).toHaveClass('size-8', 'justify-center')
+})
+
+test('navigation shortcuts slide in only while their row is hovered or focused', () => {
+  render(<SessionListHarness />)
+
+  const shortcutSlot = screen.getByText(/O$/, { selector: 'kbd' }).parentElement
+  expect(shortcutSlot).toHaveClass(
+    'hidden',
+    'overflow-hidden',
+    'opacity-0',
+    'md:inline-flex',
+    'md:w-0',
+    'md:group-hover:w-9',
+    'md:group-focus-within:w-9',
+  )
+})
+
+test('session list has no drag handle or drop target', () => {
+  render(<SessionListHarness onPinChange={() => undefined} />)
+
+  expect(screen.queryByRole('button', { name: 'Drag to pin' })).not.toBeInTheDocument()
+  expect(screen.queryByTestId('session-pin-drop-target')).not.toBeInTheDocument()
 })
 
 function baseProps() {

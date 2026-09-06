@@ -131,7 +131,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 		        durable_event_count, last_durable_event_seq, materialized_tool_count, materialized_token_count,
 		        pending_input_count, pending_permission_count,
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
-		        created_at, updated_at, completed_at, archived_at
+		        created_at, updated_at, completed_at, archived_at, pinned_at
 		 FROM sessions
 		 WHERE id = ?`,
 		id,
@@ -155,7 +155,7 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 		        durable_event_count, last_durable_event_seq, materialized_tool_count, materialized_token_count,
 		        pending_input_count, pending_permission_count,
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
-		        created_at, updated_at, completed_at, archived_at
+		        created_at, updated_at, completed_at, archived_at, pinned_at
 		 FROM sessions`
 	args := []any{}
 	filters := make([]string, 0, 2)
@@ -169,7 +169,8 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 	if len(filters) > 0 {
 		query += ` WHERE ` + strings.Join(filters, ` AND `)
 	}
-	query += ` ORDER BY updated_at DESC, created_at DESC, id DESC
+	query += ` ORDER BY CASE WHEN pinned_at IS NULL THEN 1 ELSE 0 END,
+		 pinned_at DESC, updated_at DESC, created_at DESC, id DESC
 		 LIMIT ?`
 	args = append(args, limit)
 
@@ -307,7 +308,7 @@ func (s *Store) ArchiveSession(ctx context.Context, params ArchiveSessionParams)
 	result, err := s.db.ExecContext(
 		ctx,
 		`UPDATE sessions
-		 SET archived_at = COALESCE(archived_at, ?), updated_at = ?
+		 SET archived_at = COALESCE(archived_at, ?), pinned_at = NULL, updated_at = ?
 		 WHERE id = ?`,
 		formatTime(now),
 		formatTime(now),
@@ -323,6 +324,49 @@ func (s *Store) ArchiveSession(ctx context.Context, params ArchiveSessionParams)
 	}
 	if rowsAffected == 0 {
 		return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, params.ID)
+	}
+
+	return s.GetSession(ctx, params.ID)
+}
+
+func (s *Store) UpdateSessionPin(ctx context.Context, params UpdateSessionPinParams) (Session, error) {
+	if strings.TrimSpace(params.ID) == "" {
+		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+
+	var (
+		result sql.Result
+		err    error
+	)
+	if params.Pinned {
+		result, err = s.db.ExecContext(
+			ctx,
+			`UPDATE sessions SET pinned_at = ? WHERE id = ? AND archived_at IS NULL`,
+			formatTime(s.now()),
+			params.ID,
+		)
+	} else {
+		result, err = s.db.ExecContext(ctx, `UPDATE sessions SET pinned_at = NULL WHERE id = ?`, params.ID)
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("update session pin: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, fmt.Errorf("check updated session pin rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		session, getErr := s.GetSession(ctx, params.ID)
+		if errors.Is(getErr, ErrNotFound) {
+			return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, params.ID)
+		}
+		if getErr != nil {
+			return Session{}, getErr
+		}
+		if params.Pinned && session.ArchivedAt != nil {
+			return Session{}, fmt.Errorf("%w: archived session cannot be pinned", ErrInvalidArgument)
+		}
 	}
 
 	return s.GetSession(ctx, params.ID)
@@ -1573,6 +1617,7 @@ func scanSession(row rowScanner) (Session, error) {
 	var updatedAt string
 	var completedAt sql.NullString
 	var archivedAt sql.NullString
+	var pinnedAt sql.NullString
 
 	if err := row.Scan(
 		&session.ID,
@@ -1593,6 +1638,7 @@ func scanSession(row rowScanner) (Session, error) {
 		&updatedAt,
 		&completedAt,
 		&archivedAt,
+		&pinnedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
@@ -1646,6 +1692,13 @@ func scanSession(row rowScanner) (Session, error) {
 			return Session{}, fmt.Errorf("parse session archived_at: %w", err)
 		}
 		session.ArchivedAt = &parsedArchivedAt
+	}
+	if pinnedAt.Valid {
+		parsedPinnedAt, err := parseTime(pinnedAt.String)
+		if err != nil {
+			return Session{}, fmt.Errorf("parse session pinned_at: %w", err)
+		}
+		session.PinnedAt = &parsedPinnedAt
 	}
 
 	return session, nil

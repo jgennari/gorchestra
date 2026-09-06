@@ -33,26 +33,77 @@ type updateSessionRequest struct {
 	Title         *string             `json:"title,omitempty"`
 	WorkspacePath *string             `json:"workspace_path,omitempty"`
 	AgentOptions  *createAgentOptions `json:"agent_options,omitempty"`
+	Pinned        *bool               `json:"pinned,omitempty"`
 }
 
 type createAgentOptions struct {
 	Codex    *createCodexOptions    `json:"codex,omitempty"`
 	Claude   *createClaudeOptions   `json:"claude,omitempty"`
 	OpenCode *createOpenCodeOptions `json:"opencode,omitempty"`
+	Pi       *runtimePiOptions      `json:"pi,omitempty"`
 }
 
 type createCodexOptions struct {
 	RunDangerously   bool   `json:"run_dangerously,omitempty"`
 	PermissionPolicy string `json:"permission_policy,omitempty"`
+	Model            string `json:"model,omitempty"`
+	ReasoningEffort  string `json:"reasoning_effort,omitempty"`
+	FastMode         bool   `json:"fast_mode,omitempty"`
+	PlanningMode     bool   `json:"planning_mode,omitempty"`
 }
 
 type createClaudeOptions struct {
 	RunDangerously   bool   `json:"run_dangerously,omitempty"`
 	PermissionPolicy string `json:"permission_policy,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Effort           string `json:"effort,omitempty"`
+	PlanningMode     bool   `json:"planning_mode,omitempty"`
 }
 
 type createOpenCodeOptions struct {
 	PermissionPolicy string `json:"permission_policy,omitempty"`
+	Model            string `json:"model,omitempty"`
+	PlanningMode     bool   `json:"planning_mode,omitempty"`
+}
+
+type updateSessionRuntimeAgentOptionsRequest struct {
+	Options            *runtimeAgentOptions `json:"options"`
+	InitializeIfAbsent bool                 `json:"initialize_if_absent,omitempty"`
+}
+
+type runtimeAgentOptions struct {
+	Codex    *runtimeCodexOptions    `json:"codex,omitempty"`
+	Claude   *runtimeClaudeOptions   `json:"claude,omitempty"`
+	OpenCode *runtimeOpenCodeOptions `json:"opencode,omitempty"`
+	Pi       *runtimePiOptions       `json:"pi,omitempty"`
+}
+
+type runtimeCodexOptions struct {
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	FastMode        bool   `json:"fast_mode"`
+	PlanningMode    bool   `json:"planning_mode"`
+}
+
+type runtimeClaudeOptions struct {
+	Model        string `json:"model,omitempty"`
+	Effort       string `json:"effort,omitempty"`
+	PlanningMode bool   `json:"planning_mode"`
+}
+
+type runtimeOpenCodeOptions struct {
+	Model        string `json:"model,omitempty"`
+	PlanningMode bool   `json:"planning_mode"`
+}
+
+type runtimePiOptions struct {
+	Model         string `json:"model,omitempty"`
+	ThinkingLevel string `json:"thinking_level,omitempty"`
+}
+
+type updateSessionRuntimeAgentOptionsResponse struct {
+	Session sessionResponse `json:"session"`
+	Applied bool            `json:"applied"`
 }
 
 type createSessionResponse struct {
@@ -78,6 +129,7 @@ type sessionResponse struct {
 	UpdatedAt                string  `json:"updated_at"`
 	CompletedAt              *string `json:"completed_at"`
 	ArchivedAt               *string `json:"archived_at"`
+	PinnedAt                 *string `json:"pinned_at"`
 }
 
 type listSessionsResponse struct {
@@ -339,9 +391,13 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if request.Title == nil && request.WorkspacePath == nil && request.AgentOptions == nil {
-		writeError(w, http.StatusBadRequest, "session update requires title, workspace_path, or agent_options")
+	if request.Title == nil && request.WorkspacePath == nil && request.AgentOptions == nil && request.Pinned == nil {
+		writeError(w, http.StatusBadRequest, "session update requires title, workspace_path, agent_options, or pinned")
 		return
+	}
+	if request.AgentOptions != nil && api.agentOptionsMu != nil {
+		api.agentOptionsMu.Lock()
+		defer api.agentOptionsMu.Unlock()
 	}
 
 	session, err := api.store.GetSession(r.Context(), sessionID)
@@ -351,6 +407,10 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to load session")
+		return
+	}
+	if request.Pinned != nil && *request.Pinned && session.ArchivedAt != nil {
+		writeError(w, http.StatusConflict, "archived session cannot be pinned")
 		return
 	}
 
@@ -378,10 +438,21 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var agentOptions json.RawMessage
+	agentOptionsChanged := false
 	if request.AgentOptions != nil {
-		agentOptions, err = createSessionAgentOptions(session.AgentType, request.AgentOptions)
+		var permissionOptions json.RawMessage
+		permissionOptions, err = createSessionAgentOptions(session.AgentType, request.AgentOptions)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		agentOptions, agentOptionsChanged, err = mergeSessionPermissionAgentOptions(
+			session.AgentOptions,
+			permissionOptions,
+			session.AgentType,
+		)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to merge session agent options")
 			return
 		}
 	}
@@ -432,8 +503,35 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if request.Pinned != nil {
+		session, err = api.store.UpdateSessionPin(r.Context(), store.UpdateSessionPinParams{
+			ID:     sessionID,
+			Pinned: *request.Pinned,
+		})
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "session not found")
+				return
+			}
+			if errors.Is(err, store.ErrInvalidArgument) {
+				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to update session pin")
+			return
+		}
+		if err := api.appendSessionPinUpdated(r.Context(), session); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to persist session pin update")
+			return
+		}
+		session, err = api.store.GetSession(r.Context(), sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to reload session")
+			return
+		}
+	}
 
-	if request.AgentOptions != nil {
+	if request.AgentOptions != nil && agentOptionsChanged {
 		session, err = api.store.UpdateSessionAgentOptions(r.Context(), store.UpdateSessionAgentOptionsParams{
 			ID:           sessionID,
 			AgentOptions: agentOptions,
@@ -448,6 +546,15 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "failed to update session")
+			return
+		}
+		if err := api.appendSessionAgentOptionsUpdated(r.Context(), session); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to persist session agent options update")
+			return
+		}
+		session, err = api.store.GetSession(r.Context(), sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to reload session")
 			return
 		}
 	}
@@ -466,6 +573,89 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (api API) updateSessionRuntimeAgentOptionsHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	var request updateSessionRuntimeAgentOptionsRequest
+	if !decodeJSONBody(w, r, &request) {
+		return
+	}
+	if request.Options == nil {
+		writeError(w, http.StatusBadRequest, "runtime agent options are required")
+		return
+	}
+
+	if api.agentOptionsMu != nil {
+		api.agentOptionsMu.Lock()
+		defer api.agentOptionsMu.Unlock()
+	}
+
+	session, err := api.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load session")
+		return
+	}
+
+	agentOptions, initialized, changed, err := mergeSessionRuntimeAgentOptions(
+		session.AgentOptions,
+		session.AgentType,
+		request.Options,
+	)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if request.InitializeIfAbsent && initialized {
+		response, responseErr := api.sessionResponse(r.Context(), session)
+		if responseErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load session activity")
+			return
+		}
+		writeJSON(w, http.StatusOK, updateSessionRuntimeAgentOptionsResponse{Session: response, Applied: false})
+		return
+	}
+
+	applied := false
+	if changed {
+		session, err = api.store.UpdateSessionAgentOptions(r.Context(), store.UpdateSessionAgentOptionsParams{
+			ID:           sessionID,
+			AgentOptions: agentOptions,
+		})
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "session not found")
+				return
+			}
+			if errors.Is(err, store.ErrInvalidArgument) {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to update session agent options")
+			return
+		}
+		if err := api.appendSessionAgentOptionsUpdated(r.Context(), session); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to persist session agent options update")
+			return
+		}
+		session, err = api.store.GetSession(r.Context(), sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to reload session")
+			return
+		}
+		applied = true
+	}
+
+	response, err := api.sessionResponse(r.Context(), session)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load session activity")
+		return
+	}
+	writeJSON(w, http.StatusOK, updateSessionRuntimeAgentOptionsResponse{Session: response, Applied: applied})
 }
 
 func (api API) archiveSessionHandler(w http.ResponseWriter, r *http.Request) {
@@ -575,6 +765,11 @@ func sessionResponseFromStore(session store.Session, pendingInput bool, pendingP
 		formatted := session.ArchivedAt.UTC().Format(time.RFC3339Nano)
 		archivedAt = &formatted
 	}
+	var pinnedAt *string
+	if session.PinnedAt != nil {
+		formatted := session.PinnedAt.UTC().Format(time.RFC3339Nano)
+		pinnedAt = &formatted
+	}
 
 	agentOptions := map[string]any{}
 	if len(session.AgentOptions) > 0 {
@@ -600,11 +795,12 @@ func sessionResponseFromStore(session store.Session, pendingInput bool, pendingP
 		UpdatedAt:                session.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		CompletedAt:              completedAt,
 		ArchivedAt:               archivedAt,
+		PinnedAt:                 pinnedAt,
 	}
 }
 
 func createSessionAgentOptions(agentType string, options *createAgentOptions) (json.RawMessage, error) {
-	if options == nil || options.Codex == nil && options.Claude == nil && options.OpenCode == nil {
+	if options == nil || options.Codex == nil && options.Claude == nil && options.OpenCode == nil && options.Pi == nil {
 		if agentType == "codex" || agentType == "claude" || agentType == "opencode" {
 			return json.RawMessage(fmt.Sprintf(`{"%s":{"permission_policy":"ask"}}`, agentType)), nil
 		}
@@ -618,6 +814,9 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 	}
 	if options.OpenCode != nil && agentType != "opencode" {
 		return nil, fmt.Errorf("opencode options require an opencode session")
+	}
+	if options.Pi != nil && agentType != "pi" {
+		return nil, fmt.Errorf("pi options require a pi session")
 	}
 
 	agentOptions := map[string]any{}
@@ -635,6 +834,16 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 		}
 		if policy != "" {
 			codexOptions["permission_policy"] = policy
+		}
+		if model := strings.TrimSpace(options.Codex.Model); model != "" {
+			codexOptions["model"] = model
+		}
+		if effort := strings.TrimSpace(options.Codex.ReasoningEffort); effort != "" {
+			codexOptions["reasoning_effort"] = effort
+		}
+		if strings.TrimSpace(options.Codex.Model) != "" || strings.TrimSpace(options.Codex.ReasoningEffort) != "" || options.Codex.FastMode || options.Codex.PlanningMode {
+			codexOptions["fast_mode"] = options.Codex.FastMode
+			codexOptions["planning_mode"] = options.Codex.PlanningMode
 		}
 		if len(codexOptions) > 0 {
 			agentOptions["codex"] = codexOptions
@@ -655,11 +864,21 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 		if policy != "" {
 			claudeOptions["permission_policy"] = policy
 		}
+		if model := strings.TrimSpace(options.Claude.Model); model != "" {
+			claudeOptions["model"] = model
+		}
+		if effort := strings.TrimSpace(options.Claude.Effort); effort != "" {
+			claudeOptions["effort"] = effort
+		}
+		if strings.TrimSpace(options.Claude.Model) != "" || strings.TrimSpace(options.Claude.Effort) != "" || options.Claude.PlanningMode {
+			claudeOptions["planning_mode"] = options.Claude.PlanningMode
+		}
 		if len(claudeOptions) > 0 {
 			agentOptions["claude"] = claudeOptions
 		}
 	}
 	if options.OpenCode != nil {
+		opencodeOptions := map[string]any{}
 		policy, err := permissionPolicy(options.OpenCode.PermissionPolicy)
 		if err != nil {
 			return nil, err
@@ -668,7 +887,28 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 			policy = "ask"
 		}
 		if policy != "" {
-			agentOptions["opencode"] = map[string]any{"permission_policy": policy}
+			opencodeOptions["permission_policy"] = policy
+		}
+		if model := strings.TrimSpace(options.OpenCode.Model); model != "" {
+			opencodeOptions["model"] = model
+		}
+		if strings.TrimSpace(options.OpenCode.Model) != "" || options.OpenCode.PlanningMode {
+			opencodeOptions["planning_mode"] = options.OpenCode.PlanningMode
+		}
+		if len(opencodeOptions) > 0 {
+			agentOptions["opencode"] = opencodeOptions
+		}
+	}
+	if options.Pi != nil {
+		piOptions := map[string]any{}
+		if model := strings.TrimSpace(options.Pi.Model); model != "" {
+			piOptions["model"] = model
+		}
+		if level := strings.TrimSpace(options.Pi.ThinkingLevel); level != "" {
+			piOptions["thinking_level"] = level
+		}
+		if len(piOptions) > 0 {
+			agentOptions["pi"] = piOptions
 		}
 	}
 
@@ -677,6 +917,187 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 		return nil, fmt.Errorf("marshal agent options: %w", err)
 	}
 	return encoded, nil
+}
+
+func mergeSessionPermissionAgentOptions(
+	existing json.RawMessage,
+	replacement json.RawMessage,
+	agentType string,
+) (json.RawMessage, bool, error) {
+	current, err := agentOptionsObject(existing)
+	if err != nil {
+		return nil, false, err
+	}
+	normalizedBefore, err := json.Marshal(current)
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal existing agent options: %w", err)
+	}
+	replacementOptions, err := agentOptionsObject(replacement)
+	if err != nil {
+		return nil, false, err
+	}
+	provider := providerAgentOptions(current, agentType)
+	delete(provider, "run_dangerously")
+	delete(provider, "permission_policy")
+	if replacementProvider, ok := replacementOptions[agentType].(map[string]any); ok {
+		for _, key := range []string{"run_dangerously", "permission_policy"} {
+			if value, exists := replacementProvider[key]; exists {
+				provider[key] = value
+			}
+		}
+	}
+	if len(provider) == 0 {
+		delete(current, agentType)
+	} else {
+		current[agentType] = provider
+	}
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal merged agent options: %w", err)
+	}
+	return encoded, string(encoded) != string(normalizedBefore), nil
+}
+
+func mergeSessionRuntimeAgentOptions(
+	existing json.RawMessage,
+	agentType string,
+	options *runtimeAgentOptions,
+) (json.RawMessage, bool, bool, error) {
+	replacement, err := runtimeAgentOptionsForProvider(agentType, options)
+	if err != nil {
+		return nil, false, false, err
+	}
+	current, err := agentOptionsObject(existing)
+	if err != nil {
+		return nil, false, false, err
+	}
+	normalizedBefore, err := json.Marshal(current)
+	if err != nil {
+		return nil, false, false, fmt.Errorf("marshal existing agent options: %w", err)
+	}
+	provider := providerAgentOptions(current, agentType)
+	initialized := false
+	for _, key := range runtimeAgentOptionKeys(agentType) {
+		if _, ok := provider[key]; ok {
+			initialized = true
+		}
+		delete(provider, key)
+	}
+	for key, value := range replacement {
+		provider[key] = value
+	}
+	current[agentType] = provider
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		return nil, false, false, fmt.Errorf("marshal merged agent options: %w", err)
+	}
+	return encoded, initialized, string(encoded) != string(normalizedBefore), nil
+}
+
+func runtimeAgentOptionsForProvider(agentType string, options *runtimeAgentOptions) (map[string]any, error) {
+	if options == nil {
+		return nil, fmt.Errorf("runtime agent options are required")
+	}
+	providerCount := 0
+	if options.Codex != nil {
+		providerCount++
+	}
+	if options.Claude != nil {
+		providerCount++
+	}
+	if options.OpenCode != nil {
+		providerCount++
+	}
+	if options.Pi != nil {
+		providerCount++
+	}
+	if providerCount != 1 {
+		return nil, fmt.Errorf("runtime options must contain exactly one agent provider")
+	}
+
+	result := map[string]any{}
+	switch agentType {
+	case "codex":
+		if options.Codex == nil {
+			return nil, fmt.Errorf("codex options require a codex session")
+		}
+		if value := strings.TrimSpace(options.Codex.Model); value != "" {
+			result["model"] = value
+		}
+		if value := strings.TrimSpace(options.Codex.ReasoningEffort); value != "" {
+			result["reasoning_effort"] = value
+		}
+		result["fast_mode"] = options.Codex.FastMode
+		result["planning_mode"] = options.Codex.PlanningMode
+	case "claude":
+		if options.Claude == nil {
+			return nil, fmt.Errorf("claude options require a claude session")
+		}
+		if value := strings.TrimSpace(options.Claude.Model); value != "" {
+			result["model"] = value
+		}
+		if value := strings.TrimSpace(options.Claude.Effort); value != "" {
+			result["effort"] = value
+		}
+		result["planning_mode"] = options.Claude.PlanningMode
+	case "opencode":
+		if options.OpenCode == nil {
+			return nil, fmt.Errorf("opencode options require an opencode session")
+		}
+		if value := strings.TrimSpace(options.OpenCode.Model); value != "" {
+			result["model"] = value
+		}
+		result["planning_mode"] = options.OpenCode.PlanningMode
+	case "pi":
+		if options.Pi == nil {
+			return nil, fmt.Errorf("pi options require a pi session")
+		}
+		if value := strings.TrimSpace(options.Pi.Model); value != "" {
+			result["model"] = value
+		}
+		if value := strings.TrimSpace(options.Pi.ThinkingLevel); value != "" {
+			result["thinking_level"] = value
+		}
+	default:
+		return nil, fmt.Errorf("agent type %q does not support runtime options", agentType)
+	}
+	return result, nil
+}
+
+func runtimeAgentOptionKeys(agentType string) []string {
+	switch agentType {
+	case "codex":
+		return []string{"model", "reasoning_effort", "fast_mode", "planning_mode"}
+	case "claude":
+		return []string{"model", "effort", "planning_mode"}
+	case "opencode":
+		return []string{"model", "planning_mode"}
+	case "pi":
+		return []string{"model", "thinking_level"}
+	default:
+		return nil
+	}
+}
+
+func agentOptionsObject(raw json.RawMessage) (map[string]any, error) {
+	result := map[string]any{}
+	if len(raw) == 0 {
+		return result, nil
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("decode agent options: %w", err)
+	}
+	if result == nil {
+		result = map[string]any{}
+	}
+	return result, nil
+}
+
+func providerAgentOptions(options map[string]any, agentType string) map[string]any {
+	if provider, ok := options[agentType].(map[string]any); ok {
+		return provider
+	}
+	return map[string]any{}
 }
 
 func permissionPolicy(value string) (string, error) {
@@ -1494,7 +1915,8 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 }
 
 func (api API) cancelSessionHandler(w http.ResponseWriter, r *http.Request) {
-	if !validateCancelBody(w, r) {
+	cancellation, ok := parseCancellationRequest(w, r)
+	if !ok {
 		return
 	}
 
@@ -1514,7 +1936,7 @@ func (api API) cancelSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := api.runs.Cancel(session.ID); err != nil {
+	if err := api.runs.Cancel(session.ID, cancellation); err != nil {
 		if errors.Is(err, runcontrol.ErrRunAlreadyCanceled) {
 			writeError(w, http.StatusConflict, "session cancellation already requested")
 			return
@@ -1534,6 +1956,7 @@ func (api API) cancelSessionHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to cancel session")
 		return
 	}
+	log.Printf("session cancellation requested: session_id=%s source=%s reason=%s", session.ID, cancellation.Source, cancellation.Reason)
 
 	writeJSON(w, http.StatusAccepted, cancelSessionResponse{
 		SessionID: session.ID,
@@ -1723,6 +2146,45 @@ func (api API) appendWorkspaceChanged(ctx context.Context, sessionID string, pre
 	return err
 }
 
+func (api API) appendSessionAgentOptionsUpdated(ctx context.Context, session store.Session) error {
+	payload, err := json.Marshal(map[string]any{
+		"agent_options": decodeAgentOptions(session.AgentOptions),
+		"updated_at":    session.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal session agent options update payload: %w", err)
+	}
+
+	_, err = api.events.Append(ctx, eventservice.AppendParams{
+		SessionID: session.ID,
+		Type:      "session.agent_options.updated",
+		Role:      "system",
+		Status:    store.EventStatusCompleted,
+		Payload:   payload,
+	})
+	return err
+}
+
+func (api API) appendSessionPinUpdated(ctx context.Context, session store.Session) error {
+	var pinnedAt any
+	if session.PinnedAt != nil {
+		pinnedAt = session.PinnedAt.UTC().Format(time.RFC3339Nano)
+	}
+	payload, err := json.Marshal(map[string]any{"pinned_at": pinnedAt})
+	if err != nil {
+		return fmt.Errorf("marshal session pin update payload: %w", err)
+	}
+
+	_, err = api.events.Append(ctx, eventservice.AppendParams{
+		SessionID: session.ID,
+		Type:      "session.pin.updated",
+		Role:      "system",
+		Status:    store.EventStatusCompleted,
+		Payload:   payload,
+	})
+	return err
+}
+
 func userActionText(action agents.AgentAction) string {
 	switch action {
 	case agents.AgentActionClear:
@@ -1769,10 +2231,17 @@ func (api API) runAgent(
 	runID string,
 ) bool {
 	terminalEventEmitted := false
+	cancellationLogged := false
 	emit := func(ctx context.Context, event agents.AgentEvent) error {
 		terminalEvent := isTerminalRunEvent(event.Type)
 		if terminalEvent && terminalEventEmitted {
 			return fmt.Errorf("terminal run event already emitted for session %s", session.ID)
+		}
+		if event.Type == "agent.run.cancelled" {
+			cancellation := api.runCancellation(session.ID)
+			event = withCancellationDetails(event, cancellation)
+			log.Printf("agent run cancelled: session_id=%s agent_type=%s source=%s reason=%s", session.ID, agent.Type(), cancellation.Source, cancellation.Reason)
+			cancellationLogged = true
 		}
 
 		updatedSession, err := api.persistProviderSessionIDFromEvent(ctx, session, event, action)
@@ -1805,8 +2274,12 @@ func (api API) runAgent(
 		Permissions:       api.runs,
 	}, emit)
 	if errors.Is(err, context.Canceled) {
+		cancellation := api.runCancellation(session.ID)
+		if !cancellationLogged {
+			log.Printf("agent run cancelled: session_id=%s agent_type=%s source=%s reason=%s", session.ID, agent.Type(), cancellation.Source, cancellation.Reason)
+		}
 		if !terminalEventEmitted {
-			if appendErr := api.appendAgentRunCancelled(context.Background(), session.ID, agent.Type(), runID); appendErr != nil {
+			if appendErr := api.appendAgentRunCancelled(context.Background(), session.ID, agent.Type(), cancellation, runID); appendErr != nil {
 				log.Printf("failed to append agent.run.cancelled: session_id=%s agent_type=%s error=%v", session.ID, agent.Type(), appendErr)
 			} else {
 				terminalEventEmitted = true
@@ -2078,15 +2551,41 @@ func (api API) appendAgentRunCompleted(ctx context.Context, sessionID string, ag
 	}, runIDs...)
 }
 
-func (api API) appendAgentRunCancelled(ctx context.Context, sessionID string, agentType string, runIDs ...string) error {
+func (api API) appendAgentRunCancelled(ctx context.Context, sessionID string, agentType string, cancellation runcontrol.Cancellation, runIDs ...string) error {
 	return api.appendAgentEvent(ctx, sessionID, agents.AgentEvent{
 		Type:   "agent.run.cancelled",
 		Role:   "assistant",
 		Status: string(store.EventStatusCancelled),
 		Payload: map[string]any{
-			"agent_type": agentType,
+			"agent_type":    agentType,
+			"cancel_source": cancellation.Source,
+			"cancel_reason": cancellation.Reason,
 		},
 	}, runIDs...)
+}
+
+func (api API) runCancellation(sessionID string) runcontrol.Cancellation {
+	if cancellation, ok := api.runs.Cancellation(sessionID); ok {
+		return cancellation
+	}
+	return runcontrol.Cancellation{Source: "agent", Reason: "context_cancelled"}
+}
+
+func withCancellationDetails(event agents.AgentEvent, cancellation runcontrol.Cancellation) agents.AgentEvent {
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		payload = map[string]any{}
+	} else {
+		cloned := make(map[string]any, len(payload)+2)
+		for key, value := range payload {
+			cloned[key] = value
+		}
+		payload = cloned
+	}
+	payload["cancel_source"] = cancellation.Source
+	payload["cancel_reason"] = cancellation.Reason
+	event.Payload = payload
+	return event
 }
 
 func (api API) failRunningSessionWithoutActiveRun(ctx context.Context, session store.Session) (store.Session, bool) {
@@ -2197,8 +2696,28 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, value any) bool {
 	return false
 }
 
-func validateCancelBody(w http.ResponseWriter, r *http.Request) bool {
-	return validateEmptyBody(w, r, "cancel")
+func parseCancellationRequest(w http.ResponseWriter, r *http.Request) (runcontrol.Cancellation, bool) {
+	cancellation := runcontrol.Cancellation{Source: "api", Reason: "requested"}
+	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
+		return cancellation, true
+	}
+
+	var request map[string]any
+	if !decodeJSONBody(w, r, &request) {
+		return runcontrol.Cancellation{}, false
+	}
+	if len(request) == 0 {
+		return cancellation, true
+	}
+	source, sourceOK := request["source"].(string)
+	reason, reasonOK := request["reason"].(string)
+	source = strings.TrimSpace(source)
+	reason = strings.TrimSpace(reason)
+	if len(request) != 2 || !sourceOK || !reasonOK || source != "web_ui" || reason != "stop_button" {
+		writeError(w, http.StatusBadRequest, "cancel source and reason are unsupported")
+		return runcontrol.Cancellation{}, false
+	}
+	return runcontrol.Cancellation{Source: source, Reason: reason}, true
 }
 
 func validateEmptyBody(w http.ResponseWriter, r *http.Request, requestName string) bool {

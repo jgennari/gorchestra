@@ -46,6 +46,7 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertColumnExists(t, ctx, store, "sessions", "materialized_token_count")
 	assertColumnExists(t, ctx, store, "sessions", "pending_input_count")
 	assertColumnExists(t, ctx, store, "sessions", "pending_permission_count")
+	assertColumnExists(t, ctx, store, "sessions", "pinned_at")
 	assertColumnExists(t, ctx, store, "push_subscriptions", "origin")
 	assertColumnExists(t, ctx, store, "queued_messages", "skills_json")
 	assertColumnExists(t, ctx, store, "queued_messages", "source_kind")
@@ -64,8 +65,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 21 {
-		t.Fatalf("expected twenty-one recorded migrations, got %d", count)
+	if count != 22 {
+		t.Fatalf("expected twenty-two recorded migrations, got %d", count)
 	}
 }
 
@@ -884,6 +885,89 @@ func TestListSessionsHonorsLimit(t *testing.T) {
 	assertSessionIDs(t, sessions, []string{third.ID, second.ID})
 	if hasSessionID(sessions, first.ID) {
 		t.Fatalf("expected limited result not to include first session: %#v", sessions)
+	}
+}
+
+func TestPinnedSessionsStayAboveRecentSessionsInPinOrder(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+
+	firstAt := time.Date(2026, 6, 12, 16, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return firstAt }
+	older := createTestSessionWithTitle(t, ctx, store, "Older")
+	store.now = func() time.Time { return firstAt.Add(time.Minute) }
+	newer := createTestSessionWithTitle(t, ctx, store, "Newer")
+	store.now = func() time.Time { return firstAt.Add(2 * time.Minute) }
+	newest := createTestSessionWithTitle(t, ctx, store, "Newest")
+
+	firstPinAt := firstAt.Add(3 * time.Minute)
+	store.now = func() time.Time { return firstPinAt }
+	pinnedOlder, err := store.UpdateSessionPin(ctx, UpdateSessionPinParams{ID: older.ID, Pinned: true})
+	if err != nil {
+		t.Fatalf("pin older session: %v", err)
+	}
+	secondPinAt := firstAt.Add(4 * time.Minute)
+	store.now = func() time.Time { return secondPinAt }
+	pinnedNewer, err := store.UpdateSessionPin(ctx, UpdateSessionPinParams{ID: newer.ID, Pinned: true})
+	if err != nil {
+		t.Fatalf("pin newer session: %v", err)
+	}
+
+	if pinnedOlder.PinnedAt == nil || !pinnedOlder.PinnedAt.Equal(firstPinAt) {
+		t.Fatalf("expected first pin time %s, got %v", firstPinAt, pinnedOlder.PinnedAt)
+	}
+	if pinnedNewer.PinnedAt == nil || !pinnedNewer.PinnedAt.Equal(secondPinAt) {
+		t.Fatalf("expected second pin time %s, got %v", secondPinAt, pinnedNewer.PinnedAt)
+	}
+	if !pinnedOlder.UpdatedAt.Equal(older.UpdatedAt) || !pinnedNewer.UpdatedAt.Equal(newer.UpdatedAt) {
+		t.Fatal("pinning must not change session recency")
+	}
+
+	sessions, err := store.ListSessions(ctx, ListSessionsParams{})
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	assertSessionIDs(t, sessions, []string{newer.ID, older.ID, newest.ID})
+
+	store.now = func() time.Time { return firstAt.Add(5 * time.Minute) }
+	if _, err := store.UpdateSessionStatus(ctx, UpdateSessionStatusParams{ID: older.ID, Status: SessionStatusRunning}); err != nil {
+		t.Fatalf("update pinned session activity: %v", err)
+	}
+	sessions, err = store.ListSessions(ctx, ListSessionsParams{})
+	if err != nil {
+		t.Fatalf("list sessions after activity: %v", err)
+	}
+	assertSessionIDs(t, sessions, []string{newer.ID, older.ID, newest.ID})
+}
+
+func TestUnpinAndArchiveClearSessionPin(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	session := createTestSessionWithTitle(t, ctx, store, "Pinned")
+
+	if _, err := store.UpdateSessionPin(ctx, UpdateSessionPinParams{ID: session.ID, Pinned: true}); err != nil {
+		t.Fatalf("pin session: %v", err)
+	}
+	unpinned, err := store.UpdateSessionPin(ctx, UpdateSessionPinParams{ID: session.ID, Pinned: false})
+	if err != nil {
+		t.Fatalf("unpin session: %v", err)
+	}
+	if unpinned.PinnedAt != nil {
+		t.Fatalf("expected pin cleared, got %v", unpinned.PinnedAt)
+	}
+
+	if _, err := store.UpdateSessionPin(ctx, UpdateSessionPinParams{ID: session.ID, Pinned: true}); err != nil {
+		t.Fatalf("repin session: %v", err)
+	}
+	archived, err := store.ArchiveSession(ctx, ArchiveSessionParams{ID: session.ID})
+	if err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	if archived.PinnedAt != nil {
+		t.Fatalf("expected archive to clear pin, got %v", archived.PinnedAt)
+	}
+	if _, err := store.UpdateSessionPin(ctx, UpdateSessionPinParams{ID: session.ID, Pinned: true}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected archived pin to fail with ErrInvalidArgument, got %v", err)
 	}
 }
 

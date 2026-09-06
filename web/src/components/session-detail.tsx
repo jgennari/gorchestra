@@ -4,9 +4,11 @@ import type {
   AgentEvent,
   MessageAttachment,
   Session,
+  SessionRuntimeAgentOptions,
   SkillReference,
   SubmitAgentOptions,
   SubmitMessageResponse,
+  UpdateSessionRuntimeAgentOptionsResponse,
   UserInputAnswers,
 } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
@@ -52,6 +54,11 @@ type Props = {
     skills?: SkillReference[],
     clientSubmissionID?: string,
   ) => Promise<SubmitMessageResponse | void>
+  onUpdateRuntimeAgentOptions?: (
+    sessionID: string,
+    options: SessionRuntimeAgentOptions,
+    initializeIfAbsent?: boolean,
+  ) => Promise<UpdateSessionRuntimeAgentOptionsResponse>
   onAnswerUserInput: (requestID: string, answers: UserInputAnswers) => Promise<void>
   onResolvePermission?: (requestID: string, optionID: string) => Promise<void>
   onCancel: () => Promise<void>
@@ -83,6 +90,7 @@ export function SessionDetail({
   onJumpToLatest,
   onFollowingTailChange,
   onSubmitPrompt,
+  onUpdateRuntimeAgentOptions,
   onAnswerUserInput,
   onResolvePermission = async () => undefined,
   onCancel,
@@ -332,6 +340,8 @@ export function SessionDetail({
             key={session.id}
             sessionID={session.id}
             agentType={session.agent_type}
+            sessionAgentOptions={session.agent_options}
+            sessionAgentOptionsSeq={session.last_event_seq}
             sessionStatus={session.status}
             hasPendingUserInput={Boolean(userInputRequest)}
             latestTerminalEvent={latestTerminal}
@@ -339,6 +349,7 @@ export function SessionDetail({
             disabled={composerDisabled}
             disabledReason={disabledReason}
             onSubmit={handleSubmitPrompt}
+            onUpdateRuntimeAgentOptions={onUpdateRuntimeAgentOptions}
             onCancel={session.status === 'running' ? onCancel : undefined}
             onError={onErrorMessageChange}
             onFocus={onComposerFocus}

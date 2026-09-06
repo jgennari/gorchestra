@@ -101,6 +101,7 @@ export type Session = {
   updated_at: string
   completed_at: string | null
   archived_at: string | null
+	pinned_at?: string | null
 }
 
 export type SpotlightSearchResultKind =
@@ -260,12 +261,54 @@ export type SessionAgentOptions = {
   codex?: {
     run_dangerously?: boolean
     permission_policy?: PermissionPolicy
+    model?: string
+    reasoning_effort?: string
+    fast_mode?: boolean
+    planning_mode?: boolean
   }
   claude?: {
     run_dangerously?: boolean
     permission_policy?: PermissionPolicy
+    model?: string
+    effort?: string
+    planning_mode?: boolean
   }
-  opencode?: { permission_policy?: PermissionPolicy }
+  opencode?: {
+    permission_policy?: PermissionPolicy
+    model?: string
+    planning_mode?: boolean
+  }
+  pi?: {
+    model?: string
+    thinking_level?: string
+  }
+}
+
+export type SessionRuntimeAgentOptions = {
+  codex?: {
+    model?: string
+    reasoning_effort?: string
+    fast_mode: boolean
+    planning_mode: boolean
+  }
+  claude?: {
+    model?: string
+    effort?: string
+    planning_mode: boolean
+  }
+  opencode?: {
+    model?: string
+    planning_mode: boolean
+  }
+  pi?: {
+    model?: string
+    thinking_level?: string
+  }
+}
+
+export type UpdateSessionRuntimeAgentOptionsResponse = {
+  session: Session
+  applied: boolean
 }
 
 export type PermissionPolicy = 'ask' | 'deny' | 'bypass'
@@ -812,6 +855,27 @@ export async function updateSessionAgentOptions(sessionID: string, agentOptions:
   })
 }
 
+export async function updateSessionPin(sessionID: string, pinned: boolean) {
+  return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pinned }),
+  })
+}
+
+export async function updateSessionRuntimeAgentOptions(
+  sessionID: string,
+  options: SessionRuntimeAgentOptions,
+  initializeIfAbsent = false,
+) {
+  return requestJSON<UpdateSessionRuntimeAgentOptionsResponse>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/agent-options/runtime`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ options, initialize_if_absent: initializeIfAbsent }),
+    },
+  )
+}
+
 export async function archiveSession(sessionID: string) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}/archive`, {
     method: 'POST',
@@ -1144,6 +1208,7 @@ export async function repairUserSkillClaudeBridges() {
 export async function cancelSession(sessionID: string) {
   return requestJSON<CancelSessionResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/cancel`, {
     method: 'POST',
+    body: JSON.stringify({ source: 'web_ui', reason: 'stop_button' }),
   })
 }
 

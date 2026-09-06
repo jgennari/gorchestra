@@ -247,6 +247,36 @@ test('the shared activity store delivers durable events without opening another 
   vi.unstubAllGlobals()
 })
 
+test('a sparse background activity window is painted immediately and then hydrated from the server tail', async () => {
+  clearSessionEventCacheForTest()
+  ingestClientEvent(event(8, 'agent.message.completed'))
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path === '/api/sessions/sess_test/events?tail=true&turns=50&max_bytes=2097152') {
+      return jsonResponse({
+        events: [
+          event(5, 'user.message.completed'),
+          event(6, 'agent.message.completed'),
+          event(7, 'user.message.completed'),
+          event(8, 'agent.message.completed'),
+        ],
+        page: historyPage(5, 8, true),
+      })
+    }
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const { result, unmount } = renderHook(() => useSessionEvents('sess_test'))
+
+  expect(result.current.events.map((item) => item.seq)).toEqual([8])
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([5, 6, 7, 8]))
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  unmount()
+  vi.unstubAllGlobals()
+})
+
 test('a reload persists the durable cursor but not a multiplexed transient delta', async () => {
   vi.stubGlobal('indexedDB', createFakeIndexedDB())
   clearSessionEventCacheForTest()

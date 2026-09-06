@@ -6,6 +6,8 @@ export const knownEventTypes = [
   'user.message.queue.removed',
   'user.action.completed',
   'session.action.completed',
+  'session.agent_options.updated',
+	'session.pin.updated',
   'session.status.updated',
   'agent.run.started',
   'agent.status.started',

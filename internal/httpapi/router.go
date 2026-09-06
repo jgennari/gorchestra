@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -60,6 +61,7 @@ type Store interface {
 	UpdateSessionTitle(ctx context.Context, params store.UpdateSessionTitleParams) (store.Session, error)
 	UpdateSessionWorkspace(ctx context.Context, params store.UpdateSessionWorkspaceParams) (store.Session, error)
 	UpdateSessionAgentOptions(ctx context.Context, params store.UpdateSessionAgentOptionsParams) (store.Session, error)
+	UpdateSessionPin(ctx context.Context, params store.UpdateSessionPinParams) (store.Session, error)
 	UpdateSessionStatus(ctx context.Context, params store.UpdateSessionStatusParams) (store.Session, error)
 	SetSessionProviderSessionID(ctx context.Context, params store.SetSessionProviderSessionIDParams) (store.Session, error)
 	ClearSessionProviderSessionID(ctx context.Context, params store.ClearSessionProviderSessionIDParams) (store.Session, error)
@@ -133,7 +135,8 @@ type AgentRegistry interface {
 
 type RunManager interface {
 	Register(parent context.Context, sessionID string) (context.Context, func(), error)
-	Cancel(sessionID string) error
+	Cancel(sessionID string, cancellation runcontrol.Cancellation) error
+	Cancellation(sessionID string) (runcontrol.Cancellation, bool)
 	Active(sessionID string) bool
 	OpenUserInput(ctx context.Context, request agents.UserInputRequest) (agents.UserInputWaiter, error)
 	PendingUserInput(sessionID string, requestID string) (agents.UserInputRequest, error)
@@ -213,6 +216,7 @@ type API struct {
 	maintenance      MaintenanceService
 	repositorySkills *reposkills.Manager
 	performance      *performanceDiagnosticsStore
+	agentOptionsMu   *sync.Mutex
 	userHome         string
 }
 
@@ -260,7 +264,10 @@ type eventHistoryResult struct {
 }
 
 func NewRouter(deps ...Dependencies) http.Handler {
-	api := API{performance: &performanceDiagnosticsStore{}}
+	api := API{
+		performance:    &performanceDiagnosticsStore{},
+		agentOptionsMu: &sync.Mutex{},
+	}
 	if len(deps) > 0 {
 		api.store = deps[0].Store
 		api.events = deps[0].Events
@@ -309,6 +316,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Get("/api/workspaces/browse", api.workspaceBrowseHandler)
 		r.Post("/api/sessions", api.createSessionHandler)
 		r.Patch("/api/sessions/{sessionId}", api.updateSessionHandler)
+		r.Put("/api/sessions/{sessionId}/agent-options/runtime", api.updateSessionRuntimeAgentOptionsHandler)
 		r.Post("/api/sessions/{sessionId}/archive", api.archiveSessionHandler)
 		r.Post("/api/sessions/{sessionId}/restore", api.restoreSessionHandler)
 		r.Get("/api/sessions/{sessionId}/files", api.sessionFilesHandler)

@@ -1408,6 +1408,232 @@ func TestUpdateCodexSessionAgentOptionsClearsDangerousModeToAsk(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionPinPersistsAndEmitsDurableEvent(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{Title: "Important", AgentType: "fake"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	originalUpdatedAt := session.UpdatedAt
+
+	rec := patchJSON(handler, "/api/sessions/"+session.ID, `{"pinned":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response sessionResponse
+	decodeJSON(t, rec, &response)
+	if response.PinnedAt == nil {
+		t.Fatal("expected pinned_at in response")
+	}
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if updated.PinnedAt == nil {
+		t.Fatal("expected persisted pin")
+	}
+	if !updated.UpdatedAt.Equal(originalUpdatedAt) {
+		t.Fatalf("expected pin not to change updated_at: %s != %s", updated.UpdatedAt, originalUpdatedAt)
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"session.pin.updated"})
+	var payload map[string]any
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("decode pin event: %v", err)
+	}
+	if payload["pinned_at"] != *response.PinnedAt {
+		t.Fatalf("expected event pin %q, got %#v", *response.PinnedAt, payload["pinned_at"])
+	}
+
+	unpinRec := patchJSON(handler, "/api/sessions/"+session.ID, `{"pinned":false}`)
+	if unpinRec.Code != http.StatusOK {
+		t.Fatalf("expected unpin status %d, got %d with body %s", http.StatusOK, unpinRec.Code, unpinRec.Body.String())
+	}
+	decodeJSON(t, unpinRec, &response)
+	if response.PinnedAt != nil {
+		t.Fatalf("expected unpinned response, got %v", response.PinnedAt)
+	}
+}
+
+func TestUpdateSessionPinRejectsArchivedSession(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{Title: "Archived", AgentType: "fake"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := dbStore.ArchiveSession(ctx, store.ArchiveSessionParams{ID: session.ID}); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+
+	rec := patchJSON(handler, "/api/sessions/"+session.ID, `{"pinned":true}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateSessionRuntimeAgentOptionsPersistsAndPreservesPermissions(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:        "Codex",
+		AgentType:    "codex",
+		AgentOptions: json.RawMessage(`{"codex":{"permission_policy":"deny"}}`),
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := putJSON(handler, "/api/sessions/"+session.ID+"/agent-options/runtime", `{
+		"options":{"codex":{
+			"model":"gpt-5.6",
+			"reasoning_effort":"xhigh",
+			"fast_mode":true,
+			"planning_mode":false
+		}}
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response updateSessionRuntimeAgentOptionsResponse
+	decodeJSON(t, rec, &response)
+	if !response.Applied {
+		t.Fatal("expected runtime options update to apply")
+	}
+	if response.Session.EventCount != 1 || response.Session.LastEventSeq != 1 {
+		t.Fatalf("expected response to include settings event counters, got %#v", response.Session)
+	}
+
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	options := decodeTestAgentOptions(t, updated.AgentOptions)["codex"]
+	if options["permission_policy"] != "deny" || options["model"] != "gpt-5.6" || options["reasoning_effort"] != "xhigh" {
+		t.Fatalf("expected permission and runtime options, got %#v", options)
+	}
+	if options["fast_mode"] != true || options["planning_mode"] != false {
+		t.Fatalf("expected explicit runtime toggles, got %#v", options)
+	}
+
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"session.agent_options.updated"})
+	var payload map[string]any
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("decode settings event payload: %v", err)
+	}
+	payloadOptions, ok := payload["agent_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected event agent options, got %#v", payload)
+	}
+	payloadCodex, ok := payloadOptions["codex"].(map[string]any)
+	if !ok || payloadCodex["model"] != "gpt-5.6" {
+		t.Fatalf("expected event runtime snapshot, got %#v", payloadOptions)
+	}
+}
+
+func TestInitializeSessionRuntimeAgentOptionsKeepsExistingServerSelection(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Codex",
+		AgentType: "codex",
+		AgentOptions: json.RawMessage(`{"codex":{
+			"permission_policy":"ask",
+			"model":"gpt-5.6",
+			"reasoning_effort":"high",
+			"fast_mode":false,
+			"planning_mode":true
+		}}`),
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := putJSON(handler, "/api/sessions/"+session.ID+"/agent-options/runtime", `{
+		"initialize_if_absent":true,
+		"options":{"codex":{
+			"model":"gpt-5-mini",
+			"reasoning_effort":"medium",
+			"fast_mode":true,
+			"planning_mode":false
+		}}
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var response updateSessionRuntimeAgentOptionsResponse
+	decodeJSON(t, rec, &response)
+	if response.Applied {
+		t.Fatal("expected conditional initialization to keep existing server options")
+	}
+	responseOptions, ok := response.Session.AgentOptions.(map[string]any)
+	if !ok {
+		t.Fatalf("expected response options map, got %#v", response.Session.AgentOptions)
+	}
+	responseCodex, ok := responseOptions["codex"].(map[string]any)
+	if !ok || responseCodex["model"] != "gpt-5.6" || responseCodex["planning_mode"] != true {
+		t.Fatalf("expected existing server runtime options, got %#v", response.Session.AgentOptions)
+	}
+	if events := listIntegrationEvents(t, ctx, dbStore, session.ID); len(events) != 0 {
+		t.Fatalf("expected skipped initialization not to append an event, got %#v", events)
+	}
+}
+
+func TestPermissionUpdatePreservesSessionRuntimeAgentOptions(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:     "Codex",
+		AgentType: "codex",
+		AgentOptions: json.RawMessage(`{"codex":{
+			"permission_policy":"ask",
+			"model":"gpt-5.6",
+			"reasoning_effort":"xhigh",
+			"fast_mode":true,
+			"planning_mode":true
+		}}`),
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := patchJSON(handler, "/api/sessions/"+session.ID, `{
+		"agent_options":{"codex":{"permission_policy":"deny"}}
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	updated, err := dbStore.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	options := decodeTestAgentOptions(t, updated.AgentOptions)["codex"]
+	if options["permission_policy"] != "deny" || options["model"] != "gpt-5.6" || options["fast_mode"] != true {
+		t.Fatalf("expected permission update to preserve runtime options, got %#v", options)
+	}
+	assertEventTypes(t, listIntegrationEvents(t, ctx, dbStore, session.ID), []string{"session.agent_options.updated"})
+}
+
+func TestUpdateSessionRuntimeAgentOptionsRejectsWrongProvider(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{Title: "Codex", AgentType: "codex"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rec := putJSON(handler, "/api/sessions/"+session.ID+"/agent-options/runtime", `{
+		"options":{"claude":{"model":"opus","effort":"high","planning_mode":true}}
+	}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "codex options require a codex session")
+}
+
 func TestUpdateSessionTitleReturnsNotFound(t *testing.T) {
 	ctx := context.Background()
 	_, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
@@ -1685,9 +1911,15 @@ func TestMessageSubmissionPassesSessionCodexOptionsToAgentMetadata(t *testing.T)
 	agent.agentType = "codex"
 	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
 	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
-		Title:        "Codex run",
-		AgentType:    "codex",
-		AgentOptions: json.RawMessage(`{"codex":{"run_dangerously":true}}`),
+		Title:     "Codex run",
+		AgentType: "codex",
+		AgentOptions: json.RawMessage(`{"codex":{
+			"run_dangerously":true,
+			"model":"gpt-5.6",
+			"reasoning_effort":"xhigh",
+			"fast_mode":true,
+			"planning_mode":true
+		}}`),
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -1706,6 +1938,10 @@ func TestMessageSubmissionPassesSessionCodexOptionsToAgentMetadata(t *testing.T)
 			t.Fatalf("expected codex options metadata, got %#v", input.Metadata["codex_options"])
 		}
 		assertMetadataValue(t, options, "run_dangerously", true)
+		assertMetadataValue(t, options, "model", "gpt-5.6")
+		assertMetadataValue(t, options, "reasoning_effort", "xhigh")
+		assertMetadataValue(t, options, "fast_mode", true)
+		assertMetadataValue(t, options, "planning_mode", true)
 	case <-time.After(2 * time.Second):
 		t.Fatal("context ended before agent started")
 	}
@@ -2247,7 +2483,7 @@ func TestCancelRunningFakeAgentMarksSessionCancelledAndCleansUpRun(t *testing.T)
 		return runManager.Active(session.ID) && hasEventType(t, ctx, dbStore, session.ID, "agent.run.started")
 	})
 
-	cancelRec := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", ``)
+	cancelRec := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", `{"source":"web_ui","reason":"stop_button"}`)
 	if cancelRec.Code != http.StatusAccepted {
 		t.Fatalf("expected cancel status %d, got %d with body %s", http.StatusAccepted, cancelRec.Code, cancelRec.Body.String())
 	}
@@ -2280,6 +2516,10 @@ func TestCancelRunningFakeAgentMarksSessionCancelledAndCleansUpRun(t *testing.T)
 	assertTerminalRunEventCount(t, events, 1)
 	assertPayloadStatus(t, events[1], store.SessionStatusRunning)
 	assertPayloadStatus(t, events[4], store.SessionStatusIdle)
+	cancelPayload := decodeEventPayload(t, events[3])
+	if cancelPayload["cancel_source"] != "web_ui" || cancelPayload["cancel_reason"] != "stop_button" {
+		t.Fatalf("unexpected cancellation payload %#v", cancelPayload)
+	}
 	if hasEvent(events, "agent.run.completed") {
 		t.Fatal("expected cancelled run not to emit agent.run.completed")
 	}
@@ -2345,7 +2585,7 @@ func TestAnswerUserInputRejectsInvalidOption(t *testing.T) {
 	session := createIntegrationSession(t, ctx, dbStore)
 	t.Cleanup(func() {
 		if runManager.Active(session.ID) {
-			_ = runManager.Cancel(session.ID)
+			_ = runManager.Cancel(session.ID, runcontrol.Cancellation{Source: "internal", Reason: "test_cleanup"})
 			waitFor(t, func() bool {
 				session, err := dbStore.GetSession(ctx, session.ID)
 				return err == nil && session.Status == store.SessionStatusIdle
@@ -2537,6 +2777,45 @@ func TestCancelRejectsMalformedJSONBody(t *testing.T) {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
 	assertErrorResponse(t, rec, "invalid JSON body")
+}
+
+func TestCancelRejectsUnsupportedProvenance(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	session := createIntegrationSession(t, ctx, dbStore)
+
+	rec := postJSON(handler, "/api/sessions/"+session.ID+"/cancel", `{"source":"unknown","reason":"mystery"}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "cancel source and reason are unsupported")
+}
+
+func TestEmptyCancelRequestDefaultsToAPIProvenance(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	cancellation, ok := parseCancellationRequest(rec, req)
+
+	if !ok || rec.Code != http.StatusOK {
+		t.Fatalf("expected valid request, got ok=%t status=%d body=%s", ok, rec.Code, rec.Body.String())
+	}
+	if cancellation.Source != "api" || cancellation.Reason != "requested" {
+		t.Fatalf("unexpected cancellation %#v", cancellation)
+	}
+}
+
+func TestCancellationDetailsPreserveProviderPayload(t *testing.T) {
+	event := withCancellationDetails(agents.AgentEvent{
+		Type:    "agent.run.cancelled",
+		Payload: map[string]any{"turn_id": "turn_one"},
+	}, runcontrol.Cancellation{Source: "web_ui", Reason: "stop_button"})
+
+	payload := event.Payload.(map[string]any)
+	if payload["turn_id"] != "turn_one" || payload["cancel_source"] != "web_ui" || payload["cancel_reason"] != "stop_button" {
+		t.Fatalf("unexpected cancellation payload %#v", payload)
+	}
 }
 
 func TestMessageSubmissionToRunningSessionQueuesMessage(t *testing.T) {
