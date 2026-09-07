@@ -839,6 +839,163 @@ test('segmented touch momentum can reattach after an intermediate virtualizer se
   expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 })
 
+test.each(['scroll', 'scrollend'] as const)(
+  'a canceled touch flick reattaches at the bottom through native %s without pointer moves',
+  async (finalEvent) => {
+    const onFollowingTailChange = vi.fn()
+    render(
+      <ChatTranscript
+        events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+        onFollowingTailChange={onFollowingTailChange}
+      />,
+    )
+    const log = screen.getByRole('log', { name: 'Chat messages' })
+
+    setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+    fireEvent.scroll(log)
+    await settleVirtualScroll()
+    const pointerDown = createEvent.pointerDown(log, { clientY: 200 })
+    Object.defineProperty(pointerDown, 'pointerType', { value: 'touch' })
+    fireEvent(log, pointerDown)
+    const pointerMove = createEvent.pointerMove(log, { clientY: 500 })
+    Object.defineProperty(pointerMove, 'pointerType', { value: 'touch' })
+    fireEvent(log, pointerMove)
+    fireEvent.pointerCancel(log)
+    setScrollMetrics(log, { scrollTop: 1300, scrollHeight: 2000, clientHeight: 400 })
+    fireEvent.scroll(log)
+    await settleVirtualScroll()
+    fireEvent(log, new Event('scrollend'))
+    expect(onFollowingTailChange).toHaveBeenLastCalledWith(false)
+    expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+
+    // WebKit can take over the next pan before delivering a pointermove. Its
+    // momentum scrolls must clear the previous upward gesture's detached state.
+    const flick = createEvent.pointerDown(log, { clientY: 600 })
+    Object.defineProperty(flick, 'pointerType', { value: 'touch' })
+    fireEvent(log, flick)
+    fireEvent.pointerCancel(log)
+    if (finalEvent === 'scroll') {
+      for (const scrollTop of [1340, 1500, 1580]) {
+        setScrollMetrics(log, { scrollTop, scrollHeight: 2000, clientHeight: 400 })
+        fireEvent.scroll(log)
+        await settleVirtualScroll()
+      }
+    }
+    setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+    fireEvent(log, new Event(finalEvent))
+    await settleVirtualScroll()
+
+    expect(onFollowingTailChange).toHaveBeenLastCalledWith(true)
+    expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+  },
+)
+
+test('an upward touch stays detached through cancellation and an elastic rebound near the tail', async () => {
+  const onFollowingTailChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  const pointerDown = createEvent.pointerDown(log, { clientY: 200 })
+  Object.defineProperty(pointerDown, 'pointerType', { value: 'touch' })
+  fireEvent(log, pointerDown)
+  const pointerMove = createEvent.pointerMove(log, { clientY: 208 })
+  Object.defineProperty(pointerMove, 'pointerType', { value: 'touch' })
+  fireEvent(log, pointerMove)
+  fireEvent.pointerCancel(log)
+  for (const scrollTop of [1592, 1596]) {
+    setScrollMetrics(log, { scrollTop, scrollHeight: 2000, clientHeight: 400 })
+    fireEvent.scroll(log)
+    await settleVirtualScroll()
+  }
+  fireEvent(log, new Event('scrollend'))
+
+  expect(onFollowingTailChange).toHaveBeenLastCalledWith(false)
+  expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+})
+
+test('a canceled upward touch flick also detaches without pointer moves', async () => {
+  const onFollowingTailChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  const pointerDown = createEvent.pointerDown(log, { clientY: 200 })
+  Object.defineProperty(pointerDown, 'pointerType', { value: 'touch' })
+  fireEvent(log, pointerDown)
+  fireEvent.pointerCancel(log)
+  setScrollMetrics(log, { scrollTop: 1592, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+
+  expect(onFollowingTailChange).toHaveBeenLastCalledWith(false)
+  expect(log.scrollTop).toBe(1592)
+  expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+})
+
+test('a touch tap does not mistake a later layout scroll for an upward gesture', async () => {
+  const onFollowingTailChange = vi.fn()
+  render(
+    <ChatTranscript
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      onFollowingTailChange={onFollowingTailChange}
+    />,
+  )
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+  const pointerDown = createEvent.pointerDown(log, { clientY: 200 })
+  Object.defineProperty(pointerDown, 'pointerType', { value: 'touch' })
+  fireEvent(log, pointerDown)
+  fireEvent.pointerUp(log)
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2050, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+
+  expect(onFollowingTailChange).not.toHaveBeenCalledWith(false)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+})
+
+test('detaching cancels an already scheduled tail-scroll animation frame', async () => {
+  vi.useFakeTimers()
+  try {
+    render(
+      <ChatTranscript
+        events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]}
+      />,
+    )
+    const log = screen.getByRole('log', { name: 'Chat messages' })
+    setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+    const pointerDown = createEvent.pointerDown(log, { clientY: 200 })
+    Object.defineProperty(pointerDown, 'pointerType', { value: 'touch' })
+    fireEvent(log, pointerDown)
+    const pointerMove = createEvent.pointerMove(log, { clientY: 208 })
+    Object.defineProperty(pointerMove, 'pointerType', { value: 'touch' })
+    fireEvent(log, pointerMove)
+    setScrollMetrics(log, { scrollTop: 1592, scrollHeight: 2000, clientHeight: 400 })
+    fireEvent.scroll(log)
+    await act(async () => vi.runAllTimersAsync())
+
+    expect(log.scrollTop).toBe(1592)
+    expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 test('the physical bottom hydrates newer events even after input intent has settled', async () => {
   vi.useFakeTimers()
   try {

@@ -147,6 +147,7 @@ export function ChatTranscript({
   const scrollPointerYRef = useRef<number | null>(null)
   const scrollPointerTypeRef = useRef('')
   const touchDetachedFromTailRef = useRef(false)
+  const touchScrollRef = useRef<{ startDistance: number; previousDistance: number } | null>(null)
   const tailScrollFrameRef = useRef<number | null>(null)
   const visibleSequenceRangeRef = useRef('')
   const [followingTail, setFollowingTailState] = useState(initiallyFollowingTail)
@@ -170,6 +171,10 @@ export function ChatTranscript({
 
   const pauseFollowing = useCallback(() => {
     initialTailPinPendingRef.current = false
+    if (tailScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(tailScrollFrameRef.current)
+      tailScrollFrameRef.current = null
+    }
     setSnapToTailPendingValue(false)
     setFollowingTail(false)
   }, [setFollowingTail, setSnapToTailPendingValue])
@@ -263,6 +268,7 @@ export function ChatTranscript({
     if (resumeInFlightRef.current) return
     resumeInFlightRef.current = true
     touchDetachedFromTailRef.current = false
+    touchScrollRef.current = null
     initialTailPinPendingRef.current = false
     setSnapToTailPendingValue(true)
     try {
@@ -428,11 +434,31 @@ export function ChatTranscript({
     lastScrollDirectionRef.current = direction
   }
 
+  function reconcileTouchScrollIntent(distanceFromEnd: number) {
+    const gesture = touchScrollRef.current
+    if (!gesture) return
+    const previousDistance = gesture.previousDistance
+    gesture.previousDistance = distanceFromEnd
+    // Native panning cancels pointer events, but momentum keeps scrolling. Use
+    // physical progress for the rest of the gesture, even across virtualizer
+    // settles. Requiring progress past its start ignores elastic rebounds.
+    if (distanceFromEnd > previousDistance && distanceFromEnd > gesture.startDistance + PHYSICAL_TAIL_THRESHOLD_PX) {
+      recordUserScrollIntent('backward')
+      touchDetachedFromTailRef.current = true
+      if (followingTailRef.current) pauseFollowing()
+    } else if (distanceFromEnd < previousDistance && distanceFromEnd < gesture.startDistance - PHYSICAL_TAIL_THRESHOLD_PX) {
+      recordUserScrollIntent('forward')
+      touchDetachedFromTailRef.current = false
+    }
+  }
+
   function handleNativeScroll() {
     // Programmatic focus/measurement also emits native scroll events. A short
     // historical window can be at its own bottom without being the live tail.
     if (focusSeq > 0) return
-    if (physicalDistanceFromEnd(scrollerElementRef.current) <= AUTO_SCROLL_REATTACH_THRESHOLD_PX) {
+    const distanceFromEnd = physicalDistanceFromEnd(scrollerElementRef.current)
+    reconcileTouchScrollIntent(distanceFromEnd)
+    if (distanceFromEnd <= AUTO_SCROLL_REATTACH_THRESHOLD_PX) {
       if (touchDetachedFromTailRef.current) return
       if (hasNewerEvents) {
         setSnapToTailPendingValue(true)
@@ -447,8 +473,11 @@ export function ChatTranscript({
 
   function handleNativeScrollEnd() {
     if (focusSeq > 0) return
+    const distanceFromEnd = physicalDistanceFromEnd(scrollerElementRef.current)
+    reconcileTouchScrollIntent(distanceFromEnd)
+    touchScrollRef.current = null
     if (touchDetachedFromTailRef.current) return
-    if (physicalDistanceFromEnd(scrollerElementRef.current) > AUTO_SCROLL_REATTACH_THRESHOLD_PX) return
+    if (distanceFromEnd > AUTO_SCROLL_REATTACH_THRESHOLD_PX) return
     if (hasNewerEvents) {
       void resumeFollowing(virtualizer)
     } else {
@@ -459,6 +488,7 @@ export function ChatTranscript({
 
   function handleScrollWheel(event: ReactWheelEvent<HTMLDivElement>) {
     if (event.deltaY === 0) return
+    touchScrollRef.current = null
     const direction = event.deltaY > 0 ? 'forward' : 'backward'
     recordUserScrollIntent(direction)
   }
@@ -467,6 +497,10 @@ export function ChatTranscript({
     scrollPointerActiveRef.current = true
     scrollPointerYRef.current = event.clientY
     scrollPointerTypeRef.current = event.pointerType
+    const distanceFromEnd = physicalDistanceFromEnd(scrollerElementRef.current)
+    touchScrollRef.current = event.pointerType === 'touch' || event.pointerType === 'pen'
+      ? { startDistance: distanceFromEnd, previousDistance: distanceFromEnd }
+      : null
   }
 
   function handleScrollPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
@@ -486,16 +520,20 @@ export function ChatTranscript({
     }
   }
 
-  function handleScrollPointerEnd() {
+  function handleScrollPointerEnd(event: ReactPointerEvent<HTMLDivElement>) {
     scrollPointerActiveRef.current = false
     scrollPointerYRef.current = null
     scrollPointerTypeRef.current = ''
+    // A normal pointerup ends a tap; pointercancel hands panning to the browser,
+    // so retain its scroll baseline until native scrollend or the next input.
+    if (event.type === 'pointerup') touchScrollRef.current = null
   }
 
   function handleScrollKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     const backward = event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home'
     const forward = event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End' || event.key === ' '
     if (!backward && !forward) return
+    touchScrollRef.current = null
     const direction = backward ? 'backward' : 'forward'
     recordUserScrollIntent(direction)
     if (event.key === 'PageUp' || event.key === 'Home') pauseFollowing()

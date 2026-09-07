@@ -77,6 +77,7 @@ Use a fresh profile for cold-cache cases and an intentionally retained profile f
 | UI-01 | Chat at 320, 390, 430, 768, 1024 px and narrow desktop panes | No essential control outside its usable container; titles/drafts remain readable | Regression/device |
 | UI-02 | Mobile drawer, search, composer options, files, schedules, settings | Close/Save/Send remain reachable; pins need no hover; menus stay within viewport | Smoke/device |
 | UI-03 | Real keyboard open/close, rotation, safe-area changes, text enlargement | Composer and active controls remain visible; no accidental jump/send | Physical device |
+| UI-04 | iOS Safari and installed PWA: scroll up, then return to the bottom with slow drags and fast flicks; repeat during streaming | Jump-to-latest disappears and following resumes at the bottom, including momentum after pointer cancellation; a small upward drag still pauses; historical links stay focused | Regression/physical device |
 | A11Y-01 | Keyboard-only navigation, focus restore, Escape, screen reader dialogs | Named controls/dialogs; focus stays usable; no orphaned focus after view changes | Regression/device |
 | SOAK-01 | Background 30 s, 5 min, 30 min during deterministic activity; resume | Full correct projection, catch-up completed, sensible stale/live status | Soak/device |
 | SOAK-02 | Two clients watch different sessions for 30–60 min, switch and reconnect | No dropped/duplicate durable events; bounded heap/listeners/cache; no sustained retry storm | Soak |
