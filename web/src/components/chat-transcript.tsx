@@ -23,6 +23,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type TouchEvent as ReactTouchEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
@@ -144,6 +145,7 @@ export function ChatTranscript({
   const lastScrollDirectionRef = useRef<'forward' | 'backward' | null>(null)
   const userScrollIntentRef = useRef<'forward' | 'backward' | null>(null)
   const scrollPointerActiveRef = useRef(false)
+  const scrollTouchActiveRef = useRef(false)
   const scrollPointerYRef = useRef<number | null>(null)
   const scrollPointerTypeRef = useRef('')
   const touchDetachedFromTailRef = useRef(false)
@@ -380,6 +382,9 @@ export function ChatTranscript({
       const shouldSnap = snapToTailPendingRef.current
       lastScrollDirectionRef.current = null
       userScrollIntentRef.current = null
+      // Safari may not deliver native scrollend. The virtualizer's existing
+      // idle notification must also recover a stale touch-detached state.
+      if (reconcileSettledLiveTail(instance)) return
       if (!shouldSnap) return
       if (followingTailRef.current && !hasNewerEvents) {
         setSnapToTailPendingValue(false)
@@ -434,6 +439,28 @@ export function ChatTranscript({
     lastScrollDirectionRef.current = direction
   }
 
+  function reconcileSettledLiveTail(instance: TranscriptVirtualizer) {
+    if (
+      focusSeq > 0 ||
+      hasNewerEvents ||
+      scrollPointerActiveRef.current ||
+      scrollTouchActiveRef.current ||
+      physicalDistanceFromEnd(scrollerElementRef.current) > PHYSICAL_TAIL_THRESHOLD_PX
+    ) return false
+
+    // At the settled physical live tail, position wins over stale gesture
+    // intent. Do not use the wider snap zone here: a small upward drag must
+    // remain paused, and the end of a historical window is not the live tail.
+    touchDetachedFromTailRef.current = false
+    touchScrollRef.current = null
+    lastScrollDirectionRef.current = null
+    userScrollIntentRef.current = null
+    setSnapToTailPendingValue(false)
+    setFollowingTail(true)
+    updateScrollDebugReadout(instance)
+    return true
+  }
+
   function reconcileTouchScrollIntent(distanceFromEnd: number) {
     const gesture = touchScrollRef.current
     if (!gesture) return
@@ -476,6 +503,7 @@ export function ChatTranscript({
     const distanceFromEnd = physicalDistanceFromEnd(scrollerElementRef.current)
     reconcileTouchScrollIntent(distanceFromEnd)
     touchScrollRef.current = null
+    if (reconcileSettledLiveTail(virtualizer)) return
     if (touchDetachedFromTailRef.current) return
     if (distanceFromEnd > AUTO_SCROLL_REATTACH_THRESHOLD_PX) return
     if (hasNewerEvents) {
@@ -526,7 +554,19 @@ export function ChatTranscript({
     scrollPointerTypeRef.current = ''
     // A normal pointerup ends a tap; pointercancel hands panning to the browser,
     // so retain its scroll baseline until native scrollend or the next input.
-    if (event.type === 'pointerup') touchScrollRef.current = null
+    if (event.type === 'pointerup') {
+      touchScrollRef.current = null
+      if (!virtualizer.isScrolling) reconcileSettledLiveTail(virtualizer)
+    }
+  }
+
+  function handleScrollTouchContact(event: ReactTouchEvent<HTMLDivElement>) {
+    // Pointer cancellation starts native panning; it does not mean the finger
+    // lifted. Avoid settling back into auto-follow while contact is still held.
+    scrollTouchActiveRef.current = event.touches.length > 0
+    if (!scrollTouchActiveRef.current && !virtualizer.isScrolling) {
+      reconcileSettledLiveTail(virtualizer)
+    }
   }
 
   function handleScrollKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -609,7 +649,6 @@ export function ChatTranscript({
   }
 
   const latestMessageIndex = timeline.reduce((latest, item, index) => (item.kind === 'message' ? index : latest), -1)
-  const messageDateBreakIndexes = messageDateBreaks(timeline)
   function updateChatGlow(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return
 
@@ -647,6 +686,9 @@ export function ChatTranscript({
         onPointerMoveCapture={handleScrollPointerMove}
         onPointerUpCapture={handleScrollPointerEnd}
         onPointerCancelCapture={handleScrollPointerEnd}
+        onTouchStartCapture={handleScrollTouchContact}
+        onTouchEndCapture={handleScrollTouchContact}
+        onTouchCancelCapture={handleScrollTouchContact}
         onKeyDownCapture={handleScrollKeyDown}
       >
         {olderHistoryUnavailable ? (
@@ -717,7 +759,6 @@ export function ChatTranscript({
                 item={item}
                 focusSeq={focusSeq}
                 collapseExtraTools={item.kind === 'message' && timelineIndex < latestMessageIndex}
-                showMessageDate={messageDateBreakIndexes.has(timelineIndex)}
                 onOpenFilePath={onOpenFilePath}
               />
             </div>
@@ -896,13 +937,11 @@ function timelineItemContainsSeq(item: ChatTimelineItem, seq: number) {
 function ChatTimelineRow({
   item,
   collapseExtraTools,
-  showMessageDate,
   onOpenFilePath,
   focusSeq,
 }: {
   item: ChatTimelineItem
   collapseExtraTools: boolean
-  showMessageDate: boolean
   onOpenFilePath?: (path: string) => Promise<void> | void
   focusSeq: number
 }) {
@@ -919,7 +958,6 @@ function ChatTimelineRow({
     <ChatMessageRow
       message={item.message}
       collapseExtraTools={collapseExtraTools}
-      showDate={showMessageDate}
       onOpenFilePath={onOpenFilePath}
       focusSeq={focusSeq}
     />
@@ -951,13 +989,11 @@ function ActionBreakRow({ action }: { action: ChatActionBreak }) {
 function ChatMessageRow({
   message,
   collapseExtraTools,
-  showDate,
   onOpenFilePath,
   focusSeq,
 }: {
   message: ChatTranscriptMessage
   collapseExtraTools: boolean
-  showDate: boolean
   onOpenFilePath?: (path: string) => Promise<void> | void
   focusSeq: number
 }) {
@@ -970,7 +1006,7 @@ function ChatMessageRow({
   const visibleTools = !shouldCollapseTools || showAllTools ? message.tools : message.tools.slice(0, 3)
   const hasHiddenTools = message.tools.length > visibleTools.length
   const timestampValue = messageTimestamp(message)
-  const timestamp = formatMessageTimestamp(timestampValue, showDate)
+  const timestamp = formatMessageTimestamp(timestampValue)
   const turnDuration = formatTurnDuration(message.durationMs)
   const showMessageCopy = Boolean(message.text)
   const focusedTool = message.tools.find((tool) => focusSeq >= tool.startSeq && focusSeq <= tool.endSeq)
@@ -1179,29 +1215,6 @@ function formatAttachmentSize(sizeBytes: number) {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function messageDateBreaks(timeline: ChatTimelineItem[]) {
-  const breaks = new Set<number>()
-  let previousMessageDate: Date | null = null
-
-  for (const [index, item] of timeline.entries()) {
-    if (item.kind !== 'message') continue
-    const currentMessageDate = parseMessageDate(messageTimestamp(item.message))
-    if (!currentMessageDate) continue
-    if (previousMessageDate && !sameLocalCalendarDay(previousMessageDate, currentMessageDate)) {
-      breaks.add(index)
-    }
-    previousMessageDate = currentMessageDate
-  }
-
-  return breaks
-}
-
-function parseMessageDate(value: string) {
-  if (!value) return null
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? null : date
-}
-
 function sameLocalCalendarDay(left: Date, right: Date) {
   return (
     left.getFullYear() === right.getFullYear() &&
@@ -1236,7 +1249,7 @@ function formatMessageTimestamp(value: string, includeDate = false) {
   if (Number.isNaN(date.getTime())) {
     return ''
   }
-  const options: Intl.DateTimeFormatOptions = includeDate
+  const options: Intl.DateTimeFormatOptions = includeDate || !sameLocalCalendarDay(date, new Date())
     ? { dateStyle: 'short', timeStyle: 'short' }
     : { timeStyle: 'short' }
   return new Intl.DateTimeFormat(undefined, options).format(date)

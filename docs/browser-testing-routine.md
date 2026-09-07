@@ -77,12 +77,15 @@ Use a fresh profile for cold-cache cases and an intentionally retained profile f
 | UI-01 | Chat at 320, 390, 430, 768, 1024 px and narrow desktop panes | No essential control outside its usable container; titles/drafts remain readable | Regression/device |
 | UI-02 | Mobile drawer, search, composer options, files, schedules, settings | Close/Save/Send remain reachable; pins need no hover; menus stay within viewport | Smoke/device |
 | UI-03 | Real keyboard open/close, rotation, safe-area changes, text enlargement | Composer and active controls remain visible; no accidental jump/send | Physical device |
-| UI-04 | iOS Safari and installed PWA: scroll up, then return to the bottom with slow drags and fast flicks; repeat during streaming | Jump-to-latest disappears and following resumes at the bottom, including momentum after pointer cancellation; a small upward drag still pauses; historical links stay focused | Regression/physical device |
+| UI-04 | iOS Safari and installed PWA: scroll up, then return to the bottom with slow drags and fast flicks; repeat during streaming and with the keyboard open/closed | Jump-to-latest disappears and following resumes at the settled live bottom, including stale touch intent and missing native scrollend; `?debug-scroll=1` must not remain `dist 0px · paused · idle`; a small upward drag or held touch still pauses; historical links stay focused | Regression/physical device |
+| UI-05 | iPad Safari with tab/address bars expanded and collapsed; portrait/landscape and Split View below 1024 CSS px; repeat in installed PWA | Header and session navigation remain fully visible and tappable; browser toolbar changes never shift the app above the viewport; composer remains reachable | CSS regression/physical device |
 | A11Y-01 | Keyboard-only navigation, focus restore, Escape, screen reader dialogs | Named controls/dialogs; focus stays usable; no orphaned focus after view changes | Regression/device |
 | SOAK-01 | Background 30 s, 5 min, 30 min during deterministic activity; resume | Full correct projection, catch-up completed, sensible stale/live status | Soak/device |
 | SOAK-02 | Two clients watch different sessions for 30–60 min, switch and reconnect | No dropped/duplicate durable events; bounded heap/listeners/cache; no sustained retry storm | Soak |
 
 ## Evidence and measurement
+
+September 7 scroll regression: a physical iPad screenshot showed `dist 0px`, `top 7288/7288`, and `paused · idle` with the chip visible. A controlled touch-event sequence reproduced stale detachment in the then-current production entry `index-CNc80jxk.js` (3/3 failures), independently of an earlier stale-cache finding. The source fix passed the identical browser sequence (3/3), plus 3/3 with native `scrollend` suppressed. An 8px upward scroll remained paused; a held touch at the bottom remained paused until release. These browser checks use Chromium tablet emulation and injected events, not physical iPad momentum. Physical-device confirmation of the fix remains required.
 
 For a failure, record: scenario ID; build/entry asset; browser/cache/network state; exact actions; expected/actual result; reproduction count; sanitized screenshot or trace reference; likely source location; impact; proposed fix; and an acceptance test. Keep browser-confirmed observations separate from code-review hypotheses.
 

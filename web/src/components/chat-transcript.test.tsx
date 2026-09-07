@@ -52,29 +52,59 @@ test('renders connection errors after the message list as a centered status', ()
   expect(alert).toHaveClass('mx-auto', 'justify-center', 'text-center')
 })
 
-test('adds the date only to the first message after a local day boundary', () => {
-  const firstTimestamp = '2026-06-12T23:50:00'
-  const sameDayTimestamp = '2026-06-12T23:55:00'
-  const nextDayTimestamp = '2026-06-13T00:05:00'
-  const { container } = render(
-    <ChatTranscript
-      events={[
-        { ...event(1, 'user.message.completed', 'user', 'completed', { text: 'Late prompt' }), created_at: firstTimestamp },
-        { ...event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Late answer' }), created_at: sameDayTimestamp },
-        { ...event(3, 'user.message.completed', 'user', 'completed', { text: 'Next prompt' }), created_at: nextDayTimestamp },
-      ]}
-    />,
-  )
+test('dates every earlier-day message, including the first loaded message, but not today', () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-06-13T12:00:00'))
+  try {
+    const firstTimestamp = '2026-06-12T23:50:00'
+    const sameDayTimestamp = '2026-06-12T23:55:00'
+    const nextDayTimestamp = '2026-06-13T00:05:00'
+    const { container } = render(
+      <ChatTranscript
+        events={[
+          { ...event(1, 'user.message.completed', 'user', 'completed', { text: 'Late prompt' }), created_at: firstTimestamp },
+          { ...event(2, 'agent.message.completed', 'assistant', 'completed', { text: 'Late answer' }), created_at: sameDayTimestamp },
+          { ...event(3, 'user.message.completed', 'user', 'completed', { text: 'Next prompt' }), created_at: nextDayTimestamp },
+        ]}
+      />,
+    )
 
-  const firstTime = container.querySelector(`time[datetime="${firstTimestamp}"]`)
-  const sameDayTime = container.querySelector(`time[datetime="${sameDayTimestamp}"]`)
-  const nextDayTime = container.querySelector(`time[datetime="${nextDayTimestamp}"]`)
+    const firstTime = container.querySelector(`time[datetime="${firstTimestamp}"]`)
+    const sameDayTime = container.querySelector(`time[datetime="${sameDayTimestamp}"]`)
+    const nextDayTime = container.querySelector(`time[datetime="${nextDayTimestamp}"]`)
 
-  expect(firstTime).toHaveTextContent(new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(firstTimestamp)))
-  expect(sameDayTime).toHaveTextContent(new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(sameDayTimestamp)))
-  expect(nextDayTime).toHaveTextContent(
-    new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(nextDayTimestamp)),
-  )
+    const dated = new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' })
+    const timeOnly = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' })
+    expect(firstTime?.textContent).toBe(dated.format(new Date(firstTimestamp)))
+    expect(sameDayTime?.textContent).toBe(dated.format(new Date(sameDayTimestamp)))
+    expect(nextDayTime?.textContent).toBe(timeOnly.format(new Date(nextDayTimestamp)))
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('dates messages across a local year boundary using the completed response time', () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date(2027, 0, 1, 12))
+  try {
+    const yesterday = new Date(2026, 11, 31, 23, 55).toISOString()
+    const today = new Date(2027, 0, 1, 0, 5).toISOString()
+    const { container } = render(
+      <ChatTranscript events={[
+        { ...event(1, 'user.message.completed', 'user', 'completed', { text: 'Late request' }), created_at: yesterday },
+        { ...event(2, 'agent.message.delta', 'assistant', 'delta', { text: 'Answer', item_id: 'reply' }), created_at: yesterday },
+        { ...event(3, 'agent.message.completed', 'assistant', 'completed', { text: 'Answer', item_id: 'reply' }), created_at: today },
+      ]} />,
+    )
+    expect(container.querySelector(`time[datetime="${yesterday}"]`)?.textContent).toBe(
+      new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(yesterday)),
+    )
+    expect(container.querySelector(`time[datetime="${today}"]`)?.textContent).toBe(
+      new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(today)),
+    )
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 test('shows the completed response time and total turn duration', () => {
@@ -918,6 +948,76 @@ test('an upward touch stays detached through cancellation and an elastic rebound
 
   expect(onFollowingTailChange).toHaveBeenLastCalledWith(false)
   expect(screen.getByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).toBeInTheDocument()
+})
+
+test.each(['native scrollend', 'virtualizer idle'] as const)(
+  'settled live bottom clears stale touch detachment through %s without a new forward gesture',
+  async (settlePath) => {
+    const onFollowingTailChange = vi.fn()
+    const events = [event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]
+    const view = render(<ChatTranscript events={events} onFollowingTailChange={onFollowingTailChange} />)
+    const log = screen.getByRole('log', { name: 'Chat messages' })
+    setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+    fireEvent.scroll(log)
+    await settleVirtualScroll()
+
+    const down = createEvent.pointerDown(log, { clientY: 200 })
+    Object.defineProperty(down, 'pointerType', { value: 'touch' })
+    fireEvent(log, down)
+    const move = createEvent.pointerMove(log, { clientY: 500 })
+    Object.defineProperty(move, 'pointerType', { value: 'touch' })
+    fireEvent(log, move)
+    fireEvent.pointerCancel(log)
+    setScrollMetrics(log, { scrollTop: 1300, scrollHeight: 2000, clientHeight: 400 })
+    fireEvent.scroll(log)
+    await settleVirtualScroll()
+    fireEvent(log, new Event('scrollend'))
+    expect(onFollowingTailChange).toHaveBeenLastCalledWith(false)
+
+    // Reproduce the observed state: the browser reaches the physical bottom,
+    // but the prior touch detachment outlives the gesture's direction/baseline.
+    setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+    if (settlePath === 'native scrollend') {
+      fireEvent(log, new Event('scrollend'))
+    } else {
+      fireEvent.scroll(log)
+    }
+    await settleVirtualScroll()
+
+    expect(onFollowingTailChange).toHaveBeenLastCalledWith(true)
+    expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
+    // Recover following, not just the chip's appearance.
+    setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2200, clientHeight: 400 })
+    view.rerender(<ChatTranscript events={[...events, event(2, 'agent.message.delta', 'assistant', 'delta', { text: 'More' })]} onFollowingTailChange={onFollowingTailChange} />)
+    expect(log.scrollTop).toBe(2200)
+  },
+)
+
+test('settling at the bottom does not reattach while the finger is still touching after pointer cancellation', async () => {
+  const onFollowingTailChange = vi.fn()
+  render(<ChatTranscript events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'One' })]} onFollowingTailChange={onFollowingTailChange} />)
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  setScrollMetrics(log, { scrollTop: 1600, scrollHeight: 2000, clientHeight: 400 })
+  fireEvent.scroll(log)
+  await settleVirtualScroll()
+
+  fireEvent.touchStart(log, { touches: [{ identifier: 1, clientY: 200 }] })
+  const down = createEvent.pointerDown(log, { clientY: 200 })
+  Object.defineProperty(down, 'pointerType', { value: 'touch' })
+  fireEvent(log, down)
+  const move = createEvent.pointerMove(log, { clientY: 208 })
+  Object.defineProperty(move, 'pointerType', { value: 'touch' })
+  fireEvent(log, move)
+  fireEvent.pointerCancel(log)
+  fireEvent.scroll(log)
+  fireEvent(log, new Event('scrollend'))
+  await settleVirtualScroll()
+  expect(onFollowingTailChange).toHaveBeenLastCalledWith(false)
+
+  // With no further scrolling, the end of contact must still reconcile the tail.
+  fireEvent.touchEnd(log, { touches: [] })
+  expect(onFollowingTailChange).toHaveBeenLastCalledWith(true)
+  expect(screen.queryByRole('button', { name: 'Scroll to latest and resume auto-scroll' })).not.toBeInTheDocument()
 })
 
 test('a canceled upward touch flick also detaches without pointer moves', async () => {
@@ -1981,11 +2081,11 @@ test('a repeated focus request scrolls the targeted virtual conversation row int
   expect(log.scrollTop).toBeGreaterThan(0)
 })
 
-test('explicit historical focus wins over initial tail pinning and live appends', async () => {
+test.each([true, false])('explicit historical focus wins over initial tail pinning and live appends (newer events: %s)', async (hasNewerEvents) => {
   const onJumpToLatest = vi.fn()
   const onFollowingTailChange = vi.fn()
   const events = [event(3, 'user.message.completed', 'user', 'completed', { text: 'Historical target' })]
-  const props = { events, focusSeq: 3, hasNewerEvents: true, pinToLatestOnMount: true, onJumpToLatest, onFollowingTailChange }
+  const props = { events, focusSeq: 3, hasNewerEvents, pinToLatestOnMount: true, onJumpToLatest, onFollowingTailChange }
   const view = render(<ChatTranscript {...props} />)
   const log = screen.getByRole('log', { name: 'Chat messages' })
   setScrollMetrics(log, { scrollTop: 0, scrollHeight: 400, clientHeight: 400 })
