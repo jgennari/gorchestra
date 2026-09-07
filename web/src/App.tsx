@@ -61,7 +61,7 @@ import {
   statusFromEvent,
 } from '@/lib/events'
 import { nextSessionIDAfterArchive } from '@/lib/sessions'
-import { useSessionEvents, type StreamState } from '@/hooks/use-session-events'
+import { invalidateSessionEventTails, useSessionEvents, type StreamState } from '@/hooks/use-session-events'
 import { useAppBadge } from '@/hooks/use-app-badge'
 import { useFavicon } from '@/hooks/use-favicon'
 import { usePushNotifications } from '@/hooks/use-push-notifications'
@@ -197,6 +197,7 @@ function App() {
   const [workspaceFileDirty, setWorkspaceFileDirty] = useState(false)
   const [fileRefreshKey, setFileRefreshKey] = useState(0)
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
+  const [historySyncKey, setHistorySyncKey] = useState(0)
   const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0)
   const [activityCursorReady, setActivityCursorReady] = useState(false)
   const [activityStreamState, setActivityStreamState] = useState<StreamState>('loading')
@@ -228,6 +229,7 @@ function App() {
   const paneWidthsRef = useRef(paneWidths)
   const dashboardRefreshTimerRef = useRef<number | null>(null)
   const activityCursorRef = useRef(0)
+  const activitySnapshotReadyRef = useRef(false)
   const activityClientIDRef = useRef(createActivityClientID())
   const activityWatchRef = useRef(`${selectedSessionID ?? ''}:false`)
   const showDebugEventsRef = useRef(showDebugEvents)
@@ -292,13 +294,25 @@ function App() {
       setConnectivityRetryKey((current) => current + 1)
     }
 
+    function handleVisible() {
+      if (document.visibilityState === 'visible') handleOnline()
+    }
+
+    function handlePageShow(event: PageTransitionEvent) {
+      if (event.persisted) handleOnline()
+    }
+
     window.addEventListener(serverConnectivityEventName, handleConnectivity)
     window.addEventListener('offline', handleOffline)
     window.addEventListener('online', handleOnline)
+    document.addEventListener('visibilitychange', handleVisible)
+    window.addEventListener('pageshow', handlePageShow)
     return () => {
       window.removeEventListener(serverConnectivityEventName, handleConnectivity)
       window.removeEventListener('offline', handleOffline)
       window.removeEventListener('online', handleOnline)
+      document.removeEventListener('visibilitychange', handleVisible)
+      window.removeEventListener('pageshow', handlePageShow)
     }
   }, [])
 
@@ -828,6 +842,8 @@ function App() {
     setFollowingTail,
   } = useSessionEvents(selectedSessionID, {
     refreshKey: eventRefreshKey,
+    historySyncKey,
+    historyReady: activityCursorReady,
     includeDebugEvents: showDebugEvents,
     targetSeq: focusedEventSeq,
     liveStreamState: activityStreamState,
@@ -880,7 +896,7 @@ function App() {
   ])
 
   const loadSessions = useCallback(
-    async (options: { showLoading?: boolean } = {}) => {
+    async (options: { showLoading?: boolean; resyncStream?: boolean } = {}) => {
       const showLoading = options.showLoading ?? sessionsRef.current.length === 0
       if (showLoading) {
         setLoadingSessions(true)
@@ -895,7 +911,14 @@ function App() {
         sessionSyncErrorRef.current = ''
         setError((current) => (current === recoveredError || isLikelyNetworkErrorMessage(current) ? '' : current))
         const nextSessions = snapshot.sessions
-        activityCursorRef.current = Math.max(activityCursorRef.current, snapshot.eventCursor)
+        // A session-list snapshot is not transcript history. Only advance the
+        // replay boundary when all cached tails are also marked for recovery.
+        if (!activitySnapshotReadyRef.current || options.resyncStream) {
+          activityCursorRef.current = Math.max(activityCursorRef.current, snapshot.eventCursor)
+          activitySnapshotReadyRef.current = true
+          invalidateSessionEventTails()
+          setHistorySyncKey((current) => current + 1)
+        }
         const selectedID = selectedSessionIDRef.current
         const mergedSessions = await includeSelectedSession(nextSessions, selectedID)
         void writePersistentCachedSessions(mergedSessions)
@@ -1020,6 +1043,7 @@ function App() {
     }
 
     function handleActivityMessage(message: MessageEvent<string>) {
+      if (closed || resyncing) return
       try {
         const event = JSON.parse(message.data) as AgentEvent
         handleActivityEvent(event)
@@ -1036,7 +1060,11 @@ function App() {
       resyncing = true
       setActivityStreamState('loading')
       closeSource()
-      void loadSessions({ showLoading: false }).then((synchronized) => {
+      if (reconnectTimer !== undefined) {
+        window.clearTimeout(reconnectTimer)
+        reconnectTimer = undefined
+      }
+      void loadSessions({ showLoading: false, resyncStream: true }).then((synchronized) => {
         resyncing = false
         if (closed) return
         if (synchronized) {
@@ -1063,33 +1091,53 @@ function App() {
         if (typeof EventSource === 'undefined') setActivityStreamState('disconnected')
         return
       }
-      source = new EventSource(sessionActivityStreamURL(activityCursorRef.current, {
+      closeSource()
+      const connectedSource = new EventSource(sessionActivityStreamURL(activityCursorRef.current, {
         clientID: activityClientIDRef.current,
         watchSessionID: selectedSessionIDRef.current,
         includeDebug: showDebugEventsRef.current,
       }))
+      source = connectedSource
       source.onopen = () => {
-        if (closed) return
+        if (closed || source !== connectedSource) return
         reconnectAttempt = 0
         setServerReachable(true)
         setActivityStreamState('connected')
       }
       source.onerror = () => {
+        if (closed || source !== connectedSource) return
         closeSource()
         if (!browserIsOnline()) setServerReachable(false)
         scheduleReconnect()
       }
       for (const eventType of knownEventTypes) {
-        source.addEventListener(eventType, handleActivityMessage)
+        source.addEventListener(eventType, (message) => {
+          if (source === connectedSource) handleActivityMessage(message as MessageEvent<string>)
+        })
       }
-      source.addEventListener('stream.resync.required', handleResyncRequired)
+      source.addEventListener('stream.resync.required', () => {
+        if (source === connectedSource) handleResyncRequired()
+      })
     }
 
     setActivityStreamState('loading')
     connect()
 
+    // Safari can suspend a page without an offline/error event. On return,
+    // replace the potentially half-open stream and reconcile cached history.
+    function handleVisible() {
+      if (document.visibilityState === 'visible') handleResyncRequired()
+    }
+    function handlePageShow(event: PageTransitionEvent) {
+      if (event.persisted) handleResyncRequired()
+    }
+    document.addEventListener('visibilitychange', handleVisible)
+    window.addEventListener('pageshow', handlePageShow)
+
     return () => {
       closed = true
+      document.removeEventListener('visibilitychange', handleVisible)
+      window.removeEventListener('pageshow', handlePageShow)
       if (reconnectTimer !== undefined) {
         window.clearTimeout(reconnectTimer)
       }

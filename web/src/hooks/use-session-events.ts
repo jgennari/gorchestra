@@ -27,6 +27,7 @@ import {
 } from '@/lib/session-cache'
 import {
   clearClientEventStoreForTest,
+  invalidateClientSessionEventTails,
   readClientSessionEvents,
   seedClientSessionEvents,
   subscribeClientSessionEvents,
@@ -36,6 +37,8 @@ export type StreamState = 'idle' | 'loading' | 'connected' | 'reconnecting' | 'd
 
 type Options = {
   refreshKey?: number
+  historySyncKey?: number
+  historyReady?: boolean
   includeDebugEvents?: boolean
   targetSeq?: number
   liveStreamState?: StreamState
@@ -61,6 +64,13 @@ const debugEventCacheBytesLimit = 32 * 1024 * 1024
 const debugEventCacheEntryLimit = 50
 const debugSessionEventCache = new Map<string, SessionEventCacheEntry>()
 const recentEventsRequests = new Map<string, Promise<EventHistoryResponse>>()
+
+export function invalidateSessionEventTails() {
+  invalidateClientSessionEventTails()
+  for (const entry of debugSessionEventCache.values()) entry.tailHydrated = false
+  // A pre-boundary response must not satisfy a post-boundary reconciliation.
+  recentEventsRequests.clear()
+}
 
 export function clearSessionEventCacheForTest() {
   debugSessionEventCache.clear()
@@ -96,7 +106,11 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const liveEventsRef = useRef<AgentEvent[]>([])
   const persistentHotWindowSeqRef = useRef(0)
   const tailHydratedRef = useRef(false)
+  const previousTargetSeqRef = useRef(0)
+  const loadedTargetSeqRef = useRef(0)
   const refreshKey = options.refreshKey ?? 0
+  const historySyncKey = options.historySyncKey ?? 0
+  const historyReady = options.historyReady ?? true
   const includeDebugEvents = options.includeDebugEvents ?? false
   const targetSeq = options.targetSeq ?? 0
   const networkAvailable = options.networkAvailable ?? true
@@ -116,10 +130,14 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   }, [])
 
   useEffect(() => {
+    const canLoadHistory = networkAvailable && historyReady
+    const targetChanged = previousTargetSeqRef.current !== targetSeq
+    previousTargetSeqRef.current = targetSeq
     const sameSessionRefresh =
       selectedSessionIDRef.current === sessionID &&
       loadedSessionIDRef.current === sessionID &&
       loadedIncludeDebugEventsRef.current === includeDebugEvents
+    if (!sameSessionRefresh || targetChanged) loadedTargetSeqRef.current = 0
     const cachedSession =
       sessionID && !sameSessionRefresh ? readCachedSessionEvents(sessionID, includeDebugEvents) : null
     if (selectedSessionIDRef.current !== sessionID) selectionEpochRef.current += 1
@@ -129,7 +147,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     setStreamSessionID(sessionID)
     loadingOlderEventsRef.current = false
     loadingNewerEventsRef.current = false
-    followingTailRef.current = targetSeq <= 0
+    if (!sameSessionRefresh || targetChanged) followingTailRef.current = targetSeq <= 0
     setError('')
     setLoadingOlderEvents(false)
     setLoadingNewerEvents(false)
@@ -224,15 +242,22 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           false,
           true,
           lastDurableSeqRef.current,
+          tailHydratedRef.current,
         )
       }
     })
 
     function applyTail(history: EventHistoryResponse, preserveVisible: boolean) {
       const sharedEvents = activeIncludeDebugEvents
-        ? []
+        ? liveEventsRef.current
         : (readClientSessionEvents(activeSessionID)?.events ?? [])
-      const normalizedHistoryEvents = appendEvents([], [...history.events, ...sharedEvents])
+      const serverLastSeq = history.page?.server_last_seq ?? lastDurableSeq(history.events)
+      // The response owns its range; only append stream events newer than its
+      // watermark. Old cache fragments can be separated by an unfilled gap.
+      const normalizedHistoryEvents = appendEvents([], [
+        ...history.events,
+        ...sharedEvents.filter((event) => event.seq > serverLastSeq),
+      ])
       const historyLastSeq = lastSeq(normalizedHistoryEvents)
       lastSeqRef.current = Math.max(lastSeqRef.current, history.page?.server_last_seq ?? 0, historyLastSeq)
       lastDurableSeqRef.current = Math.max(
@@ -249,7 +274,8 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setHasNewerEvents(true)
       } else {
         setEvents((current) => {
-          const next = preserveVisible
+          const overlapsVisible = history.events.length > 0 && firstSeq(history.events) <= lastSeq(current)
+          const next = preserveVisible && overlapsVisible
             ? mergeBoundedEvents(current, normalizedHistoryEvents, 'latest', residentEventWindowPolicy)
             : boundEventWindow(normalizedHistoryEvents, 'latest', residentEventWindowPolicy)
           oldestSeqRef.current = firstSeq(next.events)
@@ -290,7 +316,8 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     async function loadTail(preserveVisible: boolean, force = false) {
       if (closed || loadingTail) return
       loadingTail = true
-      if (!preserveVisible) setStreamState('loading')
+      tailHydratedRef.current = false
+      setStreamState('loading')
       try {
         const history = await listRecentEventsOnce(
           activeSessionID,
@@ -351,6 +378,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setHasNewerEvents((history.page?.has_newer ?? false) || visible.trimmedEnd)
         loadedSessionIDRef.current = activeSessionID
         loadedIncludeDebugEventsRef.current = activeIncludeDebugEvents
+        loadedTargetSeqRef.current = targetSeq
         tailHydratedRef.current = true
         writeCachedSessionEvents(
           activeSessionID,
@@ -412,7 +440,9 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         newestSeqRef.current = lastSeq(bounded.events)
         liveEventsRef.current = bounded.events
         persistentHotWindowSeqRef.current = hydratedLastSeq
-        tailHydratedRef.current = persistentSession.tailHydrated
+        // Persisted coverage describes an earlier visit, not continuity with
+        // this page's SSE cursor. Paint it immediately, then validate online.
+        tailHydratedRef.current = false
         loadedSessionIDRef.current = activeSessionID
         loadedIncludeDebugEventsRef.current = activeIncludeDebugEvents
         setEvents(bounded.events)
@@ -426,33 +456,29 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           false,
           activeIncludeDebugEvents,
           hydratedLastSeq,
-          persistentSession.tailHydrated,
+          false,
         )
-        if (persistentSession.tailHydrated) {
-          setStreamState('connected')
-          return
-        }
-        if (!networkAvailable) {
-          setStreamState('disconnected')
+        if (!canLoadHistory) {
+          setStreamState(networkAvailable ? 'loading' : 'disconnected')
           return
         }
         await loadTail(true)
         return
       }
-      if (!networkAvailable) {
-        setStreamState('disconnected')
+      if (!canLoadHistory) {
+        setStreamState(networkAvailable ? 'loading' : 'disconnected')
         return
       }
       await loadTail(preserveVisible)
     }
 
-    if (targetSeq > 0 && networkAvailable) {
+    if (targetSeq > 0 && canLoadHistory && loadedTargetSeqRef.current !== targetSeq) {
       void loadTarget()
     } else if (sameSessionRefresh) {
-      if (networkAvailable) {
+      if (canLoadHistory) {
         void loadTail(true)
       } else {
-        setStreamState('disconnected')
+        setStreamState(networkAvailable ? 'loading' : 'disconnected')
       }
     } else if (cachedSession?.tailHydrated) {
       setStreamState('connected')
@@ -481,7 +507,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       if (activeSessionIDRef.current === activeSessionID) activeSessionIDRef.current = null
       setStreamState('disconnected')
     }
-  }, [includeDebugEvents, networkAvailable, refreshKey, sessionID, setHasNewerEvents, targetSeq])
+  }, [historyReady, historySyncKey, includeDebugEvents, networkAvailable, refreshKey, sessionID, setHasNewerEvents, targetSeq])
 
   const loadOlderEvents = useCallback(async () => {
     if (!sessionID || loadingOlderEventsRef.current) return
@@ -622,7 +648,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     setError('')
     followingTailRef.current = true
     setEvents((current) => {
-      const immediate = mergeBoundedEvents(current, liveEventsRef.current, 'latest', residentEventWindowPolicy)
+      const immediate = mergeLiveTailWindow(current, liveEventsRef.current)
       oldestSeqRef.current = firstSeq(immediate.events)
       newestSeqRef.current = lastSeq(immediate.events)
       setHasOlderEvents((currentHasOlder) => currentHasOlder || immediate.trimmedStart || oldestSeqRef.current > 1)
@@ -635,12 +661,15 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     // While the browser-wide stream is connected, liveEventsRef already contains
     // every event admitted after the selected tail was loaded. Avoid downloading
     // that same tail again when the transcript reattaches after the user scrolls.
-    if (globalStreamConnected) return
+    if (globalStreamConnected && tailHydratedRef.current) return
 
     try {
       const history = await listAdaptiveRecentEventTurns(sessionID, includeDebugEvents)
       if (activeSessionIDRef.current !== sessionID) return
-      const combined = appendEvents([], [...history.events, ...liveEventsRef.current])
+      const serverLastSeq = history.page?.server_last_seq ?? lastDurableSeq(history.events)
+      const combined = appendEvents([], [...history.events, ...liveEventsRef.current.filter((event) => event.seq > serverLastSeq)])
+      liveEventsRef.current = boundEventWindow(combined, 'latest', liveEventWindowPolicy).events
+      setLiveEvents(liveEventsRef.current)
       tailHydratedRef.current = true
       lastDurableSeqRef.current = Math.max(
         lastDurableSeqRef.current,
@@ -648,13 +677,17 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         lastDurableSeq(history.events),
       )
       setEvents((current) => {
-        const next = mergeBoundedEvents(current, combined, 'latest', residentEventWindowPolicy)
+        const next = mergeLiveTailWindow(current, combined)
         oldestSeqRef.current = firstSeq(next.events)
         newestSeqRef.current = lastSeq(next.events)
         lastSeqRef.current = Math.max(lastSeqRef.current, newestSeqRef.current)
         setHasOlderEvents((history.page?.has_older ?? oldestSeqRef.current > 1) || next.trimmedStart)
         return next.events
       })
+      writeCachedSessionEvents(
+        sessionID, liveEventsRef.current, history.page?.has_older ?? firstSeq(combined) > 1,
+        false, includeDebugEvents, lastDurableSeqRef.current,
+      )
       if (!includeDebugEvents) {
         void writePersistentCachedSessionEventPage(sessionID, history.events, {
           coverageFirstSeq: history.page?.first_seq ?? firstSeq(history.events),
@@ -664,6 +697,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           tailHydrated: true,
         })
       }
+      setStreamState('connected')
     } catch (loadError) {
       if (activeSessionIDRef.current === sessionID) {
         setError(loadError instanceof Error ? loadError.message : 'Failed to refresh the latest events')
@@ -781,6 +815,14 @@ function lastDurableSeq(events: AgentEvent[]) {
     (max, event) => (isTransientEvent(event) ? max : Math.max(max, event.seq)),
     0,
   )
+}
+
+function mergeLiveTailWindow(current: AgentEvent[], tail: AgentEvent[]) {
+  // Never join disjoint windows into a seemingly continuous transcript: doing
+  // so makes backward pagination start before (and skip) the missing interval.
+  return tail.length > 0 && firstSeq(tail) <= lastSeq(current)
+    ? mergeBoundedEvents(current, tail, 'latest', residentEventWindowPolicy)
+    : boundEventWindow(tail, 'latest', residentEventWindowPolicy)
 }
 
 function sessionEventCacheKey(sessionID: string, includeDebugEvents: boolean) {

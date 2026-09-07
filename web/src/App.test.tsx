@@ -323,9 +323,11 @@ test('global activity reconnects from its latest cursor without refetching the s
   )
 })
 
-test('global activity reloads its snapshot only when replay requests a resync', async () => {
+test('replay overflow reconciles selected and background transcripts without opening per-session streams', async () => {
+  const user = userEvent.setup()
   const baseFetch = fetchMock()
   let snapshots = 0
+  const tailRequests: string[] = []
   const fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
     if (String(url) === '/api/sessions?limit=50') {
       snapshots += 1
@@ -334,6 +336,14 @@ test('global activity reloads its snapshot only when replay requests a resync', 
         event_cursor: snapshots === 1 ? 12 : 80,
       }))
     }
+    const tail = String(url).match(/^\/api\/sessions\/(sess_[12])\/events\?tail=/)
+    if (tail) {
+      tailRequests.push(tail[1])
+      return Promise.resolve(jsonResponse({ events: [
+        event(1, 'user.message.completed', { text: `Original ${tail[1]}` }, tail[1]),
+        ...(snapshots > 1 ? [event(2, 'agent.message.completed', { text: `Recovered ${tail[1]}` }, tail[1])] : []),
+      ] }))
+    }
     return baseFetch(url, init)
   })
   vi.stubGlobal('fetch', fetch)
@@ -341,12 +351,68 @@ test('global activity reloads its snapshot only when replay requests a resync', 
   render(<App />)
 
   const activitySource = await findEventSource('/api/sessions/activity/stream?after_cursor=12')
+  await screen.findByText('Original sess_1')
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+  await screen.findByText('Original sess_2')
+  await user.click(screen.getAllByRole('button', { name: /Inspect repo/ })[0])
+  await screen.findByText('Original sess_1')
   act(() => activitySource.emitControl('stream.resync.required', { cursor: 79 }))
 
   await waitFor(() => {
     expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(2)
     expect(FakeEventSource.instances.at(-1)?.url).toContain('after_cursor=80')
   })
+  await screen.findByText('Recovered sess_1')
+  expect(tailRequests).toEqual(['sess_1', 'sess_2', 'sess_1'])
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+  await screen.findByText('Recovered sess_2')
+  expect(tailRequests).toEqual(['sess_1', 'sess_2', 'sess_1', 'sess_2'])
+  expect(FakeEventSource.instances.filter((source) => !source.closed)).toHaveLength(1)
+  // A queued callback from the replaced stream must not jump the new cursor.
+  act(() => activitySource.emit({ ...event(90, 'user.message.completed', { text: 'Obsolete stream' }, 'sess_2'), global_seq: 900 }))
+  expect(screen.queryByText('Obsolete stream')).not.toBeInTheDocument()
+})
+
+test.each(['visibilitychange', 'pageshow'] as const)('foreground %s repairs a silent stream without an offline event', async (trigger) => {
+  const baseFetch = fetchMock()
+  let snapshots = 0
+  let resolveSnapshot!: (response: Response) => void
+  const fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions?limit=50') {
+      snapshots += 1
+      if (snapshots === 1) return Promise.resolve(jsonResponse({ sessions: [firstSession], event_cursor: 12 }))
+      return new Promise<Response>((resolve) => { resolveSnapshot = resolve })
+    }
+    if (String(url).includes('/sess_1/events?tail=')) {
+      return Promise.resolve(jsonResponse({ events: [
+        event(1, 'user.message.completed', { text: 'Before backgrounding' }),
+        ...(snapshots > 1 ? [event(2, 'agent.message.completed', { text: 'While this device was asleep' })] : []),
+      ] }))
+    }
+    return baseFetch(url, init)
+  })
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+  await screen.findByText('Before backgrounding')
+  const oldSource = await findEventSource('/api/sessions/activity/stream')
+  const prompt = screen.getByRole('textbox', { name: 'Prompt' })
+  fireEvent.change(prompt, { target: { value: 'Keep my draft' } })
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  act(() => {
+    if (trigger === 'visibilitychange') document.dispatchEvent(new Event('visibilitychange'))
+    else window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
+    // Browsers may dispatch both on the same return; coalesce the recovery.
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
+  })
+  expect(oldSource.closed).toBe(true)
+  expect(snapshots).toBe(2)
+  await act(async () => resolveSnapshot(jsonResponse({ sessions: [firstSession], event_cursor: 80 })))
+  await screen.findByText('While this device was asleep')
+  expect(prompt).toHaveValue('Keep my draft')
+  expect(FakeEventSource.instances.at(-1)?.url).toContain('after_cursor=80')
+  expect(FakeEventSource.instances.filter((source) => !source.closed)).toHaveLength(1)
+  expect(fetch.mock.calls.filter(([url]) => String(url).includes('/events?tail='))).toHaveLength(2)
+  visibility.mockRestore()
 })
 
 test('notification launch keeps the selected finished session unseen until deliberately selected', async () => {
@@ -1072,7 +1138,7 @@ test('session route shows inline chat history loading once session details are a
   await waitFor(() => expect(screen.queryByText('Loading session...')).not.toBeInTheDocument())
 })
 
-test('session route restores cached transcript and reconnects without downloading the tail again', async () => {
+test('session route paints cached transcript before the snapshot, then fetches messages missed while away', async () => {
   window.history.replaceState({}, '', '/sessions/sess_1')
   vi.stubGlobal('indexedDB', createFakeIndexedDB())
   clearSessionEventCacheForTest()
@@ -1097,7 +1163,7 @@ test('session route restores cached transcript and reconnects without downloadin
       await new Promise<void>((resolve) => {
         resolveSessions = resolve
       })
-      return jsonResponse({ sessions: [firstSession, secondSession] })
+      return jsonResponse({ sessions: [{ ...firstSession, last_event_seq: 12 }, secondSession], event_cursor: 80 })
     }
     if (path === '/api/sessions/sess_1') {
       return jsonResponse(firstSession)
@@ -1107,6 +1173,7 @@ test('session route restores cached transcript and reconnects without downloadin
         events: [
           event(10, 'user.message.completed', { text: 'Cached prompt' }),
           event(11, 'agent.message.completed', { text: 'Cached answer' }),
+          event(12, 'agent.message.completed', { item_id: 'missed', text: 'Completed on another device' }),
         ],
       })
     }
@@ -1130,7 +1197,9 @@ test('session route restores cached transcript and reconnects without downloadin
     resolveSessions?.()
     await Promise.resolve()
   })
-  await findEventSource('/api/sessions/activity/stream')
+  await findEventSource('/api/sessions/activity/stream?after_cursor=80')
+  await screen.findByText('Completed on another device')
+  expect(fetch.mock.calls.filter(([url]) => String(url).includes('/events?tail='))).toHaveLength(1)
 })
 
 test('switching sessions discards an unsaved settings rename', async () => {
@@ -2191,6 +2260,7 @@ class FakeEventSource {
   static instances: FakeEventSource[] = []
 
   url: string
+  closed = false
   onopen: ((event: Event) => void) | null = null
   onerror: ((event: Event) => void) | null = null
   private listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>()
@@ -2231,7 +2301,7 @@ class FakeEventSource {
     this.onerror?.(new Event('error'))
   }
 
-  close() {}
+  close() { this.closed = true }
 }
 
 class FakeWebSocket {

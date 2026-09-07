@@ -3,6 +3,7 @@ import {
   clearClientEventStoreForTest,
   clientEventStoreStats,
   ingestClientEvent,
+  invalidateClientSessionEventTails,
   publishClientSessionEvent,
   readClientSessionEvents,
   seedClientSessionEvents,
@@ -44,6 +45,20 @@ test('hydrates a transcript tail and merges newer global events', () => {
   expect(ingestClientEvent(event('sess_1', 10))).toBe(true)
   expect(readClientSessionEvents('sess_1')?.events.map((item) => item.seq)).toEqual([8, 9, 10])
   expect(readClientSessionEvents('sess_1')?.tailHydrated).toBe(true)
+})
+
+test('invalidating stream continuity keeps history and cursors but later events do not certify a missing range', () => {
+  seedClientSessionEvents('sess_1', [event('sess_1', 8)], { tailHydrated: true })
+  seedClientSessionEvents('sess_2', [event('sess_2', 20)], { tailHydrated: true })
+  invalidateClientSessionEventTails()
+  expect(readClientSessionEvents('sess_1')).toMatchObject({ lastSeq: 8, tailHydrated: false })
+  expect(readClientSessionEvents('sess_2')).toMatchObject({ lastSeq: 20, tailHydrated: false })
+  ingestClientEvent(event('sess_1', 10))
+  expect(readClientSessionEvents('sess_1')?.events.map((item) => item.seq)).toEqual([8, 10])
+  expect(readClientSessionEvents('sess_1')?.tailHydrated).toBe(false)
+  seedClientSessionEvents('sess_1', [event('sess_1', 8), event('sess_1', 9)], { tailHydrated: true })
+  expect(readClientSessionEvents('sess_1')?.events.map((item) => item.seq)).toEqual([8, 9, 10])
+  expect(readClientSessionEvents('sess_2')?.tailHydrated).toBe(false)
 })
 
 test('publishes transient events without caching or advancing the durable cursor', () => {

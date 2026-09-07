@@ -55,6 +55,7 @@ Use a fresh profile for cold-cache cases and an intentionally retained profile f
 | HIST-02 | Stop at an uncached older-history boundary offline | Explain the local limit; no endless loading or repeated no-op cache reads | Smoke |
 | HIST-03 | Receive activity in an unselected session; select it | Saved history plus new activity, not only the most recent turn | Regression |
 | HIST-04 | Exceed memory/cache limits, switch away and return | Rehydrate/reconcile correctly; bounded storage does not masquerade as complete history | Regression/release |
+| HIST-05 | Warm client A; close it without clearing storage; advance the session from client B; reopen A; then deliver another live event | Cached history paints immediately, the missed interval is recovered, and later live delivery never leaves a silent gap; one global SSE and one bounded tail reconciliation | Regression/release |
 | DRAFT-01 | Type, switch sessions, return, reload offline | Exact text preserved; draft stays associated with the correct session | Smoke |
 | DRAFT-02 | Edit one session from two tabs; close/reopen one | Defined conflict behavior; no silent replacement of the newer draft | Regression/release |
 | DRAFT-03 | Paste multiline text, compose with IME, hold Enter | Correct newline/composition behavior; no accidental or duplicate sends | Regression/device |
@@ -68,6 +69,7 @@ Use a fresh profile for cold-cache cases and an intentionally retained profile f
 | NET-02 | Browser reports online while server requests fail, hang, return 502, or return HTML | Bounded waiting, accurate unavailable state, readable cache, understandable recovery | Regression/release |
 | NET-03 | Break only SSE, then restore; overflow replay window | Cursor-based recovery/resync; correct durable sequence set; one current SSE connection per client | Regression |
 | NET-04 | Repeated network flaps with delayed/out-of-order responses | No old response overwrites newer state; bounded retries/connections and stable drafts | Regression/soak |
+| NET-05 | Keep the browser nominally online but suspend its stream; return through visibilitychange or persisted pageshow; repeat while reviewing an older event | Replace the stale stream, reconcile selected history, lazily repair background sessions on selection, preserve draft and historical focus; overlapping resume signals coalesce | Regression/device |
 | PWA-01 | Warm installed PWA, close/terminate, reopen offline | Shell and saved history work without relying on an already open page | Physical device/release |
 | PWA-02 | Warm release A; deploy B; visit/reload | Update is discoverable and reaches a coherent new bundle without reload guessing | Release |
 | PWA-03 | Interrupt upgrade after HTML but before JS/CSS; then open offline | Previous complete shell still works; no cached HTML pointing to missing entry assets | Release |
@@ -84,6 +86,10 @@ Use a fresh profile for cold-cache cases and an intentionally retained profile f
 | SOAK-02 | Two clients watch different sessions for 30–60 min, switch and reconnect | No dropped/duplicate durable events; bounded heap/listeners/cache; no sustained retry storm | Soak |
 
 ## Evidence and measurement
+
+September 7 cross-device catch-up regression: the unchanged production entry `index-XjsdU5Bf.js` showed cached session sequence 120, skipped sequence 121 produced while the page was unloaded, and displayed subsequent live sequence 122 while still missing 121. The snapshot restarted global replay after the missed event, while the persistent `tailHydrated` shortcut suppressed a history fetch. In an isolated built-frontend check with source-fix entry `index-BQahbIDg.js`, cached sequence 122 reopened after sequence 123 was produced with zero connected clients; the missing message appeared and the request ledger showed one bounded tail request and one current global SSE connection. This was an Arc/Chromium browser check, not a physical iPad suspension test.
+
+Recovery now keeps persisted history as an immediate paint, not proof of freshness; a new stream snapshot invalidates in-memory tails without deleting history, and selected history is reconciled after the snapshot boundary. Background tails are revalidated lazily when selected. Normal uninterrupted session switching still reuses the hydrated cache, and ordinary SSE reconnects still replay from the last admitted cursor. Automated coverage includes replay overflow, visibility/pageshow recovery, racing live events, obsolete responses, offline caches, failed catch-up, historical focus, and disjoint-window pagination. Physical iPad/PWA background and network-handoff confirmation remains required.
 
 September 7 scroll regression: a physical iPad screenshot showed `dist 0px`, `top 7288/7288`, and `paused · idle` with the chip visible. A controlled touch-event sequence reproduced stale detachment in the then-current production entry `index-CNc80jxk.js` (3/3 failures), independently of an earlier stale-cache finding. The source fix passed the identical browser sequence (3/3), plus 3/3 with native `scrollend` suppressed. An 8px upward scroll remained paused; a held touch at the bottom remained paused until release. These browser checks use Chromium tablet emulation and injected events, not physical iPad momentum. Physical-device confirmation of the fix remains required.
 

@@ -42,6 +42,8 @@ vi.mock('@tanstack/react-virtual', async () => {
     const previousCountRef = React.useRef(options.count)
     const wasAtEndRef = React.useRef(true)
     const instanceRef = React.useRef<MockVirtualizer | null>(null)
+    const observedElementRef = React.useRef<HTMLDivElement | null>(null)
+    const cleanupScrollRef = React.useRef<(() => void) | null>(null)
 
     if (!instanceRef.current) {
       const instance: MockVirtualizer = {
@@ -100,6 +102,10 @@ vi.mock('@tanstack/react-virtual', async () => {
 
     React.useLayoutEffect(() => {
       const element = optionsRef.current.getScrollElement()
+      if (element === observedElementRef.current) return
+      cleanupScrollRef.current?.()
+      cleanupScrollRef.current = null
+      observedElementRef.current = element
       if (!element) return
       let previousScrollTop = element.scrollTop
       let pendingWheelDirection: 'forward' | 'backward' | null = null
@@ -132,12 +138,18 @@ vi.mock('@tanstack/react-virtual', async () => {
 
       element.addEventListener('scroll', handleScroll)
       element.addEventListener('wheel', handleWheel)
-      return () => {
+      cleanupScrollRef.current = () => {
         element.removeEventListener('scroll', handleScroll)
         element.removeEventListener('wheel', handleWheel)
         if (scrollEndTimerRef.current !== null) window.clearTimeout(scrollEndTimerRef.current)
       }
-    }, [instance])
+    }) // Like the real virtualizer, discover a scroller mounted after loading.
+
+    React.useLayoutEffect(() => () => {
+      cleanupScrollRef.current?.()
+      cleanupScrollRef.current = null
+      observedElementRef.current = null
+    }, [])
 
     React.useLayoutEffect(() => {
       const countIncreased = options.count > previousCountRef.current

@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import type { AgentEvent } from '@/lib/api'
 import {
   clearSessionEventCacheForTest,
+  invalidateSessionEventTails,
   listAdaptiveRecentEventTurns,
   trimEventsToRecentTurnBudget,
   trimEventsToRecentTurns,
@@ -132,7 +133,7 @@ test('initial history fetch asks the server for one byte-bounded whole-turn wind
   expect(fetchMock).toHaveBeenCalledTimes(1)
 })
 
-test('warm reload waits for a slow persistent window instead of downloading the tail again', async () => {
+test('warm reload paints slow persistent history, then catches up even when SSE is connected', async () => {
   const fakeIndexedDB = createFakeIndexedDB()
   vi.stubGlobal('indexedDB', fakeIndexedDB)
   vi.stubGlobal('EventSource', HookEventSource)
@@ -145,17 +146,23 @@ test('warm reload waits for a slow persistent window instead of downloading the 
 
   clearSessionEventCacheForTest()
   fakeIndexedDB.setOperationDelay(225)
-  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
-    throw new Error(`unexpected history request ${String(url)}`)
-  })
+  let resolveHistory!: (response: Response) => void
+  const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolveHistory = resolve }))
   vi.stubGlobal('fetch', fetchMock)
 
-  const { result, unmount } = renderHook(() => useSessionEvents('sess_1'))
+  const { result, unmount } = renderHook(() => useSessionEvents('sess_1', { liveStreamState: 'connected' }))
 
   await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([10, 11]), {
     timeout: 3000,
   })
-  expect(fetchMock).not.toHaveBeenCalled()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(result.current.streamState).toBe('loading')
+  await act(async () => resolveHistory(jsonResponse({
+    events: [event(10, 'user.message.completed'), event(11, 'agent.message.completed'), event(12, 'agent.message.completed')],
+    page: { ...historyPage(10, 12, true), server_last_seq: 12 },
+  })))
+  expect(result.current.events.map((item) => item.seq)).toEqual([10, 11, 12])
+  expect(result.current.streamState).toBe('connected')
 
   unmount()
   vi.unstubAllGlobals()
@@ -337,7 +344,8 @@ test('a reload persists the durable cursor but not a multiplexed transient delta
   clearSessionEventCacheForTest()
   const second = renderHook(() => useSessionEvents('sess_test'))
   await waitFor(() => expect(second.result.current.events.map((item) => item.seq)).toEqual([1]))
-  expect(fetchMock).toHaveBeenCalledTimes(1)
+  await waitFor(() => expect(second.result.current.streamState).toBe('connected'))
+  expect(fetchMock).toHaveBeenCalledTimes(2)
 
   second.unmount()
   vi.unstubAllGlobals()
@@ -400,6 +408,141 @@ test('jumping to the live tail reuses the connected global stream window', async
   expect(result.current.hasNewerEvents).toBe(false)
   expect(fetchMock).toHaveBeenCalledTimes(1)
 
+  unmount()
+  vi.unstubAllGlobals()
+})
+
+test('resync preserves a historical view while repairing the live tail and merging racing events once', async () => {
+  clearSessionEventCacheForTest()
+  const initial = [event(1, 'user.message.completed'), event(2, 'agent.message.completed')]
+  let resolveRecovery!: (response: Response) => void
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse({ events: initial, page: { ...historyPage(1, 2, false), server_last_seq: 2 } }))
+    .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveRecovery = resolve }))
+  vi.stubGlobal('fetch', fetchMock)
+  const { result, rerender, unmount } = renderHook(
+    ({ historySyncKey }) => useSessionEvents('sess_test', { historySyncKey, liveStreamState: 'connected' }),
+    { initialProps: { historySyncKey: 0 } },
+  )
+  await waitFor(() => expect(result.current.streamState).toBe('connected'))
+  act(() => result.current.setFollowingTail(false))
+  invalidateSessionEventTails()
+  rerender({ historySyncKey: 1 })
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+  act(() => ingestClientEvent(event(4, 'agent.message.completed')))
+  await act(async () => resolveRecovery(jsonResponse({
+    events: [...initial, event(3, 'agent.message.completed')],
+    page: { ...historyPage(1, 3, false), server_last_seq: 3 },
+  })))
+  expect(result.current.events.map((item) => item.seq)).toEqual([1, 2])
+  expect(result.current.liveEvents.map((item) => item.seq)).toEqual([1, 2, 3, 4])
+  expect(result.current.hasNewerEvents).toBe(true)
+  await act(async () => result.current.jumpToLatest())
+  expect(result.current.events.map((item) => item.seq)).toEqual([1, 2, 3, 4])
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  unmount()
+  vi.unstubAllGlobals()
+})
+
+test('failed catch-up keeps cached history and Jump to latest retries despite a connected SSE', async () => {
+  clearSessionEventCacheForTest()
+  const initial = [event(1, 'user.message.completed')]
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse({ events: initial }))
+    .mockRejectedValueOnce(new Error('Catch-up failed'))
+    .mockResolvedValueOnce(jsonResponse({ events: [...initial, event(2, 'agent.message.completed')] }))
+  vi.stubGlobal('fetch', fetchMock)
+  const { result, rerender, unmount } = renderHook(
+    ({ historySyncKey }) => useSessionEvents('sess_test', { historySyncKey, liveStreamState: 'connected' }),
+    { initialProps: { historySyncKey: 0 } },
+  )
+  await waitFor(() => expect(result.current.streamState).toBe('connected'))
+  invalidateSessionEventTails()
+  rerender({ historySyncKey: 1 })
+  await waitFor(() => expect(result.current.error).toBe('Catch-up failed'))
+  expect(result.current.events.map((item) => item.seq)).toEqual([1])
+  await act(async () => result.current.jumpToLatest())
+  expect(result.current.events.map((item) => item.seq)).toEqual([1, 2])
+  expect(fetchMock).toHaveBeenCalledTimes(3)
+  unmount()
+  vi.unstubAllGlobals()
+})
+
+test('a large catch-up gap uses a contiguous server tail and leaves the gap reachable by paging backward', async () => {
+  clearSessionEventCacheForTest()
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse({ events: [event(1, 'user.message.completed'), event(2, 'agent.message.completed')] }))
+    .mockResolvedValueOnce(jsonResponse({
+      events: [event(100, 'user.message.completed'), event(101, 'agent.message.completed')],
+      page: historyPage(100, 101, true),
+    }))
+    .mockResolvedValueOnce(jsonResponse({ events: [event(98, 'user.message.completed'), event(99, 'agent.message.completed')] }))
+  vi.stubGlobal('fetch', fetchMock)
+  const { result, rerender, unmount } = renderHook(
+    ({ historySyncKey }) => useSessionEvents('sess_test', { historySyncKey, liveStreamState: 'connected' }),
+    { initialProps: { historySyncKey: 0 } },
+  )
+  await waitFor(() => expect(result.current.streamState).toBe('connected'))
+  act(() => result.current.setFollowingTail(false))
+  invalidateSessionEventTails()
+  rerender({ historySyncKey: 1 })
+  await waitFor(() => expect(result.current.liveEvents.map((item) => item.seq)).toEqual([100, 101]))
+  expect(result.current.events.map((item) => item.seq)).toEqual([1, 2])
+  await act(async () => result.current.jumpToLatest())
+  expect(result.current.events.map((item) => item.seq)).toEqual([100, 101])
+  await act(async () => result.current.loadOlderEvents())
+  expect(String(fetchMock.mock.calls[2][0])).toContain('before_seq=100')
+  expect(result.current.events.map((item) => item.seq)).toEqual([98, 99, 100, 101])
+  unmount()
+  vi.unstubAllGlobals()
+})
+
+test('a history response started before resync cannot replace the recovered tail', async () => {
+  clearSessionEventCacheForTest()
+  let resolveOld!: (response: Response) => void
+  const fetchMock = vi.fn()
+    .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveOld = resolve }))
+    .mockResolvedValueOnce(jsonResponse({ events: [event(20, 'user.message.completed'), event(21, 'agent.message.completed')] }))
+  vi.stubGlobal('fetch', fetchMock)
+  const { result, rerender, unmount } = renderHook(
+    ({ historySyncKey }) => useSessionEvents('sess_test', { historySyncKey }),
+    { initialProps: { historySyncKey: 0 } },
+  )
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+  invalidateSessionEventTails()
+  rerender({ historySyncKey: 1 })
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([20, 21]))
+  await act(async () => resolveOld(jsonResponse({ events: [event(1, 'user.message.completed')] })))
+  expect(result.current.events.map((item) => item.seq)).toEqual([20, 21])
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  unmount()
+  vi.unstubAllGlobals()
+})
+
+test('a cached historical link loads its target after bootstrap and stays focused across resync', async () => {
+  clearSessionEventCacheForTest()
+  vi.stubGlobal('indexedDB', createFakeIndexedDB())
+  await writeCachedSessionEvents('sess_test', [event(100, 'user.message.completed')], true)
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => String(url).includes('around_seq=10')
+    ? jsonResponse({ events: [event(10, 'user.message.completed')], page: historyPage(10, 10, true, true) })
+    : jsonResponse({ events: [event(100, 'user.message.completed'), event(101, 'agent.message.completed')] }),
+  )
+  vi.stubGlobal('fetch', fetchMock)
+  const { result, rerender, unmount } = renderHook(
+    ({ historyReady, historySyncKey }) => useSessionEvents('sess_test', { historyReady, historySyncKey, targetSeq: 10 }),
+    { initialProps: { historyReady: false, historySyncKey: 0 } },
+  )
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([100]))
+  expect(fetchMock).not.toHaveBeenCalled()
+  invalidateSessionEventTails()
+  rerender({ historyReady: true, historySyncKey: 1 })
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([10]))
+  invalidateSessionEventTails()
+  rerender({ historyReady: true, historySyncKey: 2 })
+  await waitFor(() => expect(result.current.streamState).toBe('connected'))
+  expect(result.current.events.map((item) => item.seq)).toEqual([10])
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('around_seq=10'))).toHaveLength(1)
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('tail=true'))).toHaveLength(2)
   unmount()
   vi.unstubAllGlobals()
 })

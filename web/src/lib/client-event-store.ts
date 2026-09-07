@@ -102,6 +102,12 @@ export function readClientSessionEvents(sessionID: string): ClientSessionEventSn
   return snapshotFromEntry(entry)
 }
 
+// Keep the cached paint, but stop treating it as a complete live tail after
+// adopting a new stream boundary. Background sessions reconcile when selected.
+export function invalidateClientSessionEventTails() {
+  for (const entry of entries.values()) entry.tailHydrated = false
+}
+
 export function subscribeClientSessionEvents(sessionID: string, listener: SessionEventListener) {
   const sessionListeners = listeners.get(sessionID) ?? new Set<SessionEventListener>()
   sessionListeners.add(listener)
