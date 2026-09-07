@@ -71,6 +71,44 @@ test('uses a selected session from the initial list without refetching its detai
   expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1')).toHaveLength(0)
 })
 
+test('initial gateway failure recovers automatically without an online event or reload', async () => {
+  const normalFetch = fetchMock()
+  let unavailable = true
+  vi.stubGlobal('fetch', vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions?limit=50' && unavailable) return Promise.resolve(new Response('<html>gateway</html>', { status: 502 }))
+    return normalFetch(url, init)
+  }))
+  render(<App />)
+  await screen.findByText('Session unavailable offline')
+  unavailable = false
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1), { timeout: 8000 })
+  expect(screen.queryByTestId('offline-session-status')).not.toBeInTheDocument()
+  expect(screen.queryByText('HTTP 502')).not.toBeInTheDocument()
+}, 10000)
+
+test('offline transition keeps the dirty file editor mounted', async () => {
+  vi.stubGlobal('fetch', fetchMock({ fileEntry: true }))
+  window.history.replaceState({}, '', '/sessions/inspect-repo/files/main.go')
+  render(<App />)
+  const editor = await screen.findByLabelText('File editor')
+  fireEvent.change(editor, { target: { value: 'package unsaved\n' } })
+  act(() => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false })
+    window.dispatchEvent(new Event('offline'))
+  })
+  expect(screen.getByLabelText('File editor')).toBe(editor)
+  expect(editor).toHaveValue('package unsaved\n')
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+})
+
+test('invalid session link cannot enable an unrelated composer', async () => {
+  window.history.replaceState({}, '', '/sessions/does-not-exist')
+  render(<App />)
+  await screen.findByRole('heading', { name: 'Session unavailable' })
+  expect(window.location.pathname).toBe('/sessions/does-not-exist')
+  expect(screen.queryByRole('textbox', { name: 'Prompt' })).not.toBeInTheDocument()
+})
+
 test('offline root launch restores cached sessions, saved history, and a local-only draft', async () => {
   const user = userEvent.setup()
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: false })
@@ -118,7 +156,7 @@ test('offline root launch restores cached sessions, saved history, and a local-o
   )
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
   expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveValue('Draft while disconnected')
-  expect(screen.getByRole('button', { name: 'Submit prompt' })).toBeEnabled()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Submit prompt' })).toBeEnabled())
   expect(screen.queryByTestId('offline-session-status')).not.toBeInTheDocument()
 })
 
@@ -953,7 +991,7 @@ test('cached slug route renders the session shell while sessions load', async ()
   })
 })
 
-test('server session list wins over stale cached slug aliases', async () => {
+test('stale cached slug aliases never redirect to an unrelated session', async () => {
   window.history.replaceState({}, '', '/sessions/write-docs')
   await writeCachedSession(secondSession)
   const renamedSecondSession: Session = { ...secondSession, title: 'Renamed docs' }
@@ -995,12 +1033,9 @@ test('server session list wins over stale cached slug aliases', async () => {
     await Promise.resolve()
   })
 
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo'))
-  expect(
-    screen
-      .getAllByRole('button', { name: /Inspect repo/ })
-      .some((button) => button.getAttribute('aria-current') === 'true'),
-  ).toBe(true)
+  expect(await screen.findByRole('heading', { name: 'Session unavailable' })).toBeInTheDocument()
+  expect(window.location.pathname).toBe('/sessions/write-docs')
+  expect(screen.queryByRole('textbox', { name: 'Prompt' })).not.toBeInTheDocument()
 })
 
 test('session route shows inline chat history loading once session details are available', async () => {

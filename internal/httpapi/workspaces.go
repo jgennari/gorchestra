@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -91,7 +92,8 @@ type workspaceFileContentResponse struct {
 }
 
 type updateWorkspaceFileContentRequest struct {
-	Content *string `json:"content"`
+	Content         *string `json:"content"`
+	ExpectedContent *string `json:"expected_content"`
 }
 
 type workspaceFileUploadResponse struct {
@@ -412,8 +414,12 @@ func (api API) updateSessionFileContentHandler(w http.ResponseWriter, r *http.Re
 		writeWorkspacePathError(w, err)
 		return
 	}
-	content, err := writeWorkspaceFile(workspacePath, filePath, *request.Content)
+	content, err := writeWorkspaceFile(workspacePath, filePath, *request.Content, request.ExpectedContent)
 	if err != nil {
+		if errors.Is(err, errWorkspaceFileChanged) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeWorkspacePathError(w, err)
 		return
 	}
@@ -703,7 +709,12 @@ func readWorkspaceFile(rootPath string, filePath string) (workspaceFileContentRe
 	return response, nil
 }
 
-func writeWorkspaceFile(rootPath string, filePath string, content string) (workspaceFileContentResponse, error) {
+var errWorkspaceFileChanged = errors.New("the server file changed; review its latest content before saving")
+var workspaceFileWriteMu sync.Mutex
+
+func writeWorkspaceFile(rootPath string, filePath string, content string, expectedContent *string) (workspaceFileContentResponse, error) {
+	workspaceFileWriteMu.Lock()
+	defer workspaceFileWriteMu.Unlock()
 	info, err := os.Stat(filePath)
 	if err != nil {
 		return workspaceFileContentResponse{}, fmt.Errorf("path is unavailable: %w", err)
@@ -724,6 +735,9 @@ func writeWorkspaceFile(rootPath string, filePath string, content string) (works
 	}
 	if current.Encoding != "utf-8" {
 		return workspaceFileContentResponse{}, errors.New("file must be UTF-8 text")
+	}
+	if expectedContent != nil && current.Content != *expectedContent {
+		return workspaceFileContentResponse{}, errWorkspaceFileChanged
 	}
 
 	if err := os.WriteFile(filePath, []byte(content), info.Mode().Perm()); err != nil {

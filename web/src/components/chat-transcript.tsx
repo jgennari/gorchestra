@@ -68,6 +68,7 @@ type Props = {
   activityStatus?: ChatActivityStatus | null
   showDebugEvents?: boolean
   hasOlderEvents?: boolean
+  olderHistoryUnavailable?: boolean
   hasNewerEvents?: boolean
   loadingOlderEvents?: boolean
   loadingNewerEvents?: boolean
@@ -107,6 +108,7 @@ export function ChatTranscript({
   activityStatus = null,
   showDebugEvents = false,
   hasOlderEvents = false,
+  olderHistoryUnavailable = false,
   hasNewerEvents = false,
   loadingOlderEvents = false,
   loadingNewerEvents = false,
@@ -134,9 +136,9 @@ export function ChatTranscript({
   const scrollDebug = useMemo(transcriptScrollDebugEnabled, [])
   const scrollerElementRef = useRef<HTMLDivElement | null>(null)
   const scrollDebugReadoutRef = useRef<HTMLDivElement | null>(null)
-  const initiallyFollowingTail = pinToLatestOnMount || !hasNewerEvents
+  const initiallyFollowingTail = focusSeq <= 0 && (pinToLatestOnMount || !hasNewerEvents)
   const followingTailRef = useRef(initiallyFollowingTail)
-  const initialTailPinPendingRef = useRef(pinToLatestOnMount || !hasNewerEvents)
+  const initialTailPinPendingRef = useRef(initiallyFollowingTail)
   const snapToTailPendingRef = useRef(false)
   const resumeInFlightRef = useRef(false)
   const lastScrollDirectionRef = useRef<'forward' | 'backward' | null>(null)
@@ -427,6 +429,9 @@ export function ChatTranscript({
   }
 
   function handleNativeScroll() {
+    // Programmatic focus/measurement also emits native scroll events. A short
+    // historical window can be at its own bottom without being the live tail.
+    if (focusSeq > 0) return
     if (physicalDistanceFromEnd(scrollerElementRef.current) <= AUTO_SCROLL_REATTACH_THRESHOLD_PX) {
       if (touchDetachedFromTailRef.current) return
       if (hasNewerEvents) {
@@ -441,6 +446,7 @@ export function ChatTranscript({
   }
 
   function handleNativeScrollEnd() {
+    if (focusSeq > 0) return
     if (touchDetachedFromTailRef.current) return
     if (physicalDistanceFromEnd(scrollerElementRef.current) > AUTO_SCROLL_REATTACH_THRESHOLD_PX) return
     if (hasNewerEvents) {
@@ -496,9 +502,13 @@ export function ChatTranscript({
   }
 
   useLayoutEffect(() => {
-    if (!initialTailPinPendingRef.current || loading || virtualItems.length === 0) return
+    if (focusSeq > 0) pauseFollowing()
+  }, [focusSeq, focusRequest, pauseFollowing])
+
+  useLayoutEffect(() => {
+    if (focusSeq > 0 || !initialTailPinPendingRef.current || loading || virtualItems.length === 0) return
     void resumeFollowing(virtualizer)
-  }, [loading, resumeFollowing, virtualItems.length, virtualizer])
+  }, [focusSeq, loading, resumeFollowing, virtualItems.length, virtualizer])
 
   useLayoutEffect(() => {
     updateVisibleSequenceRange(virtualizer)
@@ -601,6 +611,11 @@ export function ChatTranscript({
         onPointerCancelCapture={handleScrollPointerEnd}
         onKeyDownCapture={handleScrollKeyDown}
       >
+        {olderHistoryUnavailable ? (
+          <p role="status" className="shrink-0 px-4 pb-3 pt-24 text-center text-xs text-muted-foreground">
+            Older messages aren’t saved on this device. Reconnect to load more history.
+          </p>
+        ) : null}
         <div
           key="tanstack-direct-container-v1"
           ref={virtualizer.containerRef}

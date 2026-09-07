@@ -1824,6 +1824,23 @@ test('a repeated focus request scrolls the targeted virtual conversation row int
   expect(log.scrollTop).toBeGreaterThan(0)
 })
 
+test('explicit historical focus wins over initial tail pinning and live appends', async () => {
+  const onJumpToLatest = vi.fn()
+  const onFollowingTailChange = vi.fn()
+  const events = [event(3, 'user.message.completed', 'user', 'completed', { text: 'Historical target' })]
+  const props = { events, focusSeq: 3, hasNewerEvents: true, pinToLatestOnMount: true, onJumpToLatest, onFollowingTailChange }
+  const view = render(<ChatTranscript {...props} />)
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+  setScrollMetrics(log, { scrollTop: 0, scrollHeight: 400, clientHeight: 400 })
+  fireEvent.scroll(log)
+  fireEvent(log, new Event('scrollend'))
+  await settleVirtualScroll()
+  view.rerender(<ChatTranscript {...props} events={[...events, event(4, 'agent.message.completed', 'assistant', 'completed', { text: 'Later' })]} />)
+  expect(screen.getByText('Historical target')).toBeInTheDocument()
+  expect(onJumpToLatest).not.toHaveBeenCalled()
+  expect(onFollowingTailChange).not.toHaveBeenCalledWith(true)
+})
+
 function setScrollMetrics(
   element: HTMLElement,
   metrics: { scrollTop: number; scrollHeight: number; clientHeight: number },

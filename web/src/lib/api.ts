@@ -1,4 +1,4 @@
-import { fetchWithServerConnectivity } from '@/lib/server-connectivity'
+import { fetchWithServerConnectivity, reportServerConnectivity, withServerRequestDeadline } from '@/lib/server-connectivity'
 
 export type SessionStatus = 'idle' | 'running' | 'failed'
 export type AgentType = 'fake' | 'codex' | 'claude' | 'opencode' | 'pi'
@@ -760,6 +760,7 @@ export async function getSessionSnapshot(options: ListSessionsOptions | number =
     }).catch(() => undefined)
   }
   const data = await request
+  if (!Array.isArray(data?.sessions)) throw new TypeError('Server returned an invalid session snapshot.')
   return {
     sessions: data.sessions,
     eventCursor: Math.max(0, data.event_cursor ?? 0),
@@ -982,13 +983,13 @@ export function sessionFileRawURL(
   return withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files/raw`, params)
 }
 
-export async function updateSessionFileContent(sessionID: string, path: string, content: string) {
+export async function updateSessionFileContent(sessionID: string, path: string, content: string, expectedContent?: string) {
   const params = new URLSearchParams({ path })
   return requestJSON<WorkspaceFileContent>(
     withQuery(`/api/sessions/${encodeURIComponent(sessionID)}/files/content`, params),
     {
       method: 'PUT',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, expected_content: expectedContent }),
     },
   )
 }
@@ -1030,6 +1031,12 @@ export async function submitMessage(
     method: 'POST',
     body: JSON.stringify(body),
   })
+}
+
+export function getMessageSubmissionStatus(sessionID: string, submissionID: string) {
+  return requestJSON<import('@/lib/pending-submissions').SubmissionStatus>(
+    `/api/sessions/${encodeURIComponent(sessionID)}/submissions/${encodeURIComponent(submissionID)}`,
+  )
 }
 
 export async function fetchQueuedMessages(sessionID: string, refresh = false) {
@@ -1488,6 +1495,14 @@ function withQuery(path: string, params: URLSearchParams) {
 }
 
 async function requestJSON<T>(url: string, init: RequestInit = {}) {
+  return withServerRequestDeadline(
+    (signal) => requestJSONWithSignal<T>(url, { ...init, signal }),
+    init.signal,
+    typeof FormData !== 'undefined' && init.body instanceof FormData ? 120_000 : undefined,
+  )
+}
+
+async function requestJSONWithSignal<T>(url: string, init: RequestInit) {
   const multipart = typeof FormData !== 'undefined' && init.body instanceof FormData
   const response = await fetchWithServerConnectivity(url, {
     ...init,
@@ -1511,10 +1526,20 @@ async function requestJSON<T>(url: string, init: RequestInit = {}) {
     throw new APIError(response.status, message)
   }
 
-  return (await response.json()) as T
+  try {
+    return (await response.json()) as T
+  } catch (error) {
+    if (init.signal?.aborted) throw error
+    reportServerConnectivity(false)
+    throw new TypeError('Server returned an invalid response. Reconnecting…', { cause: error })
+  }
 }
 
 async function requestNoContent(url: string, init: RequestInit = {}) {
+  return withServerRequestDeadline((signal) => requestNoContentWithSignal(url, { ...init, signal }), init.signal)
+}
+
+async function requestNoContentWithSignal(url: string, init: RequestInit) {
   const response = await fetchWithServerConnectivity(url, {
     ...init,
     headers: {

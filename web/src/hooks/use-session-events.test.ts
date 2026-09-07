@@ -184,6 +184,10 @@ test('offline session hydration reads persistent history without requesting the 
   await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([20, 21]))
   expect(result.current.streamState).toBe('disconnected')
   expect(fetchMock).not.toHaveBeenCalled()
+  await act(async () => { await result.current.loadOlderEvents() })
+  expect(result.current.olderHistoryUnavailable).toBe(true)
+  expect(result.current.events.map((item) => item.seq)).toEqual([20, 21])
+  expect(fetchMock).not.toHaveBeenCalled()
 
   unmount()
   vi.unstubAllGlobals()

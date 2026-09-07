@@ -79,6 +79,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const [hasNewerEvents, setHasNewerEventsState] = useState(false)
   const [loadingOlderEvents, setLoadingOlderEvents] = useState(false)
   const [loadingNewerEvents, setLoadingNewerEvents] = useState(false)
+  const [olderHistoryUnavailable, setOlderHistoryUnavailable] = useState(false)
   const lastSeqRef = useRef(0)
   const lastDurableSeqRef = useRef(0)
   const oldestSeqRef = useRef(0)
@@ -100,6 +101,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
   const targetSeq = options.targetSeq ?? 0
   const networkAvailable = options.networkAvailable ?? true
   const globalStreamConnected = options.liveStreamState === 'connected'
+  useEffect(() => setOlderHistoryUnavailable(false), [sessionID, networkAvailable, targetSeq])
   const effectiveStreamState: StreamState = !networkAvailable && sessionID
     ? 'disconnected'
     : sessionID !== streamSessionID
@@ -127,7 +129,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     setStreamSessionID(sessionID)
     loadingOlderEventsRef.current = false
     loadingNewerEventsRef.current = false
-    followingTailRef.current = true
+    followingTailRef.current = targetSeq <= 0
     setError('')
     setLoadingOlderEvents(false)
     setLoadingNewerEvents(false)
@@ -500,7 +502,10 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         pagedEventHistoryByteBudget,
         includeDebugEvents,
       )
-      if (!persistentHistory && !networkAvailable) return
+      if ((!persistentHistory || persistentHistory.events.length === 0) && !networkAvailable) {
+        if (activeSessionIDRef.current === sessionID) setOlderHistoryUnavailable(true)
+        return
+      }
       const history = persistentHistory
         ? {
             events: persistentHistory.events,
@@ -683,6 +688,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     hasNewerEvents,
     loadingOlderEvents,
     loadingNewerEvents,
+    olderHistoryUnavailable,
     loadOlderEvents,
     loadNewerEvents,
     jumpToLatest,

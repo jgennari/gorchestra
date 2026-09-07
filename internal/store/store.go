@@ -938,6 +938,7 @@ func (s *Store) EnqueueMessage(ctx context.Context, params EnqueueMessageParams)
 		AgentOptions: append(json.RawMessage(nil), agentOptions...),
 		Skills:       append(json.RawMessage(nil), skills...),
 		SourceKind:   "manual",
+		SourceID:     params.ClientSubmissionID,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}

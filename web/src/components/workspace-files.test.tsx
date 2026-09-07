@@ -8,7 +8,7 @@ const mermaidMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@monaco-editor/react', () => ({
-  default: () => <textarea aria-label="File editor" />,
+  default: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => <textarea aria-label="File editor" value={value} onChange={(event) => onChange(event.target.value)} />,
 }))
 
 vi.mock('mermaid', () => ({
@@ -16,11 +16,27 @@ vi.mock('mermaid', () => ({
 }))
 
 beforeEach(() => {
+  window.localStorage.clear()
   mermaidMocks.initialize.mockReset()
   mermaidMocks.render.mockReset()
   mermaidMocks.render.mockImplementation((id: string) =>
     Promise.resolve({ svg: `<svg data-testid="rendered-mermaid" id="${id}"></svg>` }),
   )
+})
+
+test('unsaved file edits survive offline transitions and remount', () => {
+  const file = { ...markdownFile('original'), name: 'notes.txt', path: 'notes.txt', media_type: 'text/plain' }
+  const props = { sessionID: 'session', file, resolvedTheme: 'dark' as const, onFileSaved: vi.fn() }
+  const view = render(<WorkspaceFileContentView {...props} />)
+  fireEvent.change(screen.getByLabelText('File editor'), { target: { value: 'unsaved edits' } })
+  view.rerender(<WorkspaceFileContentView {...props} offline />)
+  expect(screen.getByLabelText('File editor')).toHaveValue('unsaved edits')
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  view.unmount()
+  render(<WorkspaceFileContentView {...props} />)
+  expect(screen.getByLabelText('File editor')).toHaveValue('unsaved edits')
+  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+  expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
 })
 
 test('renders Mermaid fences as diagrams with strict security', async () => {

@@ -25,6 +25,7 @@ import type {
   WorkspaceSearchResult,
 } from '@/lib/api'
 import {
+  APIError,
   getSessionFileContent,
   listSessionFiles,
   searchSessionFiles,
@@ -34,6 +35,7 @@ import {
 } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { readFileDraft, writeFileDraft } from '@/lib/file-drafts'
 
 type FileSaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error'
 type FileViewMode = 'preview' | 'edit'
@@ -100,6 +102,7 @@ export function WorkspaceFilesView({
         >
           {selectedFile ? (
             <WorkspaceFileContentView
+              key={`${session?.id}:${selectedFile.path}`}
               sessionID={session?.id ?? ''}
               file={selectedFile}
               resolvedTheme={resolvedTheme}
@@ -107,6 +110,7 @@ export function WorkspaceFilesView({
               onDirtyChange={onDirtyChange}
               onClose={onCloseFile}
               focusedLine={focusedLine}
+              offline={offline}
             />
           ) : (
             <div className="flex h-full min-h-[20rem] flex-col items-center justify-center p-8 text-center">
@@ -442,6 +446,7 @@ export function WorkspaceFileContentView({
   onDirtyChange,
   onClose,
   focusedLine = 0,
+  offline = false,
 }: {
   sessionID: string
   file: WorkspaceFileContent
@@ -450,6 +455,7 @@ export function WorkspaceFileContentView({
   onDirtyChange?: (dirty: boolean) => void
   onClose?: () => void
   focusedLine?: number
+  offline?: boolean
 }) {
   const previewKind = file.preview_kind ?? 'none'
   const mediaPreviewable = previewKind !== 'none'
@@ -461,10 +467,16 @@ export function WorkspaceFileContentView({
   const rawURL = sessionID ? sessionFileRawURL(sessionID, file.path, { raw: true }) : ''
   const downloadURL = sessionID ? sessionFileRawURL(sessionID, file.path, { download: true }) : ''
   const [mode, setMode] = useState<FileViewMode>(markdown && focusedLine <= 0 ? 'preview' : 'edit')
-  const [draft, setDraft] = useState(file.content)
+  const [draft, setDraft] = useState(() => readFileDraft(sessionID, file.path)?.draft ?? file.content)
+  const [baseContent, setBaseContent] = useState(() => readFileDraft(sessionID, file.path)?.base.content ?? file.content)
   const [saveState, setSaveState] = useState<FileSaveState>('clean')
   const [saveError, setSaveError] = useState('')
+  const [conflictingFile, setConflictingFile] = useState<WorkspaceFileContent | null>(null)
   const [mediaError, setMediaError] = useState(false)
+  const mountedRef = useRef(true)
+  const draftRef = useRef(draft)
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false } }, [])
+  useEffect(() => { draftRef.current = draft }, [draft])
   const saveResetTimerRef = useRef<number | null>(null)
   const dirty = draft !== file.content
 
@@ -484,10 +496,13 @@ export function WorkspaceFileContentView({
   useEffect(() => {
     clearSaveResetTimer()
     setMode(markdown && focusedLine <= 0 ? 'preview' : 'edit')
-    setDraft(file.content)
-    setSaveState('clean')
+    const saved = readFileDraft(sessionID, file.path)
+    setDraft(saved?.draft ?? file.content)
+    setBaseContent(saved?.base.content ?? file.content)
+    setSaveState(saved && saved.draft !== file.content ? 'dirty' : 'clean')
     setSaveError('')
     setMediaError(false)
+    setConflictingFile(null)
   }, [
     clearSaveResetTimer,
     file.content,
@@ -497,6 +512,7 @@ export function WorkspaceFileContentView({
     file.preview_kind,
     focusedLine,
     markdown,
+    sessionID,
   ])
 
   useEffect(() => clearSaveResetTimer, [clearSaveResetTimer])
@@ -504,43 +520,64 @@ export function WorkspaceFileContentView({
   function handleDraftChange(value: string | undefined) {
     clearSaveResetTimer()
     const nextValue = value ?? ''
+    draftRef.current = nextValue
     setDraft(nextValue)
     setSaveState(nextValue === file.content ? 'clean' : 'dirty')
     setSaveError('')
+    try {
+      const base = readFileDraft(sessionID, file.path)?.base ?? file
+      writeFileDraft(sessionID, base, nextValue)
+    } catch {
+      setSaveError('Local draft storage is unavailable. Keep this tab open and copy your edits before leaving.')
+    }
   }
 
   async function handleSave() {
-    if (!sessionID || !editable || !dirty || saveState === 'saving') {
+    if (offline || !sessionID || !editable || !dirty || saveState === 'saving') {
       return
     }
     setSaveState('saving')
     setSaveError('')
     try {
-      const updated = await updateSessionFileContent(sessionID, file.path, draft)
+      const updated = await updateSessionFileContent(sessionID, file.path, draft, baseContent)
+      // Keep edits made while this save was in flight, based on the saved revision.
+      const remainingDraft = draftRef.current
+      try { writeFileDraft(sessionID, updated, remainingDraft) } catch {
+        if (mountedRef.current) setSaveError('File saved, but local draft storage could not be updated. Copy any remaining edits before leaving.')
+      }
+      if (!mountedRef.current) return
       onFileSaved(updated)
-      setDraft(updated.content)
-      setSaveState('saved')
+      setBaseContent(updated.content)
+      setDraft(remainingDraft)
+      setSaveState(remainingDraft === updated.content ? 'saved' : 'dirty')
       clearSaveResetTimer()
       saveResetTimerRef.current = window.setTimeout(() => {
-        setSaveState('clean')
+        setSaveState((current) => current === 'saved' ? 'clean' : current)
         saveResetTimerRef.current = null
       }, 1400)
     } catch (saveError) {
+      if (!mountedRef.current) return
       setSaveState('error')
       setSaveError(saveError instanceof Error ? saveError.message : 'Failed to save file')
+      if (saveError instanceof APIError && saveError.status === 409) {
+        try {
+          const latest = await getSessionFileContent(sessionID, file.path)
+          if (mountedRef.current) setConflictingFile(latest)
+        } catch { /* Keep the draft and conflict error. */ }
+      }
     }
   }
 
   return (
     <section role="region" aria-label={`File viewer: ${file.name}`} className="flex h-full min-h-0 flex-col">
-      <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-border/70 px-4">
-        <div className="flex min-w-0 items-center gap-3">
+      <header className="relative flex shrink-0 flex-col gap-2 border-b border-border/70 p-3">
+        <div className="flex min-w-0 items-center gap-3 pr-10">
           <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <h2 className="min-w-0 truncate font-mono text-xs font-semibold" title={displayPath}>
             {displayPath}
           </h2>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {rawURL ? (
             <Button asChild size="sm" variant="outline">
               <a
@@ -551,7 +588,7 @@ export function WorkspaceFileContentView({
                 title="Open raw file in new tab"
               >
                 <ExternalLink className="size-3.5" aria-hidden="true" />
-                Raw
+                <span className="hidden sm:inline">Raw</span>
               </a>
             </Button>
           ) : null}
@@ -592,18 +629,18 @@ export function WorkspaceFileContentView({
               type="button"
               size="sm"
               variant="outline"
-              disabled={!dirty || saveState === 'saving' || !sessionID}
+              disabled={offline || !dirty || saveState === 'saving' || !sessionID}
               onClick={() => void handleSave()}
             >
               <Save className="size-3.5" aria-hidden="true" />
               {saveState === 'saving' ? 'Saving' : 'Save'}
             </Button>
           ) : null}
-          <span className="text-xs text-muted-foreground">{formatBytes(file.size_bytes)}</span>
+          <span className="hidden text-xs text-muted-foreground sm:inline">{formatBytes(file.size_bytes)}</span>
           {onClose ? (
             <button
               type="button"
-              className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute right-2 top-1 inline-flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-surface-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Close file viewer"
               onClick={onClose}
             >
@@ -612,6 +649,22 @@ export function WorkspaceFileContentView({
           ) : null}
         </div>
       </header>
+      {offline ? <p role="status" className="px-3 py-2 text-xs text-muted-foreground">Offline — edits stay on this device; saving is unavailable.</p> : null}
+      {conflictingFile ? (
+        <details className="max-h-64 shrink-0 overflow-auto border-b p-3 text-xs" open>
+          <summary>The server file changed. Review its current version; your edits are preserved.</summary>
+          <pre className="my-2 whitespace-pre-wrap break-words">{conflictingFile.content}</pre>
+          <Button size="sm" variant="outline" onClick={() => {
+            try {
+              writeFileDraft(sessionID, conflictingFile, draft)
+              setBaseContent(conflictingFile.content)
+              setConflictingFile(null)
+              setSaveError('')
+              setSaveState('dirty')
+            } catch { setSaveError('Unable to preserve the draft locally. Copy your edits before leaving.') }
+          }}>I reviewed the changes — keep my edits</Button>
+        </details>
+      ) : null}
 
       <div className={cn('min-h-0 flex-1 p-4', editable && mode === 'edit' ? 'overflow-hidden' : 'overflow-auto')}>
         {mediaPreviewable && previewURL ? (

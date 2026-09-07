@@ -1294,13 +1294,8 @@ func dataURLDecodedBytes(dataURL string) int64 {
 	return int64(len(decoded))
 }
 
-func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
+func (api API) submitDecodedMessage(w http.ResponseWriter, r *http.Request, request submitMessageRequest) {
 	sessionID := chi.URLParam(r, "sessionId")
-
-	var request submitMessageRequest
-	if !decodeJSONBody(w, r, &request) {
-		return
-	}
 
 	content := strings.TrimSpace(request.Content)
 	clientSubmissionID := strings.TrimSpace(request.ClientSubmissionID)
@@ -1346,7 +1341,7 @@ func (api API) submitMessageHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "queued messages cannot include image attachments")
 			return
 		}
-		queued, ok := api.enqueueSessionMessage(w, r, session, content, request.AgentOptions, skills)
+		queued, ok := api.enqueueSessionMessage(w, r, session, content, request.AgentOptions, skills, clientSubmissionID)
 		if !ok {
 			return
 		}
@@ -1461,6 +1456,7 @@ func (api API) enqueueSessionMessage(
 	content string,
 	options *submitAgentOptions,
 	skills []agents.SkillReference,
+	clientSubmissionID string,
 ) (store.QueuedMessage, bool) {
 	if _, _, err := submitOptionsMetadata(session.AgentType, session.AgentOptions, options); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1478,11 +1474,12 @@ func (api API) enqueueSessionMessage(
 	}
 
 	queued, err := api.store.EnqueueMessage(r.Context(), store.EnqueueMessageParams{
-		SessionID:    session.ID,
-		Content:      content,
-		AgentOptions: rawOptions,
-		Skills:       rawSkills,
-		MaxPending:   maxQueuedMessages,
+		SessionID:          session.ID,
+		Content:            content,
+		AgentOptions:       rawOptions,
+		Skills:             rawSkills,
+		MaxPending:         maxQueuedMessages,
+		ClientSubmissionID: clientSubmissionID,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidArgument) {
@@ -2069,10 +2066,11 @@ func (api API) appendUserMessage(
 
 func (api API) appendQueuedMessageQueued(ctx context.Context, message store.QueuedMessage) error {
 	payload, err := json.Marshal(map[string]any{
-		"queue_item_id": message.ID,
-		"text":          message.Content,
-		"agent_options": decodeAgentOptions(message.AgentOptions),
-		"skills":        decodeSkillReferences(message.Skills),
+		"queue_item_id":        message.ID,
+		"client_submission_id": message.SourceID,
+		"text":                 message.Content,
+		"agent_options":        decodeAgentOptions(message.AgentOptions),
+		"skills":               decodeSkillReferences(message.Skills),
 	})
 	if err != nil {
 		return fmt.Errorf("marshal queued message payload: %w", err)

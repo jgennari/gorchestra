@@ -29,6 +29,9 @@ import {
   type TranscriptSequenceRange,
 } from '@/lib/events'
 import { cn } from '@/lib/utils'
+import { getMessageSubmissionStatus } from '@/lib/api'
+import { Button } from '@/components/ui/button'
+import { pendingSubmissionsChanged, readPendingSubmissions, removePendingSubmission, savePendingSubmission, type PendingSubmission } from '@/lib/pending-submissions'
 
 type Props = {
   session: Session | null
@@ -40,6 +43,7 @@ type Props = {
   hasNewerEvents?: boolean
   loadingOlderEvents?: boolean
   loadingNewerEvents?: boolean
+  olderHistoryUnavailable?: boolean
   errorMessage?: string
   showDebugEvents: boolean
   onLoadOlderEvents?: () => Promise<void> | void
@@ -84,6 +88,7 @@ export function SessionDetail({
   hasNewerEvents = false,
   loadingOlderEvents = false,
   loadingNewerEvents = false,
+  olderHistoryUnavailable = false,
   errorMessage = '',
   showDebugEvents,
   onLoadOlderEvents,
@@ -109,8 +114,18 @@ export function SessionDetail({
   const bottomInsetRef = useRef<HTMLDivElement>(null)
   const [bottomInsetHeight, setBottomInsetHeight] = useState(0)
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatTranscriptMessage[]>([])
+  const [pendingSubmissions, setPendingSubmissions] = useState<PendingSubmission[]>([])
+  const [pendingLoaded, setPendingLoaded] = useState(false)
+  const [pendingError, setPendingError] = useState('')
+  const [checkingSubmission, setCheckingSubmission] = useState(false)
+  const [sendingSubmissionID, setSendingSubmissionID] = useState<string | null>(null)
+  const [rejectedSubmissionIDs, setRejectedSubmissionIDs] = useState<Set<string>>(new Set())
+  const submitInFlightRef = useRef(false)
   const statusEvents = useMemo(() => offline ? [] : (liveEvents ?? events), [events, liveEvents, offline])
   const persistedClientSubmissionIDs = useMemo(() => clientSubmissionIDs(events), [events])
+  const acceptedSubmissionIDs = useMemo(() => new Set([...persistedClientSubmissionIDs, ...clientSubmissionIDs(liveEvents ?? [])]), [persistedClientSubmissionIDs, liveEvents])
+  const acceptedSubmissionIDsRef = useRef(new Set<string>())
+  useLayoutEffect(() => { acceptedSubmissionIDsRef.current = acceptedSubmissionIDs }, [acceptedSubmissionIDs])
   const visibleOptimisticUserMessages = useMemo(
     () => optimisticUserMessages.filter((message) => !persistedClientSubmissionIDs.has(message.id)),
     [optimisticUserMessages, persistedClientSubmissionIDs],
@@ -148,6 +163,51 @@ export function SessionDetail({
   const queueEvents = useMemo(() => queuedMessageEvents(statusEvents), [statusEvents])
 
   useEffect(() => {
+    let closed = false
+    let version = 0
+    setPendingLoaded(false)
+    setPendingSubmissions([])
+    setPendingError('')
+    const sessionID = session?.id
+    if (!sessionID) return
+    async function refresh() {
+      const current = ++version
+      try {
+        const pending = await readPendingSubmissions(sessionID!)
+        if (!closed && current === version) {
+          setPendingSubmissions(pending)
+          setPendingLoaded(true)
+          if (pending.length === 0) setPendingError('')
+        }
+      } catch {
+        if (!closed) setPendingError('Unable to read pending-message storage. Reload after freeing storage; sending is paused to avoid duplicates.')
+      }
+    }
+    void refresh()
+    window.addEventListener(pendingSubmissionsChanged, refresh)
+    return () => { closed = true; window.removeEventListener(pendingSubmissionsChanged, refresh) }
+  }, [session?.id])
+
+  useEffect(() => {
+    for (const pending of pendingSubmissions) {
+      if (acceptedSubmissionIDsRef.current.has(pending.id)) {
+        void removePendingSubmission(pending.id).catch(() => setPendingError('Message accepted, but local recovery storage could not be cleared. Check delivery before retrying.'))
+      }
+    }
+  }, [events, liveEvents, pendingSubmissions])
+
+  useEffect(() => {
+    if (offline || submitInFlightRef.current) return
+    let closed = false
+    for (const pending of pendingSubmissions) {
+      void getMessageSubmissionStatus(pending.sessionID, pending.id).then(async (status) => {
+        if (!closed && status.state === 'accepted') await removePendingSubmission(pending.id)
+      }).catch(() => { /* Keep the durable record and explicit Check delivery action. */ })
+    }
+    return () => { closed = true }
+  }, [offline, pendingSubmissions])
+
+  useEffect(() => {
     setOptimisticUserMessages([])
   }, [session?.id])
 
@@ -165,56 +225,97 @@ export function SessionDetail({
     attachments: MessageAttachment[] = [],
     queue = false,
     skills: SkillReference[] = [],
+    onPrepared?: () => void,
   ) => {
-    if (queue) {
-      return onSubmitPrompt(content, agentOptions, attachments, true, skills)
-    }
-
-    const clientSubmissionID = newClientSubmissionID()
-    const submittedAt = new Date().toISOString()
-    const optimisticMessage: ChatTranscriptMessage = {
-      id: clientSubmissionID,
-      role: 'user',
-      label: 'You',
-      variant: 'default',
-      text: content,
-      attachments: attachments.map((attachment) => ({
-        name: attachment.name,
-        mediaType: attachment.media_type,
-        dataURL: attachment.data_url,
-        sourceURL: attachment.data_url,
-        sizeBytes: attachment.size_bytes,
-      })),
-      skills,
-      status: 'pending',
-      createdAt: submittedAt,
-      completedAt: '',
-      durationMs: null,
-      tools: [],
-      streaming: false,
-      startSeq: 0,
-      endSeq: 0,
-    }
-    setOptimisticUserMessages((current) => [...current, optimisticMessage])
-
+    if (!session || submitInFlightRef.current) throw new Error('A submission is already in progress.')
+    submitInFlightRef.current = true
     try {
-      const response = await onSubmitPrompt(
-        content,
-        agentOptions,
-        attachments,
-        false,
-        skills,
-        clientSubmissionID,
-      )
-      if (response?.accepted_as === 'queued') {
-        setOptimisticUserMessages((current) => current.filter((message) => message.id !== clientSubmissionID))
+      if ((await readPendingSubmissions(session.id)).length > 0) {
+        throw new Error('Check the pending message below before sending another message.')
       }
-      return response
+      const clientSubmissionID = newClientSubmissionID()
+      setSendingSubmissionID(clientSubmissionID)
+      const submittedAt = new Date().toISOString()
+      await savePendingSubmission({ id: clientSubmissionID, sessionID: session.id, content, options: agentOptions, attachments, queue, skills, createdAt: submittedAt })
+      onPrepared?.()
+      const optimisticMessage: ChatTranscriptMessage = {
+        id: clientSubmissionID,
+        role: 'user',
+        label: 'You',
+        variant: 'default',
+        text: content,
+        attachments: attachments.map((attachment) => ({
+          name: attachment.name,
+          mediaType: attachment.media_type,
+          dataURL: attachment.data_url,
+          sourceURL: attachment.data_url,
+          sizeBytes: attachment.size_bytes,
+        })),
+        skills,
+        status: 'pending',
+        createdAt: submittedAt,
+        completedAt: '',
+        durationMs: null,
+        tools: [],
+        streaming: false,
+        startSeq: 0,
+        endSeq: 0,
+      }
+      if (!queue) setOptimisticUserMessages((current) => [...current, optimisticMessage])
+
+      try {
+        const response = await onSubmitPrompt(
+          content,
+          agentOptions,
+          attachments,
+          queue,
+          skills,
+          clientSubmissionID,
+        )
+        if (response?.accepted_as === 'queued') {
+          setOptimisticUserMessages((current) => current.filter((message) => message.id !== clientSubmissionID))
+        }
+        await removePendingSubmission(clientSubmissionID)
+        setPendingSubmissions((current) => current.filter((pending) => pending.id !== clientSubmissionID))
+        setPendingError('')
+        return response
+      } catch (error) {
+        setOptimisticUserMessages((current) => current.filter((message) => message.id !== clientSubmissionID))
+        if (acceptedSubmissionIDsRef.current.has(clientSubmissionID)) {
+          await removePendingSubmission(clientSubmissionID)
+          return
+        }
+        // Keep the exact request, including attachments/options and identity.
+        // Do not put an uncertain send back into the ordinary composer as a new send.
+        setPendingError(error instanceof Error ? error.message : 'Message delivery is uncertain.')
+        return
+      }
+    } finally { submitInFlightRef.current = false; setSendingSubmissionID(null) }
+  }, [onSubmitPrompt, session])
+
+  async function checkSubmission(pending: PendingSubmission, retry = false) {
+    if (checkingSubmission || offline) return
+    setCheckingSubmission(true)
+    setPendingError('')
+    try {
+      const status = await getMessageSubmissionStatus(pending.sessionID, pending.id)
+      if (status.state === 'accepted') {
+        await removePendingSubmission(pending.id)
+      } else if (status.state === 'not_received' && retry) {
+        await onSubmitPrompt(pending.content, pending.options, pending.attachments, pending.queue, pending.skills, pending.id)
+        await removePendingSubmission(pending.id)
+      } else {
+        if (status.state === 'rejected') setRejectedSubmissionIDs((current) => new Set([...current, pending.id]))
+        setPendingError(status.state === 'not_received'
+          ? 'The server has not received this message. Retry safely uses the same submission ID.'
+          : status.state === 'rejected'
+            ? 'The server rejected this message. Copy the text below, then dismiss this record to edit and send a new message.'
+            : 'Delivery is still uncertain. Your message is preserved; check history before taking further action.')
+      }
     } catch (error) {
-      setOptimisticUserMessages((current) => current.filter((message) => message.id !== clientSubmissionID))
-      throw error
-    }
-  }, [onSubmitPrompt])
+      setPendingError(error instanceof Error ? error.message : 'Unable to check delivery.')
+    } finally { setCheckingSubmission(false) }
+  }
 
   useLayoutEffect(() => {
     const element = bottomInsetRef.current
@@ -293,6 +394,7 @@ export function SessionDetail({
 
   const composerDisabled = session.status === 'running'
   const disabledReason = session.status === 'running' ? 'This session is running.' : ''
+  const recoverableSubmissions = pendingSubmissions.filter((pending) => pending.id !== sendingSubmissionID && !acceptedSubmissionIDs.has(pending.id))
 
   return (
     <section className="relative h-full w-full min-h-0 overflow-hidden bg-transparent">
@@ -310,7 +412,8 @@ export function SessionDetail({
           autoScroll={!offline && session.status === 'running' && !userInputRequest}
           activityStatus={activityStatus}
           showDebugEvents={showDebugEvents}
-          hasOlderEvents={hasOlderEvents}
+          hasOlderEvents={hasOlderEvents && !olderHistoryUnavailable}
+          olderHistoryUnavailable={olderHistoryUnavailable}
           hasNewerEvents={hasNewerEvents}
           loadingOlderEvents={loadingOlderEvents}
           loadingNewerEvents={loadingNewerEvents}
@@ -360,6 +463,25 @@ export function SessionDetail({
           ) : null}
           <PermissionQueue requests={permissionRequests} onResolve={onResolvePermission} />
           <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
+          {recoverableSubmissions.length > 0 || pendingError ? (
+            <section aria-label="Pending message recovery" className="mx-3 max-h-64 overflow-auto rounded-lg border border-border bg-background p-3 text-xs">
+              <p role="status">Message awaiting confirmation. It is saved on this device; nothing is automatically resent.</p>
+              {pendingError ? <p role="alert" className="my-2 text-destructive">{pendingError}</p> : null}
+              {recoverableSubmissions.map((pending) => (
+                <div key={pending.id} className="mt-2">
+                  <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words">{pending.content}</pre>
+                  {pending.attachments.length > 0 ? <p>{pending.attachments.length} image attachment(s) preserved</p> : null}
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" disabled={offline || checkingSubmission} onClick={() => void checkSubmission(pending)}>Check delivery</Button>
+                    <Button size="sm" variant="outline" disabled={offline || checkingSubmission} onClick={() => void checkSubmission(pending, true)}>Retry safely</Button>
+                    {rejectedSubmissionIDs.has(pending.id) ? <Button size="sm" variant="outline" onClick={() => {
+                      void removePendingSubmission(pending.id).then(() => setPendingError('')).catch(() => setPendingError('Unable to clear the rejected record.'))
+                    }}>Dismiss rejected message</Button> : null}
+                  </div>
+                </div>
+              ))}
+            </section>
+          ) : null}
           <PromptComposer
             key={session.id}
             sessionID={session.id}
@@ -379,6 +501,8 @@ export function SessionDetail({
             onFocus={onComposerFocus}
             focusRequest={composerFocusRequest}
             offline={offline}
+            submissionBlocked={!pendingLoaded || pendingSubmissions.length > 0}
+            prepareBeforeClear
           />
         </div>
       </div>
@@ -403,7 +527,7 @@ function newClientSubmissionID() {
 function clientSubmissionIDs(events: AgentEvent[]) {
   const ids = new Set<string>()
   for (const event of events) {
-    if (event.type !== 'user.message.completed' || typeof event.payload !== 'object' || event.payload === null) {
+    if (!['user.message.completed', 'user.message.queued'].includes(event.type) || typeof event.payload !== 'object' || event.payload === null) {
       continue
     }
     const value = (event.payload as Record<string, unknown>).client_submission_id

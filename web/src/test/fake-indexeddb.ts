@@ -198,15 +198,19 @@ class FakeObjectStore {
 
   put(value: unknown) {
     const key = recordKey(value, this.store.keyPath)
+    const request: FakeRequest<unknown> = {}
     if (key) this.store.values.set(key, value)
     this.transaction.start()
-    this.schedule(() => this.transaction.finish())
+    this.schedule(() => { request.result = key; request.onsuccess?.(); this.transaction.finish() })
+    return request
   }
 
   delete(key: IDBValidKey) {
+    const request: FakeRequest<undefined> = {}
     this.store.values.delete(String(key))
     this.transaction.start()
-    this.schedule(() => this.transaction.finish())
+    this.schedule(() => { request.onsuccess?.(); this.transaction.finish() })
+    return request
   }
 }
 

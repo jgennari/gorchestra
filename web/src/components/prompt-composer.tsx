@@ -55,6 +55,7 @@ import {
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { publishComposerActivity } from '@/lib/composer-activity'
+import { useDraftVersions } from '@/hooks/use-draft-versions'
 
 const maxPromptRows = 5
 const fallbackLineHeight = 20
@@ -91,6 +92,7 @@ type Props = {
     attachments?: MessageAttachment[],
     queue?: boolean,
     skills?: SkillReference[],
+    onPrepared?: () => void,
   ) => Promise<SubmitMessageResponse | void>
   onUpdateRuntimeAgentOptions?: (
     sessionID: string,
@@ -102,6 +104,8 @@ type Props = {
   onFocus?: () => void
   focusRequest?: number
   offline?: boolean
+  submissionBlocked?: boolean
+  prepareBeforeClear?: boolean
 }
 
 type CodexSelection = {
@@ -176,6 +180,8 @@ export function PromptComposer({
   onFocus,
   focusRequest = 0,
   offline = false,
+  submissionBlocked = false,
+  prepareBeforeClear = false,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -185,6 +191,7 @@ export function PromptComposer({
     ensureInlineSkillTokens(loadDraft(sessionID), loadSelectedSkills(sessionID)),
   )
   const [selectedSkills, setSelectedSkills] = useState<SkillReference[]>(() => loadSelectedSkills(sessionID))
+  const draftVersions = useDraftVersions(sessionID, content)
   const promptSelectionRef = useRef({ start: content.length, end: content.length })
   const [skills, setSkills] = useState<AgentSkill[]>([])
   const [skillErrors, setSkillErrors] = useState<AgentSkillError[]>([])
@@ -236,9 +243,10 @@ export function PromptComposer({
   const hasAttachments = attachments.length > 0
   const hasSelectedSkills = selectedSkills.length > 0
   const shouldLoadSkills = hasSelectedSkills || skillsOpen || skillTypeahead !== null
-  const canSubmit = !offline && !disabled && !submitting && (content.trim().length > 0 || hasAttachments || hasSelectedSkills)
+  const canSubmit = !submissionBlocked && !offline && !disabled && !submitting && (content.trim().length > 0 || hasAttachments || hasSelectedSkills)
   const queueBlockedByAttachments = hasAttachments
   const canQueue =
+    !submissionBlocked &&
     !offline &&
     !submitting &&
     (content.trim().length > 0 || hasSelectedSkills) &&
@@ -664,9 +672,10 @@ export function PromptComposer({
     return undefined
   }
 
-  async function submitText(contentToSend: string, submitAttachments: MessageAttachment[] = [], queue = false) {
+  async function submitText(contentToSend: string, submitAttachments: MessageAttachment[] = [], queue = false, onPrepared?: () => void) {
     const submitOptions = currentSubmitOptions()
     const submitSkills = selectedSkills.map(({ name, path }) => ({ name, path }))
+    if (onPrepared) return onSubmit(contentToSend, submitOptions, submitAttachments, queue, submitSkills, onPrepared)
 
     if (submitSkills.length > 0) {
       return onSubmit(
@@ -712,10 +721,13 @@ export function PromptComposer({
     const submittedSkills = selectedSkills
     setSubmitting(true)
     onError?.('')
-    setContent('')
-    setAttachments([])
-    setSelectedSkills([])
-    setSkillTypeahead(null)
+    const clearPreparedDraft = () => {
+      setContent('')
+      setAttachments([])
+      setSelectedSkills([])
+      setSkillTypeahead(null)
+    }
+    if (!prepareBeforeClear) clearPreparedDraft()
     try {
       const submitAttachments = submittedAttachments.map((attachment) => ({
         name: attachment.name,
@@ -723,7 +735,7 @@ export function PromptComposer({
         data_url: attachment.data_url,
         size_bytes: attachment.size_bytes,
       }))
-      const response = await submitText(submittedContent.trim(), submitAttachments)
+      const response = await submitText(submittedContent.trim(), submitAttachments, false, prepareBeforeClear ? clearPreparedDraft : undefined)
       if (response?.queued_message) {
         const queuedMessage = response.queued_message
         commitQueuedMessages((current) => upsertQueuedMessage(current, queuedMessage))
@@ -896,7 +908,7 @@ export function PromptComposer({
   }
 
   async function enqueueDraft(forceRestoreFocus = false) {
-    if (offline) return
+    if (offline || submissionBlocked || submitting) return
     const trimmed = content.trim()
     if (!trimmed && selectedSkills.length === 0) {
       return
@@ -1024,6 +1036,24 @@ export function PromptComposer({
 
   return (
     <form onSubmit={(event) => void handleSubmit(event)} className="prompt-composer-shell relative shrink-0 px-3 pb-3">
+      {draftVersions.storageError ? <p role="alert" className="mb-2 text-xs text-destructive">{draftVersions.storageError}</p> : null}
+      {draftVersions.versions.length > 0 ? (
+        <details className="mb-2 max-h-48 overflow-auto rounded-lg border bg-background p-2 text-xs">
+          <summary>Saved drafts from other tabs ({draftVersions.versions.length}) — your current text is unchanged</summary>
+          {draftVersions.versions.map((version) => (
+            <div key={version.key} className="mt-2 border-t pt-2">
+              <pre className="max-h-20 overflow-auto whitespace-pre-wrap break-words">{version.draft}</pre>
+              <Button type="button" size="sm" variant="outline" disabled={submitting} onClick={() => {
+                try {
+                  draftVersions.preserveCurrent()
+                  setContent(version.draft)
+                } catch { onError?.('Unable to preserve your current draft. Copy it before switching versions.') }
+              }}>Use saved draft</Button>
+              <Button type="button" size="sm" variant="ghost" className="ml-2" onClick={() => draftVersions.discardVersion(version)}>Discard this saved copy</Button>
+            </div>
+          ))}
+        </details>
+      ) : null}
       {queuedMessages.length > 0 ? (
         <div className="pointer-events-auto relative z-0 mx-3 -mb-3 rounded-t-[20px] border border-border/85 border-b-0 bg-surface-muted/75 px-4 pb-4 pt-2 shadow-[0_10px_24px_hsl(var(--foreground)/0.08)] backdrop-blur">
           <div className="flex items-center justify-between gap-3">

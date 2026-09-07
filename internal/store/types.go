@@ -311,11 +311,12 @@ type AppendEventParams struct {
 }
 
 type EnqueueMessageParams struct {
-	SessionID    string
-	Content      string
-	AgentOptions json.RawMessage
-	Skills       json.RawMessage
-	MaxPending   int
+	ClientSubmissionID string
+	SessionID          string
+	Content            string
+	AgentOptions       json.RawMessage
+	Skills             json.RawMessage
+	MaxPending         int
 }
 
 type SaveHostRuntimeParams struct {

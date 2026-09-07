@@ -161,6 +161,7 @@ function shouldUseDeclarativeNotification(payload, notification) {
 const appShellCacheName = 'gorchestra-app-shell-v1'
 const staticCacheName = 'gorchestra-static-v1'
 const appShellCacheKey = '/__gorchestra_app_shell__'
+let appShellRequestVersion = 0
 const cacheNames = new Set([appShellCacheName, staticCacheName])
 const staticShellPaths = new Set(['/favicon.svg', '/favicon-notify.svg', '/icon.svg', '/manifest.webmanifest'])
 
@@ -173,8 +174,9 @@ function isStaticShellPath(pathname) {
 }
 
 async function precacheAppShell() {
+  const version = ++appShellRequestVersion
   const response = await fetch('/', { cache: 'no-cache', credentials: 'same-origin' })
-  await cacheAppShellResponse(response)
+  await cacheAppShellResponse(response, version)
 }
 
 async function appShellResponse(event) {
@@ -191,12 +193,13 @@ async function appShellResponse(event) {
 }
 
 async function fetchAndCacheAppShell(request) {
+  const version = ++appShellRequestVersion
   const response = await fetch(request)
-  await cacheAppShellResponse(response)
+  await cacheAppShellResponse(response, version)
   return response
 }
 
-async function cacheAppShellResponse(response) {
+async function cacheAppShellResponse(response, version = ++appShellRequestVersion) {
   if (!response || !response.ok || !isHTMLResponse(response)) {
     return
   }
@@ -207,8 +210,10 @@ async function cacheAppShellResponse(response) {
   }
 
   const cache = await caches.open(appShellCacheName)
-  await cache.put(appShellCacheKey, response.clone())
+  // Advance the shell pointer only after every required entry asset is usable.
+  // Failed updates must leave the previous complete shell available offline.
   await cacheAppShellAssets(html)
+  if (version === appShellRequestVersion) await cache.put(appShellCacheKey, response.clone())
 }
 
 async function cacheAppShellAssets(html) {
@@ -223,14 +228,15 @@ async function cacheAppShellAssets(html) {
   await Promise.all(
     Array.from(assetPaths, async (path) => {
       if (await cache.match(path)) return
-      try {
-        const response = await fetch(path, { cache: 'no-cache', credentials: 'same-origin' })
-        if (isCacheableResponse(response)) {
-          await cache.put(path, response)
-        }
-      } catch {
-        // A later online request will populate a missing entry through cacheFirst.
+      const response = await fetch(path, { cache: 'no-cache', credentials: 'same-origin' })
+      const contentType = response.headers.get('Content-Type') || ''
+      const validType = path.endsWith('.css') ? contentType.includes('text/css')
+        : path.endsWith('.js') ? /(?:java|ecma)script/.test(contentType)
+          : !contentType.includes('text/html')
+      if (!isCacheableResponse(response) || !validType) {
+        throw new Error(`Incomplete app update: ${path}`)
       }
+      await cache.put(path, response)
     }),
   )
 }

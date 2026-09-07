@@ -123,6 +123,7 @@ import {
 } from '@/lib/server-connectivity'
 import { cn } from '@/lib/utils'
 import { applySessionEvent } from '@/lib/session-events'
+import { readFileDraft } from '@/lib/file-drafts'
 import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
 import { ingestClientEvent, publishClientSessionEvent } from '@/lib/client-event-store'
 
@@ -201,6 +202,7 @@ function App() {
   const [activityStreamState, setActivityStreamState] = useState<StreamState>('loading')
   const [serverReachable, setServerReachable] = useState(() => browserIsOnline())
   const [connectivityRetryKey, setConnectivityRetryKey] = useState(0)
+  const sessionSyncErrorRef = useRef('')
   const [lastSeenSeqBySession, setLastSeenSeqBySession] = useState<Record<string, number>>(() => loadSessionSeenSeqs())
   const [notificationAttentionSeqBySession, setNotificationAttentionSeqBySession] = useState<Record<string, number>>({})
   const [notificationAttentionRestored, setNotificationAttentionRestored] = useState(false)
@@ -674,7 +676,9 @@ function App() {
       })
       .catch((openError) => {
         if (!cancelled) {
-          setError(messageFromError(openError))
+          const saved = readFileDraft(selectedSessionID, route.filePath!)
+          if (saved) setOpenWorkspaceFile(saved.base)
+          else setError(messageFromError(openError))
         }
       })
 
@@ -817,6 +821,7 @@ function App() {
     hasNewerEvents,
     loadingOlderEvents,
     loadingNewerEvents,
+    olderHistoryUnavailable,
     loadOlderEvents,
     loadNewerEvents,
     jumpToLatest,
@@ -886,7 +891,9 @@ function App() {
       try {
         const snapshot = await getSessionSnapshot()
         setServerReachable(true)
-        setError((current) => (isLikelyNetworkErrorMessage(current) ? '' : current))
+        const recoveredError = sessionSyncErrorRef.current
+        sessionSyncErrorRef.current = ''
+        setError((current) => (current === recoveredError || isLikelyNetworkErrorMessage(current) ? '' : current))
         const nextSessions = snapshot.sessions
         activityCursorRef.current = Math.max(activityCursorRef.current, snapshot.eventCursor)
         const selectedID = selectedSessionIDRef.current
@@ -902,7 +909,9 @@ function App() {
               ? routeSelectedID
               : !route.sessionSlug && selectedID && mergedSessions.some((session) => session.id === selectedID)
                 ? selectedID
-                : (nextSessions[0]?.id ?? mergedSessions[0]?.id ?? null)
+                : route.sessionSlug || route.sessionID
+                  ? null
+                  : (nextSessions[0]?.id ?? mergedSessions[0]?.id ?? null)
 
         const sortedSessions = sortSessions(preferFresherSessionSnapshots(mergedSessions, sessionsRef.current))
         sessionsRef.current = sortedSessions
@@ -915,12 +924,17 @@ function App() {
           setOverviewSelected(false)
           setUserSkillsSelected(true)
         } else {
-          selectSession(nextSelectedID, preserveSlugRoute ? 'none' : 'replace')
+          const preserveDestination = preserveSlugRoute || eventSequenceFromLocation() > 0 ||
+            (!nextSelectedID && Boolean(route.sessionSlug || route.sessionID))
+          selectSession(nextSelectedID, preserveDestination ? 'none' : 'replace')
         }
         return true
       } catch (loadError) {
+        // An unsuccessful bootstrap has no cursor/stream to trigger recovery.
+        // Retry synchronization even for HTTP errors or malformed snapshots.
+        setServerReachable(false)
+        sessionSyncErrorRef.current = messageFromError(loadError)
         if (isNetworkRequestError(loadError)) {
-          setServerReachable(false)
           if (
             !offlineRootSelectionRestoredRef.current &&
             !isSessionLocation() &&
@@ -1587,7 +1601,7 @@ function App() {
   }
   const list = <SessionList {...sessionListProps} />
   const mobileList = <SessionList {...sessionListProps} variant="embedded" />
-  const displayedAppView: AppView = serverReachable ? appView : 'session'
+  const displayedAppView: AppView = serverReachable || appView === 'files' ? appView : 'session'
   const confirmActionPending =
     pendingSessionAction !== null &&
     confirmSessionAction !== null &&
@@ -1732,6 +1746,8 @@ function App() {
   const isOverview = overviewSelected && selectedSessionID === null
   const isUserSkills = userSkillsSelected && selectedSessionID === null
   const isGlobalView = isOverview || isUserSkills
+  const unavailableSessionRoute = !loadingSessions && isSessionLocation() && !selectedSession &&
+    serverReachable
 
   return (
     <main className="app-shell">
@@ -1752,7 +1768,15 @@ function App() {
 
       <section className="command-workspace flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="relative min-h-0 flex-1 overflow-hidden">
-          {!serverReachable && isGlobalView ? (
+          {unavailableSessionRoute ? (
+            <section className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+              <h2 className="text-lg font-semibold">Session unavailable</h2>
+              <p className="max-w-md text-sm text-muted-foreground">
+                {serverReachable ? 'This session link could not be resolved. Choose a session to continue.' : 'This session is not saved on this device. Reconnect or choose a saved session.'}
+              </p>
+              <Button variant="outline" onClick={() => setMobileListOpen(true)}>Choose session</Button>
+            </section>
+          ) : !serverReachable && isGlobalView ? (
             <OfflineGlobalView onOpenSessions={() => setMobileListOpen(true)} />
           ) : isOverview ? (
             <DashboardOverview
@@ -2125,6 +2149,7 @@ function App() {
             </>
           ) : (
             <SessionDetail
+              key={selectedSessionID ?? resolvingChatSessionID}
               session={selectedSession}
               resolvingSessionID={resolvingChatSessionID}
               events={events}
@@ -2134,6 +2159,7 @@ function App() {
               hasNewerEvents={hasNewerEvents}
               loadingOlderEvents={loadingOlderEvents}
               loadingNewerEvents={loadingNewerEvents}
+              olderHistoryUnavailable={olderHistoryUnavailable}
               onLoadOlderEvents={loadOlderEvents}
               onLoadNewerEvents={loadNewerEvents}
               onJumpToLatest={handleJumpToLatest}
@@ -2257,6 +2283,7 @@ function App() {
       />
       <Dialog open={mobileListOpen} onOpenChange={setMobileListOpen}>
         <DialogContent
+          aria-describedby={undefined}
           showClose={false}
           className="command-chat-header grid max-h-[min(42rem,calc(100dvh-4rem))] w-[calc(100vw-1.5rem)] max-w-md grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden border-border/90 p-0 shadow-[0_18px_60px_hsl(var(--foreground)/0.18)]"
         >
@@ -3230,7 +3257,8 @@ function resolveSessionRouteSessionID(route: SessionRoute, sessions: Session[]) 
   if (!route.sessionSlug) {
     return null
   }
-  return sessions.find((session) => sessionTitleSlug(session.title) === route.sessionSlug)?.id ?? null
+  const matches = sessions.filter((session) => sessionTitleSlug(session.title) === route.sessionSlug)
+  return matches.length === 1 ? matches[0].id : null
 }
 
 function writeSelectedSessionRoute(

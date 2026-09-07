@@ -2,6 +2,14 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import type { ComponentProps, ReactNode } from 'react'
 import type { AgentEvent, Session } from '@/lib/api'
 import { SessionDetail } from '@/components/session-detail'
+import { readPendingSubmissions, savePendingSubmission } from '@/lib/pending-submissions'
+
+beforeEach(() => {
+  window.localStorage.clear()
+  vi.stubGlobal('indexedDB', undefined)
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ messages: [], state: 'unknown' })))
+})
+afterEach(() => vi.unstubAllGlobals())
 
 const baseSession: Session = {
   id: 'sess_1',
@@ -34,21 +42,23 @@ test('prompt composer remains enabled after a completed run returns to idle', ()
   expect(screen.getByLabelText('Prompt')).toBeEnabled()
 })
 
-test('optimistic user message rolls back when submission fails', async () => {
+test('uncertain submission remains recoverable after unmount without becoming a new draft', async () => {
   let rejectSubmit: ((error: Error) => void) | undefined
   const onErrorMessageChange = vi.fn()
-  renderDetail({
-    onSubmitPrompt: () => new Promise((_resolve, reject) => {
+  const onSubmitPrompt = vi.fn(() => new Promise<void>((_resolve, reject) => {
       rejectSubmit = reject
-    }),
+    }))
+  const view = renderDetail({
+    onSubmitPrompt,
     onErrorMessageChange,
   })
 
   const prompt = screen.getByLabelText('Prompt')
   fireEvent.change(prompt, { target: { value: 'Prompt that fails' } })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Submit prompt' })).toBeEnabled())
   fireEvent.keyDown(prompt, { key: 'Enter' })
 
-  expect(within(screen.getByRole('log', { name: 'Chat messages' })).getByText('Prompt that fails')).toBeInTheDocument()
+  await waitFor(() => expect(within(screen.getByRole('log', { name: 'Chat messages' })).getByText('Prompt that fails')).toBeInTheDocument())
 
   await act(async () => {
     rejectSubmit?.(new Error('HTTP 502'))
@@ -56,8 +66,13 @@ test('optimistic user message rolls back when submission fails', async () => {
   })
 
   await waitFor(() => expect(screen.queryByRole('log', { name: 'Chat messages' })).not.toBeInTheDocument())
-  expect(prompt).toHaveValue('Prompt that fails')
-  expect(onErrorMessageChange).toHaveBeenCalledWith('HTTP 502')
+  expect(prompt).toHaveValue('')
+  expect(await readPendingSubmissions('sess_1')).toHaveLength(1)
+  view.unmount()
+  renderDetail({ onSubmitPrompt })
+  const recovery = await screen.findByRole('region', { name: 'Pending message recovery' })
+  expect(within(recovery).getByText('Prompt that fails')).toBeInTheDocument()
+  expect(onSubmitPrompt).toHaveBeenCalledOnce()
 })
 
 test('session detail shows loading while a routed session resolves', () => {
@@ -65,6 +80,48 @@ test('session detail shows loading while a routed session resolves', () => {
 
   expect(screen.getByText('Loading session...')).toBeInTheDocument()
   expect(screen.queryByText('No session selected')).not.toBeInTheDocument()
+})
+
+test('reload restores an unacknowledged request; safe retry preserves its exact identity', async () => {
+  const pending = { id: 'original-id', sessionID: baseSession.id, content: 'Durable request', attachments: [], skills: [], queue: false, createdAt: new Date().toISOString() }
+  await savePendingSubmission(pending)
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ messages: [], state: 'not_received' })))
+  const onSubmitPrompt = vi.fn(async () => ({ session_id: baseSession.id, status: 'running' as const, accepted_as: 'run' as const }))
+  renderDetail({ onSubmitPrompt })
+  await screen.findByText('Durable request')
+  expect(onSubmitPrompt).not.toHaveBeenCalled()
+  expect(screen.getByLabelText('Prompt')).toHaveValue('')
+  fireEvent.click(screen.getByRole('button', { name: 'Retry safely' }))
+  await waitFor(() => expect(onSubmitPrompt).toHaveBeenCalledExactlyOnceWith('Durable request', undefined, [], false, [], 'original-id'))
+  await waitFor(async () => expect(await readPendingSubmissions(baseSession.id)).toEqual([]))
+})
+
+test('accepted receipt removes recovery record without resending', async () => {
+  await savePendingSubmission({ id: 'accepted-id', sessionID: baseSession.id, content: 'Already accepted', attachments: [], skills: [], queue: true, createdAt: new Date().toISOString() })
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ messages: [], state: 'accepted' })))
+  const onSubmitPrompt = vi.fn(async () => undefined)
+  renderDetail({ onSubmitPrompt })
+  await waitFor(async () => expect(await readPendingSubmissions(baseSession.id)).toEqual([]))
+  expect(onSubmitPrompt).not.toHaveBeenCalled()
+  expect(screen.queryByRole('region', { name: 'Pending message recovery' })).not.toBeInTheDocument()
+})
+
+test('storage failure preserves composer and never submits an unprotected request', async () => {
+  const onSubmitPrompt = vi.fn(async () => undefined)
+  renderDetail({ onSubmitPrompt })
+  const prompt = screen.getByLabelText('Prompt')
+  fireEvent.change(prompt, { target: { value: 'Do not lose this' } })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Submit prompt' })).toBeEnabled())
+  const original = window.localStorage.setItem.bind(window.localStorage)
+  const spy = vi.spyOn(window.localStorage, 'setItem').mockImplementation((key, value) => {
+    if (key.startsWith('gorchestra.pending-submission.')) throw new Error('quota')
+    original(key, value)
+  })
+  fireEvent.keyDown(prompt, { key: 'Enter' })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Submit prompt' })).toBeEnabled())
+  expect(prompt).toHaveValue('Do not lose this')
+  expect(onSubmitPrompt).not.toHaveBeenCalled()
+  spy.mockRestore()
 })
 
 test('session detail keeps session loading visible while initial chat history loads', () => {
