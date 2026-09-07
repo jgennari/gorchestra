@@ -150,6 +150,7 @@ type NotificationService interface {
 	PublicKey(ctx context.Context) (string, error)
 	SaveSubscription(ctx context.Context, input notifications.SubscriptionInput) (store.PushSubscription, error)
 	DeleteSubscription(ctx context.Context, endpoint string) error
+	Acknowledge(ctx context.Context, endpoint string, sessionID string, seq int64) error
 	SendTest(ctx context.Context) error
 	SendBadgeVariantTest(ctx context.Context, variant string) error
 	Debug(ctx context.Context) (notifications.DebugState, error)
@@ -401,6 +402,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Get("/api/notifications/public-key", api.notificationPublicKeyHandler)
 		r.Post("/api/notifications/subscriptions", api.saveNotificationSubscriptionHandler)
 		r.Delete("/api/notifications/subscriptions", api.deleteNotificationSubscriptionHandler)
+		r.Post("/api/notifications/acknowledge", api.acknowledgeNotificationHandler)
 		r.Post("/api/notifications/test", api.testNotificationHandler)
 	}
 	r.NotFound(api.notFoundHandler)

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import type { AgentEvent, PushSubscriptionPayload } from '@/lib/api'
 import {
+  acknowledgeNotification,
   deletePushSubscription,
   fetchNotificationPublicKey,
   savePushSubscription,
@@ -10,10 +11,6 @@ import {
 export type NotificationStatus = 'unsupported' | 'default' | 'denied' | 'enabling' | 'enabled' | 'error'
 type NotificationTestState = 'idle' | 'sending' | 'sent'
 type BadgeTestState = 'idle' | 'setting' | 'set' | 'clearing' | 'cleared' | 'unsupported' | 'error'
-type SessionStopNotificationDetails = {
-  title?: string
-  excerpt?: string
-}
 type WindowWithWebkitAudio = Window & {
   webkitAudioContext?: typeof AudioContext
 }
@@ -30,13 +27,7 @@ export function usePushNotifications() {
   const [badgeTestMessage, setBadgeTestMessage] = useState('')
   const [soundEnabled, setSoundEnabledState] = useState(() => readBooleanStorage(soundStorageKey, false))
   const playedEventsRef = useRef<Set<string>>(new Set())
-  const shownTerminalNotificationsRef = useRef<Set<string>>(new Set())
-  const foregroundNotificationsStartedAtRef = useRef(0)
   const audioContextRef = useRef<AudioContext | null>(null)
-
-  useEffect(() => {
-    foregroundNotificationsStartedAtRef.current = Date.now()
-  }, [])
 
   useEffect(() => {
     if (!supported) {
@@ -240,31 +231,25 @@ export function usePushNotifications() {
     [soundEnabled],
   )
 
-  const showSessionStopNotification = useCallback(
-    (event: AgentEvent, details: SessionStopNotificationDetails = {}) => {
+  const acknowledgeSessionNotification = useCallback(
+    async (event: AgentEvent) => {
       if (
         !supported ||
         !isAttentionNotificationEvent(event.type) ||
-        !isForegroundEventFromThisPage(event, foregroundNotificationsStartedAtRef.current) ||
         Notification.permission !== 'granted' ||
         document.visibilityState !== 'visible'
       ) {
         return
       }
-
-      const eventKey = event.id || `${event.session_id}:${event.seq}`
-      if (shownTerminalNotificationsRef.current.has(eventKey)) {
-        return
+      try {
+        const manager = await activePushManager()
+        const subscription = await manager?.getSubscription()
+        if (!subscription || document.visibilityState !== 'visible') return
+        await acknowledgeNotification(subscription.endpoint, event.session_id, event.seq)
+      } catch {
+        // Failed or late ACKs leave server push delivery intact. Never retry or
+        // show a second local OS notification alongside the server's push.
       }
-      shownTerminalNotificationsRef.current.add(eventKey)
-      if (shownTerminalNotificationsRef.current.size > 200) {
-        const firstKey = shownTerminalNotificationsRef.current.values().next().value
-        if (firstKey) {
-          shownTerminalNotificationsRef.current.delete(firstKey)
-        }
-      }
-
-      void showLocalSessionStopNotification(event, details)
     },
     [supported],
   )
@@ -286,7 +271,7 @@ export function usePushNotifications() {
     clearTestBadge,
     setSoundEnabled,
     playSessionStopSound,
-    showSessionStopNotification,
+    acknowledgeSessionNotification,
   }
 }
 
@@ -413,69 +398,12 @@ async function showLocalTestNotification(supported: boolean) {
   })
 }
 
-async function showLocalSessionStopNotification(event: AgentEvent, details: SessionStopNotificationDetails) {
-  try {
-    const registration = await navigator.serviceWorker.ready
-    const permission = event.type === 'agent.permission.requested'
-    await registration.showNotification(permission ? 'Approval needed' : sessionStopNotificationTitle(event.type), {
-      body: permission ? `${sessionNotificationName(details)} is waiting for approval.` : sessionStopNotificationBody(details),
-      badge: '/favicon-notify.svg',
-      icon: '/icon.svg',
-      tag: `gorchestra-session-${event.session_id}`,
-      data: { url: `/sessions/${event.session_id}`, session_id: event.session_id, event_type: event.type },
-    })
-
-    const badgeNavigator = navigator as Navigator & { setAppBadge?: (contents?: number) => Promise<void> }
-    if (badgeNavigator.setAppBadge) {
-      await badgeNavigator.setAppBadge(1).catch(() => undefined)
-    }
-  } catch {
-    // Local foreground notifications are best-effort; background push remains the primary path.
-  }
-}
-
 function isAttentionNotificationEvent(type: string) {
   return type === 'agent.permission.requested' || isPushNotificationTerminalEvent(type)
 }
 
 function isPushNotificationTerminalEvent(type: string) {
   return type === 'agent.run.completed' || type === 'agent.run.failed' || type === 'agent.run.cancelled'
-}
-
-function isForegroundEventFromThisPage(event: AgentEvent, pageStartedAt: number) {
-  const createdAt = Date.parse(event.created_at)
-  if (!Number.isFinite(createdAt)) {
-    return false
-  }
-  return createdAt >= pageStartedAt
-}
-
-function sessionNotificationName(details: SessionStopNotificationDetails) {
-  const title = singleLineText(details.title ?? '')
-  return title || 'Untitled session'
-}
-
-function sessionStopNotificationTitle(type: string) {
-  if (type === 'agent.run.completed') {
-    return 'Completed'
-  }
-  if (type === 'agent.run.cancelled') {
-    return 'Cancelled'
-  }
-  return 'Failed'
-}
-
-function sessionStopNotificationBody(details: SessionStopNotificationDetails) {
-  const sessionName = sessionNotificationName(details)
-  const cleanedExcerpt = singleLineText(details.excerpt ?? '')
-  if (!cleanedExcerpt) {
-    return sessionName
-  }
-  return `${sessionName}: ${cleanedExcerpt}`
-}
-
-function singleLineText(text: string) {
-  return text.trim().split(/\s+/).filter(Boolean).join(' ')
 }
 
 function readBooleanStorage(key: string, fallback: boolean) {

@@ -1423,6 +1423,13 @@ export async function sendTestNotification() {
   })
 }
 
+export async function acknowledgeNotification(endpoint: string, sessionID: string, seq: number) {
+  return requestJSON<{ acknowledged: boolean }>('/api/notifications/acknowledge', {
+    method: 'POST',
+    body: JSON.stringify({ endpoint, session_id: sessionID, seq }),
+  })
+}
+
 export async function getConsoleStatus(sessionID: string) {
   return requestJSON<ConsoleStatus>(`/api/sessions/${encodeURIComponent(sessionID)}/console`)
 }

@@ -105,6 +105,27 @@ func (api API) testNotificationHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, notificationTestResponse{Sent: true})
 }
 
+func (api API) acknowledgeNotificationHandler(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Endpoint  string `json:"endpoint"`
+		SessionID string `json:"session_id"`
+		Seq       int64  `json:"seq"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := api.notifications.Acknowledge(r.Context(), request.Endpoint, request.SessionID, request.Seq); err != nil {
+		if errors.Is(err, store.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to acknowledge notification")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"acknowledged": true})
+}
+
 func requestOrigin(r *http.Request) string {
 	if origin := cleanOrigin(r.Header.Get("Origin")); origin != "" {
 		return origin

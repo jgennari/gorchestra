@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -56,10 +57,13 @@ type Sender interface {
 }
 
 type Service struct {
-	store      Store
-	sender     Sender
-	subscriber string
-	logger     *log.Logger
+	store           Store
+	sender          Sender
+	subscriber      string
+	logger          *log.Logger
+	ackMu           sync.Mutex
+	foregroundAcks  map[acknowledgementKey]time.Time
+	foregroundGrace time.Duration
 }
 
 type DebugState struct {
@@ -119,10 +123,11 @@ func WithSubscriber(subscriber string) Option {
 
 func NewService(store Store, opts ...Option) *Service {
 	service := &Service{
-		store:      store,
-		sender:     webPushSender{subscriber: DefaultSubscriber},
-		subscriber: DefaultSubscriber,
-		logger:     log.Default(),
+		store:           store,
+		sender:          webPushSender{subscriber: DefaultSubscriber},
+		subscriber:      DefaultSubscriber,
+		logger:          log.Default(),
+		foregroundGrace: time.Second,
 	}
 	for _, opt := range opts {
 		opt(service)
@@ -377,11 +382,26 @@ func (s *Service) sendToActiveSubscriptions(ctx context.Context, input notificat
 		s.logf("notification send skipped: no active push subscriptions")
 		return nil
 	}
+	// Give the SSE client a short opportunity to acknowledge the event before
+	// sending a user-visible push. Safari cannot safely discard received pushes.
+	if input.SessionID != "" && input.Seq > 0 && s.foregroundGrace > 0 {
+		timer := time.NewTimer(s.foregroundGrace)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 	s.logf("notification send started: kind=%s subscriptions=%d", input.Kind, len(subscriptions))
 
 	var errs []error
 	attentionRecorded := false
 	for _, subscription := range subscriptions {
+		if input.SessionID != "" && input.Seq > 0 && s.acknowledged(subscription.Endpoint, input.SessionID, input.Seq, time.Now()) {
+			s.logf("notification send skipped: foreground acknowledgement endpoint=%s session_id=%s seq=%d", endpointFingerprint(subscription.Endpoint), input.SessionID, input.Seq)
+			continue
+		}
 		payload, err := json.Marshal(newNotificationPayload(input, subscription))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("build push payload for %s: %w", subscription.Endpoint, err))

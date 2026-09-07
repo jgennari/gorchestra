@@ -71,6 +71,66 @@ test('uses a selected session from the initial list without refetching its detai
   expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1')).toHaveLength(0)
 })
 
+test('only the visible selected session acknowledges SSE notifications for this device', async () => {
+  const originalServiceWorker = Object.getOwnPropertyDescriptor(navigator, 'serviceWorker')
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  const showNotification = vi.fn()
+  const subscription = {
+    endpoint: 'https://push.example.test/this-device',
+    toJSON: () => ({ endpoint: 'https://push.example.test/this-device', keys: { p256dh: 'key', auth: 'auth' } }),
+  }
+  vi.stubGlobal('isSecureContext', true)
+  vi.stubGlobal('Notification', { permission: 'granted' })
+  vi.stubGlobal('PushManager', class {})
+  const registration = { pushManager: { getSubscription: vi.fn().mockResolvedValue(subscription) }, showNotification }
+  Object.defineProperty(navigator, 'serviceWorker', {
+    configurable: true,
+    value: { getRegistration: vi.fn().mockResolvedValue(registration), ready: Promise.resolve(registration) },
+  })
+  const normalFetch = fetchMock()
+  const fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).startsWith('/api/notifications/')) return Promise.resolve(jsonResponse({ enabled: true, acknowledged: true }))
+    return normalFetch(url, init)
+  })
+  vi.stubGlobal('fetch', fetch)
+  const app = render(<App />)
+  try {
+    const source = await findEventSource('/api/sessions/activity/stream')
+    const acknowledgements = () => fetch.mock.calls.filter(([url]) => String(url) === '/api/notifications/acknowledge')
+    const completed = { ...event(8, 'agent.run.completed', {}), global_seq: 10 }
+    act(() => source.emit(completed))
+    await waitFor(() => expect(acknowledgements()).toHaveLength(1))
+    expect(JSON.parse(String(acknowledgements()[0][1]?.body))).toEqual({ endpoint: subscription.endpoint, session_id: 'sess_1', seq: 8 })
+    expect(acknowledgements()[0][1]?.method).toBe('POST')
+
+    act(() => {
+      source.emit(completed) // Replay must not create a duplicate ACK or alert.
+      source.emit({ ...event(9, 'agent.run.completed', {}, 'sess_2'), global_seq: 11 })
+      source.emit({ ...event(10, 'agent.message.completed', { text: 'Not a notification' }), global_seq: 12 })
+    })
+    visibility.mockReturnValue('hidden')
+    act(() => source.emit({ ...event(11, 'agent.run.failed', {}), global_seq: 13 }))
+    visibility.mockReturnValue('visible')
+    act(() => source.emit({ ...event(12, 'agent.permission.requested', { request_id: 'approval_1' }), global_seq: 14 }))
+    await waitFor(() => expect(acknowledgements()).toHaveLength(2))
+    expect(JSON.parse(String(acknowledgements()[1][1]?.body)).seq).toBe(12)
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+    act(() => {
+      source.emit({ ...event(13, 'agent.run.completed', {}), global_seq: 15 })
+      source.emit({ ...event(14, 'agent.run.completed', {}, 'sess_2'), global_seq: 16 })
+    })
+    await waitFor(() => expect(acknowledgements()).toHaveLength(3))
+    expect(JSON.parse(String(acknowledgements()[2][1]?.body)).session_id).toBe('sess_2')
+    expect(showNotification).not.toHaveBeenCalled()
+  } finally {
+    app.unmount()
+    visibility.mockRestore()
+    if (originalServiceWorker) Object.defineProperty(navigator, 'serviceWorker', originalServiceWorker)
+    else Reflect.deleteProperty(navigator, 'serviceWorker')
+  }
+})
+
 test('Cmd/Ctrl+D toggles client debug without restarting SSE, refetching history, or changing the draft', async () => {
   const fetch = fetchMock()
   vi.stubGlobal('fetch', fetch)
@@ -799,22 +859,59 @@ test('mobile sessions button opens a floating session dialog', async () => {
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Sessions' })).not.toBeInTheDocument())
 })
 
-test('mobile session menu opens workspace details in a floating dialog', async () => {
+test('mobile session menu toggles debug in place and replaces workspace details', async () => {
   const user = userEvent.setup()
-  vi.stubGlobal('fetch', fetchMock({ fileEntry: true }))
-
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
   render(<App />)
+  const source = await findEventSource('/api/sessions/activity/stream')
+  const header = within(screen.getByTestId('mobile-floating-session-header'))
+  const prompt = screen.getByRole('textbox', { name: 'Prompt' })
+  fireEvent.change(prompt, { target: { value: 'Keep this unsent draft' } })
+  const trigger = header.getByRole('button', { name: 'More session actions' })
+  await user.click(trigger)
+  const menuElement = header.getByRole('menu')
+  const menu = within(menuElement)
+  expect(menu.queryByRole('menuitem', { name: 'Workspace details' })).not.toBeInTheDocument()
+  const workspaceHeading = menu.getByText('Workspace details')
+  expect(workspaceHeading.tagName).toBe('P')
+  expect(workspaceHeading.className).toBe(menu.getByText('Views').className)
+  expect(workspaceHeading.compareDocumentPosition(menu.getByTestId('mobile-context-meter')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(menuElement.lastElementChild).toBe(menu.getByRole('menuitemcheckbox', { name: 'Debug' }))
+  expect(menu.getByRole('menuitemcheckbox', { name: 'Debug' })).not.toBeChecked()
+  const requestsBefore = fetch.mock.calls.length
+  const pathBefore = window.location.pathname
+  await user.click(menu.getByRole('menuitemcheckbox', { name: 'Debug' }))
+  expect(screen.getByRole('complementary', { name: 'Client debug' })).toBeVisible()
+  expect(header.queryByRole('menu')).not.toBeInTheDocument()
+  expect(trigger).toHaveFocus()
+  expect(window.location.pathname).toBe(pathBefore)
+  expect(window.location.search).toBe('?debug=1')
+  expect(prompt).toHaveValue('Keep this unsent draft')
+  expect(source.closed).toBe(false)
+  expect(FakeEventSource.instances).toHaveLength(1)
+  expect(fetch.mock.calls.length).toBe(requestsBefore)
 
-  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
-  const mobileHeader = screen.getByTestId('mobile-floating-session-header')
+  await user.click(trigger)
+  expect(header.getByRole('menuitemcheckbox', { name: 'Debug' })).toBeChecked()
+  await user.click(header.getByRole('menuitemcheckbox', { name: 'Debug' }))
+  expect(screen.queryByRole('complementary', { name: 'Client debug' })).not.toBeInTheDocument()
+  expect(window.location.search).toBe('')
+  expect(screen.queryByRole('dialog', { name: 'Workspace details' })).not.toBeInTheDocument()
+})
 
-  await user.click(within(mobileHeader).getByRole('button', { name: 'More session actions' }))
-  await user.click(within(mobileHeader).getByRole('menuitem', { name: 'Workspace details' }))
-
-  const dialog = await screen.findByRole('dialog', { name: 'Workspace details' })
-  expect(within(dialog).getByText('Activity')).toBeInTheDocument()
-  expect(within(dialog).queryByText('Files')).not.toBeInTheDocument()
-  expect(within(dialog).queryByRole('button', { name: /main\.go/i })).not.toBeInTheDocument()
+test('mobile debug toggle reflects URL, keyboard, and panel close state', async () => {
+  window.history.replaceState({}, '', '/sessions/sess_1?debug=1')
+  render(<App />)
+  await findEventSource('/api/sessions/activity/stream')
+  const header = within(screen.getByTestId('mobile-floating-session-header'))
+  fireEvent.click(header.getByRole('button', { name: 'More session actions' }))
+  expect(header.getByRole('menuitemcheckbox', { name: 'Debug' })).toBeChecked()
+  fireEvent.click(screen.getByRole('button', { name: 'Close debug view' }))
+  expect(header.getByRole('menuitemcheckbox', { name: 'Debug' })).not.toBeChecked()
+  fireEvent.keyDown(window, { key: 'd', metaKey: true })
+  expect(header.getByRole('menuitemcheckbox', { name: 'Debug' })).toBeChecked()
+  expect(screen.getByRole('complementary', { name: 'Client debug' })).toBeVisible()
 })
 
 test('mobile actions show a live context counter without fetching more data or closing the menu', async () => {

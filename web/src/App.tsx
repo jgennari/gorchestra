@@ -1,4 +1,4 @@
-import { Archive, BookOpen, CalendarClock, Eraser, Folder, Loader2, Menu, MessageSquare, Minimize2, MoreHorizontal, PanelRightOpen, Plus, Server, Settings, Terminal, WifiOff, X } from 'lucide-react'
+import { Archive, BookOpen, Bug, CalendarClock, Eraser, Folder, Loader2, Menu, MessageSquare, Minimize2, MoreHorizontal, Plus, Server, Settings, Terminal, WifiOff, X } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -57,7 +57,6 @@ import {
   knownEventTypes,
   lastSeq,
   latestTokenUsage,
-  payloadText,
   shouldRefreshWorkspaceFilesForEvent,
   statusFromEvent,
 } from '@/lib/events'
@@ -194,7 +193,6 @@ function App() {
   const [selectedSessionID, setSelectedSessionID] = useState<string | null>(initialSessionState.selectedSessionID)
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileListOpen, setMobileListOpen] = useState(false)
-  const [mobileRailOpen, setMobileRailOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(!initialSessionState.seededCachedSession)
   const [refreshingSessions, setRefreshingSessions] = useState(false)
   const [error, setError] = useState('')
@@ -288,7 +286,7 @@ function App() {
   const release = useReleaseUpdate()
   const pushNotifications = usePushNotifications()
   const playSessionStopSound = pushNotifications.playSessionStopSound
-  const showSessionStopNotification = pushNotifications.showSessionStopNotification
+  const acknowledgeSessionNotification = pushNotifications.acknowledgeSessionNotification
   useFavicon(hasFaviconAttention)
   useAppBadge(appBadgeCount)
   useClientPerformanceTelemetry(selectedSessionID)
@@ -797,15 +795,11 @@ function App() {
       applySessionActivityEvent(event)
       const selected = event.session_id === selectedSessionIDRef.current
       if (selected) selectedEventsRef.current = appendEvent(selectedEventsRef.current, event)
-      playSessionStopSound(event)
-      showSessionStopNotification(
-        event,
-        notificationDetailsForEvent(
-          event,
-          selected ? selectedEventsRef.current : [],
-          sessionsRef.current,
-        ),
-      )
+      if (selected && document.visibilityState === 'visible') {
+        void acknowledgeSessionNotification(event)
+      } else {
+        playSessionStopSound(event)
+      }
       if (shouldRefreshWorkspaceFilesForEvent(event) && selected) {
         setFileRefreshKey((value) => value + 1)
       }
@@ -827,7 +821,7 @@ function App() {
       playSessionStopSound,
       refreshSession,
       scheduleDashboardRefresh,
-      showSessionStopNotification,
+      acknowledgeSessionNotification,
     ],
   )
 
@@ -1541,7 +1535,6 @@ function App() {
 
   const handleOpenWorkspaceFile = useCallback(
     (file: WorkspaceFileContent) => {
-      setMobileRailOpen(false)
       setOpenWorkspaceFile(file)
       setWorkspaceFileDirty(false)
       selectAppView('files', 'push', file.path)
@@ -1738,7 +1731,8 @@ function App() {
       onSelect={(view) => {
         if (serverReachable) selectAppView(view)
       }}
-      onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
+      debugEnabled={clientDebug}
+      onToggleDebug={toggleClientDebug}
       onClear={() => requestSessionAction('clear')}
       onCompact={() => requestSessionAction('compact')}
       onToggleArchive={requestArchiveSession}
@@ -1798,7 +1792,6 @@ function App() {
             requestArchiveSession()
             return Promise.resolve()
           }}
-          onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
           clearPending={
             selectedSession
               ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
@@ -1840,7 +1833,6 @@ function App() {
             requestArchiveSession()
             return Promise.resolve()
           }}
-          onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
           clearPending={
             selectedSession
               ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
@@ -1989,7 +1981,6 @@ function App() {
                     requestArchiveSession()
                     return Promise.resolve()
                   }}
-                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
                       ? pendingSessionAction?.sessionID === selectedSession.id &&
@@ -2033,7 +2024,6 @@ function App() {
                     requestArchiveSession()
                     return Promise.resolve()
                   }}
-                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
                       ? pendingSessionAction?.sessionID === selectedSession.id &&
@@ -2103,7 +2093,6 @@ function App() {
                     requestArchiveSession()
                     return Promise.resolve()
                   }}
-                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
                       ? pendingSessionAction?.sessionID === selectedSession.id &&
@@ -2147,7 +2136,6 @@ function App() {
                     requestArchiveSession()
                     return Promise.resolve()
                   }}
-                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
                       ? pendingSessionAction?.sessionID === selectedSession.id &&
@@ -2195,7 +2183,6 @@ function App() {
                     requestArchiveSession()
                     return Promise.resolve()
                   }}
-                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
                       ? pendingSessionAction?.sessionID === selectedSession.id &&
@@ -2238,7 +2225,6 @@ function App() {
                     requestArchiveSession()
                     return Promise.resolve()
                   }}
-                  onOpenWorkspaceDetails={() => setMobileRailOpen(true)}
                   clearPending={
                     selectedSession
                       ? pendingSessionAction?.sessionID === selectedSession.id &&
@@ -2444,65 +2430,6 @@ function App() {
           <div className="min-h-0 overflow-hidden">{mobileList}</div>
         </DialogContent>
       </Dialog>
-      <Dialog open={mobileRailOpen} onOpenChange={setMobileRailOpen}>
-        <DialogContent
-          showClose={false}
-          className="command-chat-header grid max-h-[min(44rem,calc(100dvh-4rem))] w-[calc(100vw-1.5rem)] max-w-md grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden border-border/90 p-0 shadow-[0_18px_60px_hsl(var(--foreground)/0.18)] lg:hidden"
-        >
-          <DialogHeader className="border-b border-border/70 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <DialogTitle>Workspace details</DialogTitle>
-              <DialogClose asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Close workspace details"
-                  className="text-muted-foreground hover:bg-background/50 hover:text-foreground"
-                >
-                  <X />
-                </Button>
-              </DialogClose>
-            </div>
-          </DialogHeader>
-          <div className="min-h-0 overflow-hidden">
-            <RunHealthRail
-              session={selectedSession}
-              resolvingSessionID={resolvingSelectedSessionID}
-              events={events}
-              streamState={streamState}
-              streamError={chatErrorMessage}
-              fileRefreshKey={fileRefreshKey}
-              showUtilityContent={false}
-              onClear={() => {
-                requestSessionAction('clear')
-                return Promise.resolve()
-              }}
-              onCompact={() => {
-                requestSessionAction('compact')
-                return Promise.resolve()
-              }}
-              onToggleArchive={() => {
-                requestArchiveSession()
-                return Promise.resolve()
-              }}
-              onOpenFile={handleOpenWorkspaceFile}
-              clearPending={
-                selectedSession
-                  ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
-                  : false
-              }
-              compactPending={
-                selectedSession
-                  ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
-                  : false
-              }
-              archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
-              offline={!serverReachable}
-            />
-          </div>
-        </DialogContent>
-      </Dialog>
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
       {clientDebug ? <ClientDebugPanel readSnapshot={readDebugSnapshot} onClose={toggleClientDebug} /> : null}
     </main>
@@ -2530,7 +2457,8 @@ function SessionViewNavigation({
   events,
   view,
   onSelect,
-  onOpenWorkspaceDetails,
+  debugEnabled,
+  onToggleDebug,
   onClear,
   onCompact,
   onToggleArchive,
@@ -2542,7 +2470,8 @@ function SessionViewNavigation({
   events: AgentEvent[]
   view: AppView
   onSelect: (view: AppView) => void
-  onOpenWorkspaceDetails: () => void
+  debugEnabled: boolean
+  onToggleDebug: () => void
   onClear: () => void
   onCompact: () => void
   onToggleArchive: () => void
@@ -2645,9 +2574,7 @@ function SessionViewNavigation({
               </button>
             ))}
             <div className="my-1 border-t border-border/70" />
-            <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground" onClick={() => { setOpen(false); onOpenWorkspaceDetails() }}>
-              <PanelRightOpen className="size-4" /><span>Workspace details</span>
-            </button>
+            <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Workspace details</p>
             {session ? <div className="px-2 py-2" data-testid="mobile-context-meter">
               <ContextTokenMeter usage={tokenUsage} compact />
             </div> : null}
@@ -2660,6 +2587,17 @@ function SessionViewNavigation({
             <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-45" disabled={archiveDisabled} onClick={() => { setOpen(false); onToggleArchive() }}>
               {archivePending ? <Loader2 className="size-4 animate-spin" /> : <Archive className="size-4" />}
               <span>{archivePending ? (session?.archived_at ? 'Restoring' : 'Archiving') : session?.archived_at ? 'Restore session' : 'Archive session'}</span>
+            </button>
+            <div className="my-1 border-t border-border/70" />
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={debugEnabled}
+              className={cn('flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground', debugEnabled && 'text-primary')}
+              onClick={() => { setOpen(false); onToggleDebug(); triggerRef.current?.focus() }}
+            >
+              <Bug className="size-4" aria-hidden="true" /><span className="flex-1">Debug</span>
+              <span aria-hidden="true" className="text-xs text-muted-foreground">{debugEnabled ? 'On' : 'Off'}</span>
             </button>
           </div>
         ) : null}
@@ -2691,7 +2629,6 @@ function FilesWorkspaceHeader({
   onClear?: () => Promise<void>
   onCompact?: () => Promise<void>
   onToggleArchive?: () => Promise<void>
-  onOpenWorkspaceDetails?: () => void
   clearPending?: boolean
   compactPending?: boolean
   archivePending?: boolean
@@ -2908,37 +2845,6 @@ function sortSessions(sessions: Session[]) {
     const byUpdated = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
     return byUpdated !== 0 ? byUpdated : right.id.localeCompare(left.id)
   })
-}
-
-function notificationDetailsForEvent(event: AgentEvent, events: AgentEvent[], sessions: Session[]) {
-  const session = sessions.find((item) => item.id === event.session_id)
-  return {
-    title: session?.title,
-    excerpt: latestAgentMessageExcerpt(events),
-  }
-}
-
-function latestAgentMessageExcerpt(events: AgentEvent[]) {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event.type !== 'agent.message.completed') {
-      continue
-    }
-    const excerpt = notificationExcerpt(payloadText(event.payload))
-    if (excerpt) {
-      return excerpt
-    }
-  }
-  return ''
-}
-
-function notificationExcerpt(text: string) {
-  const words = text.trim().split(/\s+/).filter(Boolean)
-  if (words.length === 0) {
-    return ''
-  }
-  const clipped = words.slice(0, 18).join(' ')
-  return words.length > 18 ? `${clipped}...` : clipped
 }
 
 function paneWidthStyle(width: number): CSSProperties {
