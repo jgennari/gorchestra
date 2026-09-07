@@ -39,6 +39,16 @@ Suggested cadence: a short smoke on every promotion, the automated regression la
 
 ## Repeatable scenario matrix
 
+### Client debug view
+
+Open any app URL with `?debug=1` (or append `&debug=1` to an existing query). `⌘D` on macOS or `Ctrl+D` elsewhere toggles the same view without a reload; the app overrides the bookmark shortcut while focused. Closing removes the flag, and session/skills navigation preserves it while enabled. Old `?debug-scroll=1` and `?viewportDebug=1` links still work.
+
+The collapsible panel includes global SSE state, requested/current cursor, connection/error counts, retry countdown, last foreground/replay resync, and the last received event's type, session, sequences, and timestamps. Selected-history diagnostics are separate: server/local durable sequence, loaded/live windows, tail validation, older/newer pages, historical focus, and the last completed message in those loaded windows. Scroll pinning, intent, insets, tail distance, and cyan/fuchsia boundary markers remain available. Expand “Viewport & bundle” for Safari geometry, entry asset, version, and service-worker controller.
+
+This is browser-local instrumentation: bounded event metadata in memory and a 1 Hz panel sampler while mounted (sampling skipped when hidden), not a new server endpoint or event log. “Connected” is transport state, not proof of a complete transcript; compare the history fields too. SSE comments/heartbeats are not observable through native EventSource, so last-event age measures application events, not transport liveness. Message previews exclude drafts and raw tool payloads; Copy diagnostics omits message text. Review session names/IDs, errors, and paths before sharing an export.
+
+Regression checks: toggle from a focused composer without changing its draft, selection, history requests, or active SSE; hold the shortcut without flicker; verify both URL aliases and navigation; receive a background-session event while the selected message stays unchanged; induce a stream error/resync and verify counters; collapse/close on a narrow viewport without covering header/composer controls.
+
 Use a fresh profile for cold-cache cases and an intentionally retained profile for warm/upgrade cases. Do not clear caches between steps of a persistence test. Mark every case PASS, FAIL, BLOCKED, or NOT RUN with a build identifier.
 
 | ID | Scenario and actions | Required observation | Lane |
@@ -79,7 +89,7 @@ Use a fresh profile for cold-cache cases and an intentionally retained profile f
 | UI-01 | Chat at 320, 390, 430, 768, 1024 px and narrow desktop panes | No essential control outside its usable container; titles/drafts remain readable | Regression/device |
 | UI-02 | Mobile drawer, search, composer options, files, schedules, settings | Close/Save/Send remain reachable; pins need no hover; menus stay within viewport | Smoke/device |
 | UI-03 | Real keyboard open/close, rotation, safe-area changes, text enlargement | Composer and active controls remain visible; no accidental jump/send | Physical device |
-| UI-04 | iOS Safari and installed PWA: scroll up, then return to the bottom with slow drags and fast flicks; repeat during streaming and with the keyboard open/closed | Jump-to-latest disappears and following resumes at the settled live bottom, including stale touch intent and missing native scrollend; `?debug-scroll=1` must not remain `dist 0px · paused · idle`; a small upward drag or held touch still pauses; historical links stay focused | Regression/physical device |
+| UI-04 | iOS Safari and installed PWA: scroll up, then return to the bottom with slow drags and fast flicks; repeat during streaming and with the keyboard open/closed | Jump-to-latest disappears and following resumes at the settled live bottom, including stale touch intent and missing native scrollend; `?debug=1` must not remain `dist 0px · paused · idle`; a small upward drag or held touch still pauses; historical links stay focused | Regression/physical device |
 | UI-05 | iPad Safari with tab/address bars expanded and collapsed; portrait/landscape and Split View below 1024 CSS px; repeat in installed PWA | Header and session navigation remain fully visible and tappable; browser toolbar changes never shift the app above the viewport; composer remains reachable | CSS regression/physical device |
 | A11Y-01 | Keyboard-only navigation, focus restore, Escape, screen reader dialogs | Named controls/dialogs; focus stays usable; no orphaned focus after view changes | Regression/device |
 | SOAK-01 | Background 30 s, 5 min, 30 min during deterministic activity; resume | Full correct projection, catch-up completed, sensible stale/live status | Soak/device |

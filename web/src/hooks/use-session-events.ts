@@ -713,6 +713,13 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     }
   }, [])
 
+  // Read on demand by the debug panel; no extra state or subscriptions.
+  const readHistoryDebug = useCallback(() => ({
+    lastDurableSeq: lastDurableSeqRef.current,
+    tailHydrated: tailHydratedRef.current,
+    followingTail: followingTailRef.current,
+  }), [])
+
   return {
     events,
     liveEvents,
@@ -727,6 +734,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     loadNewerEvents,
     jumpToLatest,
     setFollowingTail,
+    readHistoryDebug,
   }
 }
 

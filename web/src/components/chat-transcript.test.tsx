@@ -4,10 +4,28 @@ import type { ComponentProps } from 'react'
 import type { AgentEvent } from '@/lib/api'
 import { ChatTranscript as ChatTranscriptComponent } from '@/components/chat-transcript'
 import type { ChatTranscriptMessage } from '@/lib/events'
+import { ClientDebugContext } from '@/lib/client-debug'
 
 function ChatTranscript(props: ComponentProps<typeof ChatTranscriptComponent>) {
   return <ChatTranscriptComponent autoScroll {...props} />
 }
+
+test('debug toggle retains the transcript and populates idle scroll measurements immediately', () => {
+  const events = [event(1, 'agent.message.completed', 'assistant', 'completed', { text: 'Idle message' })]
+  const { container, rerender } = render(<ClientDebugContext.Provider value={false}><ChatTranscript events={events} /></ClientDebugContext.Provider>)
+  const scroller = screen.getByRole('log')
+  expect(container.querySelector('[data-debug-scroll-readout]')).not.toBeInTheDocument()
+  rerender(<ClientDebugContext.Provider value={true}><ChatTranscript events={events} /></ClientDebugContext.Provider>)
+  expect(screen.getByRole('log')).toBe(scroller)
+  const readout = container.querySelector('[data-debug-scroll-readout]')
+  expect(readout).toHaveTextContent('inset 0px · tail 6px · dist 0px')
+  expect(readout).toHaveTextContent('pinned · idle')
+  expect(readout).not.toHaveTextContent('waiting for scroll')
+  expect(readout).not.toBeVisible()
+  rerender(<ClientDebugContext.Provider value={false}><ChatTranscript events={events} /></ClientDebugContext.Provider>)
+  expect(container.querySelector('[data-debug-scroll-readout]')).not.toBeInTheDocument()
+  expect(screen.getByRole('log')).toBe(scroller)
+})
 
 test('renders user and assistant messages without duplicating completion text', () => {
   const { container } = render(

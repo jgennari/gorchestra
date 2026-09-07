@@ -27,6 +27,8 @@ import { ConversationMap } from '@/components/conversation-map'
 import { SignalField } from '@/components/signal-field'
 import { WorkspaceFileBrowser } from '@/components/workspace-files'
 import { cn } from '@/lib/utils'
+import { ContextTokenMeter } from '@/components/context-token-meter'
+import { formatTokenCount } from '@/lib/token-count'
 
 type Props = {
   session: Session | null
@@ -374,27 +376,11 @@ function Metric({ label, value }: { label: string; value: number }) {
 
 function TokenUsageView({ usage, cumulativeTokenCount }: { usage: TokenUsageSummary; cumulativeTokenCount: number }) {
   const contextOnly = usage.kind === 'context'
-  const contextTokens = usage.last.totalTokens > 0 ? usage.last.totalTokens : usage.total.totalTokens
-  const contextPercent = contextTokens / usage.modelContextWindow
   const cachedPercent = usage.total.inputTokens > 0 ? usage.total.cachedInputTokens / usage.total.inputTokens : 0
 
   return (
     <div className="mt-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] font-medium text-muted-foreground">Context</span>
-        <span className={cn('text-xs font-semibold tabular-nums', tokenPressureClassName(contextPercent))}>
-          {formatPercent(contextPercent)}
-        </span>
-      </div>
-      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-muted">
-        <div
-          className={cn('h-full rounded-full', tokenPressureBarClassName(contextPercent))}
-          style={{ width: `${Math.min(Math.max(contextPercent * 100, 0), 100)}%` }}
-        />
-      </div>
-      <p className="mt-1 truncate text-[11px] text-muted-foreground">
-        {formatTokenCount(contextTokens)} / {formatTokenCount(usage.modelContextWindow)} current
-      </p>
+      <ContextTokenMeter usage={usage} />
       {contextOnly ? (
         usage.cost ? (
           <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{formatCost(usage.cost)} cost</p>
@@ -503,26 +489,6 @@ function activeChatClassName(running: boolean, state: StreamState, error: string
   if (error || state === 'disconnected') return 'bg-destructive'
   if (running) return 'bg-[hsl(var(--success))]'
   return streamStateClassName(state, error)
-}
-
-function tokenPressureClassName(percent: number) {
-  if (percent >= 0.9) return 'text-destructive'
-  if (percent >= 0.7) return 'text-amber-700 dark:text-amber-400'
-  return 'text-foreground'
-}
-
-function tokenPressureBarClassName(percent: number) {
-  if (percent >= 0.9) return 'bg-destructive'
-  if (percent >= 0.7) return 'bg-[hsl(var(--warning))]'
-  return 'bg-primary'
-}
-
-function formatTokenCount(value: number) {
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 10_000) return `${Math.round(value / 1_000)}k`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
-  return String(value)
 }
 
 function formatCompactCount(value: number) {

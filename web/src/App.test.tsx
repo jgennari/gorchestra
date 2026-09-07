@@ -71,6 +71,82 @@ test('uses a selected session from the initial list without refetching its detai
   expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1')).toHaveLength(0)
 })
 
+test('Cmd/Ctrl+D toggles client debug without restarting SSE, refetching history, or changing the draft', async () => {
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+  const source = await findEventSource('/api/sessions/activity/stream')
+  const prompt = screen.getByRole('textbox', { name: 'Prompt' })
+  fireEvent.change(prompt, { target: { value: 'Unsent draft stays here' } })
+  prompt.focus()
+  expect(screen.queryByRole('complementary', { name: 'Client debug' })).not.toBeInTheDocument()
+  const historyRequests = () => fetch.mock.calls.filter(([url]) => /\/events\?|\/api\/sessions\?/.test(String(url))).length
+  const requestsBefore = historyRequests()
+
+  expect(fireEvent.keyDown(prompt, { key: 'd', metaKey: true })).toBe(false)
+  expect(screen.getByRole('complementary', { name: 'Client debug' })).toBeVisible()
+  expect(window.location.search).toBe('?debug=1')
+  fireEvent.keyDown(prompt, { key: 'd', metaKey: true, repeat: true })
+  expect(screen.getByRole('complementary', { name: 'Client debug' })).toBeVisible()
+  expect(prompt).toHaveValue('Unsent draft stays here')
+  expect(prompt).toHaveFocus()
+  expect(FakeEventSource.instances).toHaveLength(1)
+  expect(source.closed).toBe(false)
+  expect(historyRequests()).toBe(requestsBefore)
+
+  fireEvent.keyDown(prompt, { key: 'd', ctrlKey: true })
+  expect(screen.queryByRole('complementary', { name: 'Client debug' })).not.toBeInTheDocument()
+  expect(window.location.search).toBe('')
+  fireEvent.keyDown(prompt, { key: 'd', metaKey: true, shiftKey: true })
+  fireEvent.keyDown(prompt, { key: 'd', metaKey: true, isComposing: true })
+  expect(screen.queryByRole('complementary', { name: 'Client debug' })).not.toBeInTheDocument()
+})
+
+test.each(['debug=1', 'debug-scroll=1', 'viewportDebug=true'])('debug URLs survive session navigation: %s', async (query) => {
+  window.history.replaceState({}, '', `/sessions/sess_1?${query}`)
+  render(<App />)
+  await findEventSource('/api/sessions/activity/stream')
+  expect(screen.getByRole('complementary', { name: 'Client debug' })).toBeVisible()
+  fireEvent.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+  expect(window.location.pathname).toBe('/sessions/write-docs')
+  expect(window.location.search).toBe('?debug=1')
+  fireEvent.keyDown(window, { key: 's', metaKey: true })
+  expect(window.location.pathname).toBe('/skills')
+  expect(window.location.search).toBe('?debug=1')
+  fireEvent.click(screen.getByRole('button', { name: 'Close debug view' }))
+  expect(window.location.search).toBe('')
+})
+
+test('debug distinguishes the last global SSE event from the last selected-session message', async () => {
+  render(<App />)
+  const source = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    source.emit({ ...event(5, 'agent.message.completed', { text: 'Selected answer' }), global_seq: 10 })
+    source.emit({ ...event(6, 'tool.call.completed', { command: 'private command' }, 'sess_2'), global_seq: 11 })
+  })
+  fireEvent.keyDown(window, { key: 'd', metaKey: true })
+  const panel = within(screen.getByRole('complementary', { name: 'Client debug' }))
+  await waitFor(() => expect(panel.getByText('sess_2 #6 · global 11')).toBeVisible(), { timeout: 2500 })
+  expect(panel.getByText('tool.call.completed · durable')).toBeVisible()
+  expect(panel.getByText('Selected answer')).toBeVisible()
+  expect(panel.queryByText('private command')).not.toBeInTheDocument()
+  expect(panel.getByText('11 · opened after 0')).toBeVisible()
+  expect(document.querySelector('[data-debug-scroll-readout]')).toBeInTheDocument()
+})
+
+test('debug reports stream errors and foreground resyncs without changing recovery', async () => {
+  render(<App />)
+  const source = await findEventSource('/api/sessions/activity/stream')
+  act(() => source.fail())
+  fireEvent.keyDown(window, { key: 'd', metaKey: true })
+  const panel = within(screen.getByRole('complementary', { name: 'Client debug' }))
+  expect(panel.getAllByText('reconnecting · source closed').length).toBeGreaterThan(0)
+  expect(panel.getByText('1 · errors 1')).toBeVisible()
+  act(() => document.dispatchEvent(new Event('visibilitychange')))
+  await waitFor(() => expect(panel.getByText(/foreground return/)).toBeVisible(), { timeout: 2500 })
+  expect(FakeEventSource.instances.filter((item) => !item.closed)).toHaveLength(1)
+})
+
 test('initial gateway failure recovers automatically without an online event or reload', async () => {
   const normalFetch = fetchMock()
   let unavailable = true
@@ -739,6 +815,48 @@ test('mobile session menu opens workspace details in a floating dialog', async (
   expect(within(dialog).getByText('Activity')).toBeInTheDocument()
   expect(within(dialog).queryByText('Files')).not.toBeInTheDocument()
   expect(within(dialog).queryByRole('button', { name: /main\.go/i })).not.toBeInTheDocument()
+})
+
+test('mobile actions show a live context counter without fetching more data or closing the menu', async () => {
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+  const source = await findEventSource('/api/sessions/activity/stream')
+  const header = within(screen.getByTestId('mobile-floating-session-header'))
+  const usageEvent = (seq: number, tokens: number) => event(seq, 'provider.codex.event', {
+    provider: 'codex',
+    provider_event_type: 'thread/tokenUsage/updated',
+    raw: { tokenUsage: {
+      total: { totalTokens: 8_000_000, inputTokens: 8_000_000, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0 },
+      last: { totalTokens: tokens, inputTokens: tokens, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0 },
+      modelContextWindow: 256_000,
+    } },
+  })
+  act(() => source.emit(usageEvent(5, 128_000)))
+  await waitFor(() => expect(screen.getByText('128k / 256k current')).toBeInTheDocument())
+  const requestCount = fetch.mock.calls.length
+  fireEvent.click(header.getByRole('button', { name: 'More session actions' }))
+  const menu = header.getByRole('menu', { name: 'Session navigation and actions' })
+  const meter = within(menu).getByRole('meter', { name: 'Context token usage' })
+  expect(within(menu).getByText('128k / 256k')).toBeInTheDocument()
+  expect(within(menu).getByText('50%')).toBeInTheDocument()
+  expect(meter.compareDocumentPosition(within(menu).getByRole('menuitem', { name: 'Clear context' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(fetch.mock.calls.length).toBe(requestCount)
+
+  act(() => source.emit(usageEvent(6, 192_000)))
+  await waitFor(() => expect(within(menu).getByText('192k / 256k')).toBeInTheDocument())
+  expect(within(menu).getByText('75%')).toBeInTheDocument()
+  expect(header.getByRole('button', { name: 'More session actions' })).toHaveAttribute('aria-expanded', 'true')
+})
+
+test('mobile context meter does not invent counts before usage has arrived', async () => {
+  render(<App />)
+  await findEventSource('/api/sessions/activity/stream')
+  const header = within(screen.getByTestId('mobile-floating-session-header'))
+  fireEvent.click(header.getByRole('button', { name: 'More session actions' }))
+  const menu = within(header.getByRole('menu'))
+  expect(menu.getByText('No token usage yet')).toBeInTheDocument()
+  expect(menu.queryByRole('meter')).not.toBeInTheDocument()
 })
 
 test('header files view opens workspace files inline', async () => {

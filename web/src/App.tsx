@@ -56,6 +56,7 @@ import {
   isTerminalEvent,
   knownEventTypes,
   lastSeq,
+  latestTokenUsage,
   payloadText,
   shouldRefreshWorkspaceFilesForEvent,
   statusFromEvent,
@@ -85,6 +86,7 @@ import { HostConsole } from '@/components/host-console'
 import { HostPreview } from '@/components/host-preview'
 import { NotificationsPopover } from '@/components/notifications-popover'
 import { RunHealthRail } from '@/components/run-health-rail'
+import { ContextTokenMeter } from '@/components/context-token-meter'
 import { ChatSessionHeader, SessionDetail } from '@/components/session-detail'
 import { SessionList } from '@/components/session-list'
 import { SessionSchedules } from '@/components/session-schedules'
@@ -126,6 +128,18 @@ import { applySessionEvent } from '@/lib/session-events'
 import { readFileDraft } from '@/lib/file-drafts'
 import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
 import { ingestClientEvent, publishClientSessionEvent } from '@/lib/client-event-store'
+import { ClientDebugPanel } from '@/components/client-debug-panel'
+import {
+  ClientDebugContext,
+  clientDebugEnabled,
+  clientDebugURL,
+  createClientDebugTransport,
+  debugEventMetadata,
+  debugEventRange,
+  debugTime,
+  latestDebugMessage,
+  type ClientDebugSnapshot,
+} from '@/lib/client-debug'
 
 type SessionRouteHistoryMode = 'push' | 'replace' | 'none'
 type PaneSide = 'left' | 'right'
@@ -138,18 +152,6 @@ type AppView = SessionRouteView
 type PendingSessionAction = {
   action: CodexSessionAction
   sessionID: string
-}
-type ViewportDebugSnapshot = {
-  inner: string
-  outer: string
-  documentElement: string
-  visualViewport: string
-  visualOffset: string
-  scroll: string
-  safeTop: string
-  appRect: string
-  screen: string
-  dpr: string
 }
 type InitialSessionState = {
   sessions: Session[]
@@ -175,7 +177,18 @@ const paneLimits = {
 }
 
 function App() {
-  const viewportDebug = useMemo(() => loadViewportDebugPreference(), [])
+  const [clientDebug, setClientDebug] = useState(clientDebugEnabled)
+  const debugTransportRef = useRef(createClientDebugTransport())
+  const toggleClientDebug = useCallback(() => {
+    const next = !clientDebug
+    window.history.replaceState({}, '', clientDebugURL(window.location.href, next))
+    setClientDebug(next)
+  }, [clientDebug])
+  useEffect(() => {
+    const update = () => setClientDebug(clientDebugEnabled())
+    window.addEventListener('popstate', update)
+    return () => window.removeEventListener('popstate', update)
+  }, [])
   const initialSessionState = useMemo(() => loadInitialSessionStateFromLocation(), [])
   const [sessions, setSessions] = useState<Session[]>(initialSessionState.sessions)
   const [selectedSessionID, setSelectedSessionID] = useState<string | null>(initialSessionState.selectedSessionID)
@@ -442,7 +455,7 @@ function App() {
     selectedSessionIDRef.current = null
     setSelectedSessionID(null)
     if (historyMode !== 'none' && window.location.pathname !== '/skills') {
-      window.history[historyMode === 'replace' ? 'replaceState' : 'pushState']({}, '', '/skills')
+      window.history[historyMode === 'replace' ? 'replaceState' : 'pushState']({}, '', clientDebugURL('/skills'))
     }
     setMobileListOpen(false)
   }, [])
@@ -624,6 +637,11 @@ function App() {
       }
 
       const key = event.key.toLowerCase()
+      if (key === 'd' && !event.isComposing) {
+        event.preventDefault()
+        if (!event.repeat) toggleClientDebug()
+        return
+      }
       if (key === 'k') {
         event.preventDefault()
         setSpotlightOpen(true)
@@ -652,7 +670,7 @@ function App() {
     }
     window.addEventListener('keydown', handleNavigationShortcut)
     return () => window.removeEventListener('keydown', handleNavigationShortcut)
-  }, [requestSessionSelection, selectOverview, selectUserSkills])
+  }, [requestSessionSelection, selectOverview, selectUserSkills, toggleClientDebug])
 
   useEffect(() => {
     setShowDebugEvents(loadSessionDebugPreference(selectedSessionID))
@@ -840,6 +858,7 @@ function App() {
     loadNewerEvents,
     jumpToLatest,
     setFollowingTail,
+    readHistoryDebug,
   } = useSessionEvents(selectedSessionID, {
     refreshKey: eventRefreshKey,
     historySyncKey,
@@ -849,6 +868,41 @@ function App() {
     liveStreamState: activityStreamState,
     networkAvailable: serverReachable,
   })
+
+  const readDebugSnapshot = useCallback((): ClientDebugSnapshot => {
+    const debugTransport = debugTransportRef.current
+    const history = readHistoryDebug()
+    const lastEvent = debugTransport.lastEvent
+    return {
+      stream: {
+        connection: `${activityStreamState} · source ${debugTransport.sourceState}`,
+        network: `${browserIsOnline() ? 'online' : 'offline'} · server ${serverReachable ? 'reachable' : 'unreachable'} · ${document.visibilityState}`,
+        cursor: `${activityCursorRef.current} · opened after ${debugTransport.requestedCursor}`,
+        attempts: `${debugTransport.attempts} · errors ${debugTransport.errors}`,
+        opened: debugTime(debugTransport.openedAt),
+        retry: debugTransport.retryAt ? `in ${Math.max(0, Math.ceil((debugTransport.retryAt - Date.now()) / 1000))}s` : 'none',
+        lastError: debugTime(debugTransport.errorAt),
+        resync: debugTransport.resyncs ? `${debugTransport.resyncs} · ${debugTransport.resyncReason} · ${debugTime(debugTransport.resyncAt)}` : 'none',
+        received: `${debugTransport.received} · rejected ${debugTransport.rejected}`,
+        lastEvent: lastEvent ? `${lastEvent.type} · ${lastEvent.transient ? 'transient' : 'durable'}` : 'none received this page load',
+        eventSession: lastEvent ? `${lastEvent.session} #${lastEvent.seq} · global ${lastEvent.cursor}` : '—',
+        eventReceived: lastEvent ? debugTime(lastEvent.receivedAt) : '—',
+        eventCreated: lastEvent ? debugTime(lastEvent.createdAt) : '—',
+      },
+      history: {
+        session: selectedSession ? `${selectedSession.title} (${selectedSession.id})` : 'none',
+        sync: `${streamState} · boundary ${historySyncKey} · snapshot ${activityCursorReady ? 'ready' : 'pending'}`,
+        sequences: `server ${selectedSession ? latestSessionSeq(selectedSession) : 0} · local durable ${history.lastDurableSeq}`,
+        tail: `${history.tailHydrated ? 'validated' : 'not validated'} · ${history.followingTail ? 'following' : 'paused'}`,
+        loaded: debugEventRange(events),
+        live: debugEventRange(liveEvents),
+        pages: `older ${hasOlderEvents ? 'yes' : 'no'}${loadingOlderEvents ? ' (loading)' : ''} · newer ${hasNewerEvents ? 'yes' : 'no'}${loadingNewerEvents ? ' (loading)' : ''}`,
+        focus: focusedEventSeq > 0 ? `#${focusedEventSeq}` : 'live tail',
+        error: streamError || 'none',
+      },
+      ...latestDebugMessage(events, liveEvents),
+    }
+  }, [activityCursorReady, activityStreamState, events, focusedEventSeq, hasNewerEvents, hasOlderEvents, historySyncKey, liveEvents, loadingNewerEvents, loadingOlderEvents, readHistoryDebug, selectedSession, serverReachable, streamError, streamState])
 
   const handleJumpToLatest = useCallback(() => {
     if (focusedEventSeq <= 0) return jumpToLatest()
@@ -1031,6 +1085,7 @@ function App() {
       setActivityStreamState('disconnected')
       return
     }
+    const debugTransport = debugTransportRef.current
     let closed = false
     let source: EventSource | null = null
     let reconnectTimer: number | undefined
@@ -1040,23 +1095,31 @@ function App() {
     function closeSource() {
       source?.close()
       source = null
+      debugTransport.sourceState = 'closed'
+      debugTransport.retryAt = 0
     }
 
     function handleActivityMessage(message: MessageEvent<string>) {
       if (closed || resyncing) return
       try {
         const event = JSON.parse(message.data) as AgentEvent
+        debugTransport.received += 1
+        debugTransport.lastEvent = debugEventMetadata(event)
         handleActivityEvent(event)
         if (event.global_seq && event.global_seq > activityCursorRef.current) {
           activityCursorRef.current = event.global_seq
         }
       } catch {
+        debugTransport.rejected += 1
         // A malformed sidebar event should not interrupt the selected transcript stream.
       }
     }
 
-    function handleResyncRequired() {
+    function handleResyncRequired(reason: string) {
       if (closed || resyncing) return
+      debugTransport.resyncs += 1
+      debugTransport.resyncAt = Date.now()
+      debugTransport.resyncReason = reason
       resyncing = true
       setActivityStreamState('loading')
       closeSource()
@@ -1080,6 +1143,7 @@ function App() {
       setActivityStreamState('reconnecting')
       const delay = Math.min(1000 * 2 ** reconnectAttempt, maximumActivityReconnectDelayMs)
       reconnectAttempt += 1
+      debugTransport.retryAt = Date.now() + delay
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = undefined
         connect()
@@ -1092,6 +1156,9 @@ function App() {
         return
       }
       closeSource()
+      debugTransport.attempts += 1
+      debugTransport.requestedCursor = activityCursorRef.current
+      debugTransport.sourceState = 'connecting'
       const connectedSource = new EventSource(sessionActivityStreamURL(activityCursorRef.current, {
         clientID: activityClientIDRef.current,
         watchSessionID: selectedSessionIDRef.current,
@@ -1101,11 +1168,15 @@ function App() {
       source.onopen = () => {
         if (closed || source !== connectedSource) return
         reconnectAttempt = 0
+        debugTransport.sourceState = 'open'
+        debugTransport.openedAt = Date.now()
         setServerReachable(true)
         setActivityStreamState('connected')
       }
       source.onerror = () => {
         if (closed || source !== connectedSource) return
+        debugTransport.errors += 1
+        debugTransport.errorAt = Date.now()
         closeSource()
         if (!browserIsOnline()) setServerReachable(false)
         scheduleReconnect()
@@ -1116,7 +1187,7 @@ function App() {
         })
       }
       source.addEventListener('stream.resync.required', () => {
-        if (source === connectedSource) handleResyncRequired()
+        if (source === connectedSource) handleResyncRequired('stream.resync.required')
       })
     }
 
@@ -1126,10 +1197,10 @@ function App() {
     // Safari can suspend a page without an offline/error event. On return,
     // replace the potentially half-open stream and reconcile cached history.
     function handleVisible() {
-      if (document.visibilityState === 'visible') handleResyncRequired()
+      if (document.visibilityState === 'visible') handleResyncRequired('foreground return')
     }
     function handlePageShow(event: PageTransitionEvent) {
-      if (event.persisted) handleResyncRequired()
+      if (event.persisted) handleResyncRequired('page restored (bfcache)')
     }
     document.addEventListener('visibilitychange', handleVisible)
     window.addEventListener('pageshow', handlePageShow)
@@ -1662,6 +1733,7 @@ function App() {
   const viewToggle = (
     <SessionViewNavigation
       session={selectedSession}
+      events={events}
       view={displayedAppView}
       onSelect={(view) => {
         if (serverReachable) selectAppView(view)
@@ -1798,6 +1870,7 @@ function App() {
     serverReachable
 
   return (
+    <ClientDebugContext.Provider value={clientDebug}>
     <main className="app-shell">
       <div className="hidden min-h-0 shrink-0 lg:flex" style={paneWidthStyle(paneWidths.left)}>
         {list}
@@ -2431,8 +2504,9 @@ function App() {
         </DialogContent>
       </Dialog>
       <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
-      {viewportDebug ? <ViewportDebugPanel /> : null}
+      {clientDebug ? <ClientDebugPanel readSnapshot={readDebugSnapshot} onClose={toggleClientDebug} /> : null}
     </main>
+    </ClientDebugContext.Provider>
   )
 }
 
@@ -2453,6 +2527,7 @@ function OfflineGlobalView({ onOpenSessions }: { onOpenSessions: () => void }) {
 
 function SessionViewNavigation({
   session,
+  events,
   view,
   onSelect,
   onOpenWorkspaceDetails,
@@ -2464,6 +2539,7 @@ function SessionViewNavigation({
   archivePending,
 }: {
   session: Session | null
+  events: AgentEvent[]
   view: AppView
   onSelect: (view: AppView) => void
   onOpenWorkspaceDetails: () => void
@@ -2476,6 +2552,7 @@ function SessionViewNavigation({
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
+  const tokenUsage = useMemo(() => open ? latestTokenUsage(events) : null, [events, open])
   const { triggerRef, popoverStyle } = useAnchoredPopover(open, 288)
   const views: Array<{ view: AppView; label: string; shortLabel: string; icon: ReactNode }> = [
     { view: 'session', label: 'Show chat', shortLabel: 'Chat', icon: <MessageSquare className="size-4" /> },
@@ -2571,6 +2648,9 @@ function SessionViewNavigation({
             <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground" onClick={() => { setOpen(false); onOpenWorkspaceDetails() }}>
               <PanelRightOpen className="size-4" /><span>Workspace details</span>
             </button>
+            {session ? <div className="px-2 py-2" data-testid="mobile-context-meter">
+              <ContextTokenMeter usage={tokenUsage} compact />
+            </div> : null}
             <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45" disabled={codexActionDisabled} onClick={() => { setOpen(false); onClear() }}>
               {clearPending ? <Loader2 className="size-4 animate-spin" /> : <Eraser className="size-4" />}<span>{clearPending ? 'Clearing' : 'Clear context'}</span>
             </button>
@@ -2637,61 +2717,6 @@ function FilesWorkspaceHeader({
         {headerActions}
       </div>
     </div>
-  )
-}
-
-function ViewportDebugPanel() {
-  const probeRef = useRef<HTMLDivElement | null>(null)
-  const [snapshot, setSnapshot] = useState<ViewportDebugSnapshot>(() => viewportDebugSnapshot(null))
-
-  useEffect(() => {
-    const visualViewport = window.visualViewport
-
-    function updateSnapshot() {
-      setSnapshot(viewportDebugSnapshot(probeRef.current))
-    }
-
-    updateSnapshot()
-    window.addEventListener('resize', updateSnapshot)
-    window.addEventListener('orientationchange', updateSnapshot)
-    window.addEventListener('scroll', updateSnapshot, { passive: true })
-    visualViewport?.addEventListener('resize', updateSnapshot)
-    visualViewport?.addEventListener('scroll', updateSnapshot)
-
-    const timer = window.setInterval(updateSnapshot, 1000)
-    return () => {
-      window.removeEventListener('resize', updateSnapshot)
-      window.removeEventListener('orientationchange', updateSnapshot)
-      window.removeEventListener('scroll', updateSnapshot)
-      visualViewport?.removeEventListener('resize', updateSnapshot)
-      visualViewport?.removeEventListener('scroll', updateSnapshot)
-      window.clearInterval(timer)
-    }
-  }, [])
-
-  return (
-    <>
-      <div
-        ref={probeRef}
-        aria-hidden="true"
-        className="pointer-events-none fixed left-0 top-0 h-0 w-0 overflow-hidden"
-        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
-      />
-      <div className="fixed inset-x-2 bottom-2 z-[100] rounded-lg border border-amber-300/60 bg-background/92 p-2 font-mono text-[11px] leading-4 text-foreground shadow-xl backdrop-blur">
-        <div className="mb-1 flex items-center justify-between gap-2 font-sans text-xs font-semibold">
-          <span>Viewport debug</span>
-          <span className="text-muted-foreground">remove param to hide</span>
-        </div>
-        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2">
-          {Object.entries(snapshot).map(([label, value]) => (
-            <div key={label} className="contents">
-              <dt className="text-muted-foreground">{label}</dt>
-              <dd className="truncate">{value}</dd>
-            </div>
-          ))}
-        </dl>
-      </div>
-    </>
   )
 }
 
@@ -3170,45 +3195,6 @@ function debugStorageKey(sessionID: string) {
   return `${debugStorageKeyPrefix}${sessionID}`
 }
 
-function loadViewportDebugPreference() {
-  if (typeof window === 'undefined') {
-    return false
-  }
-
-  const value = new URLSearchParams(window.location.search).get('viewportDebug')
-  return value === '1' || value === 'true'
-}
-
-function viewportDebugSnapshot(probe: HTMLElement | null): ViewportDebugSnapshot {
-  const visualViewport = window.visualViewport
-  const documentElement = document.documentElement
-  const appRect = document.querySelector('.app-shell')?.getBoundingClientRect()
-  const safeTop = probe ? window.getComputedStyle(probe).paddingTop : 'n/a'
-
-  return {
-    inner: `${Math.round(window.innerWidth)} x ${Math.round(window.innerHeight)}`,
-    outer: `${Math.round(window.outerWidth)} x ${Math.round(window.outerHeight)}`,
-    documentElement: `${Math.round(documentElement.clientWidth)} x ${Math.round(documentElement.clientHeight)}`,
-    visualViewport: visualViewport
-      ? `${Math.round(visualViewport.width)} x ${Math.round(visualViewport.height)} scale ${round2(visualViewport.scale)}`
-      : 'n/a',
-    visualOffset: visualViewport
-      ? `top ${round2(visualViewport.offsetTop)} pageTop ${round2(visualViewport.pageTop)}`
-      : 'n/a',
-    scroll: `${round2(window.scrollX)}, ${round2(window.scrollY)}`,
-    safeTop,
-    appRect: appRect
-      ? `top ${round2(appRect.top)} bottom ${round2(appRect.bottom)} height ${round2(appRect.height)}`
-      : 'n/a',
-    screen: `${window.screen.width} x ${window.screen.height} avail ${window.screen.availHeight}`,
-    dpr: String(round2(window.devicePixelRatio)),
-  }
-}
-
-function round2(value: number) {
-  return Math.round(value * 100) / 100
-}
-
 function loadInitialSessionStateFromLocation(): InitialSessionState {
   const route = selectedSessionRouteFromLocation()
   const cachedSession = cachedSessionForRoute(route)
@@ -3328,15 +3314,16 @@ function writeSelectedSessionRoute(
     : currentRoute.sessionSlug && currentRouteSessionID === sessionID
       ? sessionSlugPath(currentRoute.sessionSlug, view, filePath)
       : sessionPath(sessionID, view, filePath)
-  if (window.location.pathname === path && window.location.search === '') {
+  const url = clientDebugURL(path)
+  if (`${window.location.pathname}${window.location.search}` === url) {
     return
   }
 
   if (historyMode === 'replace') {
-    window.history.replaceState({}, '', path)
+    window.history.replaceState({}, '', url)
     return
   }
-  window.history.pushState({}, '', path)
+  window.history.pushState({}, '', url)
 }
 
 function writeSpotlightResultRoute(
@@ -3350,7 +3337,7 @@ function writeSpotlightResultRoute(
   const params = new URLSearchParams()
   if (target.eventSeq && target.eventSeq > 0) params.set('event_seq', String(target.eventSeq))
   if (target.line && target.line > 0) params.set('line', String(target.line))
-  const url = params.size > 0 ? `${path}?${params}` : path
+  const url = clientDebugURL(params.size > 0 ? `${path}?${params}` : path)
   if (`${window.location.pathname}${window.location.search}` === url) return
   window.history.pushState({}, '', url)
 }

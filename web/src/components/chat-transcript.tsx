@@ -14,6 +14,7 @@ import {
   isValidElement,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -45,6 +46,7 @@ import { buildChatTimeline } from '@/lib/events'
 import { clipboardCopyErrorMessage, copyText } from '@/lib/clipboard'
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import { ClientDebugContext, clientDebugEnabled } from '@/lib/client-debug'
 
 const TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX = 6
 // Hysteresis keeps incidental wheel/touch jitter magnetized to the live tail,
@@ -134,7 +136,7 @@ export function ChatTranscript({
   ], [events, optimisticUserMessages, showDebugEvents])
   const latestOptimisticMessageID = optimisticUserMessages.at(-1)?.id ?? ''
   const previousOptimisticMessageIDRef = useRef(latestOptimisticMessageID)
-  const scrollDebug = useMemo(transcriptScrollDebugEnabled, [])
+  const scrollDebug = useContext(ClientDebugContext) ?? clientDebugEnabled()
   const scrollerElementRef = useRef<HTMLDivElement | null>(null)
   const scrollDebugReadoutRef = useRef<HTMLDivElement | null>(null)
   const initiallyFollowingTail = focusSeq <= 0 && (pinToLatestOnMount || !hasNewerEvents)
@@ -431,6 +433,9 @@ export function ChatTranscript({
       `top ${Math.round(scroller.scrollTop)}/${Math.round(maxScrollTop)}`,
       followingTailRef.current ? 'pinned' : 'paused',
       instance.scrollDirection ?? 'idle',
+      scrollTouchActiveRef.current ? 'touch held' : 'no touch',
+      scrollPointerActiveRef.current ? 'pointer held' : 'no pointer',
+      `intent ${userScrollIntentRef.current ?? 'none'}`,
     ].join(' · ')
   }
 
@@ -590,6 +595,8 @@ export function ChatTranscript({
 
   useLayoutEffect(() => {
     updateVisibleSequenceRange(virtualizer)
+    // A keyboard toggle must populate the panel even on an idle transcript.
+    updateScrollDebugReadout(virtualizer)
   })
 
   useLayoutEffect(() => {
@@ -786,7 +793,8 @@ export function ChatTranscript({
           />
           <div
             ref={scrollDebugReadoutRef}
-            className="pointer-events-none absolute right-3 top-20 z-40 rounded bg-black/85 px-2 py-1 font-mono text-[10px] text-white shadow"
+            data-debug-scroll-readout="true"
+            hidden
           >
             inset {composerClearanceHeight}px · tail {TRANSCRIPT_BOTTOM_BREATHING_ROOM_PX}px · waiting for scroll
           </div>
@@ -810,11 +818,6 @@ export function ChatTranscript({
       ) : null}
     </div>
   )
-}
-
-function transcriptScrollDebugEnabled() {
-  if (typeof window === 'undefined') return false
-  return new URLSearchParams(window.location.search).get('debug-scroll') === '1'
 }
 
 function physicalDistanceFromEnd(scroller: HTMLDivElement | null) {
