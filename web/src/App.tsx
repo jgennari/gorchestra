@@ -1,5 +1,7 @@
-import { Archive, BookOpen, Bug, CalendarClock, Eraser, Folder, Loader2, Menu, MessageSquare, Minimize2, MoreHorizontal, Plus, Server, Settings, Terminal, WifiOff, X } from 'lucide-react'
+import { Archive, Bug, Eraser, Folder, Loader2, Menu, MessageSquare, Minimize2, MoreHorizontal, Plus, Settings, Terminal, WifiOff, X } from 'lucide-react'
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -82,15 +84,12 @@ import { AppMenu } from '@/components/app-menu'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { DashboardOverview } from '@/components/dashboard-overview'
 import { HostConsole } from '@/components/host-console'
-import { HostPreview } from '@/components/host-preview'
 import { NotificationsPopover } from '@/components/notifications-popover'
 import { RunHealthRail } from '@/components/run-health-rail'
 import { ContextTokenMeter } from '@/components/context-token-meter'
 import { ChatSessionHeader, SessionDetail } from '@/components/session-detail'
 import { SessionList } from '@/components/session-list'
-import { SessionSchedules } from '@/components/session-schedules'
-import { SessionSettings } from '@/components/session-settings'
-import { RepositorySkills } from '@/components/repository-skills'
+import { SessionSettingsPage } from '@/components/session-settings-page'
 import { SpotlightSearch } from '@/components/spotlight-search'
 import { WorkspaceFilesView } from '@/components/workspace-files'
 import { hasSessionAttention, latestSessionSeq, sessionAttention } from '@/lib/session-attention'
@@ -101,6 +100,7 @@ import {
 } from '@/lib/notification-attention'
 import type { TranscriptSequenceRange } from '@/lib/events'
 import {
+  isSessionSettingsView,
   sessionPath,
   sessionRouteFromPathname,
   sessionSlugPath,
@@ -139,6 +139,8 @@ import {
   latestDebugMessage,
   type ClientDebugSnapshot,
 } from '@/lib/client-debug'
+
+const RepositorySkills = lazy(() => import('@/components/repository-skills').then((module) => ({ default: module.RepositorySkills })))
 
 type SessionRouteHistoryMode = 'push' | 'replace' | 'none'
 type PaneSide = 'left' | 'right'
@@ -1761,93 +1763,6 @@ function App() {
       <Menu />
     </Button>
   )
-  const floatingRepositorySkillsHeader = (
-    <>
-      <div
-        data-testid="mobile-floating-skills-header"
-        className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden"
-      >
-        <FilesWorkspaceHeader
-          session={selectedSession}
-          resolvingSessionID={selectedSession ? null : selectedSessionID}
-          fallbackTitle="Skills"
-          errorMessage={chatErrorMessage}
-          leadingAction={openSessionsButton}
-          headerActions={viewToggle}
-          onUpdateTitle={handleUpdateTitle}
-          onUpdateWorkspace={handleUpdateWorkspace}
-          hasUnsavedWorkspaceFile={workspaceFileDirty}
-          onUpdateAgentOptions={handleUpdateAgentOptions}
-          showDebugEvents={showDebugEvents}
-          onShowDebugEventsChange={handleShowDebugEventsChange}
-          onClear={() => {
-            requestSessionAction('clear')
-            return Promise.resolve()
-          }}
-          onCompact={() => {
-            requestSessionAction('compact')
-            return Promise.resolve()
-          }}
-          onToggleArchive={() => {
-            requestArchiveSession()
-            return Promise.resolve()
-          }}
-          clearPending={
-            selectedSession
-              ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
-              : false
-          }
-          compactPending={
-            selectedSession
-              ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
-              : false
-          }
-          archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
-        />
-      </div>
-      <div
-        data-testid="floating-skills-header"
-        className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block"
-      >
-        <FilesWorkspaceHeader
-          session={selectedSession}
-          resolvingSessionID={selectedSession ? null : selectedSessionID}
-          fallbackTitle="Skills"
-          errorMessage={chatErrorMessage}
-          headerActions={viewToggle}
-          onUpdateTitle={handleUpdateTitle}
-          onUpdateWorkspace={handleUpdateWorkspace}
-          hasUnsavedWorkspaceFile={workspaceFileDirty}
-          onUpdateAgentOptions={handleUpdateAgentOptions}
-          showDebugEvents={showDebugEvents}
-          onShowDebugEventsChange={handleShowDebugEventsChange}
-          onClear={() => {
-            requestSessionAction('clear')
-            return Promise.resolve()
-          }}
-          onCompact={() => {
-            requestSessionAction('compact')
-            return Promise.resolve()
-          }}
-          onToggleArchive={() => {
-            requestArchiveSession()
-            return Promise.resolve()
-          }}
-          clearPending={
-            selectedSession
-              ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
-              : false
-          }
-          compactPending={
-            selectedSession
-              ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
-              : false
-          }
-          archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
-        />
-      </div>
-    </>
-  )
   const currentSessionRoute = selectedSessionRouteFromLocation()
   const resolvingInitialSessionSelection = loadingSessions && !selectedSessionID
   const unresolvedRouteSessionKey = resolvingInitialSessionSelection
@@ -1899,8 +1814,10 @@ function App() {
               onCreate={() => setCreateOpen(true)}
             />
           ) : isUserSkills ? (
-            <RepositorySkills userScope onOpenSessions={() => setMobileListOpen(true)} />
-          ) : displayedAppView === 'settings' ? (
+            <Suspense fallback={<div role="status" className="p-6 text-sm text-muted-foreground">Loading user skills…</div>}>
+              <RepositorySkills userScope onOpenSessions={() => setMobileListOpen(true)} />
+            </Suspense>
+          ) : isSessionSettingsView(displayedAppView) ? (
             <>
               <div
                 data-testid="mobile-floating-settings-header"
@@ -1939,7 +1856,11 @@ function App() {
                   onShowDebugEventsChange={handleShowDebugEventsChange}
                 />
               </div>
-              <SessionSettings
+              <SessionSettingsPage
+                section={displayedAppView}
+                onSelectSection={selectAppView}
+                scheduleRefreshKey={events.filter((event) => event.type.startsWith('schedule.')).length}
+                onOpenFile={(path) => void handleOpenWorkspacePath(path)}
                 session={selectedSession}
                 resolvingSessionID={resolvingSelectedSessionID}
                 showDebugEvents={showDebugEvents}
@@ -1950,110 +1871,6 @@ function App() {
                 onShowDebugEventsChange={handleShowDebugEventsChange}
               />
             </>
-          ) : displayedAppView === 'schedules' ? (
-            <>
-              <div
-                data-testid="mobile-floating-schedules-header"
-                className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden"
-              >
-                <FilesWorkspaceHeader
-                  session={selectedSession}
-                  resolvingSessionID={resolvingSelectedSessionID}
-                  fallbackTitle="Schedules"
-                  errorMessage={chatErrorMessage}
-                  leadingAction={openSessionsButton}
-                  headerActions={viewToggle}
-                  onUpdateTitle={handleUpdateTitle}
-                  onUpdateWorkspace={handleUpdateWorkspace}
-                  hasUnsavedWorkspaceFile={workspaceFileDirty}
-                  onUpdateAgentOptions={handleUpdateAgentOptions}
-                  showDebugEvents={showDebugEvents}
-                  onShowDebugEventsChange={handleShowDebugEventsChange}
-                  onClear={() => {
-                    requestSessionAction('clear')
-                    return Promise.resolve()
-                  }}
-                  onCompact={() => {
-                    requestSessionAction('compact')
-                    return Promise.resolve()
-                  }}
-                  onToggleArchive={() => {
-                    requestArchiveSession()
-                    return Promise.resolve()
-                  }}
-                  clearPending={
-                    selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id &&
-                        pendingSessionAction.action === 'clear'
-                      : false
-                  }
-                  compactPending={
-                    selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id &&
-                        pendingSessionAction.action === 'compact'
-                      : false
-                  }
-                  archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
-                />
-              </div>
-              <div
-                data-testid="floating-schedules-header"
-                className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block"
-              >
-                <FilesWorkspaceHeader
-                  session={selectedSession}
-                  resolvingSessionID={resolvingSelectedSessionID}
-                  fallbackTitle="Schedules"
-                  errorMessage={chatErrorMessage}
-                  headerActions={viewToggle}
-                  onUpdateTitle={handleUpdateTitle}
-                  onUpdateWorkspace={handleUpdateWorkspace}
-                  hasUnsavedWorkspaceFile={workspaceFileDirty}
-                  onUpdateAgentOptions={handleUpdateAgentOptions}
-                  showDebugEvents={showDebugEvents}
-                  onShowDebugEventsChange={handleShowDebugEventsChange}
-                  onClear={() => {
-                    requestSessionAction('clear')
-                    return Promise.resolve()
-                  }}
-                  onCompact={() => {
-                    requestSessionAction('compact')
-                    return Promise.resolve()
-                  }}
-                  onToggleArchive={() => {
-                    requestArchiveSession()
-                    return Promise.resolve()
-                  }}
-                  clearPending={
-                    selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id &&
-                        pendingSessionAction.action === 'clear'
-                      : false
-                  }
-                  compactPending={
-                    selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id &&
-                        pendingSessionAction.action === 'compact'
-                      : false
-                  }
-                  archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
-                />
-              </div>
-              <SessionSchedules
-                session={selectedSession}
-                resolvingSessionID={resolvingSelectedSessionID}
-                refreshKey={events.filter((event) => event.type.startsWith('schedule.')).length}
-              />
-            </>
-          ) : displayedAppView === 'skills' ? (
-            <>
-              {floatingRepositorySkillsHeader}
-              <RepositorySkills
-                session={selectedSession}
-                resolvingSessionID={resolvingSelectedSessionID}
-                onOpenFile={(path) => void handleOpenWorkspacePath(path)}
-              />
-            </>
           ) : displayedAppView === 'console' ? (
             <HostConsole
               session={selectedSession}
@@ -2062,97 +1879,6 @@ function App() {
               headerActions={viewToggle}
               mobileLeadingAction={openSessionsButton}
             />
-          ) : displayedAppView === 'host' ? (
-            <>
-              <div
-                data-testid="mobile-floating-host-header"
-                className="mobile-floating-header-shell pointer-events-none absolute inset-x-0 z-20 p-3 lg:hidden"
-              >
-                <FilesWorkspaceHeader
-                  session={selectedSession}
-                  resolvingSessionID={resolvingSelectedSessionID}
-                  fallbackTitle="Preview"
-                  errorMessage={chatErrorMessage}
-                  leadingAction={openSessionsButton}
-                  headerActions={viewToggle}
-                  onUpdateTitle={handleUpdateTitle}
-                  onUpdateWorkspace={handleUpdateWorkspace}
-                  hasUnsavedWorkspaceFile={workspaceFileDirty}
-                  onUpdateAgentOptions={handleUpdateAgentOptions}
-                  showDebugEvents={showDebugEvents}
-                  onShowDebugEventsChange={handleShowDebugEventsChange}
-                  onClear={() => {
-                    requestSessionAction('clear')
-                    return Promise.resolve()
-                  }}
-                  onCompact={() => {
-                    requestSessionAction('compact')
-                    return Promise.resolve()
-                  }}
-                  onToggleArchive={() => {
-                    requestArchiveSession()
-                    return Promise.resolve()
-                  }}
-                  clearPending={
-                    selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id &&
-                        pendingSessionAction.action === 'clear'
-                      : false
-                  }
-                  compactPending={
-                    selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id &&
-                        pendingSessionAction.action === 'compact'
-                      : false
-                  }
-                  archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
-                />
-              </div>
-              <div
-                data-testid="floating-host-header"
-                className="pointer-events-none absolute inset-x-0 top-0 z-20 hidden p-3 lg:block"
-              >
-                <FilesWorkspaceHeader
-                  session={selectedSession}
-                  resolvingSessionID={resolvingSelectedSessionID}
-                  fallbackTitle="Preview"
-                  errorMessage={chatErrorMessage}
-                  headerActions={viewToggle}
-                  onUpdateTitle={handleUpdateTitle}
-                  onUpdateWorkspace={handleUpdateWorkspace}
-                  hasUnsavedWorkspaceFile={workspaceFileDirty}
-                  onUpdateAgentOptions={handleUpdateAgentOptions}
-                  showDebugEvents={showDebugEvents}
-                  onShowDebugEventsChange={handleShowDebugEventsChange}
-                  onClear={() => {
-                    requestSessionAction('clear')
-                    return Promise.resolve()
-                  }}
-                  onCompact={() => {
-                    requestSessionAction('compact')
-                    return Promise.resolve()
-                  }}
-                  onToggleArchive={() => {
-                    requestArchiveSession()
-                    return Promise.resolve()
-                  }}
-                  clearPending={
-                    selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id &&
-                        pendingSessionAction.action === 'clear'
-                      : false
-                  }
-                  compactPending={
-                    selectedSession
-                      ? pendingSessionAction?.sessionID === selectedSession.id &&
-                        pendingSessionAction.action === 'compact'
-                      : false
-                  }
-                  archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
-                />
-              </div>
-              <HostPreview session={selectedSession} resolvingSessionID={resolvingSelectedSessionID} />
-            </>
           ) : displayedAppView === 'files' ? (
             <>
               <div
@@ -2486,13 +2212,11 @@ function SessionViewNavigation({
   const views: Array<{ view: AppView; label: string; shortLabel: string; icon: ReactNode }> = [
     { view: 'session', label: 'Show chat', shortLabel: 'Chat', icon: <MessageSquare className="size-4" /> },
     { view: 'console', label: 'Show console', shortLabel: 'Console', icon: <Terminal className="size-4" /> },
-    { view: 'schedules', label: 'Show schedules', shortLabel: 'Scheduled tasks', icon: <CalendarClock className="size-4" /> },
-    { view: 'skills', label: 'Show repository skills', shortLabel: 'Repository skills', icon: <BookOpen className="size-4" /> },
     { view: 'files', label: 'Show files', shortLabel: 'Files', icon: <Folder className="size-4" /> },
-    { view: 'host', label: 'Show hosted preview', shortLabel: 'Hosted preview', icon: <Server className="size-4" /> },
-    { view: 'settings', label: 'Show session settings', shortLabel: 'Session settings', icon: <Settings className="size-4" /> },
+    { view: 'settings', label: 'Show session settings', shortLabel: 'Settings', icon: <Settings className="size-4" /> },
   ]
-  const activeIndex = Math.max(0, views.findIndex((item) => item.view === view))
+  const primaryView = isSessionSettingsView(view) ? 'settings' : view
+  const activeIndex = Math.max(0, views.findIndex((item) => item.view === primaryView))
   const actionPending = clearPending || compactPending || archivePending
   const codexActionDisabled =
     !session || session.agent_type !== 'codex' || session.status === 'running' || Boolean(session.archived_at) || actionPending
@@ -2522,7 +2246,7 @@ function SessionViewNavigation({
 
   return (
     <>
-      <div className="relative hidden shrink-0 grid-cols-7 rounded-md bg-muted p-1 shadow-inner lg:grid">
+      <div className="relative hidden shrink-0 grid-cols-4 rounded-md bg-muted p-1 shadow-inner lg:grid">
         <span
           aria-hidden="true"
           className="absolute bottom-1 left-1 top-1 w-8 rounded-sm bg-background shadow-sm transition-transform duration-150 ease-out"
@@ -2533,10 +2257,10 @@ function SessionViewNavigation({
             key={item.view}
             type="button"
             aria-label={item.label}
-            aria-pressed={view === item.view}
+            aria-pressed={primaryView === item.view}
             className={cn(
               'relative z-10 flex h-8 w-8 items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              view === item.view ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+              primaryView === item.view ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
             )}
             onClick={() => select(item.view)}
           >
@@ -2566,8 +2290,8 @@ function SessionViewNavigation({
                 key={item.view}
                 type="button"
                 role="menuitem"
-                aria-current={view === item.view ? 'page' : undefined}
-                className={cn('flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground', view === item.view && 'bg-accent/65 text-accent-foreground')}
+                aria-current={primaryView === item.view ? 'page' : undefined}
+                className={cn('flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground', primaryView === item.view && 'bg-accent/65 text-accent-foreground')}
                 onClick={() => select(item.view)}
               >
                 {item.icon}<span className="flex-1">{item.shortLabel}</span>

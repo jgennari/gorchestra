@@ -40,10 +40,12 @@ export function SessionSchedules({
   session,
   resolvingSessionID,
   refreshKey = 0,
+  embedded = false,
 }: {
   session: Session | null
   resolvingSessionID?: string | null
   refreshKey?: number
+  embedded?: boolean
 }) {
   const [schedules, setSchedules] = useState<SessionSchedule[]>([])
   const [occurrences, setOccurrences] = useState<Record<string, ScheduleOccurrence[]>>({})
@@ -117,7 +119,7 @@ export function SessionSchedules({
 
   const archived = Boolean(session.archived_at)
   return (
-    <div className="session-schedules-body flex h-full min-h-0 flex-col overflow-y-auto px-3 pb-3">
+    <div className={`${embedded ? '' : 'session-schedules-body '}flex h-full min-h-0 flex-col overflow-y-auto px-3 pb-3`}>
       <div className="flex min-h-0 w-full flex-1 flex-col gap-3 pb-16">
         <section className="shrink-0 rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm" aria-labelledby="scheduled-tasks-heading">
           <div className="flex flex-wrap items-start justify-between gap-3">

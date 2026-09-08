@@ -4,6 +4,7 @@ import {
   sessionRouteFromPathname,
   sessionSlugPath,
   sessionTitleSlug,
+  isSessionSettingsView,
 } from '@/lib/routes'
 
 test('session route helpers parse and build session paths', () => {
@@ -95,10 +96,10 @@ test('session route helpers parse and build session paths', () => {
 
   expect(sessionPath('sess_123')).toBe('/sessions/sess_123')
   expect(sessionPath('sess_123', 'console')).toBe('/sessions/sess_123/console')
-  expect(sessionPath('sess_123', 'schedules')).toBe('/sessions/sess_123/schedules')
-  expect(sessionPath('sess_123', 'skills')).toBe('/sessions/sess_123/skills')
+  expect(sessionPath('sess_123', 'schedules')).toBe('/sessions/sess_123/settings/schedules')
+  expect(sessionPath('sess_123', 'skills')).toBe('/sessions/sess_123/settings/skills')
   expect(sessionPath('sess_123', 'files')).toBe('/sessions/sess_123/files')
-  expect(sessionPath('sess_123', 'host')).toBe('/sessions/sess_123/host')
+  expect(sessionPath('sess_123', 'host')).toBe('/sessions/sess_123/settings/hosting')
   expect(sessionPath('sess_123', 'settings')).toBe('/sessions/sess_123/settings')
   expect(sessionPath('sess_123', 'files', 'src/main.go')).toBe('/sessions/sess_123/files/src%2Fmain.go')
   expect(sessionPath('sess_/encoded')).toBe('/sessions/sess_%2Fencoded')
@@ -110,4 +111,21 @@ test('session route helpers parse and build session paths', () => {
   expect(sessionTitleSlug('Gorchestra UI')).toBe('gorchestra-ui')
   expect(sessionTitleSlug('  Claude + OpenCode support!  ')).toBe('claude-opencode-support')
   expect(sessionTitleSlug('')).toBe('untitled-session')
+})
+
+test.each(['sess_123', 'gorchestra-ui'])('Settings sections round-trip for %s and retain legacy links', (key) => {
+  for (const [view, segment] of [['schedules', 'schedules'], ['skills', 'skills'], ['host', 'hosting']] as const) {
+    const canonical = `/sessions/${key}/settings/${segment}`
+    expect(sessionPath(key, view)).toBe(canonical)
+    expect(sessionSlugPath(key, view)).toBe(canonical)
+    const route = sessionRouteFromPathname(canonical)
+    expect(route.view).toBe(view)
+    expect(route.filePath).toBeNull()
+    expect(sessionRouteFromPathname(`/sessions/${key}/${view}`)).toEqual(route)
+    expect(isSessionSettingsView(route.view)).toBe(true)
+  }
+  expect(sessionRouteFromPathname(`/sessions/${key}/settings/unknown`).view).toBe('settings')
+  expect(sessionRouteFromPathname(`/sessions/${key}/settings/constructor`).view).toBe('settings')
+  expect(isSessionSettingsView('settings')).toBe(true)
+  for (const view of ['session', 'console', 'files']) expect(isSessionSettingsView(view)).toBe(false)
 })

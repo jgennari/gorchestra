@@ -40,6 +40,21 @@ Suggested cadence: a short smoke on every promotion, the automated regression la
 
 ## Repeatable scenario matrix
 
+### Session navigation and Settings
+
+The primary session navigation is **Chat, Console, Files, Settings**. Settings has General, Scheduled tasks, Skills, and Hosting tabs; the global User skills entry remains separate. Hosting retains its Open preview link when the runtime is running.
+
+Check the following after navigation changes:
+
+- Load `/sessions/{id-or-slug}/settings`, `/settings/schedules`, `/settings/skills`, and `/settings/hosting` directly. The old session `/schedules`, `/skills`, and `/host` links must still open the corresponding Settings tab.
+- Switch tabs, then use Back/Forward. The selected tab, Settings navigation highlight, session, and `?debug=1` flag should stay consistent.
+- At phone and tablet sizes, all four tabs and the session header must remain reachable; scroll long section content without losing the tab controls. The mobile menu should not duplicate the nested sections under Views.
+- With keyboard navigation, arrow keys move tab focus without activating a section; Enter/Space selects it. Check the selected panel is labeled by its tab.
+- Watch requests: Chat and General should not fetch schedules, repository skills, or hosting data. Only the active section mounts. Leaving Hosting must close its log SSE and polling without closing the main activity stream.
+- Confirm the global User skills page still opens from the sidebar and repository skill file links still open Files.
+
+September 7 implementation check: automated coverage passed for routing (including legacy links), keyboard selection, browser history, debug-query preservation, on-demand requests, and host-log stream cleanup. A read-only Arc/Chromium dev-page check verified desktop layout plus iPad Mini (768×1024) and iPhone SE (375×667) emulation, tab navigation, and the four-item mobile menu. No schedules, skills, permissions, or hosting runtime were changed. These are not physical-device/PWA or production-bundle checks.
+
 ### Client debug view
 
 Open any app URL with `?debug=1` (or append `&debug=1` to an existing query). `⌘D` on macOS or `Ctrl+D` elsewhere toggles the same view without a reload; the app overrides the bookmark shortcut while focused. Closing removes the flag, and session/skills navigation preserves it while enabled. Old `?debug-scroll=1` and `?viewportDebug=1` links still work.

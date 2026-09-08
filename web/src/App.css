@@ -72,6 +72,7 @@
 .host-preview-body,
 .session-schedules-body,
 .session-settings-body,
+.session-settings-page,
 .repository-skills-body {
   padding-top: calc(env(safe-area-inset-top, 0px) + 5.25rem);
 }
@@ -101,6 +102,7 @@
   .host-preview-body,
   .session-schedules-body,
   .session-settings-body,
+  .session-settings-page,
   .repository-skills-body {
     padding-top: calc(env(safe-area-inset-top, 0px) + 4.875rem);
   }
@@ -122,6 +124,7 @@
   .host-preview-body,
   .session-schedules-body,
   .session-settings-body,
+  .session-settings-page,
   .repository-skills-body {
     padding-top: 4.75rem;
   }

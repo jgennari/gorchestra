@@ -976,20 +976,21 @@ test('header files view opens workspace files inline', async () => {
   expect(within(fileViewer).getByLabelText('File editor')).toHaveValue('package main\n')
 })
 
-test('header hosted preview view updates the route and shows host status', async () => {
+test('Hosting inside Settings updates the route and shows host status', async () => {
   const user = userEvent.setup()
 
   render(<App />)
 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
-  await user.click(screen.getAllByRole('button', { name: 'Show hosted preview' })[0])
+  await user.click(screen.getAllByRole('button', { name: 'Show session settings' })[0])
+  await user.click(screen.getByRole('tab', { name: 'Hosting' }))
 
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/host'))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/settings/hosting'))
   expect(await screen.findByText('No host recipe found')).toBeInTheDocument()
-  expect(within(screen.getByTestId('floating-host-header')).getByRole('button', { name: 'Show session settings' })).toBeInTheDocument()
+  expect(within(screen.getByTestId('floating-settings-header')).getByRole('button', { name: 'Show session settings' })).toBeInTheDocument()
   expect(
     screen
-      .getAllByRole('button', { name: 'Show hosted preview' })
+      .getAllByRole('button', { name: 'Show session settings' })
       .some((button) => button.getAttribute('aria-pressed') === 'true'),
   ).toBe(true)
 })
@@ -1000,15 +1001,16 @@ test('schedules view uses the shared floating session header', async () => {
   render(<App />)
 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
-  await user.click(screen.getAllByRole('button', { name: 'Show schedules' })[0])
+  await user.click(screen.getAllByRole('button', { name: 'Show session settings' })[0])
+  await user.click(screen.getByRole('tab', { name: 'Scheduled tasks' }))
 
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/schedules'))
-  const schedulesHeader = screen.getByTestId('floating-schedules-header')
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/settings/schedules'))
+  const schedulesHeader = screen.getByTestId('floating-settings-header')
   expect(within(schedulesHeader).getByRole('button', { name: 'Show session settings' })).toBeInTheDocument()
   expect(schedulesHeader.querySelector('.command-chat-header')).toBeInTheDocument()
-  const scheduleInfo = screen.getByRole('heading', { name: 'Scheduled tasks' }).closest('section')
+  const scheduleInfo = (await screen.findByRole('heading', { name: 'Scheduled tasks' })).closest('section')
   expect(scheduleInfo).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
-  expect(scheduleInfo?.closest('.session-schedules-body')).toBeTruthy()
+  expect(scheduleInfo?.closest('.session-settings-page')).toBeTruthy()
 })
 
 test('session settings is a routed card page and mobile views live in an overflow menu', async () => {
@@ -1021,12 +1023,12 @@ test('session settings is a routed card page and mobile views live in an overflo
   expect(within(mobileHeader).queryByRole('button', { name: 'Session settings' })).not.toBeInTheDocument()
 
   await user.click(within(mobileHeader).getByRole('button', { name: 'More session actions' }))
-  await user.click(within(mobileHeader).getByRole('menuitem', { name: 'Session settings' }))
+  await user.click(within(mobileHeader).getByRole('menuitem', { name: 'Settings' }))
 
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/settings'))
   const card = screen.getByRole('heading', { name: 'Session settings' }).closest('section')
   expect(card).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
-  expect(card?.closest('.session-settings-body')).toBeTruthy()
+  expect(card?.closest('.session-settings-page')).toBeTruthy()
   expect(screen.getByTestId('floating-settings-header')).toBeInTheDocument()
 })
 
@@ -1034,13 +1036,105 @@ test('repository skills view uses the shared floating session header and informa
   const user = userEvent.setup()
   render(<App />)
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
-  await user.click(screen.getAllByRole('button', { name: 'Show repository skills' })[0])
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/skills'))
-  const skillsHeader = screen.getByTestId('floating-skills-header')
+  await user.click(screen.getAllByRole('button', { name: 'Show session settings' })[0])
+  await user.click(screen.getByRole('tab', { name: 'Skills' }))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/settings/skills'))
+  const skillsHeader = screen.getByTestId('floating-settings-header')
   expect(within(skillsHeader).getByRole('button', { name: 'Show session settings' })).toBeInTheDocument()
   expect(skillsHeader.querySelector('.command-chat-header')).toBeInTheDocument()
-  const info = screen.getByRole('heading', { name: 'Repository skills' }).closest('section')
+  const info = (await screen.findByRole('heading', { name: 'Repository skills' })).closest('section')
   expect(info).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
+})
+
+test('primary navigation has four views and only the active Settings section loads data', async () => {
+  const user = userEvent.setup()
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+  const activity = await findEventSource('/api/sessions/activity/stream')
+  const sectionRequests = () => fetch.mock.calls.map(([url]) => String(url)).filter((url) => /\/sessions\/sess_1\/(schedules|repository-skills|host)(\/logs)?$/.test(url))
+  const header = within(screen.getByTestId('floating-session-header'))
+  expect(header.getAllByRole('button', { name: /^Show / }).map((button) => button.getAttribute('aria-label'))).toEqual([
+    'Show chat', 'Show console', 'Show files', 'Show session settings',
+  ])
+  const mobileHeader = within(screen.getByTestId('mobile-floating-session-header'))
+  await user.click(mobileHeader.getByRole('button', { name: 'More session actions' }))
+  const menu = within(mobileHeader.getByRole('menu'))
+  expect(menu.getAllByRole('menuitem').slice(0, 4).map((item) => item.textContent)).toEqual(['Chat', 'Console', 'Files', 'Settings'])
+  for (const name of ['Scheduled tasks', 'Repository skills', 'Hosted preview']) expect(menu.queryByRole('menuitem', { name })).not.toBeInTheDocument()
+  expect(sectionRequests()).toEqual([])
+
+  await user.click(menu.getByRole('menuitem', { name: 'Settings' }))
+  expect(await screen.findByRole('region', { name: 'Session configuration' })).toBeInTheDocument()
+  expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true')
+  expect(sectionRequests()).toEqual([])
+  await user.click(screen.getByRole('tab', { name: 'Scheduled tasks' }))
+  await screen.findByRole('heading', { name: 'Scheduled tasks' })
+  await waitFor(() => expect(sectionRequests()).toEqual(['/api/sessions/sess_1/schedules']))
+  expect(screen.queryByRole('region', { name: 'Session configuration' })).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('tab', { name: 'Skills' }))
+  await screen.findByRole('heading', { name: 'Repository skills' })
+  await waitFor(() => expect(sectionRequests()).toEqual(['/api/sessions/sess_1/schedules', '/api/sessions/sess_1/repository-skills']))
+  expect(screen.queryByRole('heading', { name: 'Scheduled tasks' })).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('tab', { name: 'Hosting' }))
+  await screen.findByText('No host recipe found')
+  const logs = await findEventSource('/api/sessions/sess_1/host/logs/stream')
+  expect(logs.closed).toBe(false)
+  expect(sectionRequests()).toEqual([
+    '/api/sessions/sess_1/schedules', '/api/sessions/sess_1/repository-skills',
+    '/api/sessions/sess_1/host', '/api/sessions/sess_1/host/logs',
+  ])
+  await user.click(screen.getByRole('tab', { name: 'General' }))
+  await screen.findByRole('region', { name: 'Session configuration' })
+  expect(logs.closed).toBe(true)
+  expect(activity.closed).toBe(false)
+  expect(FakeEventSource.instances.filter((source) => !source.closed)).toHaveLength(1)
+})
+
+test('Settings sections support keyboard selection, browser history, and debug URLs', async () => {
+  window.history.replaceState({}, '', '/sessions/inspect-repo/settings?debug=1')
+  const user = userEvent.setup()
+  render(<App />)
+  const general = await screen.findByRole('tab', { name: 'General' })
+  general.focus()
+  await user.keyboard('{ArrowRight}')
+  expect(screen.getByRole('tab', { name: 'Scheduled tasks' })).toHaveFocus()
+  expect(general).toHaveAttribute('aria-selected', 'true')
+  await user.keyboard('{Enter}')
+  await screen.findByRole('heading', { name: 'Scheduled tasks' })
+  expect(window.location.pathname).toBe('/sessions/inspect-repo/settings/schedules')
+  expect(window.location.search).toBe('?debug=1')
+  await user.click(screen.getByRole('tab', { name: 'Skills' }))
+  await screen.findByRole('heading', { name: 'Repository skills' })
+  await act(async () => {
+    window.history.back()
+    await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/settings/schedules'))
+  })
+  expect(screen.getByRole('tab', { name: 'Scheduled tasks' })).toHaveAttribute('aria-selected', 'true')
+  await act(async () => {
+    window.history.forward()
+    await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/settings/skills'))
+  })
+  expect(screen.getByRole('tab', { name: 'Skills' })).toHaveAttribute('aria-selected', 'true')
+  expect(window.location.search).toBe('?debug=1')
+})
+
+test.each([
+  ['schedules', 'Scheduled tasks', 'Scheduled tasks'],
+  ['skills', 'Skills', 'Repository skills'],
+  ['host', 'Hosting', 'Hosted preview'],
+  ['settings/schedules', 'Scheduled tasks', 'Scheduled tasks'],
+  ['settings/skills', 'Skills', 'Repository skills'],
+  ['settings/hosting', 'Hosting', 'Hosted preview'],
+])('deep link %s opens its section under Settings', async (path, tab, heading) => {
+  window.history.replaceState({}, '', `/sessions/sess_1/${path}`)
+  render(<App />)
+  expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'Session settings' })).toBeInTheDocument()
+  expect(screen.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true')
+  expect(within(screen.getByTestId('floating-settings-header')).getByRole('button', { name: 'Show session settings' })).toHaveAttribute('aria-pressed', 'true')
 })
 
 test('user skills appears beneath Overview and opens the global management route', async () => {

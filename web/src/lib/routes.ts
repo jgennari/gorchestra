@@ -1,6 +1,17 @@
 const sessionRoutePrefix = '/sessions/'
 
 export type SessionRouteView = 'session' | 'console' | 'schedules' | 'skills' | 'files' | 'host' | 'settings'
+export type SessionSettingsSection = 'settings' | 'schedules' | 'skills' | 'host'
+
+const settingsSections: Record<string, SessionSettingsSection> = {
+  schedules: 'schedules',
+  skills: 'skills',
+  hosting: 'host',
+}
+
+export function isSessionSettingsView(view: string): view is SessionSettingsSection {
+  return view === 'settings' || view === 'schedules' || view === 'skills' || view === 'host'
+}
 
 export type SessionRoute = {
   sessionID: string | null
@@ -23,7 +34,9 @@ export function sessionRouteFromPathname(pathname: string): SessionRoute {
 
   try {
     const sessionRouteKey = decodeURIComponent(encodedSessionRouteKey)
-    const view = routeViews.has(viewSegment as SessionRouteView) ? (viewSegment as SessionRouteView) : 'session'
+    const view = viewSegment === 'settings'
+      ? (Object.hasOwn(settingsSections, filePathSegments[0]) ? settingsSections[filePathSegments[0]] : 'settings')
+      : routeViews.has(viewSegment as SessionRouteView) ? (viewSegment as SessionRouteView) : 'session'
     const filePath = view === 'files' && filePathSegments.length > 0 ? decodeURIComponent(filePathSegments.join('/')) : null
     if (sessionRouteKey.startsWith('sess_')) {
       return { sessionID: sessionRouteKey, sessionSlug: null, view, filePath }
@@ -80,6 +93,9 @@ function sessionViewPath(basePath: string, view: SessionRouteView, filePath: str
   }
   if (view === 'files' && filePath) {
     return `${basePath}/files/${encodeURIComponent(filePath)}`
+  }
+  if (view === 'schedules' || view === 'skills' || view === 'host') {
+    return `${basePath}/settings/${view === 'host' ? 'hosting' : view}`
   }
   return `${basePath}/${view}`
 }

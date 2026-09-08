@@ -39,9 +39,11 @@ const maxRenderedChunks = 4_000
 export function HostPreview({
   session,
   resolvingSessionID = null,
+  embedded = false,
 }: {
   session: Session | null
   resolvingSessionID?: string | null
+  embedded?: boolean
 }) {
   const [status, setStatus] = useState<HostStatus | null>(null)
   const [logs, setLogs] = useState<HostLogChunk[]>([])
@@ -228,7 +230,7 @@ export function HostPreview({
   const stopDisabled = runtime?.status !== 'running' && runtime?.status !== 'starting'
 
   return (
-    <div className="host-preview-body flex h-full min-h-0 flex-col overflow-y-auto px-3 pb-3">
+    <div className={cn(!embedded && 'host-preview-body', 'flex h-full min-h-0 flex-col overflow-y-auto px-3 pb-3')}>
       <div className="flex min-h-0 w-full flex-1 flex-col gap-3">
         <section className="shrink-0 rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm" aria-labelledby="host-preview-heading">
           <div className="flex flex-wrap items-start justify-between gap-3">

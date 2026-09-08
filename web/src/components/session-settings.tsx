@@ -17,6 +17,7 @@ export function SessionSettings({
   hasUnsavedWorkspaceFile = false,
   onUpdateAgentOptions,
   onShowDebugEventsChange,
+  embedded = false,
 }: {
   session: Session | null
   resolvingSessionID?: string | null
@@ -26,6 +27,7 @@ export function SessionSettings({
   hasUnsavedWorkspaceFile?: boolean
   onUpdateAgentOptions: (agentOptions: SessionAgentOptions) => Promise<void>
   onShowDebugEventsChange: (showDebugEvents: boolean) => void
+  embedded?: boolean
 }) {
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [copiedField, setCopiedField] = useState<'session' | 'workspace' | null>(null)
@@ -71,15 +73,15 @@ export function SessionSettings({
   }
 
   return (
-    <div className="session-settings-body flex h-full min-h-0 flex-col overflow-y-auto px-3 pb-3">
+    <div className={cn(!embedded && 'session-settings-body', 'flex h-full min-h-0 flex-col overflow-y-auto px-3 pb-3')}>
       <div className="flex min-h-0 w-full flex-1 flex-col gap-3 pb-16">
-        <section className="shrink-0 rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm" aria-labelledby="session-settings-heading">
+        {!embedded ? <section className="shrink-0 rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm" aria-labelledby="session-settings-heading">
           <div className="flex items-center gap-2">
             <Settings className="size-5 text-primary" aria-hidden="true" />
             <h1 id="session-settings-heading" className="text-base font-semibold">Session settings</h1>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">Manage this session’s identity, workspace, permissions, and event visibility.</p>
-        </section>
+        </section> : null}
 
         <section className="rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm" aria-label="Session configuration">
           <div className="grid gap-5 md:grid-cols-2">
