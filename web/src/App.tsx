@@ -1314,6 +1314,8 @@ function App() {
       if (cancelError instanceof APIError && cancelError.status === 409) {
         await refreshSession(selectedSessionID)
       }
+      // The composer must not dequeue anything when cancellation was rejected.
+      throw cancelError
     }
   }
 

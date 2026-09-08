@@ -1,5 +1,7 @@
 import '@testing-library/jest-dom/vitest'
-import { vi } from 'vitest'
+import { beforeEach, vi } from 'vitest'
+
+beforeEach(() => window.sessionStorage.clear())
 
 vi.mock('@tanstack/react-virtual', async () => {
   const React = await import('react')

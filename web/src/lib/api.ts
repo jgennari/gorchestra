@@ -1065,12 +1065,16 @@ export function clearAPIRequestCachesForTest() {
 }
 
 export async function removeQueuedMessage(sessionID: string, queuedMessageID: string) {
-  return requestJSON<QueuedMessage>(
-    `/api/sessions/${encodeURIComponent(sessionID)}/queued-messages/${encodeURIComponent(queuedMessageID)}`,
-    {
-      method: 'DELETE',
-    },
-  )
+  try {
+    return await requestJSON<QueuedMessage>(
+      `/api/sessions/${encodeURIComponent(sessionID)}/queued-messages/${encodeURIComponent(queuedMessageID)}`,
+      { method: 'DELETE' },
+    )
+  } finally {
+    // A composer can unmount before the response, or the response can be lost after deletion.
+    // Never let a later mount trust the queue cached before this mutation.
+    queuedMessagesRequests.delete(sessionID)
+  }
 }
 
 export async function listSchedules(sessionID: string) {

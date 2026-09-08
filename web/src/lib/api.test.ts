@@ -721,6 +721,27 @@ test('queued message helpers use session queue endpoints', async () => {
   expect(removed.id).toBe('queue_1')
 })
 
+test.each([true, false])('queue removal invalidates the cached list even if its response is lost (success: %s)', async (success) => {
+  const queueURL = '/api/sessions/sess_1/queued-messages'
+  const message = { id: 'queue_1', session_id: 'sess_1', seq: 1, content: 'Next', created_at: '2026-09-08T12:00:00Z' }
+  let messages = [message]
+  const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'DELETE') {
+      messages = []
+      if (!success) throw new TypeError('Failed to fetch')
+      return jsonResponse(message)
+    }
+    return jsonResponse({ messages })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  expect((await fetchQueuedMessages('sess_1')).messages).toEqual([message])
+  const removal = removeQueuedMessage('sess_1', message.id)
+  if (success) await removal
+  else await expect(removal).rejects.toThrow('Failed to fetch')
+  expect((await fetchQueuedMessages('sess_1')).messages).toEqual([])
+  expect(fetchMock.mock.calls.filter(([url]) => url === queueURL)).toHaveLength(2)
+})
+
 test('answer user input posts selected answers', async () => {
   const answers = {
     question_test: {

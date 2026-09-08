@@ -71,6 +71,25 @@ test('uses a selected session from the initial list without refetching its detai
   expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions/sess_1')).toHaveLength(0)
 })
 
+test('a rejected Stop request cannot trigger queue-to-composer restoration', async () => {
+  const normalFetch = fetchMock({ sessions: [{ ...firstSession, status: 'running' }, secondSession] })
+  const queued = { id: 'queue_1', session_id: 'sess_1', seq: 1, content: 'Leave this queued', created_at: firstSession.created_at }
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions/sess_1/cancel') return new Response('{"error":"Run already stopped"}', { status: 409 })
+    if (String(url) === '/api/sessions/sess_1/queued-messages') return jsonResponse({ messages: [queued] })
+    return normalFetch(url, init)
+  })
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+  await screen.findByRole('button', { name: 'Move queued message 1 to composer' })
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel running session' }))
+  await screen.findByText('Run already stopped')
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel running session' })).toBeEnabled())
+  expect(screen.getByLabelText('Prompt')).toHaveValue('')
+  expect(screen.getByRole('button', { name: 'Move queued message 1 to composer' })).toBeInTheDocument()
+  expect(fetch.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0)
+})
+
 test('only the visible selected session acknowledges SSE notifications for this device', async () => {
   const originalServiceWorker = Object.getOwnPropertyDescriptor(navigator, 'serviceWorker')
   const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')

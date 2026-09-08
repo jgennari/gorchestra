@@ -2,6 +2,7 @@ import {
   BookOpen,
   ChevronDown,
   ClipboardList,
+  CornerDownLeft,
   Paperclip,
   RefreshCw,
   Search,
@@ -55,12 +56,11 @@ import {
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { publishComposerActivity } from '@/lib/composer-activity'
-import { useDraftVersions } from '@/hooks/use-draft-versions'
+import { useComposerDraftStorage } from '@/hooks/use-composer-draft-storage'
+import { composerStorageKey, loadComposerDraft, parseComposerDraft, saveComposerDraft } from '@/lib/composer-drafts'
 
 const maxPromptRows = 5
 const fallbackLineHeight = 20
-const composerStorageKeyPrefix = 'gorchestra.session-composer.'
-const defaultComposerStorageID = '__default__'
 const maxImageAttachmentBytes = 5 * 1024 * 1024
 const maxImageAttachmentCount = 8
 const maxQueuedMessages = 5
@@ -186,12 +186,16 @@ export function PromptComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const queueEventsRef = useRef<Map<string, AgentEvent>>(new Map())
+  const removedQueueIDsRef = useRef(new Set<string>())
+  const queueActionRef = useRef(false)
+  const attachmentReadsRef = useRef({ pending: 0 })
+  const lifetimeRef = useRef({ active: true, sessionID })
   const skillsLoadedSessionRef = useRef('')
   const [content, setContent] = useState(() =>
     ensureInlineSkillTokens(loadDraft(sessionID), loadSelectedSkills(sessionID)),
   )
   const [selectedSkills, setSelectedSkills] = useState<SkillReference[]>(() => loadSelectedSkills(sessionID))
-  const draftVersions = useDraftVersions(sessionID, content)
+  const { storageError: draftStorageError, markRestored: markDraftRestored } = useComposerDraftStorage(sessionID, { draft: content, selectedSkills })
   const promptSelectionRef = useRef({ start: content.length, end: content.length })
   const [skills, setSkills] = useState<AgentSkill[]>([])
   const [skillErrors, setSkillErrors] = useState<AgentSkillError[]>([])
@@ -208,6 +212,17 @@ export function PromptComposer({
   const [dragActive, setDragActive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [queueActionPending, setQueueActionPending] = useState(false)
+  const currentDraftRef = useRef({ content, selectedSkills, attachments, offline, submitting })
+  const adoptedDraftRef = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    currentDraftRef.current = { content, selectedSkills, attachments, offline, submitting }
+  }, [content, selectedSkills, attachments, offline, submitting])
+  useLayoutEffect(() => {
+    const lifetime = { active: true, sessionID }
+    lifetimeRef.current = lifetime
+    return () => { lifetime.active = false }
+  }, [sessionID])
   const [codexOptions, setCodexOptions] = useState<CodexAgentOptions | null>(null)
   const [codexOptionsLoading, setCodexOptionsLoading] = useState(false)
   const [codexOptionsError, setCodexOptionsError] = useState('')
@@ -243,12 +258,14 @@ export function PromptComposer({
   const hasAttachments = attachments.length > 0
   const hasSelectedSkills = selectedSkills.length > 0
   const shouldLoadSkills = hasSelectedSkills || skillsOpen || skillTypeahead !== null
-  const canSubmit = !submissionBlocked && !offline && !disabled && !submitting && (content.trim().length > 0 || hasAttachments || hasSelectedSkills)
+  const canSubmit = !submissionBlocked && !offline && !disabled && !submitting && !cancelling && !queueActionPending && (content.trim().length > 0 || hasAttachments || hasSelectedSkills)
   const queueBlockedByAttachments = hasAttachments
   const canQueue =
     !submissionBlocked &&
     !offline &&
     !submitting &&
+    !cancelling &&
+    !queueActionPending &&
     (content.trim().length > 0 || hasSelectedSkills) &&
     !queueBlockedByAttachments &&
     queuedMessages.length < maxQueuedMessages
@@ -427,7 +444,8 @@ export function PromptComposer({
     update: QueuedMessage[] | ((current: QueuedMessage[]) => QueuedMessage[]),
   ) => {
     setQueuedMessages((current) => {
-      const next = typeof update === 'function' ? update(current) : update
+      const next = (typeof update === 'function' ? update(current) : update)
+        .filter((message) => !removedQueueIDsRef.current.has(message.id))
       if (sessionID) updateQueuedMessagesCache(sessionID, next)
       return next
     })
@@ -577,12 +595,27 @@ export function PromptComposer({
   }, [agentType, offline])
 
   useEffect(() => {
-    saveDraft(sessionID, content)
-  }, [content, sessionID])
-
-  useEffect(() => {
-    saveSelectedSkills(sessionID, selectedSkills)
-  }, [selectedSkills, sessionID])
+    function receiveDraft(event: StorageEvent) {
+      if (event.key !== composerStorageKey(sessionID)) return
+      const incoming = parseComposerDraft(event.newValue)
+      const previous = parseComposerDraft(event.oldValue)
+      // Provider setting writes can carry an unchanged draft; those aren't draft edits.
+      if (!incoming || JSON.stringify(incoming) === JSON.stringify(previous)) return
+      const local = currentDraftRef.current
+      const followingSavedDraft = adoptedDraftRef.current === JSON.stringify({ draft: local.content, selectedSkills: local.selectedSkills })
+      if ((!followingSavedDraft && (local.content.length || local.selectedSkills.length)) || local.attachments.length ||
+        local.submitting || queueActionRef.current || attachmentReadsRef.current.pending) return
+      if (!followingSavedDraft && !incoming.draft.length && !incoming.selectedSkills.length) return
+      const restoredContent = ensureInlineSkillTokens(incoming.draft, incoming.selectedSkills)
+      adoptedDraftRef.current = JSON.stringify({ draft: restoredContent, selectedSkills: incoming.selectedSkills })
+      markDraftRestored({ draft: restoredContent, selectedSkills: incoming.selectedSkills })
+      setContent(restoredContent)
+      setSelectedSkills(incoming.selectedSkills)
+      promptSelectionRef.current = { start: restoredContent.length, end: restoredContent.length }
+    }
+    window.addEventListener('storage', receiveDraft)
+    return () => window.removeEventListener('storage', receiveDraft)
+  }, [markDraftRestored, sessionID])
 
   useEffect(() => {
     function handleWindowFocus() {
@@ -598,6 +631,10 @@ export function PromptComposer({
       textareaRef.current?.focus({ preventScroll: true })
     }
   }, [focusRequest])
+
+  useEffect(() => {
+    removedQueueIDsRef.current.clear()
+  }, [sessionID])
 
   useEffect(() => {
     if (!sessionID) {
@@ -809,6 +846,7 @@ export function PromptComposer({
   }
 
   function handleContentChange(event: ChangeEvent<HTMLTextAreaElement>) {
+    adoptedDraftRef.current = null
     const nextContent = event.target.value
     const caret = event.target.selectionStart ?? nextContent.length
     publishComposerActivity(sessionID, Math.abs(nextContent.length - content.length))
@@ -823,6 +861,7 @@ export function PromptComposer({
   }
 
   function selectSkill(skill: AgentSkill, fromTypeahead = false) {
+    adoptedDraftRef.current = null
     setSelectedSkills((current) => {
       const sameName = current.filter((reference) => reference.name === skill.name)
       if (sameName.length === 1 && skillKey(sameName[0]) === skillKey(skill)) {
@@ -892,23 +931,104 @@ export function PromptComposer({
   }
 
   async function handleCancel() {
-    if (offline || !onCancel || cancelling) {
+    if (offline || !onCancel || queueActionRef.current) {
       return
     }
 
+    const lifetime = lifetimeRef.current
+    const restoreAfterStop = composerIsEmpty()
+    queueActionRef.current = true
     setCancelling(true)
     onError?.('')
+    let stopped = false
     try {
       await onCancel()
+      stopped = true
+      if (sessionID && lifetime.active && restoreAfterStop && composerIsEmpty()) {
+        // A fresh read avoids restoring a message already consumed/removed on another device.
+        const eventsBeforeRead = new Map(queueEventsRef.current)
+        const response = await fetchQueuedMessages(sessionID, true)
+        if (!lifetime.active || !composerIsEmpty()) return
+        const duringRead = [...queueEventsRef.current.values()].filter((event) =>
+          event.seq > (eventsBeforeRead.get(queuedMessageID(event))?.seq ?? -1),
+        )
+        const messages = reconcileQueuedMessages(response.messages, duringRead)
+          .filter((message) => !removedQueueIDsRef.current.has(message.id))
+        commitQueuedMessages(messages)
+        const first = [...messages].sort((left, right) => left.seq - right.seq)[0]
+        if (first) await restoreQueuedDraft(first, supportsComposerAutoFocus())
+      }
     } catch (cancelError) {
-      onError?.(cancelError instanceof Error ? cancelError.message : 'Failed to cancel run')
+      if (lifetime.active) {
+        const detail = cancelError instanceof Error ? cancelError.message : 'Request failed'
+        onError?.(stopped ? `Run stopped, but the queued draft could not be restored. ${detail}` : detail)
+      }
     } finally {
-      setCancelling(false)
+      queueActionRef.current = false
+      if (lifetime.active) setCancelling(false)
+    }
+  }
+
+  function composerIsEmpty() {
+    const draft = currentDraftRef.current
+    return !draft.offline && !draft.submitting && draft.content.length === 0 &&
+      draft.selectedSkills.length === 0 && draft.attachments.length === 0 &&
+      attachmentReadsRef.current.pending === 0 &&
+      loadDraft(sessionID).length === 0 && loadSelectedSkills(sessionID).length === 0
+  }
+
+  async function restoreQueuedDraft(message: QueuedMessage, focus: boolean) {
+    if (!sessionID || message.session_id !== sessionID) return
+    const lifetime = lifetimeRef.current
+    const restoredSkills = message.skills ?? []
+    const restoredContent = ensureInlineSkillTokens(message.content, restoredSkills)
+    // Save before deleting: a lost response or closing this tab cannot lose the message.
+    // Unlike ordinary editing, storage failure must leave the server queue untouched.
+    try {
+      saveComposerDraft(sessionID, { draft: restoredContent, selectedSkills: restoredSkills })
+    } catch {
+      throw new Error('Unable to save the draft locally. The message was left queued.')
+    }
+    setContent(restoredContent)
+    setSelectedSkills(restoredSkills)
+    adoptedDraftRef.current = null
+    attachmentReadsRef.current = { pending: 0 }
+    setAttachments([])
+    setSkillTypeahead(null)
+    promptSelectionRef.current = { start: restoredContent.length, end: restoredContent.length }
+    if (focus) textareaRef.current?.focus({ preventScroll: true })
+    try {
+      const removed = await deleteQueuedMessage(sessionID, message.id)
+      if (!lifetime.active) return
+      removedQueueIDsRef.current.add(removed.id)
+      commitQueuedMessages((current) => current.filter((item) => item.id !== removed.id))
+    } catch (removeError) {
+      if (lifetime.active) {
+        const detail = removeError instanceof Error ? removeError.message : 'Request failed'
+        onError?.(`A copy is saved in the composer, but queue removal could not be confirmed. Check the queue before sending. ${detail}`)
+      }
+    }
+  }
+
+  async function moveQueuedDraft(message: QueuedMessage) {
+    if (offline || !sessionID || submitting || queueActionRef.current) return
+    const lifetime = lifetimeRef.current
+    queueActionRef.current = true
+    setQueueActionPending(true)
+    onError?.('')
+    try {
+      // Explicit action: replace the draft, even when it contains text, skills, or images.
+      await restoreQueuedDraft(message, true)
+    } catch (moveError) {
+      if (lifetime.active) onError?.(moveError instanceof Error ? moveError.message : 'Failed to restore queued prompt')
+    } finally {
+      queueActionRef.current = false
+      if (lifetime.active) setQueueActionPending(false)
     }
   }
 
   async function enqueueDraft(forceRestoreFocus = false) {
-    if (offline || submissionBlocked || submitting) return
+    if (offline || submissionBlocked || submitting || queueActionRef.current) return
     const trimmed = content.trim()
     if (!trimmed && selectedSkills.length === 0) {
       return
@@ -950,15 +1070,23 @@ export function PromptComposer({
   }
 
   async function removeQueuedDraft(queuedMessageID: string) {
-    if (offline || !sessionID) {
+    if (offline || !sessionID || submitting || queueActionRef.current) {
       return
     }
+    const lifetime = lifetimeRef.current
+    queueActionRef.current = true
+    setQueueActionPending(true)
     onError?.('')
     try {
       const removed = await deleteQueuedMessage(sessionID, queuedMessageID)
+      if (!lifetime.active) return
+      removedQueueIDsRef.current.add(removed.id)
       commitQueuedMessages((current) => current.filter((message) => message.id !== removed.id))
     } catch (removeError) {
-      onError?.(removeError instanceof Error ? removeError.message : 'Failed to remove queued prompt')
+      if (lifetime.active) onError?.(removeError instanceof Error ? removeError.message : 'Failed to remove queued prompt')
+    } finally {
+      queueActionRef.current = false
+      if (lifetime.active) setQueueActionPending(false)
     }
   }
 
@@ -967,6 +1095,7 @@ export function PromptComposer({
     if (selectedFiles.length === 0) {
       return
     }
+    adoptedDraftRef.current = null
     if (attachments.length + selectedFiles.length > maxImageAttachmentCount) {
       onError?.(`Attach up to ${maxImageAttachmentCount} images.`)
       return
@@ -985,12 +1114,20 @@ export function PromptComposer({
       imageFiles.push(file)
     }
 
+    const lifetime = lifetimeRef.current
+    const reads = attachmentReadsRef.current
+    reads.pending += 1
     try {
       const nextAttachments = await Promise.all(imageFiles.map(fileToAttachment))
+      if (!lifetime.active || reads !== attachmentReadsRef.current) return
       setAttachments((current) => [...current, ...nextAttachments])
       onError?.('')
     } catch (attachmentError) {
-      onError?.(attachmentError instanceof Error ? attachmentError.message : 'Failed to attach image')
+      if (lifetime.active && reads === attachmentReadsRef.current) {
+        onError?.(attachmentError instanceof Error ? attachmentError.message : 'Failed to attach image')
+      }
+    } finally {
+      reads.pending -= 1
     }
   }
 
@@ -1036,24 +1173,7 @@ export function PromptComposer({
 
   return (
     <form onSubmit={(event) => void handleSubmit(event)} className="prompt-composer-shell relative shrink-0 px-3 pb-3">
-      {draftVersions.storageError ? <p role="alert" className="mb-2 text-xs text-destructive">{draftVersions.storageError}</p> : null}
-      {draftVersions.versions.length > 0 ? (
-        <details className="mb-2 max-h-48 overflow-auto rounded-lg border bg-background p-2 text-xs">
-          <summary>Saved drafts from other tabs ({draftVersions.versions.length}) — your current text is unchanged</summary>
-          {draftVersions.versions.map((version) => (
-            <div key={version.key} className="mt-2 border-t pt-2">
-              <pre className="max-h-20 overflow-auto whitespace-pre-wrap break-words">{version.draft}</pre>
-              <Button type="button" size="sm" variant="outline" disabled={submitting} onClick={() => {
-                try {
-                  draftVersions.preserveCurrent()
-                  setContent(version.draft)
-                } catch { onError?.('Unable to preserve your current draft. Copy it before switching versions.') }
-              }}>Use saved draft</Button>
-              <Button type="button" size="sm" variant="ghost" className="ml-2" onClick={() => draftVersions.discardVersion(version)}>Discard this saved copy</Button>
-            </div>
-          ))}
-        </details>
-      ) : null}
+      {draftStorageError ? <p role="alert" className="mb-2 text-xs text-destructive">{draftStorageError}</p> : null}
       {queuedMessages.length > 0 ? (
         <div className="pointer-events-auto relative z-0 mx-3 -mb-3 rounded-t-[20px] border border-border/85 border-b-0 bg-surface-muted/75 px-4 pb-4 pt-2 shadow-[0_10px_24px_hsl(var(--foreground)/0.08)] backdrop-blur">
           <div className="flex items-center justify-between gap-3">
@@ -1069,6 +1189,8 @@ export function PromptComposer({
                 index={index}
                 message={message.content}
                 skills={message.skills ?? []}
+                disabled={offline || submitting || cancelling || queueActionPending}
+                onMoveToComposer={() => void moveQueuedDraft(message)}
                 onRemove={() => void removeQueuedDraft(message.id)}
               />
             ))}
@@ -1324,7 +1446,7 @@ export function PromptComposer({
                 type="button"
                 variant="outline"
                 size="icon"
-                disabled={cancelling}
+                disabled={cancelling || queueActionPending}
                 onClick={() => void handleCancel()}
                 className={cn(
                   'running-stop-button h-8 w-8 border-destructive/40 text-destructive hover:bg-destructive/10',
@@ -1717,11 +1839,15 @@ function QueuedMessageRow({
   index,
   message,
   skills,
+  disabled,
+  onMoveToComposer,
   onRemove,
 }: {
   index: number
   message: string
   skills: SkillReference[]
+  disabled: boolean
+  onMoveToComposer: () => void
   onRemove: () => void
 }) {
   return (
@@ -1751,7 +1877,20 @@ function QueuedMessageRow({
         type="button"
         variant="ghost"
         size="icon"
+        disabled={disabled}
+        aria-label={`Move queued message ${index + 1} to composer`}
+        title="Move to composer (replaces current draft)"
+        onClick={onMoveToComposer}
+        className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+      >
+        <CornerDownLeft className="size-3.5" aria-hidden="true" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
         aria-label={`Remove queued message ${index + 1}`}
+        disabled={disabled}
         onClick={onRemove}
         className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
       >
@@ -2888,10 +3027,6 @@ function fastTierForModel(model: CodexModelOption | null): CodexServiceTierOptio
   return model?.service_tiers.find((tier) => tier.name.toLowerCase() === 'fast') ?? null
 }
 
-function composerStorageKey(sessionID: string | undefined) {
-  return `${composerStorageKeyPrefix}${sessionID || defaultComposerStorageID}`
-}
-
 function loadComposerStorage(sessionID: string | undefined): ComposerStorageValue {
   try {
     const stored = window.localStorage.getItem(composerStorageKey(sessionID))
@@ -2914,40 +3049,11 @@ function saveComposerStorage(sessionID: string | undefined, value: ComposerStora
 }
 
 function loadDraft(sessionID: string | undefined) {
-  const stored = loadComposerStorage(sessionID)
-  return typeof stored.draft === 'string' ? stored.draft : ''
-}
-
-function saveDraft(sessionID: string | undefined, draft: string) {
-  saveComposerStorage(sessionID, {
-    ...loadComposerStorage(sessionID),
-    draft,
-  })
+  return loadComposerDraft(sessionID).draft
 }
 
 function loadSelectedSkills(sessionID: string | undefined): SkillReference[] {
-  const stored = loadComposerStorage(sessionID).selectedSkills
-  if (!Array.isArray(stored)) return []
-  return stored.flatMap((reference) => {
-    if (
-      !reference ||
-      typeof reference !== 'object' ||
-      typeof reference.name !== 'string' ||
-      typeof reference.path !== 'string' ||
-      !reference.name.trim() ||
-      !reference.path.trim()
-    ) {
-      return []
-    }
-    return [{ name: reference.name.trim(), path: reference.path.trim() }]
-  })
-}
-
-function saveSelectedSkills(sessionID: string | undefined, selectedSkills: SkillReference[]) {
-  saveComposerStorage(sessionID, {
-    ...loadComposerStorage(sessionID),
-    selectedSkills,
-  })
+  return loadComposerDraft(sessionID).selectedSkills
 }
 
 function skillKey(reference: SkillReference) {
