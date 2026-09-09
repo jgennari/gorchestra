@@ -815,6 +815,7 @@ type appServerRun struct {
 	action            agents.AgentAction
 	userInput         agents.UserInputBroker
 	permissions       agents.PermissionBroker
+	asyncInput        asyncInputState
 
 	stateMu  sync.Mutex
 	threadID string
@@ -822,6 +823,9 @@ type appServerRun struct {
 }
 
 func (r *appServerRun) execute(ctx context.Context, input agents.AgentInput, workdir string) error {
+	r.asyncInput.done = make(chan struct{})
+	r.asyncInput.responses = make(map[string]asyncAnswerResponse)
+	defer r.closeAsyncInput()
 	cancelWatchDone := r.watchCancellation(ctx)
 	defer close(cancelWatchDone)
 	defer r.stopServer()
@@ -1322,6 +1326,9 @@ func (r *appServerRun) handleIncoming(ctx context.Context, incoming incomingMess
 		return nil, false, terminal, err
 	}
 	if len(message.ID) > 0 {
+		if r.resolveAsyncAnswer(message) {
+			return nil, false, false, nil
+		}
 		matched := message.idKey() == responseID
 		return message, matched, false, nil
 	}
@@ -1633,7 +1640,13 @@ func (r *appServerRun) handleNotification(ctx context.Context, message *rpcMessa
 	events := r.normalizer.normalize(message.Method, message.Params)
 	terminal := false
 	for _, event := range events {
+		if event.Event.Type == "agent.input.requested" {
+			if err := r.openAsyncInput(ctx, event.Event); err != nil {
+				return false, err
+			}
+		}
 		if event.Terminal != terminalNone {
+			r.closeAsyncInput()
 			terminal = true
 		}
 		if err := r.emitEvent(ctx, event); err != nil {

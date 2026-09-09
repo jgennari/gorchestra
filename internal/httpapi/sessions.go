@@ -2002,17 +2002,42 @@ func (api API) answerUserInputHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := api.appendUserInputAnswered(r.Context(), session.ID, pending, request.Answers); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to persist user input answer")
-		return
-	}
-	if err := api.runs.AnswerUserInput(session.ID, pending.RequestID, agents.UserInputResponse{Answers: request.Answers}); err != nil {
+	// Once claimed, persist the user's intent before delivery. For asynchronous
+	// questions, don't call it answered until the provider acknowledges the steer.
+	// Detach from the HTTP connection: closing a mobile tab must not abort a reply
+	// that the provider may already have received. Never automatically resend it.
+	answerCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 20*time.Second)
+	defer cancel()
+	submitted := false
+	err = api.runs.AnswerUserInputWithPersistence(answerCtx, session.ID, pending.RequestID, agents.UserInputResponse{Answers: request.Answers}, func() error {
+		eventType := "agent.input.answered"
+		if pending.Delivery == "async" {
+			eventType = "agent.input.submitted"
+		}
+		if err := api.appendUserInputAnswerEvent(answerCtx, session.ID, pending, request.Answers, eventType, ""); err != nil {
+			return err
+		}
+		submitted = true
+		return nil
+	})
+	if err != nil {
+		if submitted && pending.Delivery == "async" {
+			if persistErr := api.appendUserInputAnswerEvent(context.WithoutCancel(answerCtx), session.ID, pending, request.Answers, "agent.input.failed", "Answer delivery was not confirmed. It will not be resent automatically."); persistErr != nil {
+				log.Printf("failed to persist answer delivery failure: session_id=%s request_id=%s error=%v", session.ID, pending.RequestID, persistErr)
+			}
+		}
 		if errors.Is(err, runcontrol.ErrRunNotActive) || errors.Is(err, runcontrol.ErrUserInputNotActive) {
 			writeError(w, http.StatusConflict, "user input request is not active")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to answer user input request")
+		writeError(w, http.StatusInternalServerError, "Unable to confirm answer delivery. It has not been resent automatically.")
 		return
+	}
+	if pending.Delivery == "async" {
+		if err := api.appendUserInputAnswerEvent(answerCtx, session.ID, pending, request.Answers, "agent.input.answered", ""); err != nil {
+			writeError(w, http.StatusInternalServerError, "Answer delivered, but its confirmation could not be saved. Do not resend it.")
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusAccepted, answerUserInputResponse{
@@ -2194,17 +2219,34 @@ func userActionText(action agents.AgentAction) string {
 	}
 }
 
-func (api API) appendUserInputAnswered(
-	ctx context.Context,
-	sessionID string,
-	request agents.UserInputRequest,
-	answers map[string]agents.UserInputQuestionAnswer,
-) error {
+func (api API) appendUserInputAnswerEvent(ctx context.Context, sessionID string, request agents.UserInputRequest, answers map[string]agents.UserInputQuestionAnswer, eventType string, deliveryError string) error {
+	text := ""
+	if request.Delivery == "async" && eventType == "agent.input.answered" {
+		values := make([]string, 0, len(request.Questions))
+		for _, question := range request.Questions {
+			value := strings.Join(answers[question.ID].Answers, ", ")
+			if question.IsSecret {
+				value = "[redacted]"
+			}
+			values = append(values, value)
+		}
+		text = strings.Join(values, "\n\n")
+	}
+	status := string(store.EventStatusCompleted)
+	if eventType == "agent.input.submitted" {
+		status = string(store.EventStatusStarted)
+	}
+	if eventType == "agent.input.failed" {
+		status = string(store.EventStatusFailed)
+	}
 	return api.appendAgentEvent(ctx, sessionID, agents.AgentEvent{
-		Type:   "agent.input.answered",
+		Type:   eventType,
 		Role:   "user",
-		Status: string(store.EventStatusCompleted),
+		Status: status,
 		Payload: map[string]any{
+			"text":                text,
+			"delivery":            request.Delivery,
+			"error":               deliveryError,
 			"provider":            request.Provider,
 			"provider_event_type": request.ProviderEventType,
 			"provider_request_id": request.ProviderRequestID,

@@ -42,6 +42,27 @@ test('prompt composer remains enabled after a completed run returns to idle', ()
   expect(screen.getByLabelText('Prompt')).toBeEnabled()
 })
 
+test('async question card leaves thinking and the composer draft intact and clears after acknowledgement', async () => {
+  const events = [
+    event(1, 'agent.run.started', {}),
+    event(2, 'agent.input.requested', { delivery: 'async', request_id: 'q', text: 'Pick one', questions: [{ id: 'q1', question: 'Pick one', is_other: true, options: [{ label: 'Alpha' }, { label: 'Beta' }] }] }),
+    event(3, 'agent.thinking.started', { item_id: 'thinking' }),
+  ]
+  const onAnswerUserInput = vi.fn(async () => undefined)
+  const overrides = { session: { ...baseSession, status: 'running' as const }, events, onAnswerUserInput }
+  const view = renderDetail(overrides)
+  const prompt = screen.getByLabelText('Prompt')
+  fireEvent.change(prompt, { target: { value: 'My unrelated draft' } })
+  const card = screen.getByRole('group', { name: 'Agent question' })
+  expect(screen.getByText('Thinking')).toBeInTheDocument()
+  fireEvent.click(within(card).getByRole('button', { name: 'Beta' }))
+  await waitFor(() => expect(onAnswerUserInput).toHaveBeenCalledExactlyOnceWith('q', { q1: { answers: ['Beta'] } }))
+  expect(prompt).toHaveValue('My unrelated draft')
+  rerenderDetail(view.rerender, { ...overrides, events: [...events, event(4, 'agent.input.answered', { request_id: 'q', delivery: 'async', text: 'Beta' })] })
+  expect(screen.queryByRole('group', { name: 'Agent question' })).not.toBeInTheDocument()
+  expect(prompt).toHaveValue('My unrelated draft')
+})
+
 test('uncertain submission remains recoverable after unmount without becoming a new draft', async () => {
   let rejectSubmit: ((error: Error) => void) | undefined
   const onErrorMessageChange = vi.fn()

@@ -138,21 +138,22 @@ export function SessionDetail({
     () => (session?.status === 'running' ? pendingPermissionRequests(statusEvents) : []),
     [session?.status, statusEvents],
   )
+  const blockingUserInput = Boolean(userInputRequest && userInputRequest.delivery !== 'async')
   const thinking = useMemo(
-    () => session?.status === 'running' && !userInputRequest && activeThinking(statusEvents),
-    [session?.status, statusEvents, userInputRequest],
+    () => session?.status === 'running' && !blockingUserInput && activeThinking(statusEvents),
+    [session?.status, statusEvents, blockingUserInput],
   )
   const runActivity = useMemo(
-    () => (session?.status === 'running' && !userInputRequest ? activeRunActivity(statusEvents) : null),
-    [session?.status, statusEvents, userInputRequest],
+    () => (session?.status === 'running' && !blockingUserInput ? activeRunActivity(statusEvents) : null),
+    [session?.status, statusEvents, blockingUserInput],
   )
   const streamingResponse = useMemo(
-    () => session?.status === 'running' && !userInputRequest && activeStreamingResponse(statusEvents),
-    [session?.status, statusEvents, userInputRequest],
+    () => session?.status === 'running' && !blockingUserInput && activeStreamingResponse(statusEvents),
+    [session?.status, statusEvents, blockingUserInput],
   )
   const activeTool = useMemo(
-    () => session?.status === 'running' && !userInputRequest && activeToolActivity(statusEvents),
-    [session?.status, statusEvents, userInputRequest],
+    () => session?.status === 'running' && !blockingUserInput && activeToolActivity(statusEvents),
+    [session?.status, statusEvents, blockingUserInput],
   )
   const activityStatus = thinking
     ? ({ kind: 'thinking' } as const)
@@ -409,7 +410,7 @@ export function SessionDetail({
           topInset="sessionHeader"
           bottomInsetHeight={bottomInsetHeight}
           pinToLatestOnMount
-          autoScroll={!offline && session.status === 'running' && !userInputRequest}
+          autoScroll={!offline && session.status === 'running' && !blockingUserInput}
           activityStatus={activityStatus}
           showDebugEvents={showDebugEvents}
           hasOlderEvents={hasOlderEvents && !olderHistoryUnavailable}
@@ -462,7 +463,7 @@ export function SessionDetail({
             </div>
           ) : null}
           <PermissionQueue requests={permissionRequests} onResolve={onResolvePermission} />
-          <UserInputCard request={userInputRequest} onAnswer={onAnswerUserInput} />
+          <UserInputCard key={userInputRequest?.requestID} request={userInputRequest} disabled={offline} onAnswer={onAnswerUserInput} />
           {recoverableSubmissions.length > 0 || pendingError ? (
             <section aria-label="Pending message recovery" className="mx-3 max-h-64 overflow-auto rounded-lg border border-border bg-background p-3 text-xs">
               <p role="status">Message awaiting confirmation. It is saved on this device; nothing is automatically resent.</p>
@@ -489,7 +490,7 @@ export function SessionDetail({
             sessionAgentOptions={session.agent_options}
             sessionAgentOptionsSeq={session.last_event_seq}
             sessionStatus={session.status}
-            hasPendingUserInput={Boolean(userInputRequest)}
+            hasPendingUserInput={blockingUserInput}
             latestTerminalEvent={latestTerminal}
             queueEvents={queueEvents}
             disabled={composerDisabled}

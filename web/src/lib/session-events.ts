@@ -95,7 +95,7 @@ function pendingPermissionCountFromEvent(current: number, event: AgentEvent) {
 
 function pendingInputFromEvent(current: boolean, event: AgentEvent) {
   if (event.type === 'agent.input.requested') return true
-  if (event.type === 'agent.input.answered' || isTerminalEvent(event.type)) return false
+  if (event.type === 'agent.input.answered' || event.type === 'agent.input.failed' || isTerminalEvent(event.type)) return false
   return current
 }
 

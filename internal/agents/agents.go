@@ -196,6 +196,12 @@ type UserInputBroker interface {
 	OpenUserInput(ctx context.Context, request UserInputRequest) (UserInputWaiter, error)
 }
 
+// AsyncUserInputBroker registers questions without blocking the agent's event loop.
+// Delivery returns only after the provider acknowledges the active-turn input.
+type AsyncUserInputBroker interface {
+	OpenAsyncUserInput(ctx context.Context, request UserInputRequest, deliver func(context.Context, UserInputResponse) error) (UserInputWaiter, error)
+}
+
 type UserInputWaiter interface {
 	Wait(ctx context.Context) (UserInputResponse, error)
 	Close()
@@ -210,6 +216,7 @@ type UserInputRequest struct {
 	ThreadID          string
 	TurnID            string
 	ItemID            string
+	Delivery          string
 	Questions         []UserInputQuestion
 }
 

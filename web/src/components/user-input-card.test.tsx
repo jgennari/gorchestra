@@ -55,6 +55,47 @@ test('long option copy wraps on mobile instead of truncating', () => {
   expect(description).not.toHaveClass('truncate')
 })
 
+test('async questions reuse the paged choices and send free text without preselecting', async () => {
+  const user = userEvent.setup()
+  const onAnswer = vi.fn(async () => undefined)
+  const asyncRequest = requestWithOther()
+  asyncRequest.delivery = 'async'
+  asyncRequest.questions[1].is_other = true
+  asyncRequest.questions[1].options = []
+  render(<UserInputCard request={asyncRequest} onAnswer={onAnswer} />)
+  expect(screen.getByText(/agent is still working/)).toBeInTheDocument()
+  expect(onAnswer).not.toHaveBeenCalled()
+  await user.click(screen.getByRole('button', { name: /Moon Launch/i }))
+  const input = screen.getByLabelText('Other answer for Pick a scheduler')
+  await user.type(input, 'Use my custom scheduler{Enter}')
+  expect(onAnswer).toHaveBeenCalledExactlyOnceWith('call_test', {
+    deployment: { answers: ['Moon Launch'] }, scheduler: { answers: ['Use my custom scheduler'] },
+  })
+})
+
+test('replayed sending and uncertain delivery states prevent duplicate answers', () => {
+  const pending = { ...request(), delivery: 'async' as const, submitting: true }
+  const onAnswer = vi.fn(async () => undefined)
+  const view = render(<UserInputCard request={pending} onAnswer={onAnswer} />)
+  expect(screen.getByRole('button', { name: /Moon Launch/ })).toBeDisabled()
+  expect(screen.getByRole('status')).toHaveTextContent('Sending answer')
+  view.rerender(<UserInputCard request={{ ...pending, submitting: false, deliveryError: 'Delivery was not confirmed.' }} onAnswer={onAnswer} />)
+  expect(screen.getByRole('button', { name: /Moon Launch/ })).toBeDisabled()
+  expect(screen.getByRole('alert')).toHaveTextContent('Delivery was not confirmed.')
+  expect(screen.queryByText('Sending answer…')).not.toBeInTheDocument()
+})
+
+test('failed submission preserves the free-text reply', async () => {
+  const user = userEvent.setup()
+  const req = { ...requestWithOther(), delivery: 'async' as const }
+  req.questions = [req.questions[0]]
+  render(<UserInputCard request={req} onAnswer={vi.fn(async () => { throw new Error('Offline') })} />)
+  const input = screen.getByLabelText('Other answer for Pick a deployment')
+  await user.type(input, 'Keep my answer{Enter}')
+  expect(await screen.findByRole('alert')).toHaveTextContent('Offline')
+  expect(input).toHaveValue('Keep my answer')
+})
+
 function request(): PendingUserInputRequest {
   return {
     requestID: 'call_test',

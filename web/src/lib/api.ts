@@ -687,6 +687,7 @@ export type EventHistoryPage = {
 export type EventHistoryResponse = {
   events: AgentEvent[]
   page?: EventHistoryPage
+  input_events?: AgentEvent[]
 }
 
 type NotificationPublicKeyResponse = {

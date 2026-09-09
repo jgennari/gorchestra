@@ -254,6 +254,17 @@ test('unpinned session action stays visible on mobile and becomes hover-only on 
   )
 })
 
+test.each([false, true])('pin sits close to the row edge without shrinking its target (pinned: %s)', (pinned) => {
+  render(<SessionListHarness sessions={[{
+    ...sessions[0], pinned_at: pinned ? '2026-09-09T12:00:00Z' : undefined,
+  }]} onPinChange={() => undefined} />)
+
+  const pin = screen.getByRole('button', { name: pinned ? 'Unpin session' : 'Pin session' })
+  expect(pin).toHaveClass('size-8', 'justify-center')
+  expect(pin.parentElement).not.toHaveClass('mr-1')
+  expect(pin.parentElement).not.toHaveClass('pr-2')
+})
+
 test('session shortcuts consume row width only while hovered or focused', () => {
   const { container } = render(
     <SessionListHarness sessions={[sessions[0]]} onPinChange={() => undefined} />,

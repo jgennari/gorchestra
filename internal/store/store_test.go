@@ -1612,6 +1612,25 @@ func TestSessionSummaryTracksPendingActivityAndTerminalReset(t *testing.T) {
 	}
 }
 
+func TestLateAsyncAnswerDoesNotClearNextRunsQuestion(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, s)
+	appendTestEventWithType(t, ctx, s, session.ID, "agent.input.requested", `{"request_id":"old","delivery":"async"}`)
+	appendTestEventWithType(t, ctx, s, session.ID, "agent.run.completed", `{}`)
+	appendTestEventWithType(t, ctx, s, session.ID, "agent.input.requested", `{"request_id":"new","delivery":"async"}`)
+	appendTestEventWithType(t, ctx, s, session.ID, "agent.input.answered", `{"request_id":"old","delivery":"async"}`)
+	persisted, err := s.GetSession(ctx, session.ID)
+	if err != nil || persisted.PendingInputCount != 1 {
+		t.Fatalf("late answer affected new question: %#v %v", persisted, err)
+	}
+	appendTestEventWithType(t, ctx, s, session.ID, "agent.input.failed", `{"request_id":"new","delivery":"async"}`)
+	persisted, err = s.GetSession(ctx, session.ID)
+	if err != nil || persisted.PendingInputCount != 0 {
+		t.Fatalf("failed answer still counted: %#v %v", persisted, err)
+	}
+}
+
 func TestAppendEventExternalizesLargeToolOutput(t *testing.T) {
 	ctx := context.Background()
 	testStore := newTestStore(t, ctx)

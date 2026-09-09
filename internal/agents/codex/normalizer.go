@@ -156,6 +156,15 @@ func (n *normalizer) normalizeItemLifecycle(method string, params json.RawMessag
 	switch itemType {
 	case "agentMessage":
 		payload["text"] = stringFromMap(item, "text")
+		if stringFromMap(item, "delivery") == "async" {
+			questions := asyncQuestions(item)
+			if len(questions) > 0 && stringFromMap(item, "id") != "" && stringAt(params, "threadId") != "" && stringAt(params, "turnId") != "" {
+				payload["delivery"] = "async"
+				payload["request_id"] = stringFromMap(item, "id")
+				payload["questions"] = questions
+				return []normalizedEvent{{Event: event("agent.input.requested", "assistant", "started", payload)}}
+			}
+		}
 		return []normalizedEvent{{Event: event("agent.message.completed", "assistant", "completed", payload)}}
 	case "reasoning":
 		payload["text"] = reasoningText(item)

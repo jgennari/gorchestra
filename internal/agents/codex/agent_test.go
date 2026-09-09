@@ -1301,6 +1301,18 @@ func runFakeAppServer(mode string) {
 		}
 
 		switch request.Method {
+		case "turn/steer":
+			if stringAt(request.Params, "threadId") != "thread_fake" || stringAt(request.Params, "expectedTurnId") != "turn_fake" || !strings.Contains(fakeCodexPromptText(request.Params), "Pick one\nBeta") {
+				fakeRespondError(request.ID, -32602, "incorrect steer parameters")
+				continue
+			}
+			if mode == "async-reject" {
+				fakeRespondError(request.ID, -32602, "turn is no longer active")
+				continue
+			}
+			fakeNotify("item/agentMessage/delta", map[string]any{"threadId": "thread_fake", "turnId": "turn_fake", "itemId": "answer_message", "delta": "Reading your answer"})
+			fakeRespond(request.ID, map[string]any{"turnId": "turn_fake"})
+			fakeNotify("turn/completed", map[string]any{"threadId": "thread_fake", "turn": map[string]any{"id": "turn_fake", "status": "completed"}})
 		case "initialize":
 			if mode == "stderr" {
 				_, _ = os.Stderr.WriteString("codex log line\n")
@@ -1448,6 +1460,15 @@ func runFakeAppServer(mode string) {
 				},
 			})
 			switch mode {
+			case "async-input", "async-reject", "async-ended":
+				fakeNotify("item/completed", map[string]any{
+					"threadId": "thread_fake", "turnId": "turn_fake",
+					"item": map[string]any{"id": "call_async", "type": "agentMessage", "text": "Pick one\n- Alpha\n- Beta", "delivery": "async", "questions": []map[string]any{{"title": "Pick one", "options": []string{"Alpha", "Beta"}}}},
+				})
+				fakeNotify("item/started", map[string]any{"threadId": "thread_fake", "turnId": "turn_fake", "item": map[string]any{"id": "thinking_after_question", "type": "reasoning"}})
+				if mode == "async-ended" {
+					fakeNotify("turn/completed", map[string]any{"threadId": "thread_fake", "turn": map[string]any{"id": "turn_fake", "status": "completed"}})
+				}
 			case "success", "stderr", "retry-success":
 				if mode == "retry-success" {
 					fakeNotify("error", map[string]any{

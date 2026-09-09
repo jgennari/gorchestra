@@ -1323,7 +1323,13 @@ function App() {
     if (!selectedSessionID) {
       throw new Error('Select a session first.')
     }
-    await answerUserInput(selectedSessionID, requestID, answers)
+    const sessionID = selectedSessionID
+    try {
+      await answerUserInput(sessionID, requestID, answers)
+    } finally {
+      setEventRefreshKey((value) => value + 1)
+      void refreshSession(sessionID)
+    }
   }
 
   async function handleResolvePermission(requestID: string, optionID: string) {

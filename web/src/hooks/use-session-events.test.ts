@@ -11,6 +11,30 @@ import {
 import { readCachedSessionEvents, writeCachedSessionEvents } from '@/lib/session-cache'
 import { createFakeIndexedDB } from '@/test/fake-indexeddb'
 import { ingestClientEvent, publishClientSessionEvent } from '@/lib/client-event-store'
+import { pendingUserInputRequest } from '@/lib/events'
+
+test('question controls survive a truncated transcript and resolve from the shared stream', async () => {
+  clearSessionEventCacheForTest()
+  const request = { ...event(2, 'agent.input.requested'), payload: { request_id: 'question', delivery: 'async', questions: [{ id: 'q', question: 'Choose?', is_other: true, options: [] }] } }
+  const fetchMock = vi.fn(async () => jsonResponse({
+    events: [event(10000, 'agent.thinking.started')],
+    input_events: [request],
+    page: { ...historyPage(10000, 10000, true), server_last_seq: 10000 },
+  }))
+  vi.stubGlobal('fetch', fetchMock)
+  const { result, unmount } = renderHook(() => useSessionEvents('sess_test', { liveStreamState: 'connected' }))
+  await waitFor(() => expect(result.current.streamState).toBe('connected'))
+  expect(result.current.events.map(event => event.seq)).toEqual([10000])
+  expect(pendingUserInputRequest(result.current.liveEvents)?.requestID).toBe('question')
+  unmount()
+  const second = renderHook(() => useSessionEvents('sess_test', { liveStreamState: 'connected' }))
+  await waitFor(() => expect(pendingUserInputRequest(second.result.current.liveEvents)?.requestID).toBe('question'))
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  act(() => ingestClientEvent({ ...event(10001, 'agent.input.answered'), payload: { request_id: 'question', delivery: 'async' } }))
+  await waitFor(() => expect(pendingUserInputRequest(second.result.current.liveEvents)).toBeNull())
+  second.unmount()
+  vi.unstubAllGlobals()
+})
 
 test('turn trimming keeps the latest requested turns', () => {
   const trimmed = trimEventsToRecentTurns(

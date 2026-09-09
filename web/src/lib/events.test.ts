@@ -57,6 +57,35 @@ test('classifies provider diagnostics consistently with the server stream filter
   }))).toBe(true)
 })
 
+test('async questions replay, stay stable, and resolve independently while streaming continues', () => {
+  const question = (seq: number, requestID: string, delivery?: string) => event(seq, 'agent.input.requested', {
+    request_id: requestID, delivery, text: `Question ${requestID}`,
+    questions: [{ id: 'q1', question: `Question ${requestID}`, is_other: true, options: [] }],
+  })
+  const events = [event(1, 'agent.run.started'), event(2, 'agent.thinking.started'), question(3, 'first', 'async'), question(4, 'second', 'async')]
+  expect(activeThinking(events)).toBe(true)
+  expect(pendingUserInputRequest([...events].reverse())).toMatchObject({ requestID: 'first', delivery: 'async' })
+  expect(pendingUserInputRequest([...events, question(5, 'blocking')])).toMatchObject({ requestID: 'blocking' })
+  const submitted = event(5, 'agent.input.submitted', { request_id: 'first' })
+  expect(pendingUserInputRequest([...events, submitted])).toMatchObject({ requestID: 'first', submitting: true })
+  const failed = event(6, 'agent.input.failed', { request_id: 'first', error: 'Not confirmed' })
+  expect(pendingUserInputRequest([...events, submitted, failed])).toMatchObject({ requestID: 'second' })
+  expect(pendingUserInputRequest([...events, submitted, failed, event(7, 'agent.input.answered', { request_id: 'second' })])).toMatchObject({ requestID: 'first', submitting: false, deliveryError: 'Not confirmed' })
+  expect(pendingUserInputRequest([...events, event(6, 'agent.input.answered', { request_id: 'first' })])).toMatchObject({ requestID: 'second' })
+  expect(pendingUserInputRequest([...events, event(7, 'agent.run.completed')])).toBeNull()
+  expect(pendingUserInputRequest([...events, event(7, 'agent.run.cancelled')])).toBeNull()
+})
+
+test('async question and confirmed answer remain in transcript history', () => {
+  const events = [
+    event(1, 'agent.input.requested', { request_id: 'first', delivery: 'async', text: 'Which color?', questions: [{ id: 'q1', question: 'Which color?', is_other: true, options: [] }] }),
+    event(2, 'agent.input.submitted', { request_id: 'first', delivery: 'async' }),
+    event(3, 'agent.input.answered', { request_id: 'first', delivery: 'async', text: 'Blue' }),
+  ]
+  const messages = buildChatTranscript(events)
+  expect(messages.map((message) => [message.role, message.text])).toEqual([['assistant', 'Which color?'], ['user', 'Blue']])
+})
+
 function timedEvent(seq: number, type: string, createdAt: string, payload: Record<string, unknown> = {}) {
   return {
     ...event(seq, type, payload),

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { reconcileInputEvents, unresolvedInputEvents } from '@/lib/input-events'
 import type { AgentEvent, EventHistoryResponse } from '@/lib/api'
 import {
   defaultEventTurnPageSize,
@@ -47,6 +48,7 @@ type Options = {
 
 type SessionEventCacheEntry = {
   events: AgentEvent[]
+  inputEvents?: AgentEvent[]
   lastSeq: number
   oldestSeq: number
   hasOlderEvents: boolean
@@ -82,6 +84,7 @@ export function clearSessionEventCacheForTest() {
 export function useSessionEvents(sessionID: string | null, options: Options = {}) {
   const [events, setEvents] = useState<AgentEvent[]>([])
   const [liveEvents, setLiveEvents] = useState<AgentEvent[]>([])
+  const [inputEvents, setInputEvents] = useState<AgentEvent[]>([])
   const [streamState, setStreamState] = useState<StreamState>('idle')
   const [streamSessionID, setStreamSessionID] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -153,6 +156,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     setLoadingNewerEvents(false)
 
     if (!sessionID) {
+      setInputEvents([])
       lastSeqRef.current = 0
       lastDurableSeqRef.current = 0
       oldestSeqRef.current = 0
@@ -172,6 +176,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     }
 
     if (!sameSessionRefresh) {
+      setInputEvents(cachedSession?.inputEvents ?? unresolvedInputEvents(cachedSession?.events ?? []))
       if (cachedSession) {
         lastSeqRef.current = cachedSession.lastSeq
         lastDurableSeqRef.current = cachedSession.lastSeq
@@ -208,6 +213,9 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     let loadingTail = false
 
     function applyEvent(event: AgentEvent) {
+      if (event.type.startsWith('agent.input.') || event.type.startsWith('agent.run.')) {
+        setInputEvents(current => unresolvedInputEvents([...current, event]))
+      }
       lastSeqRef.current = Math.max(lastSeqRef.current, event.seq)
       if (!isTransientEvent(event)) {
         lastDurableSeqRef.current = Math.max(lastDurableSeqRef.current, event.seq)
@@ -248,6 +256,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     })
 
     function applyTail(history: EventHistoryResponse, preserveVisible: boolean) {
+      setInputEvents(current => reconcileInputEvents(current, history))
       const sharedEvents = activeIncludeDebugEvents
         ? liveEventsRef.current
         : (readClientSessionEvents(activeSessionID)?.events ?? [])
@@ -296,6 +305,8 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         history.page?.has_newer ?? false,
         activeIncludeDebugEvents,
         lastDurableSeqRef.current,
+        true,
+        history,
       )
       if (!activeIncludeDebugEvents) {
         persistentHotWindowSeqRef.current = lastDurableSeqRef.current
@@ -350,6 +361,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           listAdaptiveRecentEventTurns(activeSessionID, activeIncludeDebugEvents),
         ])
         if (closed) return
+        setInputEvents(current => reconcileInputEvents(current, tail))
 
         const visible = boundEventWindow(appendEvents([], history.events), 'latest', residentEventWindowPolicy)
         const sharedEvents = activeIncludeDebugEvents
@@ -387,6 +399,8 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
           false,
           activeIncludeDebugEvents,
           lastDurableSeqRef.current,
+          true,
+          tail,
         )
         if (!activeIncludeDebugEvents) {
           persistentHotWindowSeqRef.current = lastDurableSeqRef.current
@@ -481,7 +495,8 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         setStreamState(networkAvailable ? 'loading' : 'disconnected')
       }
     } else if (cachedSession?.tailHydrated) {
-      setStreamState('connected')
+      if (activeIncludeDebugEvents && canLoadHistory) void loadTail(true)
+      else setStreamState('connected')
     } else {
       void hydratePersistentCacheOrLoad(cachedSession !== null)
     }
@@ -666,6 +681,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     try {
       const history = await listAdaptiveRecentEventTurns(sessionID, includeDebugEvents)
       if (activeSessionIDRef.current !== sessionID) return
+      setInputEvents(current => reconcileInputEvents(current, history))
       const serverLastSeq = history.page?.server_last_seq ?? lastDurableSeq(history.events)
       const combined = appendEvents([], [...history.events, ...liveEventsRef.current.filter((event) => event.seq > serverLastSeq)])
       liveEventsRef.current = boundEventWindow(combined, 'latest', liveEventWindowPolicy).events
@@ -687,6 +703,7 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       writeCachedSessionEvents(
         sessionID, liveEventsRef.current, history.page?.has_older ?? firstSeq(combined) > 1,
         false, includeDebugEvents, lastDurableSeqRef.current,
+        true, history,
       )
       if (!includeDebugEvents) {
         void writePersistentCachedSessionEventPage(sessionID, history.events, {
@@ -720,9 +737,10 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
     followingTail: followingTailRef.current,
   }), [])
 
+  const liveEventsWithInputs = useMemo(() => appendEvents(liveEvents.filter(event => !event.type.startsWith('agent.input.')), inputEvents), [liveEvents, inputEvents])
   return {
     events,
-    liveEvents,
+    liveEvents: liveEventsWithInputs,
     streamState: effectiveStreamState,
     error,
     hasOlderEvents,
@@ -791,6 +809,7 @@ function writeCachedSessionEvents(
   includeDebugEvents: boolean,
   cursorSeq = lastSeq(events),
   tailHydrated = true,
+  inputHistory?: EventHistoryResponse,
 ) {
   if (!includeDebugEvents) {
     seedClientSessionEvents(sessionID, events, {
@@ -799,6 +818,7 @@ function writeCachedSessionEvents(
       hasNewerEvents,
       tailHydrated,
       replace: true,
+      inputHistory,
     })
     return
   }

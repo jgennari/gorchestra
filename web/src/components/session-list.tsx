@@ -216,7 +216,7 @@ function SessionRow({
           </span>
         ) : null}
       </button>
-      <div className="mr-1 flex h-8 shrink-0 items-center pr-2">
+      <div className="flex h-8 shrink-0 items-center">
         {shortcut ? (
           <ShortcutReveal shortcut={shortcut} trailingGap />
         ) : null}

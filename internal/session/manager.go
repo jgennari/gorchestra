@@ -43,8 +43,10 @@ var defaultCancellation = Cancellation{
 }
 
 type userInputRequest struct {
-	request  agents.UserInputRequest
-	response chan agents.UserInputResponse
+	request   agents.UserInputRequest
+	response  chan agents.UserInputResponse
+	deliver   func(context.Context, agents.UserInputResponse) error
+	answering bool
 }
 
 type userInputWaiter struct {
@@ -160,6 +162,18 @@ func (m *Manager) Active(sessionID string) bool {
 }
 
 func (m *Manager) OpenUserInput(ctx context.Context, request agents.UserInputRequest) (agents.UserInputWaiter, error) {
+	return m.openUserInput(ctx, request, nil)
+}
+
+func (m *Manager) OpenAsyncUserInput(ctx context.Context, request agents.UserInputRequest, deliver func(context.Context, agents.UserInputResponse) error) (agents.UserInputWaiter, error) {
+	if deliver == nil {
+		return nil, errors.New("session: async input requires a delivery handler")
+	}
+	request.Delivery = "async"
+	return m.openUserInput(ctx, request, deliver)
+}
+
+func (m *Manager) openUserInput(ctx context.Context, request agents.UserInputRequest, deliver func(context.Context, agents.UserInputResponse) error) (agents.UserInputWaiter, error) {
 	sessionID := strings.TrimSpace(request.SessionID)
 	requestID := strings.TrimSpace(request.RequestID)
 	if sessionID == "" {
@@ -177,11 +191,12 @@ func (m *Manager) OpenUserInput(ctx context.Context, request agents.UserInputReq
 	pending := &userInputRequest{
 		request:  request,
 		response: make(chan agents.UserInputResponse, 1),
+		deliver:  deliver,
 	}
 
 	m.mu.Lock()
 	activeRun, exists := m.runs[sessionID]
-	if !exists {
+	if !exists || activeRun.cancelled {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrRunNotActive, sessionID)
 	}
@@ -228,6 +243,16 @@ func (m *Manager) PendingUserInput(sessionID string, requestID string) (agents.U
 }
 
 func (m *Manager) AnswerUserInput(sessionID string, requestID string, response agents.UserInputResponse) error {
+	return m.AnswerUserInputWithPersistence(context.Background(), sessionID, requestID, response, nil)
+}
+
+// Claim before persistence so competing clients cannot record/deliver two answers.
+// A failed persistence attempt is retryable; once delivery starts, never replay it
+// automatically (a disconnected provider may already have accepted the input).
+func (m *Manager) AnswerUserInputWithPersistence(ctx context.Context, sessionID string, requestID string, response agents.UserInputResponse, persist func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sessionID = strings.TrimSpace(sessionID)
 	requestID = strings.TrimSpace(requestID)
 	if sessionID == "" {
@@ -239,18 +264,36 @@ func (m *Manager) AnswerUserInput(sessionID string, requestID string, response a
 
 	m.mu.Lock()
 	activeRun, exists := m.runs[sessionID]
-	if !exists {
+	if !exists || activeRun.cancelled {
 		m.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrRunNotActive, sessionID)
 	}
 	pending := activeRun.inputRequests[requestID]
-	if pending == nil {
+	if pending == nil || pending.answering {
 		m.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrUserInputNotActive, requestID)
 	}
-	delete(activeRun.inputRequests, requestID)
+	pending.answering = true
 	m.mu.Unlock()
 
+	if persist != nil {
+		if err := persist(); err != nil {
+			m.mu.Lock()
+			pending.answering = false
+			m.mu.Unlock()
+			return err
+		}
+	}
+	m.mu.Lock()
+	stillActive := m.runs[sessionID] == activeRun && !activeRun.cancelled && activeRun.inputRequests[requestID] == pending
+	delete(activeRun.inputRequests, requestID)
+	m.mu.Unlock()
+	if !stillActive {
+		return ErrUserInputNotActive
+	}
+	if pending.deliver != nil {
+		return pending.deliver(ctx, response)
+	}
 	pending.response <- response
 	return nil
 }

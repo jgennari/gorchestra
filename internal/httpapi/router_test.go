@@ -75,7 +75,9 @@ func (noopRunManager) PendingUserInput(string, string) (agents.UserInputRequest,
 	return agents.UserInputRequest{}, store.ErrNotFound
 }
 
-func (noopRunManager) AnswerUserInput(string, string, agents.UserInputResponse) error { return nil }
+func (noopRunManager) AnswerUserInputWithPersistence(context.Context, string, string, agents.UserInputResponse, func() error) error {
+	return nil
+}
 
 func (noopRunManager) OpenPermission(context.Context, agents.PermissionRequest) (agents.PermissionWaiter, error) {
 	return nil, nil

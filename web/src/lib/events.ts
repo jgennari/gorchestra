@@ -21,6 +21,8 @@ export const knownEventTypes = [
   'agent.log.delta',
   'agent.input.requested',
   'agent.input.answered',
+  'agent.input.submitted',
+  'agent.input.failed',
   'agent.permission.requested',
   'agent.permission.resolved',
   'agent.permission.cancelled',
@@ -246,6 +248,9 @@ export type PendingUserInputRequest = {
   questions: UserInputQuestion[]
   createdAt: string
   seq: number
+  delivery?: 'async'
+  submitting?: boolean
+  deliveryError?: string
 }
 
 export type PendingPermissionRequest = PermissionRequest & { createdAt: string; seq: number }
@@ -581,12 +586,23 @@ export function pendingUserInputRequest(events: AgentEvent[]) {
         answered.add(requestID)
       }
     }
+    if (event.type === 'agent.input.submitted' || event.type === 'agent.input.failed') {
+      const request = requests.get(payloadString(event.payload, ['request_id']))
+      if (request) {
+        request.submitting = event.type === 'agent.input.submitted'
+        request.deliveryError = event.type === 'agent.input.failed'
+          ? payloadString(event.payload, ['error']) || 'Answer delivery was not confirmed. It will not be resent automatically.'
+          : undefined
+      }
+    }
   }
 
   return (
     [...requests.values()]
       .filter((request) => request.seq > latestTerminalSeq && !answered.has(request.requestID))
-      .sort((left, right) => right.seq - left.seq)[0] ?? null
+      // Blocking requests need attention first. Keep the oldest async question
+      // stable while more questions arrive, without resetting an in-progress reply.
+      .sort((left, right) => Number(Boolean(left.deliveryError)) - Number(Boolean(right.deliveryError)) || Number(left.delivery === 'async') - Number(right.delivery === 'async') || left.seq - right.seq)[0] ?? null
   )
 }
 
@@ -825,6 +841,10 @@ export function eventLabel(eventOrType: AgentEvent | string) {
   if (type.startsWith('agent.message')) return 'Agent message'
   if (type.startsWith('agent.plan')) return 'Plan'
   if (type.startsWith('agent.thinking')) return 'Thinking'
+  if (type === 'agent.input.requested') return 'Question'
+  if (type === 'agent.input.submitted') return 'Sending answer'
+  if (type === 'agent.input.answered') return 'Answer delivered'
+  if (type === 'agent.input.failed') return 'Answer not confirmed'
   if (type.startsWith('tool.call')) return 'Tool call'
   if (type.startsWith('file.change')) return 'File change'
   if (type === 'agent.log.delta') return 'Log'
@@ -1281,6 +1301,8 @@ function appendToGroup(group: EventGroup, event: AgentEvent) {
 function groupKind(event: AgentEvent): EventGroupKind {
   if (isActionBreakEvent(event)) return 'action-break'
   if (event.type === 'user.message.completed') return 'user-message'
+  if (event.type === 'agent.input.requested' && payloadString(event.payload, ['delivery']) === 'async') return 'agent-message'
+  if (event.type === 'agent.input.answered' && payloadString(event.payload, ['delivery']) === 'async') return 'user-message'
   if (isClaudeToolOnlyAssistantEvent(event)) return 'unknown'
   if (event.type.startsWith('agent.message')) return 'agent-message'
   if (isPlanEvent(event)) return 'plan'
@@ -1383,7 +1405,7 @@ function clearsActiveThinking(event: AgentEvent) {
     isLegacyProviderPlanEvent(event) ||
     event.type.startsWith('tool.call') ||
     event.type.startsWith('file.change') ||
-    event.type === 'agent.input.requested' ||
+    (event.type === 'agent.input.requested' && payloadString(event.payload, ['delivery']) !== 'async') ||
     isTerminalEvent(event.type)
   )
 }
@@ -2339,6 +2361,7 @@ function userInputRequestFromEvent(event: AgentEvent): PendingUserInputRequest |
     threadID: payloadString(event.payload, ['thread_id']),
     turnID: payloadString(event.payload, ['turn_id']),
     itemID: payloadString(event.payload, ['item_id']),
+    delivery: payloadString(event.payload, ['delivery']) === 'async' ? 'async' : undefined,
     questions,
     createdAt: event.created_at,
     seq: event.seq,

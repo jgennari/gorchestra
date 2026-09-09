@@ -140,7 +140,7 @@ type RunManager interface {
 	Active(sessionID string) bool
 	OpenUserInput(ctx context.Context, request agents.UserInputRequest) (agents.UserInputWaiter, error)
 	PendingUserInput(sessionID string, requestID string) (agents.UserInputRequest, error)
-	AnswerUserInput(sessionID string, requestID string, response agents.UserInputResponse) error
+	AnswerUserInputWithPersistence(ctx context.Context, sessionID string, requestID string, response agents.UserInputResponse, persist func() error) error
 	OpenPermission(ctx context.Context, request agents.PermissionRequest) (agents.PermissionWaiter, error)
 	PendingPermission(sessionID string, requestID string) (agents.PermissionRequest, error)
 	ResolvePermission(sessionID string, requestID string, response agents.PermissionResponse) error
@@ -245,8 +245,9 @@ type eventResponse struct {
 }
 
 type eventHistoryResponse struct {
-	Events []eventResponse  `json:"events"`
-	Page   eventHistoryPage `json:"page"`
+	Events      []eventResponse  `json:"events"`
+	Page        eventHistoryPage `json:"page"`
+	InputEvents []eventResponse  `json:"input_events"`
 }
 
 type eventHistoryPage struct {
@@ -565,7 +566,20 @@ func (api API) eventHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to inspect event page")
 		return
 	}
-	writeCompressedJSON(w, r, http.StatusOK, eventHistoryResponse{Events: responses, Page: page})
+	inputs := make([]eventResponse, 0)
+	if source, ok := api.store.(interface {
+		ListPendingInputEvents(context.Context, string, int64) ([]store.Event, error)
+	}); ok && api.runs != nil && api.runs.Active(sessionID) {
+		pending, err := source.ListPendingInputEvents(r.Context(), sessionID, page.ServerLastSeq)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load pending questions")
+			return
+		}
+		for _, event := range pending {
+			inputs = append(inputs, newEventResponse(event))
+		}
+	}
+	writeCompressedJSON(w, r, http.StatusOK, eventHistoryResponse{Events: responses, Page: page, InputEvents: inputs})
 }
 
 func (api API) eventAttachmentHandler(w http.ResponseWriter, r *http.Request) {

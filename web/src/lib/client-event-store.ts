@@ -1,4 +1,5 @@
-import type { AgentEvent } from '@/lib/api'
+import type { AgentEvent, EventHistoryResponse } from '@/lib/api'
+import { reconcileInputEvents, unresolvedInputEvents } from '@/lib/input-events'
 import { isTransientEvent, lastSeq } from '@/lib/events'
 import {
   appendBoundedEvent,
@@ -11,6 +12,7 @@ import { writeCachedSessionEvent as writePersistentCachedSessionEvent } from '@/
 
 export type ClientSessionEventSnapshot = {
   events: AgentEvent[]
+  inputEvents?: AgentEvent[]
   lastSeq: number
   oldestSeq: number
   hasOlderEvents: boolean
@@ -40,6 +42,7 @@ export function ingestClientEvent(event: AgentEvent) {
   const current = entries.get(event.session_id)
   const bounded = appendBoundedEvent(current?.events ?? [], event, cachedEventWindowPolicy)
   const snapshot = setEntry(event.session_id, bounded.events, {
+    inputEvents: unresolvedInputEvents([...(current?.inputEvents ?? []), event]),
     lastSeq: event.seq,
     hasOlderEvents: Boolean(current?.hasOlderEvents) || bounded.trimmedStart || firstSeq(bounded.events) > 1,
     hasNewerEvents: false,
@@ -74,6 +77,7 @@ export function seedClientSessionEvents(
     hasNewerEvents?: boolean
     tailHydrated?: boolean
     replace?: boolean
+    inputHistory?: EventHistoryResponse
   } = {},
 ) {
   const durableEvents = events.filter((event) => !isTransientEvent(event))
@@ -84,6 +88,9 @@ export function seedClientSessionEvents(
   const cursor = Math.max(cursors.get(sessionID) ?? 0, options.lastSeq ?? 0, lastSeq(durableEvents))
   cursors.set(sessionID, cursor)
   return setEntry(sessionID, bounded.events, {
+    inputEvents: options.inputHistory
+      ? reconcileInputEvents(current?.inputEvents ?? [], options.inputHistory)
+      : unresolvedInputEvents([...(current?.inputEvents ?? []), ...durableEvents]),
     lastSeq: cursor,
     hasOlderEvents:
       options.hasOlderEvents === true ||
@@ -137,18 +144,19 @@ function setEntry(
   events: AgentEvent[],
   options: Pick<
     ClientSessionEventSnapshot,
-    'lastSeq' | 'hasOlderEvents' | 'hasNewerEvents' | 'tailHydrated'
+    'lastSeq' | 'hasOlderEvents' | 'hasNewerEvents' | 'tailHydrated' | 'inputEvents'
   >,
 ) {
   const entry: ClientSessionEventEntry = {
     events,
+    inputEvents: options.inputEvents,
     lastSeq: Math.max(options.lastSeq, lastSeq(events)),
     oldestSeq: firstSeq(events),
     hasOlderEvents: options.hasOlderEvents,
     hasNewerEvents: options.hasNewerEvents,
     tailHydrated: options.tailHydrated,
     usedAt: Date.now(),
-    bytes: eventWindowStats(events).bytes,
+    bytes: eventWindowStats(events).bytes + eventWindowStats(options.inputEvents ?? []).bytes,
   }
   entries.set(sessionID, entry)
   evictOldEntries()
@@ -158,6 +166,7 @@ function setEntry(
 function snapshotFromEntry(entry: ClientSessionEventEntry): ClientSessionEventSnapshot {
   return {
     events: entry.events,
+    inputEvents: entry.inputEvents,
     lastSeq: entry.lastSeq,
     oldestSeq: entry.oldestSeq,
     hasOlderEvents: entry.hasOlderEvents,

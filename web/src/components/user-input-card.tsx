@@ -11,6 +11,7 @@ type Props = {
 }
 
 export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
+  disabled = disabled || Boolean(request?.submitting || request?.deliveryError)
   const [pageIndex, setPageIndex] = useState(0)
   const [selections, setSelections] = useState<Record<string, string>>({})
   const [otherValues, setOtherValues] = useState<Record<string, string>>({})
@@ -80,7 +81,7 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
     <section
       role="group"
       aria-label="Agent question"
-      className="mx-3 rounded-xl border border-border/90 bg-background/95 p-3 shadow-[0_16px_40px_hsl(var(--foreground)/0.14)] backdrop-blur"
+      className="mx-3 max-h-[min(60dvh,32rem)] overflow-y-auto overscroll-contain rounded-xl border border-border/90 bg-background/95 p-3 shadow-[0_16px_40px_hsl(var(--foreground)/0.14)] backdrop-blur"
     >
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -88,6 +89,9 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
             {question.header || 'Question'}
           </p>
           <h3 className="mt-1 text-sm font-semibold leading-snug">{question.question}</h3>
+          {request.delivery === 'async' ? (
+            <p className="mt-1 text-xs text-muted-foreground">The agent is still working. Your answer goes to this run immediately.</p>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button
@@ -196,7 +200,8 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
         ) : null}
       </div>
 
-      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
+      {!request.deliveryError && (submitting || request.submitting) ? <p role="status" className="mt-2 text-xs text-muted-foreground">Sending answer…</p> : null}
+      {request.deliveryError || error ? <p role="alert" className="mt-2 text-xs text-destructive">{request.deliveryError || error}</p> : null}
     </section>
   )
 }
