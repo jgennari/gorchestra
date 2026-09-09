@@ -4,6 +4,8 @@ Gorchestra already has most of the reusable infrastructure needed to close sever
 
 This is a source and protocol audit, not a live-model certification. It covers the current workspace at commit `f293b075b4d7571d456cfa8f261de6043b138017`, including pre-existing uncommitted steering changes. No application implementation or installed runtime was changed. “Recent” below means the August–September releases reviewed; older capabilities are included separately when they offer useful parity work.
 
+Implementation follow-up: [Claude questions and image input](claude-input.md) records the first two priorities implemented after this baseline audit and the `v0.8.7` release.
+
 ## Runtime baseline
 
 | Agent | Local PATH version | Integration used by Gorchestra | Upstream comparison |

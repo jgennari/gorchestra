@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jgennari/gorchestra/internal/agents"
 )
@@ -60,7 +61,7 @@ func TestAvailabilityDetectionWrapsUnavailable(t *testing.T) {
 
 func TestCommandConstructionUsesStreamJSONPromptAndResume(t *testing.T) {
 	agent := New(WithBinary("/opt/bin/claude"), WithModel("claude-opus-4-7"))
-	cmd := agent.command("hello", "session_1", "/tmp/workspace")
+	cmd := agent.command("session_1", "/tmp/workspace")
 
 	if cmd.Path != "/opt/bin/claude" {
 		t.Fatalf("expected path /opt/bin/claude, got %q", cmd.Path)
@@ -70,9 +71,10 @@ func TestCommandConstructionUsesStreamJSONPromptAndResume(t *testing.T) {
 		"--output-format", "stream-json",
 		"--verbose",
 		"--include-partial-messages",
+		"--input-format", "stream-json", "--permission-prompt-tool", "stdio", "-p",
 		"--model", "claude-opus-4-7",
+		"--permission-mode", "dontAsk",
 		"--resume", "session_1",
-		"-p", "hello",
 	}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("expected args %#v, got %#v", wantArgs, cmd.Args)
@@ -84,7 +86,7 @@ func TestCommandConstructionUsesStreamJSONPromptAndResume(t *testing.T) {
 
 func TestCommandConstructionCanSkipPermissionsDangerously(t *testing.T) {
 	agent := New(WithBinary("/opt/bin/claude"))
-	cmd := agent.commandWithOptions("hello", "", "/tmp/workspace", claudeRunOptions{
+	cmd := agent.commandWithOptions("", "/tmp/workspace", claudeRunOptions{
 		RunDangerously: true,
 		Model:          "opus",
 		Effort:         "high",
@@ -96,11 +98,11 @@ func TestCommandConstructionCanSkipPermissionsDangerously(t *testing.T) {
 		"--output-format", "stream-json",
 		"--verbose",
 		"--include-partial-messages",
+		"--input-format", "stream-json", "--permission-prompt-tool", "stdio", "-p",
 		"--model", "opus",
 		"--effort", "high",
 		"--permission-mode", "plan",
 		"--allow-dangerously-skip-permissions",
-		"-p", "hello",
 	}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("expected args %#v, got %#v", wantArgs, cmd.Args)
@@ -127,8 +129,8 @@ func TestRunOptionsFromMetadataReadsDangerousMode(t *testing.T) {
 
 func TestCommandConstructionEnablesStdioPermissionPrompts(t *testing.T) {
 	agent := New(WithBinary("/opt/bin/claude"))
-	cmd := agent.commandWithOptions("hello", "", "/tmp/workspace", claudeRunOptions{PermissionPolicy: "ask"})
-	want := []string{"/opt/bin/claude", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--input-format", "stream-json", "--permission-prompt-tool", "stdio"}
+	cmd := agent.commandWithOptions("", "/tmp/workspace", claudeRunOptions{PermissionPolicy: "ask"})
+	want := []string{"/opt/bin/claude", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "-p"}
 	if !reflect.DeepEqual(cmd.Args, want) {
 		t.Fatalf("expected args %#v, got %#v", want, cmd.Args)
 	}
@@ -299,7 +301,7 @@ func TestResultErrorNormalizesFailedTerminal(t *testing.T) {
 }
 
 func TestInvalidJSONProducesParseError(t *testing.T) {
-	incoming := readStream(strings.NewReader("{"), strings.NewReader(""))
+	incoming := readStream(context.Background(), strings.NewReader("{"), strings.NewReader(""))
 	message, ok := <-incoming
 	if !ok {
 		t.Fatal("expected parse error message")
@@ -421,14 +423,25 @@ func runFakeClaude() {
 	if expected := os.Getenv("GORCHESTRA_FAKE_CLAUDE_EXPECT_ENV"); expected != "" && os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE") != expected {
 		os.Exit(10)
 	}
+	if os.Getenv("GORCHESTRA_FAKE_CLAUDE_CONTROL") == "ignore_stdin" {
+		time.Sleep(time.Minute)
+		return
+	}
+	decoder := json.NewDecoder(os.Stdin)
+	var initialize, user map[string]any
+	if decoder.Decode(&initialize) != nil || decoder.Decode(&user) != nil {
+		os.Exit(20)
+	}
+	if mapString(initialize, "type") != "control_request" || mapString(user, "type") != "user" {
+		os.Exit(21)
+	}
+	if capture := os.Getenv("GORCHESTRA_FAKE_CLAUDE_CAPTURE"); capture != "" {
+		data, _ := json.Marshal(user)
+		_ = os.WriteFile(capture, data, 0600)
+	}
 	if expected := os.Getenv("GORCHESTRA_FAKE_CLAUDE_EXPECT_CONTEXT"); expected != "" {
-		prompt := ""
-		for index, arg := range os.Args {
-			if arg == "-p" && index+1 < len(os.Args) {
-				prompt = os.Args[index+1]
-				break
-			}
-		}
+		message, _ := user["message"].(map[string]any)
+		prompt := mapString(message, "content")
 		if !strings.Contains(prompt, "<gorchestra_context>\n"+expected+"\n</gorchestra_context>") || !strings.HasSuffix(prompt, "\n\nhello") {
 			os.Exit(11)
 		}
@@ -439,6 +452,9 @@ func runFakeClaude() {
 		"subtype":    "init",
 		"session_id": "session_fake",
 	})
+	if scenario := os.Getenv("GORCHESTRA_FAKE_CLAUDE_CONTROL"); scenario != "" {
+		runFakeClaudeControl(scenario, decoder, encoder)
+	}
 	_ = encoder.Encode(map[string]any{
 		"type":       "stream_event",
 		"session_id": "session_fake",

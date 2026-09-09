@@ -480,6 +480,7 @@ export type UserInputQuestion = {
   question: string
   is_other: boolean
   is_secret: boolean
+  multi_select?: boolean
   options: UserInputOption[]
 }
 

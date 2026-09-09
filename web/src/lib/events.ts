@@ -23,6 +23,7 @@ export const knownEventTypes = [
   'agent.log.delta',
   'agent.input.requested',
   'agent.input.answered',
+  'agent.input.cancelled',
   'agent.input.submitted',
   'agent.input.failed',
   'agent.permission.requested',
@@ -582,7 +583,7 @@ export function pendingUserInputRequest(events: AgentEvent[]) {
         requests.set(request.requestID, request)
       }
     }
-    if (event.type === 'agent.input.answered') {
+    if (event.type === 'agent.input.answered' || event.type === 'agent.input.cancelled') {
       const requestID = payloadString(event.payload, ['request_id'])
       if (requestID) {
         answered.add(requestID)
@@ -860,6 +861,7 @@ export function eventLabel(eventOrType: AgentEvent | string) {
   if (type === 'agent.input.requested') return 'Question'
   if (type === 'agent.input.submitted') return 'Sending answer'
   if (type === 'agent.input.answered') return 'Answer delivered'
+  if (type === 'agent.input.cancelled') return 'Question withdrawn'
   if (type === 'agent.input.failed') return 'Answer not confirmed'
   if (type.startsWith('tool.call')) return 'Tool call'
   if (type.startsWith('file.change')) return 'File change'
@@ -2574,6 +2576,7 @@ function payloadQuestions(value: unknown): UserInputQuestion[] {
         question,
         is_other: item.is_other === true,
         is_secret: item.is_secret === true,
+        multi_select: item.multi_select === true,
         options: payloadOptions(item.options),
       },
     ]

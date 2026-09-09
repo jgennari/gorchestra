@@ -76,6 +76,20 @@ test('async questions replay, stay stable, and resolve independently while strea
   expect(pendingUserInputRequest([...events, event(7, 'agent.run.cancelled')])).toBeNull()
 })
 
+test('Claude multi-select questions replay and provider withdrawals resolve only their card', () => {
+  const requested = event(1, 'agent.input.requested', {
+    provider: 'claude', request_id: 'claude_question',
+    questions: [{ id: 'question_1', question: 'Which sections?', multi_select: true, is_other: true, options: [{ label: 'Tests' }] }],
+  })
+  expect(pendingUserInputRequest([requested])).toMatchObject({
+    provider: 'claude', questions: [{ id: 'question_1', multi_select: true, is_other: true }],
+  })
+  const unrelated = event(2, 'agent.input.cancelled', { request_id: 'different_question' })
+  expect(pendingUserInputRequest([requested, unrelated])).not.toBeNull()
+  const cancelled = event(3, 'agent.input.cancelled', { request_id: 'claude_question' })
+  expect(pendingUserInputRequest([cancelled, requested, unrelated])).toBeNull()
+})
+
 test('async question and confirmed answer remain in transcript history', () => {
   const events = [
     event(1, 'agent.input.requested', { request_id: 'first', delivery: 'async', text: 'Which color?', questions: [{ id: 'q1', question: 'Which color?', is_other: true, options: [] }] }),

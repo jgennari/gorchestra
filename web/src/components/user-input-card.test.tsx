@@ -96,6 +96,63 @@ test('failed submission preserves the free-text reply', async () => {
   expect(input).toHaveValue('Keep my answer')
 })
 
+test('multiple selections wait for confirmation and can include free text', async () => {
+  const user = userEvent.setup()
+  const onAnswer = vi.fn(async () => undefined)
+  const req = request()
+  req.provider = 'claude'
+  req.questions = [{ ...req.questions[0], multi_select: true, is_other: true }]
+  render(<UserInputCard request={req} onAnswer={onAnswer} />)
+  const confirm = screen.getByRole('button', { name: 'Send answers' })
+  expect(confirm).toBeDisabled()
+  const moon = screen.getByRole('checkbox', { name: /Moon Launch/ })
+  const jazz = screen.getByRole('checkbox', { name: /Jazz Mode/ })
+  await user.click(moon)
+  await user.click(jazz)
+  expect(moon).toBeChecked()
+  expect(jazz).toBeChecked()
+  expect(onAnswer).not.toHaveBeenCalled()
+  await user.click(moon)
+  expect(moon).not.toBeChecked()
+  await user.type(screen.getByLabelText('Other answer for Pick a deployment'), 'Custom deployment')
+  await user.click(confirm)
+  expect(onAnswer).toHaveBeenCalledExactlyOnceWith('call_test', {
+    deployment: { answers: ['Jazz Mode', 'Custom deployment'] },
+  })
+})
+
+test('mixed questions require confirmation of a multi-select draft', async () => {
+  const user = userEvent.setup()
+  const onAnswer = vi.fn(async () => undefined)
+  const req = request()
+  req.questions[0].multi_select = true
+  render(<UserInputCard request={req} onAnswer={onAnswer} />)
+  await user.click(screen.getByRole('checkbox', { name: /Moon Launch/ }))
+  await user.click(screen.getByRole('button', { name: 'Next question' }))
+  await user.click(screen.getByRole('button', { name: /Tiny Parade/ }))
+  expect(onAnswer).not.toHaveBeenCalled()
+  expect(screen.getByText('Pick a deployment')).toBeInTheDocument()
+  expect(screen.getByRole('checkbox', { name: /Moon Launch/ })).toBeChecked()
+  await user.click(screen.getByRole('button', { name: 'Send answers' }))
+  expect(onAnswer).toHaveBeenCalledExactlyOnceWith('call_test', {
+    deployment: { answers: ['Moon Launch'] }, scheduler: { answers: ['Tiny Parade'] },
+  })
+})
+
+test('failed multi-select submission retains choices for an explicit retry', async () => {
+  const user = userEvent.setup()
+  const onAnswer = vi.fn().mockRejectedValueOnce(new Error('Offline')).mockResolvedValue(undefined)
+  const req = request()
+  req.questions = [{ ...req.questions[0], multi_select: true }]
+  render(<UserInputCard request={req} onAnswer={onAnswer} />)
+  await user.click(screen.getByRole('checkbox', { name: /Jazz Mode/ }))
+  await user.click(screen.getByRole('button', { name: 'Send answers' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Offline')
+  expect(screen.getByRole('checkbox', { name: /Jazz Mode/ })).toBeChecked()
+  await user.click(screen.getByRole('button', { name: 'Send answers' }))
+  expect(onAnswer).toHaveBeenCalledTimes(2)
+})
+
 function request(): PendingUserInputRequest {
   return {
     requestID: 'call_test',

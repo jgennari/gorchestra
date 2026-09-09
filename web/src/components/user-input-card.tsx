@@ -13,7 +13,8 @@ type Props = {
 export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
   disabled = disabled || Boolean(request?.submitting || request?.deliveryError)
   const [pageIndex, setPageIndex] = useState(0)
-  const [selections, setSelections] = useState<Record<string, string>>({})
+  const [selections, setSelections] = useState<Record<string, string[]>>({})
+  const [confirmed, setConfirmed] = useState<Record<string, boolean>>({})
   const [otherValues, setOtherValues] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -22,35 +23,40 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
   useEffect(() => {
     setPageIndex(0)
     setSelections({})
+    setConfirmed({})
     setOtherValues({})
     setSubmitting(false)
     setError('')
   }, [request?.requestID])
 
   const question = request?.questions[pageIndex] ?? null
-  const selectedValue = question ? selections[question.id] : ''
+  const selectedValues = question ? selections[question.id] ?? [] : []
   const optionLabels = useMemo(() => new Set(question?.options.map((option) => option.label) ?? []), [question])
-  const otherSelected = Boolean(selectedValue && !optionLabels.has(selectedValue))
+  const otherSelected = selectedValues.some((value) => !optionLabels.has(value)) || Boolean(question?.multi_select && otherValues[question.id]?.trim())
+  const multiValues = question?.multi_select
+    ? [...new Set([...selectedValues.filter((value) => optionLabels.has(value)), ...(otherValues[question.id]?.trim() ? [otherValues[question.id].trim()] : [])])]
+    : []
 
   if (!request || !question) {
     return null
   }
 
-  async function selectAnswer(value: string) {
+  async function commitAnswer(values: string[]) {
     if (!request || !question || disabled || submitting) {
       return
     }
 
-    const answer = value.trim()
-    if (!answer) {
+    if (values.length === 0) {
       return
     }
 
-    const nextSelections = { ...selections, [question.id]: answer }
+    const nextSelections = { ...selections, [question.id]: values }
+    const nextConfirmed = { ...confirmed, [question.id]: true }
     setSelections(nextSelections)
+    setConfirmed(nextConfirmed)
     setError('')
 
-    const nextUnansweredIndex = request.questions.findIndex((item) => !nextSelections[item.id])
+    const nextUnansweredIndex = request.questions.findIndex((item) => !nextConfirmed[item.id])
     if (nextUnansweredIndex >= 0) {
       setPageIndex(nextUnansweredIndex)
       return
@@ -65,12 +71,26 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
     }
   }
 
+  function selectAnswer(value: string) {
+    if (!question || disabled || submitting || !value.trim()) return
+    if (question.multi_select) {
+      setSelections((current) => {
+        const values = current[question.id] ?? []
+        return { ...current, [question.id]: values.includes(value) ? values.filter((item) => item !== value) : [...values, value] }
+      })
+      setConfirmed((current) => ({ ...current, [question.id]: false }))
+      setError('')
+      return
+    }
+    void commitAnswer([value.trim()])
+  }
+
   function selectOther() {
     if (!question) {
       return
     }
     const value = otherValues[question.id] ?? ''
-    if (!value.trim()) {
+    if (question.multi_select || !value.trim()) {
       otherInputRef.current?.focus()
       return
     }
@@ -88,10 +108,6 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
           <p className="truncate text-xs font-semibold uppercase tracking-normal text-muted-foreground">
             {question.header || 'Question'}
           </p>
-          <h3 className="mt-1 text-sm font-semibold leading-snug">{question.question}</h3>
-          {request.delivery === 'async' ? (
-            <p className="mt-1 text-xs text-muted-foreground">The agent is still working. Your answer goes to this run immediately.</p>
-          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button
@@ -118,16 +134,26 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
         </div>
       </div>
 
+      <div className="mb-3">
+        <h3 className="mt-1 text-sm font-semibold leading-snug">{question.question}</h3>
+        {question.multi_select ? <p className="mt-1 text-xs text-muted-foreground">Select all that apply, then continue.</p> : null}
+        {request.delivery === 'async' ? (
+          <p className="mt-1 text-xs text-muted-foreground">The agent is still working. Your answer goes to this run immediately.</p>
+        ) : null}
+      </div>
+
       <div className="grid gap-1.5">
         {question.options.map((option) => (
           <button
             key={option.label}
             type="button"
             disabled={disabled || submitting}
-            onClick={() => void selectAnswer(option.label)}
+            role={question.multi_select ? 'checkbox' : undefined}
+            aria-checked={question.multi_select ? selectedValues.includes(option.label) : undefined}
+            onClick={() => selectAnswer(option.label)}
             className={cn(
               'flex min-h-12 w-full min-w-0 items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors disabled:pointer-events-none disabled:opacity-60 sm:items-center',
-              selectedValue === option.label
+              selectedValues.includes(option.label)
                 ? 'border-primary/60 bg-primary/10 text-foreground'
                 : 'border-border/72 bg-transparent text-foreground hover:border-border',
             )}
@@ -135,8 +161,9 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
             <span
               aria-hidden="true"
               className={cn(
-                'mt-1.5 size-2.5 shrink-0 rounded-full border sm:mt-0',
-                selectedValue === option.label ? 'border-primary bg-primary' : 'border-muted-foreground/35',
+                'mt-1.5 size-2.5 shrink-0 border sm:mt-0',
+                question.multi_select ? 'rounded-sm' : 'rounded-full',
+                selectedValues.includes(option.label) ? 'border-primary bg-primary' : 'border-muted-foreground/35',
               )}
             />
             <span className="min-w-0 flex-1">
@@ -185,12 +212,16 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
                 value={otherValues[question.id] ?? ''}
                 disabled={disabled || submitting}
                 onClick={(event) => event.stopPropagation()}
-                onChange={(event) => setOtherValues((current) => ({ ...current, [question.id]: event.target.value }))}
+                onChange={(event) => {
+                  setOtherValues((current) => ({ ...current, [question.id]: event.target.value }))
+                  if (question.multi_select) setConfirmed((current) => ({ ...current, [question.id]: false }))
+                }}
                 onKeyDown={(event) => {
                   event.stopPropagation()
                   if (event.key === 'Enter') {
                     event.preventDefault()
-                    void selectAnswer(event.currentTarget.value)
+                    if (question.multi_select) void commitAnswer(multiValues)
+                    else selectAnswer(event.currentTarget.value)
                   }
                 }}
                 className="mt-1 h-7 w-full rounded border border-border/70 bg-background px-2 text-sm outline-none focus:border-primary"
@@ -200,17 +231,28 @@ export function UserInputCard({ request, disabled = false, onAnswer }: Props) {
         ) : null}
       </div>
 
+      {question.multi_select ? (
+        <button
+          type="button"
+          disabled={disabled || submitting || multiValues.length === 0}
+          onClick={() => void commitAnswer(multiValues)}
+          className="mt-3 min-h-10 w-full rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        >
+          {request.questions.some((item) => item.id !== question.id && !confirmed[item.id]) ? 'Continue' : 'Send answers'}
+        </button>
+      ) : null}
+
       {!request.deliveryError && (submitting || request.submitting) ? <p role="status" className="mt-2 text-xs text-muted-foreground">Sending answer…</p> : null}
       {request.deliveryError || error ? <p role="alert" className="mt-2 text-xs text-destructive">{request.deliveryError || error}</p> : null}
     </section>
   )
 }
 
-function answersFromSelections(questions: UserInputQuestion[], selections: Record<string, string>): UserInputAnswers {
+function answersFromSelections(questions: UserInputQuestion[], selections: Record<string, string[]>): UserInputAnswers {
   const answers: UserInputAnswers = {}
   for (const question of questions) {
     answers[question.id] = {
-      answers: [selections[question.id]],
+      answers: selections[question.id],
     }
   }
   return answers

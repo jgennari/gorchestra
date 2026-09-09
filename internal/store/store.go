@@ -737,32 +737,20 @@ func updateSessionEventSummary(ctx context.Context, tx *sql.Tx, event Event, ses
 	switch event.Type {
 	case "agent.input.requested":
 		pendingInputDelta = 1
-	case "agent.input.answered", "agent.input.failed":
-		pendingInputDelta = -1
-		// An async provider acknowledgement may race turn completion and even
-		// the next queued run. Never decrement that new run's question count.
-		var payload struct {
-			Delivery  string `json:"delivery"`
-			RequestID string `json:"request_id"`
+	case "agent.input.answered", "agent.input.failed", "agent.input.cancelled":
+		delta, err := controlResolutionDelta(ctx, tx, event)
+		if err != nil {
+			return err
 		}
-		if json.Unmarshal(event.Payload, &payload) == nil && payload.Delivery == "async" {
-			var current bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
-				SELECT 1 FROM events WHERE session_id = ? AND type = 'agent.input.requested'
-				AND json_extract(payload_json, '$.request_id') = ?
-				AND seq > COALESCE((SELECT MAX(seq) FROM events WHERE session_id = ?
-				AND type IN ('agent.run.completed', 'agent.run.failed', 'agent.run.cancelled')), 0)
-			)`, event.SessionID, payload.RequestID, event.SessionID).Scan(&current); err != nil {
-				return err
-			}
-			if !current {
-				pendingInputDelta = 0
-			}
-		}
+		pendingInputDelta = delta
 	case "agent.permission.requested":
 		pendingPermissionDelta = 1
 	case "agent.permission.resolved", "agent.permission.cancelled":
-		pendingPermissionDelta = -1
+		delta, err := controlResolutionDelta(ctx, tx, event)
+		if err != nil {
+			return err
+		}
+		pendingPermissionDelta = delta
 	case "agent.run.completed", "agent.run.failed", "agent.run.cancelled":
 		resetPending = true
 	}

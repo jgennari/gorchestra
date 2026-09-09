@@ -139,9 +139,6 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 	if input.Action != "" && input.Action != agents.AgentActionMessage {
 		return fmt.Errorf("unsupported claude agent action %q", input.Action)
 	}
-	if len(input.Attachments) > 0 {
-		return fmt.Errorf("claude attachments are not supported")
-	}
 
 	workdir, err := a.workdirForRun(input.Workdir)
 	if err != nil {
@@ -150,17 +147,19 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 
 	options := runOptionsFromMetadata(input.Metadata)
 	message := input.ProviderMessage()
-	cmd := a.commandWithOptions(message, strings.TrimSpace(input.ProviderSessionID), workdir, options)
+	content, err := userMessageContent(message, input.Attachments)
+	if err != nil {
+		return err
+	}
+	cmd := a.commandWithOptions(strings.TrimSpace(input.ProviderSessionID), workdir, options)
 	if err := agents.ApplyEnvironment(cmd, input.Environment); err != nil {
 		return fmt.Errorf("configure claude environment: %w", err)
 	}
-	var stdin io.WriteCloser
-	if options.interactivePermissions() {
-		stdin, err = cmd.StdinPipe()
-		if err != nil {
-			return fmt.Errorf("create claude stdin pipe: %w", err)
-		}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("create claude stdin pipe: %w", err)
 	}
+	defer stdin.Close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("create claude stdout pipe: %w", err)
@@ -173,24 +172,36 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 		return fmt.Errorf("start claude: %w", err)
 	}
 
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	process := waitProcess(cmd)
+	// A large image may fill stdin before execute reaches its select loop.
+	// Cancellation must be able to unblock that write even if Claude stops reading.
+	go func() {
+		select {
+		case <-runCtx.Done():
+			process.kill()
+		case <-process.done:
+		}
+	}()
 	run := &streamRun{
 		agent:       a,
-		incoming:    readStream(stdout, stderr),
-		process:     waitProcess(cmd),
+		incoming:    readStream(runCtx, stdout, stderr),
+		process:     process,
 		emit:        emit,
 		normalizer:  newNormalizer(),
 		stdin:       stdin,
 		sessionID:   input.SessionID,
-		message:     message,
+		content:     content,
+		userInput:   input.UserInput,
 		permissions: input.Permissions,
 		options:     options,
 	}
-	if options.interactivePermissions() {
-		if err := run.startInteractive(); err != nil {
-			return err
-		}
+	err = run.execute(runCtx)
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	return run.execute(ctx)
+	return err
 }
 
 func (a *Agent) workdirForRun(inputWorkdir string) (string, error) {
@@ -215,15 +226,14 @@ func (a *Agent) workdirForRun(inputWorkdir string) (string, error) {
 	return workdir, nil
 }
 
-func (a *Agent) command(message string, providerSessionID string, workdir string) *exec.Cmd {
-	return a.commandWithOptions(message, providerSessionID, workdir, claudeRunOptions{})
+func (a *Agent) command(providerSessionID string, workdir string) *exec.Cmd {
+	return a.commandWithOptions(providerSessionID, workdir, claudeRunOptions{})
 }
 
-func (a *Agent) commandWithOptions(message string, providerSessionID string, workdir string, options claudeRunOptions) *exec.Cmd {
-	args := []string{"--output-format", "stream-json", "--verbose", "--include-partial-messages"}
-	if options.interactivePermissions() {
-		args = append(args, "--input-format", "stream-json", "--permission-prompt-tool", "stdio")
-	}
+func (a *Agent) commandWithOptions(providerSessionID string, workdir string, options claudeRunOptions) *exec.Cmd {
+	// Keep image input available in every mode, and questions where the mode permits.
+	// Ordinary tool approvals still follow the selected permission policy.
+	args := []string{"--output-format", "stream-json", "--verbose", "--include-partial-messages", "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "-p"}
 	model := a.model
 	if options.Model != "" {
 		model = options.Model
@@ -236,7 +246,7 @@ func (a *Agent) commandWithOptions(message string, providerSessionID string, wor
 	}
 	if options.PermissionMode != "" {
 		args = append(args, "--permission-mode", options.PermissionMode)
-	} else if options.PermissionPolicy == "deny" {
+	} else if options.permissionPolicy() == "deny" {
 		args = append(args, "--permission-mode", "dontAsk")
 	} else if options.permissionPolicy() == "bypass" {
 		args = append(args, "--permission-mode", "bypassPermissions")
@@ -246,9 +256,6 @@ func (a *Agent) commandWithOptions(message string, providerSessionID string, wor
 	}
 	if providerSessionID != "" {
 		args = append(args, "--resume", providerSessionID)
-	}
-	if !options.interactivePermissions() {
-		args = append(args, "-p", message)
 	}
 	cmd := exec.Command(a.binary, args...)
 	cmd.Dir = workdir
@@ -287,10 +294,6 @@ func (o claudeRunOptions) permissionPolicy() string {
 	return "deny"
 }
 
-func (o claudeRunOptions) interactivePermissions() bool {
-	return o.PermissionMode != "plan" && o.permissionPolicy() == "ask"
-}
-
 func stringMetadataValue(values map[string]any, key string) string {
 	value, _ := values[key].(string)
 	return strings.TrimSpace(value)
@@ -302,17 +305,21 @@ func boolMetadataValue(values map[string]any, key string) bool {
 }
 
 type streamRun struct {
-	agent       *Agent
-	incoming    <-chan incomingMessage
-	process     *processState
-	emit        agents.EmitFunc
-	normalizer  *normalizer
-	stdin       io.WriteCloser
-	writeMu     sync.Mutex
-	sessionID   string
-	message     string
-	permissions agents.PermissionBroker
-	options     claudeRunOptions
+	agent          *Agent
+	incoming       <-chan incomingMessage
+	process        *processState
+	emit           agents.EmitFunc
+	normalizer     *normalizer
+	stdin          io.WriteCloser
+	writeMu        sync.Mutex
+	sessionID      string
+	content        any
+	userInput      agents.UserInputBroker
+	permissions    agents.PermissionBroker
+	options        claudeRunOptions
+	controls       map[string]*pendingControl
+	controlResults chan controlResult
+	controlWaiters sync.WaitGroup
 }
 
 func (r *streamRun) startInteractive() error {
@@ -320,7 +327,7 @@ func (r *streamRun) startInteractive() error {
 	if err := r.writeJSON(map[string]any{"type": "control_request", "request_id": requestID, "request": map[string]any{"subtype": "initialize", "hooks": nil}}); err != nil {
 		return err
 	}
-	return r.writeJSON(map[string]any{"type": "user", "session_id": "", "message": map[string]any{"role": "user", "content": r.message}, "parent_tool_use_id": nil})
+	return r.writeJSON(map[string]any{"type": "user", "session_id": "", "message": map[string]any{"role": "user", "content": r.content}, "parent_tool_use_id": nil})
 }
 
 func (r *streamRun) writeJSON(value any) error {
@@ -340,11 +347,30 @@ func (r *streamRun) writeJSON(value any) error {
 }
 
 func (r *streamRun) execute(ctx context.Context) error {
-	defer r.stop()
+	ctx, cancel := context.WithCancel(ctx)
+	r.controls = make(map[string]*pendingControl)
+	r.controlResults = make(chan controlResult)
+	defer func() {
+		cancel()
+		for _, pending := range r.controls {
+			pending.cancel()
+			pending.close()
+		}
+		_ = r.stdin.Close()
+		r.stop()
+		r.controlWaiters.Wait()
+	}()
+	if err := r.startInteractive(); err != nil {
+		return err
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case result := <-r.controlResults:
+			if err := r.finishControl(result); err != nil {
+				return err
+			}
 		case <-r.process.done:
 			if r.normalizer.terminal {
 				return r.terminalReturn()
@@ -427,66 +453,15 @@ func (r *streamRun) handleIncoming(ctx context.Context, incoming incomingMessage
 	if incoming.Event.Type == "control_request" {
 		return r.handleControlRequest(ctx, incoming.Event)
 	}
+	if incoming.Event.Type == "control_cancel_request" {
+		return r.cancelControl(ctx, incoming.Event)
+	}
 	for _, normalized := range r.normalizer.normalize(incoming.Event) {
 		if err := r.emit(ctx, normalized.Event); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func (r *streamRun) handleControlRequest(ctx context.Context, event *streamEvent) error {
-	var envelope struct {
-		RequestID string         `json:"request_id"`
-		Request   map[string]any `json:"request"`
-	}
-	if err := json.Unmarshal(event.Raw, &envelope); err != nil {
-		return err
-	}
-	if mapString(envelope.Request, "subtype") != "can_use_tool" {
-		return nil
-	}
-	input := envelope.Request["input"]
-	suggestions, _ := envelope.Request["permission_suggestions"].([]any)
-	options := []agents.PermissionOption{{ID: "allow-once", Label: "Allow once", Decision: "allow", Scope: "once"}}
-	if len(suggestions) > 0 {
-		options = append(options, agents.PermissionOption{ID: "allow-session", Label: "Allow for session", Decision: "allow", Scope: "session"})
-	}
-	options = append(options, agents.PermissionOption{ID: "deny", Label: "Deny", Decision: "deny", Scope: "once"}, agents.PermissionOption{ID: "cancel", Label: "Stop run", Decision: "cancel"})
-	request := agents.PermissionRequest{SessionID: r.sessionID, RequestID: envelope.RequestID, Provider: "claude", ProviderEventType: "can_use_tool", ProviderRequestID: envelope.RequestID,
-		ItemID: mapString(envelope.Request, "tool_use_id"), Kind: "tool", Title: firstNonEmpty(mapString(envelope.Request, "title"), mapString(envelope.Request, "display_name"), "Approve tool use"),
-		Description: mapString(envelope.Request, "description"), Reason: mapString(envelope.Request, "decision_reason"), ToolName: mapString(envelope.Request, "tool_name"), ToolInput: input, Options: options}
-	if r.permissions == nil {
-		return r.sendClaudePermissionResponse(envelope.RequestID, "deny", input, suggestions)
-	}
-	waiter, err := r.permissions.OpenPermission(ctx, request)
-	if err != nil {
-		return err
-	}
-	defer waiter.Close()
-	if err := r.emit(ctx, agents.AgentEvent{Type: "agent.permission.requested", Role: "assistant", Status: "started", Payload: request}); err != nil {
-		return err
-	}
-	response, err := waiter.Wait(ctx)
-	if err != nil {
-		return r.sendClaudePermissionResponse(envelope.RequestID, "cancel", input, suggestions)
-	}
-	return r.sendClaudePermissionResponse(envelope.RequestID, response.OptionID, input, suggestions)
-}
-
-func (r *streamRun) sendClaudePermissionResponse(requestID string, optionID string, input any, suggestions []any) error {
-	result := map[string]any{}
-	switch optionID {
-	case "allow-once":
-		result = map[string]any{"behavior": "allow", "updatedInput": input}
-	case "allow-session":
-		result = map[string]any{"behavior": "allow", "updatedInput": input, "updatedPermissions": sessionPermissionSuggestions(suggestions)}
-	case "cancel":
-		result = map[string]any{"behavior": "deny", "message": "Stopped by user", "interrupt": true}
-	default:
-		result = map[string]any{"behavior": "deny", "message": "Denied by user", "interrupt": false}
-	}
-	return r.writeJSON(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": requestID, "response": result}})
 }
 
 func sessionPermissionSuggestions(suggestions []any) []any {
@@ -555,17 +530,17 @@ func (e *ParseError) Error() string {
 	return fmt.Sprintf("parse claude stream JSON line %d: %v", e.Line, e.Err)
 }
 
-func readStream(stdout io.Reader, stderr io.Reader) <-chan incomingMessage {
+func readStream(ctx context.Context, stdout io.Reader, stderr io.Reader) <-chan incomingMessage {
 	incoming := make(chan incomingMessage, 128)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		scanStream(stdout, incoming)
+		scanStream(ctx, stdout, incoming)
 	}()
 	go func() {
 		defer wg.Done()
-		scanStderr(stderr, incoming)
+		scanStderr(ctx, stderr, incoming)
 	}()
 	go func() {
 		wg.Wait()
@@ -574,7 +549,7 @@ func readStream(stdout io.Reader, stderr io.Reader) <-chan incomingMessage {
 	return incoming
 }
 
-func scanStream(reader io.Reader, incoming chan<- incomingMessage) {
+func scanStream(ctx context.Context, reader io.Reader, incoming chan<- incomingMessage) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	line := 0
@@ -586,19 +561,23 @@ func scanStream(reader io.Reader, incoming chan<- incomingMessage) {
 		}
 		event, err := parseStreamEvent([]byte(raw))
 		if err != nil {
-			incoming <- incomingMessage{ParseErr: &ParseError{Line: line, Raw: raw, Err: err}}
+			if !sendIncoming(ctx, incoming, incomingMessage{ParseErr: &ParseError{Line: line, Raw: raw, Err: err}}) {
+				return
+			}
 			continue
 		}
-		incoming <- incomingMessage{Event: event}
+		if !sendIncoming(ctx, incoming, incomingMessage{Event: event}) {
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		if !errors.Is(err, os.ErrClosed) {
-			incoming <- incomingMessage{ReadErr: fmt.Errorf("read claude stdout: %w", err)}
+			sendIncoming(ctx, incoming, incomingMessage{ReadErr: fmt.Errorf("read claude stdout: %w", err)})
 		}
 	}
 }
 
-func scanStderr(reader io.Reader, incoming chan<- incomingMessage) {
+func scanStderr(ctx context.Context, reader io.Reader, incoming chan<- incomingMessage) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -606,12 +585,23 @@ func scanStderr(reader io.Reader, incoming chan<- incomingMessage) {
 		if line == "" {
 			continue
 		}
-		incoming <- incomingMessage{Stderr: line}
+		if !sendIncoming(ctx, incoming, incomingMessage{Stderr: line}) {
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		if !errors.Is(err, os.ErrClosed) {
-			incoming <- incomingMessage{ReadErr: fmt.Errorf("read claude stderr: %w", err)}
+			sendIncoming(ctx, incoming, incomingMessage{ReadErr: fmt.Errorf("read claude stderr: %w", err)})
 		}
+	}
+}
+
+func sendIncoming(ctx context.Context, incoming chan<- incomingMessage, message incomingMessage) bool {
+	select {
+	case incoming <- message:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 

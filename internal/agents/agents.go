@@ -235,12 +235,13 @@ type UserInputRequest struct {
 }
 
 type UserInputQuestion struct {
-	ID       string            `json:"id"`
-	Header   string            `json:"header"`
-	Question string            `json:"question"`
-	IsOther  bool              `json:"is_other"`
-	IsSecret bool              `json:"is_secret"`
-	Options  []UserInputOption `json:"options"`
+	ID          string            `json:"id"`
+	Header      string            `json:"header"`
+	Question    string            `json:"question"`
+	IsOther     bool              `json:"is_other"`
+	IsSecret    bool              `json:"is_secret"`
+	MultiSelect bool              `json:"multi_select,omitempty"`
+	Options     []UserInputOption `json:"options"`
 }
 
 type UserInputOption struct {

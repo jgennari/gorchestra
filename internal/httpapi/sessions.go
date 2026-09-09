@@ -2806,17 +2806,26 @@ func validateUserInputAnswers(request agents.UserInputRequest, answers map[strin
 		if !ok {
 			return fmt.Errorf("answer %q is required", question.ID)
 		}
-		if len(answer.Answers) != 1 {
+		if !question.MultiSelect && len(answer.Answers) != 1 {
 			return fmt.Errorf("answer %q must include exactly one selection", question.ID)
 		}
-		value := strings.TrimSpace(answer.Answers[0])
-		if value == "" {
-			return fmt.Errorf("answer %q cannot be empty", question.ID)
+		if len(answer.Answers) == 0 {
+			return fmt.Errorf("answer %q must include at least one selection", question.ID)
 		}
-		if questionAllowsAnswer(question, value) {
-			continue
+		seen := make(map[string]bool, len(answer.Answers))
+		for _, raw := range answer.Answers {
+			value := strings.TrimSpace(raw)
+			if value == "" {
+				return fmt.Errorf("answer %q cannot be empty", question.ID)
+			}
+			if seen[value] {
+				return fmt.Errorf("answer %q contains a duplicate selection", question.ID)
+			}
+			seen[value] = true
+			if !questionAllowsAnswer(question, value) {
+				return fmt.Errorf("answer %q is not a valid option", question.ID)
+			}
 		}
-		return fmt.Errorf("answer %q is not a valid option", question.ID)
 	}
 	return nil
 }
