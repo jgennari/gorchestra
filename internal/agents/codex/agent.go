@@ -858,6 +858,19 @@ func (r *appServerRun) executeMessage(ctx context.Context, input agents.AgentInp
 	if err := r.startTurn(ctx, input.ProviderMessage(), workdir); err != nil {
 		return err
 	}
+	if input.Steering != nil {
+		threadID, turnID := r.ids()
+		unregister, err := input.Steering.RegisterSteering(ctx, input.SessionID, input.RunID, func(answerCtx context.Context, additional agents.SteeringInput) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return r.steerInput(answerCtx, threadID, turnID, additional)
+		})
+		if err != nil {
+			return err
+		}
+		defer unregister()
+	}
 	return r.awaitTerminal(ctx)
 }
 

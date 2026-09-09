@@ -80,6 +80,7 @@ type Props = {
   sessionAgentOptions?: SessionAgentOptions
   sessionAgentOptionsSeq?: number
   sessionStatus?: 'idle' | 'running' | 'failed'
+  steeringRunID?: string
   hasPendingUserInput?: boolean
   latestTerminalEvent?: AgentEvent | null
   queueEvents?: AgentEvent[]
@@ -93,6 +94,7 @@ type Props = {
     queue?: boolean,
     skills?: SkillReference[],
     onPrepared?: () => void,
+    steerRunID?: string,
   ) => Promise<SubmitMessageResponse | void>
   onUpdateRuntimeAgentOptions?: (
     sessionID: string,
@@ -169,6 +171,8 @@ export function PromptComposer({
   sessionAgentOptions,
   sessionAgentOptionsSeq = 0,
   sessionStatus = 'idle',
+  steeringRunID = '',
+  hasPendingUserInput = false,
   queueEvents = noQueueEvents,
   latestQueueEvent = null,
   disabled,
@@ -188,6 +192,7 @@ export function PromptComposer({
   const queueEventsRef = useRef<Map<string, AgentEvent>>(new Map())
   const removedQueueIDsRef = useRef(new Set<string>())
   const queueActionRef = useRef(false)
+  const submitActionRef = useRef(false)
   const attachmentReadsRef = useRef({ pending: 0 })
   const lifetimeRef = useRef({ active: true, sessionID })
   const skillsLoadedSessionRef = useRef('')
@@ -259,6 +264,8 @@ export function PromptComposer({
   const hasSelectedSkills = selectedSkills.length > 0
   const shouldLoadSkills = hasSelectedSkills || skillsOpen || skillTypeahead !== null
   const canSubmit = !submissionBlocked && !offline && !disabled && !submitting && !cancelling && !queueActionPending && (content.trim().length > 0 || hasAttachments || hasSelectedSkills)
+  const showSendNow = agentType === 'codex' && sessionStatus === 'running'
+  const canSendNow = showSendNow && Boolean(steeringRunID) && !hasPendingUserInput && !submissionBlocked && !offline && !submitting && !cancelling && !queueActionPending && (content.trim().length > 0 || hasAttachments || hasSelectedSkills)
   const queueBlockedByAttachments = hasAttachments
   const canQueue =
     !submissionBlocked &&
@@ -747,10 +754,11 @@ export function PromptComposer({
     }, 0)
   }
 
-  async function submitPrompt(forceRestoreFocus = false) {
-    if (!canSubmit) {
+  async function submitPrompt(forceRestoreFocus = false, steer = false) {
+    if (submitActionRef.current || (steer ? !canSendNow : !canSubmit)) {
       return
     }
+    submitActionRef.current = true
 
     const restorePromptFocus = forceRestoreFocus || document.activeElement === textareaRef.current
     const submittedContent = content
@@ -772,7 +780,9 @@ export function PromptComposer({
         data_url: attachment.data_url,
         size_bytes: attachment.size_bytes,
       }))
-      const response = await submitText(submittedContent.trim(), submitAttachments, false, prepareBeforeClear ? clearPreparedDraft : undefined)
+      const response = steer
+        ? await onSubmit(submittedContent.trim(), undefined, submitAttachments, false, submittedSkills.map(({ name, path }) => ({ name, path })), prepareBeforeClear ? clearPreparedDraft : undefined, steeringRunID)
+        : await submitText(submittedContent.trim(), submitAttachments, false, prepareBeforeClear ? clearPreparedDraft : undefined)
       if (response?.queued_message) {
         const queuedMessage = response.queued_message
         commitQueuedMessages((current) => upsertQueuedMessage(current, queuedMessage))
@@ -783,6 +793,7 @@ export function PromptComposer({
       setSelectedSkills(submittedSkills)
       onError?.(submitError instanceof Error ? submitError.message : 'Failed to submit prompt')
     } finally {
+      submitActionRef.current = false
       setSubmitting(false)
       if (restorePromptFocus) {
         restoreTextareaFocus()
@@ -796,6 +807,7 @@ export function PromptComposer({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return
     if (skillTypeahead && suggestedSkills.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -824,6 +836,11 @@ export function PromptComposer({
     if ((event.metaKey || event.ctrlKey) && event.shiftKey) {
       event.preventDefault()
       void enqueueDraft(true)
+      return
+    }
+    if ((event.metaKey || event.ctrlKey) && showSendNow) {
+      event.preventDefault()
+      void submitPrompt(true, true)
       return
     }
     if (event.shiftKey) {
@@ -1028,7 +1045,7 @@ export function PromptComposer({
   }
 
   async function enqueueDraft(forceRestoreFocus = false) {
-    if (offline || submissionBlocked || submitting || queueActionRef.current) return
+    if (offline || submissionBlocked || submitting || submitActionRef.current || queueActionRef.current) return
     const trimmed = content.trim()
     if (!trimmed && selectedSkills.length === 0) {
       return
@@ -1265,7 +1282,7 @@ export function PromptComposer({
             className="relative z-10 h-9 min-h-9 resize-none border-transparent bg-transparent px-1 py-1.5 text-base shadow-none focus-visible:ring-0 sm:py-2 sm:text-sm"
           />
         </div>
-        <div className="mt-2 flex min-h-8 items-center gap-1.5">
+        <div className="mt-2 flex min-h-8 flex-wrap items-center gap-1.5">
           {agentType === 'codex' && sessionID ? (
             <SkillBrowser
               open={skillsOpen}
@@ -1441,6 +1458,19 @@ export function PromptComposer({
               <ClipboardList />
               <span className="composer-wide-label">Queue</span>
             </Button>
+            {showSendNow ? (
+              <Button
+                type="button"
+                disabled={!canSendNow}
+                onClick={() => void submitPrompt(false, true)}
+                aria-label="Send now"
+                title="Send to the current run now (Cmd/Ctrl+Enter). Keeps the current model and settings."
+                className="h-8 px-2.5 text-sm"
+              >
+                <Send />
+                <span className="composer-send-now-label">{submitting ? 'Sending' : 'Send now'}</span>
+              </Button>
+            ) : null}
             {canCancel ? (
               <Button
                 type="button"

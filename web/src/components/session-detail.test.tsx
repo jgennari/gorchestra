@@ -1,13 +1,15 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ComponentProps, ReactNode } from 'react'
 import type { AgentEvent, Session } from '@/lib/api'
+import { clearAPIRequestCachesForTest } from '@/lib/api'
 import { SessionDetail } from '@/components/session-detail'
 import { readPendingSubmissions, savePendingSubmission } from '@/lib/pending-submissions'
 
 beforeEach(() => {
   window.localStorage.clear()
+  clearAPIRequestCachesForTest()
   vi.stubGlobal('indexedDB', undefined)
-  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ messages: [], state: 'unknown' })))
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ messages: [], state: 'unknown', models: [], collaboration_modes: [] })))
 })
 afterEach(() => vi.unstubAllGlobals())
 
@@ -115,6 +117,28 @@ test('reload restores an unacknowledged request; safe retry preserves its exact 
   fireEvent.click(screen.getByRole('button', { name: 'Retry safely' }))
   await waitFor(() => expect(onSubmitPrompt).toHaveBeenCalledExactlyOnceWith('Durable request', undefined, [], false, [], 'original-id'))
   await waitFor(async () => expect(await readPendingSubmissions(baseSession.id)).toEqual([]))
+})
+
+test('Send now persists its target and recovers without changing a failed steer into a new turn', async () => {
+  const events = [event(1, 'agent.run.started', { run_id: 'run1' }), event(2, 'agent.thinking.started', { run_id: 'run1' })]
+  const onSubmitPrompt = vi.fn(async () => { throw new Error('Lost connection') })
+  const view = renderDetail({ session: { ...baseSession, agent_type: 'codex', status: 'running' }, events, onSubmitPrompt })
+  fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Change direction' } })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send now' })).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', { name: 'Send now' }))
+  await screen.findByRole('region', { name: 'Pending message recovery' })
+  expect(screen.getByLabelText('Prompt')).toHaveValue('')
+  expect(screen.getByText('Thinking')).toBeInTheDocument()
+  const pending = await readPendingSubmissions('sess_1')
+  expect(pending).toEqual([expect.objectContaining({ content: 'Change direction', steerRunID: 'run1', queue: false })])
+  expect(onSubmitPrompt).toHaveBeenCalledExactlyOnceWith('Change direction', undefined, [], false, [], pending[0].id, 'run1')
+  view.unmount()
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ messages: [], state: 'not_received' })))
+  const retry = vi.fn(async () => undefined)
+  renderDetail({ session: { ...baseSession, status: 'running' }, events: [event(3, 'agent.run.started', { run_id: 'run2' })], onSubmitPrompt: retry })
+  await screen.findByRole('region', { name: 'Pending message recovery' })
+  fireEvent.click(screen.getByRole('button', { name: 'Retry safely' }))
+  await waitFor(() => expect(retry).toHaveBeenCalledExactlyOnceWith('Change direction', undefined, [], false, [], pending[0].id, 'run1'))
 })
 
 test('accepted receipt removes recovery record without resending', async () => {

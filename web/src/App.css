@@ -281,8 +281,13 @@
 }
 
 .prompt-composer-shell .composer-desktop-options,
+.prompt-composer-shell .composer-send-now-label,
 .prompt-composer-shell .composer-wide-label {
   display: none;
+}
+
+@container (min-width: 28rem) {
+  .prompt-composer-shell .composer-send-now-label { display: inline; }
 }
 
 .prompt-composer-shell .composer-mobile-options,

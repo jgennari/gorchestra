@@ -30,3 +30,37 @@ Coverage includes fake app-server steering, ongoing streaming, stale turns,
 competing answers, persistence failures, cancellation, bounded-history replay,
 existing card choices/free text, and composer draft preservation. Browser QA uses
 synthetic sessions; physical iOS and a live model round-trip remain manual checks.
+
+## Send now (generic steering)
+
+During a Codex message run, the composer also offers **Send now**, without needing
+an open question. Cmd/Ctrl+Enter sends to the active run; plain Enter and
+Cmd/Ctrl+Shift+Enter still queue the draft for a later run. Shift+Enter inserts a
+newline. Queue and Stop retain their existing behavior. Narrow layouts use an
+accessible send icon and wrap controls when needed.
+
+Send now accepts text, images, and selected skills, but retains the active run's
+model and settings. It is disabled offline, while a blocking question awaits an
+answer, or while another submission is pending. Other adapters keep their current
+composer behavior until they support steering.
+
+The normal message endpoint accepts `steer: true`, `expected_run_id`, and a
+`client_submission_id`. It cannot combine steering with queuing or settings
+changes. The optional provider-neutral `SteeringBroker` registers a callback for
+the exact Gorchestra run; Codex captures the original provider thread/turn IDs and
+uses the same acknowledged `turn/steer` delivery path as async answers. A stale
+target is rejected rather than applied to the next run.
+
+The client saves the submission and its target run before clearing the draft.
+The server reserves the existing durable submission receipt, persists
+`user.message.steer.submitted` before delivery, and appends a normal
+`user.message.completed` (with `delivery: "steer"`) only after provider acceptance.
+That acknowledgment deduplicates the optimistic message. Unconfirmed delivery
+records `user.message.steer.failed` and remains recoverable without automatic
+resending; recovery retains the original run target even after a reload.
+
+Coverage includes run-bound delivery and cleanup, persistence-before-delivery,
+provider rejection, duplicate submissions, unchanged queues, keyboard shortcuts,
+attachments/skills, and durable recovery against a successor run. Synthetic
+browser checks verified click/keyboard submission and separate queuing at desktop,
+390px, and 320px widths; these are not physical-device or live-model tests.

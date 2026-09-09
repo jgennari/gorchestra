@@ -95,6 +95,10 @@ func (r *appServerRun) steerAnswer(ctx context.Context, request agents.UserInput
 		}
 		fmt.Fprintf(&text, "\n%s\n%s\n", question.Question, answer[0])
 	}
+	return r.steerInput(ctx, request.ThreadID, request.TurnID, agents.SteeringInput{Message: text.String()})
+}
+
+func (r *appServerRun) steerInput(ctx context.Context, threadID, turnID string, input agents.SteeringInput) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -107,15 +111,15 @@ func (r *appServerRun) steerAnswer(ctx context.Context, request agents.UserInput
 	// Hold the registration lock over the write: a very fast acknowledgement must
 	// not arrive before its response channel is registered.
 	id, err := r.rpc.sendRequest("turn/steer", map[string]any{
-		"threadId": request.ThreadID, "expectedTurnId": request.TurnID,
-		"input": userInputItems(text.String(), nil, nil),
+		"threadId": threadID, "expectedTurnId": turnID,
+		"input": userInputItems(input.Message, input.Attachments, input.Skills),
 	})
 	if err != nil {
 		state.mu.Unlock()
 		return err
 	}
 	result := make(chan error, 1)
-	state.responses[id] = asyncAnswerResponse{turnID: request.TurnID, result: result}
+	state.responses[id] = asyncAnswerResponse{turnID: turnID, result: result}
 	state.mu.Unlock()
 	defer func() {
 		state.mu.Lock()

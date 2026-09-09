@@ -1302,11 +1302,15 @@ func runFakeAppServer(mode string) {
 
 		switch request.Method {
 		case "turn/steer":
-			if stringAt(request.Params, "threadId") != "thread_fake" || stringAt(request.Params, "expectedTurnId") != "turn_fake" || !strings.Contains(fakeCodexPromptText(request.Params), "Pick one\nBeta") {
+			want := "Pick one\nBeta"
+			if mode == "steer" || mode == "steer-reject" {
+				want = "Actually focus on the tests"
+			}
+			if stringAt(request.Params, "threadId") != "thread_fake" || stringAt(request.Params, "expectedTurnId") != "turn_fake" || !strings.Contains(fakeCodexPromptText(request.Params), want) {
 				fakeRespondError(request.ID, -32602, "incorrect steer parameters")
 				continue
 			}
-			if mode == "async-reject" {
+			if mode == "async-reject" || mode == "steer-reject" {
 				fakeRespondError(request.ID, -32602, "turn is no longer active")
 				continue
 			}
@@ -1460,6 +1464,8 @@ func runFakeAppServer(mode string) {
 				},
 			})
 			switch mode {
+			case "steer", "steer-reject":
+				fakeNotify("item/started", map[string]any{"threadId": "thread_fake", "turnId": "turn_fake", "item": map[string]any{"id": "thinking_before_steer", "type": "reasoning"}})
 			case "async-input", "async-reject", "async-ended":
 				fakeNotify("item/completed", map[string]any{
 					"threadId": "thread_fake", "turnId": "turn_fake",

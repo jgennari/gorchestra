@@ -1273,6 +1273,7 @@ function App() {
     queue = false,
     skills: SkillReference[] = [],
     clientSubmissionID = '',
+    steerRunID?: string,
   ) {
     if (!selectedSessionID) {
       throw new Error('Select a session first.')
@@ -1285,7 +1286,11 @@ function App() {
       queue,
       skills,
       clientSubmissionID,
+      steerRunID,
     )
+    // A steer can be acknowledged just as the run ends. SSE owns its status;
+    // never turn an already-completed session back to "running" here.
+    if (steerRunID) return response
     setSessions((current) =>
       current.map((session) => {
         if (session.id !== selectedSessionID) {

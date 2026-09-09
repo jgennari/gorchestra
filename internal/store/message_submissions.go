@@ -56,7 +56,7 @@ func (s *Store) GetMessageSubmission(ctx context.Context, sessionID, clientID st
 		return record, nil
 	}
 	var acceptedAs string
-	err = s.db.QueryRowContext(ctx, `SELECT 'run' FROM events WHERE session_id = ? AND type = 'user.message.completed' AND json_extract(payload_json, '$.client_submission_id') = ?
+	err = s.db.QueryRowContext(ctx, `SELECT CASE WHEN json_extract(payload_json, '$.delivery') = 'steer' THEN 'steered' ELSE 'run' END FROM events WHERE session_id = ? AND type = 'user.message.completed' AND json_extract(payload_json, '$.client_submission_id') = ?
  UNION ALL SELECT 'queued' FROM queued_messages WHERE session_id = ? AND source_kind = 'manual' AND source_id = ? LIMIT 1`, sessionID, clientID, sessionID, clientID).Scan(&acceptedAs)
 	if err == nil {
 		record.State = "accepted"

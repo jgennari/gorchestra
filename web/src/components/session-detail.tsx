@@ -19,6 +19,7 @@ import { SessionTitle } from '@/components/session-title-editor'
 import { UserInputCard } from '@/components/user-input-card'
 import {
   activeRunActivity,
+  activeRunID,
   activeStreamingResponse,
   activeThinking,
   activeToolActivity,
@@ -57,6 +58,7 @@ type Props = {
     queue?: boolean,
     skills?: SkillReference[],
     clientSubmissionID?: string,
+    steerRunID?: string,
   ) => Promise<SubmitMessageResponse | void>
   onUpdateRuntimeAgentOptions?: (
     sessionID: string,
@@ -162,6 +164,7 @@ export function SessionDetail({
       : null
   const latestTerminal = useMemo(() => latestTerminalEvent(statusEvents), [statusEvents])
   const queueEvents = useMemo(() => queuedMessageEvents(statusEvents), [statusEvents])
+  const steeringRunID = useMemo(() => activeRunID(statusEvents), [statusEvents])
 
   useEffect(() => {
     let closed = false
@@ -227,6 +230,7 @@ export function SessionDetail({
     queue = false,
     skills: SkillReference[] = [],
     onPrepared?: () => void,
+    steerRunID?: string,
   ) => {
     if (!session || submitInFlightRef.current) throw new Error('A submission is already in progress.')
     submitInFlightRef.current = true
@@ -237,7 +241,7 @@ export function SessionDetail({
       const clientSubmissionID = newClientSubmissionID()
       setSendingSubmissionID(clientSubmissionID)
       const submittedAt = new Date().toISOString()
-      await savePendingSubmission({ id: clientSubmissionID, sessionID: session.id, content, options: agentOptions, attachments, queue, skills, createdAt: submittedAt })
+      await savePendingSubmission({ id: clientSubmissionID, sessionID: session.id, content, options: agentOptions, attachments, queue, skills, createdAt: submittedAt, ...(steerRunID ? { steerRunID } : {}) })
       onPrepared?.()
       const optimisticMessage: ChatTranscriptMessage = {
         id: clientSubmissionID,
@@ -272,6 +276,7 @@ export function SessionDetail({
           queue,
           skills,
           clientSubmissionID,
+          ...(steerRunID ? [steerRunID] : []),
         )
         if (response?.accepted_as === 'queued') {
           setOptimisticUserMessages((current) => current.filter((message) => message.id !== clientSubmissionID))
@@ -303,7 +308,7 @@ export function SessionDetail({
       if (status.state === 'accepted') {
         await removePendingSubmission(pending.id)
       } else if (status.state === 'not_received' && retry) {
-        await onSubmitPrompt(pending.content, pending.options, pending.attachments, pending.queue, pending.skills, pending.id)
+        await onSubmitPrompt(pending.content, pending.options, pending.attachments, pending.queue, pending.skills, pending.id, ...(pending.steerRunID ? [pending.steerRunID] : []))
         await removePendingSubmission(pending.id)
       } else {
         if (status.state === 'rejected') setRejectedSubmissionIDs((current) => new Set([...current, pending.id]))
@@ -490,6 +495,7 @@ export function SessionDetail({
             sessionAgentOptions={session.agent_options}
             sessionAgentOptionsSeq={session.last_event_seq}
             sessionStatus={session.status}
+            steeringRunID={steeringRunID}
             hasPendingUserInput={blockingUserInput}
             latestTerminalEvent={latestTerminal}
             queueEvents={queueEvents}

@@ -654,7 +654,7 @@ type CreateSessionResponse = {
 export type SubmitMessageResponse = {
   session_id: string
   status: SessionStatus
-  accepted_as?: 'run' | 'queued'
+  accepted_as?: 'run' | 'queued' | 'steered'
   queued_message?: QueuedMessage
 }
 
@@ -1003,6 +1003,7 @@ export async function submitMessage(
   queue = false,
   skills: SkillReference[] = [],
   clientSubmissionID = '',
+  steerRunID?: string,
 ) {
   const body: {
     content: string
@@ -1011,6 +1012,8 @@ export async function submitMessage(
     queue?: boolean
     skills?: SkillReference[]
     client_submission_id?: string
+    steer?: boolean
+    expected_run_id?: string
   } = { content }
   if (agentOptions) {
     body.agent_options = agentOptions
@@ -1026,6 +1029,10 @@ export async function submitMessage(
   }
   if (clientSubmissionID) {
     body.client_submission_id = clientSubmissionID
+  }
+  if (steerRunID) {
+    body.steer = true
+    body.expected_run_id = steerRunID
   }
 
   return requestJSON<SubmitMessageResponse>(`/api/sessions/${encodeURIComponent(sessionID)}/messages`, {

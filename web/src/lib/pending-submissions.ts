@@ -7,6 +7,7 @@ export type PendingSubmission = {
   options?: SubmitAgentOptions
   attachments: MessageAttachment[]
   queue: boolean
+  steerRunID?: string
   skills: SkillReference[]
   createdAt: string
 }

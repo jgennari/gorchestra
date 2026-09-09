@@ -107,6 +107,7 @@ type CollaborationModeOption struct {
 
 type AgentInput struct {
 	SessionID         string
+	RunID             string
 	ProviderSessionID string
 	Action            AgentAction
 	Message           string
@@ -118,6 +119,19 @@ type AgentInput struct {
 	Skills            []SkillReference
 	UserInput         UserInputBroker
 	Permissions       PermissionBroker
+	Steering          SteeringBroker
+}
+
+// Steering is optional: adapters register an active-turn delivery function only
+// when their provider can accept additional input without starting another run.
+type SteeringInput struct {
+	Message     string
+	Attachments []Attachment
+	Skills      []SkillReference
+}
+
+type SteeringBroker interface {
+	RegisterSteering(context.Context, string, string, func(context.Context, SteeringInput) error) (func(), error)
 }
 
 // ProviderMessage returns the message sent to an agent provider. Context is

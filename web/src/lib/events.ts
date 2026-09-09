@@ -2,6 +2,8 @@ import type { AgentEvent, PermissionRequest, SessionStatus, SkillReference, User
 
 export const knownEventTypes = [
   'user.message.completed',
+  'user.message.steer.submitted',
+  'user.message.steer.failed',
   'user.message.queued',
   'user.message.queue.removed',
   'user.action.completed',
@@ -606,6 +608,18 @@ export function pendingUserInputRequest(events: AgentEvent[]) {
   )
 }
 
+// Run IDs are server-owned and appear on every run-linked agent event, so a
+// bounded tail still knows its target. Ignore late user-delivery acknowledgments.
+export function activeRunID(events: AgentEvent[]): string {
+  for (const event of sortedUniqueEvents(events).reverse()) {
+    if (event.type.startsWith('user.')) continue
+    if (isTerminalEvent(event.type)) return ''
+    const id = payloadString(event.payload, ['run_id'])
+    if (id) return id
+  }
+  return ''
+}
+
 export function pendingPermissionRequests(events: AgentEvent[]): PendingPermissionRequest[] {
   const requests = new Map<string, PendingPermissionRequest>()
   const resolved = new Set<string>()
@@ -837,6 +851,8 @@ export function eventLabel(eventOrType: AgentEvent | string) {
   if (providerEventType && type.startsWith('provider.')) return providerEventType
   if (type === 'session.status.updated') return 'Session status'
   if (type.startsWith('session.action') || type.startsWith('user.action')) return 'Session action'
+  if (type === 'user.message.steer.submitted') return 'Sending now'
+  if (type === 'user.message.steer.failed') return 'Send now not confirmed'
   if (type.startsWith('user.message')) return 'User message'
   if (type.startsWith('agent.message')) return 'Agent message'
   if (type.startsWith('agent.plan')) return 'Plan'

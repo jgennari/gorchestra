@@ -143,6 +143,8 @@ type submitMessageRequest struct {
 	Attachments        []submitAttachment     `json:"attachments,omitempty"`
 	Skills             []submitSkillReference `json:"skills,omitempty"`
 	Queue              bool                   `json:"queue,omitempty"`
+	Steer              bool                   `json:"steer,omitempty"`
+	ExpectedRunID      string                 `json:"expected_run_id,omitempty"`
 	ClientSubmissionID string                 `json:"client_submission_id,omitempty"`
 }
 
@@ -1336,6 +1338,14 @@ func (api API) submitDecodedMessage(w http.ResponseWriter, r *http.Request, requ
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if request.Steer {
+		api.steerSessionMessage(w, r, session, request, content, attachments, skills)
+		return
+	}
+	if request.ExpectedRunID != "" {
+		writeError(w, http.StatusBadRequest, "expected_run_id requires steer")
+		return
+	}
 	if request.Queue || session.Status == store.SessionStatusRunning {
 		if len(attachments) > 0 {
 			writeError(w, http.StatusBadRequest, "queued messages cannot include image attachments")
@@ -2299,8 +2309,10 @@ func (api API) runAgent(
 		return nil
 	}
 
+	steering, _ := api.runs.(agents.SteeringBroker)
 	err := agent.Run(ctx, agents.AgentInput{
 		SessionID:         session.ID,
+		RunID:             runID,
 		ProviderSessionID: session.ProviderSessionID,
 		Action:            action,
 		Message:           message,
@@ -2312,6 +2324,7 @@ func (api API) runAgent(
 		Skills:            skills,
 		UserInput:         api.runs,
 		Permissions:       api.runs,
+		Steering:          steering,
 	}, emit)
 	if errors.Is(err, context.Canceled) {
 		cancellation := api.runCancellation(session.ID)

@@ -30,6 +30,7 @@ type run struct {
 	cancellation       Cancellation
 	inputRequests      map[string]*userInputRequest
 	permissionRequests map[string]*permissionRequest
+	steering           *steeringHandler
 }
 
 type Cancellation struct {
