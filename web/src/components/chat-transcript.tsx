@@ -1,4 +1,5 @@
 import {
+  ArrowUpRight,
   Brain,
   Check,
   ChevronDown,
@@ -30,6 +31,8 @@ import {
 import ReactMarkdown, { type Components } from 'react-markdown'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import remarkGfm from 'remark-gfm'
+import remarkDirective from 'remark-directive'
+import { remarkCodexFollowups } from '@/lib/remark-codex-followups'
 import type { AgentEvent } from '@/lib/api'
 import type {
   ChatActionBreak,
@@ -80,6 +83,7 @@ type Props = {
   onJumpToLatest?: () => Promise<void> | void
   onFollowingTailChange?: (following: boolean) => void
   onOpenFilePath?: (path: string) => Promise<void> | void
+  onFollowUp?: (prompt: string) => void
   focusSeq?: number
   focusRequest?: number
   onVisibleSequenceRangeChange?: (range: TranscriptSequenceRange | null) => void
@@ -120,6 +124,7 @@ export function ChatTranscript({
   onJumpToLatest,
   onFollowingTailChange,
   onOpenFilePath,
+  onFollowUp,
   focusSeq = 0,
   focusRequest = 0,
   onVisibleSequenceRangeChange,
@@ -767,6 +772,7 @@ export function ChatTranscript({
                 focusSeq={focusSeq}
                 collapseExtraTools={item.kind === 'message' && timelineIndex < latestMessageIndex}
                 onOpenFilePath={onOpenFilePath}
+                onFollowUp={onFollowUp}
               />
             </div>
           )
@@ -941,11 +947,13 @@ function ChatTimelineRow({
   item,
   collapseExtraTools,
   onOpenFilePath,
+  onFollowUp,
   focusSeq,
 }: {
   item: ChatTimelineItem
   collapseExtraTools: boolean
   onOpenFilePath?: (path: string) => Promise<void> | void
+  onFollowUp?: (prompt: string) => void
   focusSeq: number
 }) {
   if (item.kind === 'action') {
@@ -962,6 +970,7 @@ function ChatTimelineRow({
       message={item.message}
       collapseExtraTools={collapseExtraTools}
       onOpenFilePath={onOpenFilePath}
+      onFollowUp={onFollowUp}
       focusSeq={focusSeq}
     />
   )
@@ -993,11 +1002,13 @@ function ChatMessageRow({
   message,
   collapseExtraTools,
   onOpenFilePath,
+  onFollowUp,
   focusSeq,
 }: {
   message: ChatTranscriptMessage
   collapseExtraTools: boolean
   onOpenFilePath?: (path: string) => Promise<void> | void
+  onFollowUp?: (prompt: string) => void
   focusSeq: number
 }) {
   const user = message.role === 'user'
@@ -1097,6 +1108,7 @@ function ChatMessageRow({
               content={message.text}
               variant={user ? 'inverted' : plan ? 'plan' : 'default'}
               onOpenFilePath={onOpenFilePath}
+              onFollowUp={user ? undefined : onFollowUp}
             />
           ) : user && (message.attachments.length > 0 || message.skills.length > 0) ? null : (
             <p className="text-muted-foreground">Working...</p>
@@ -1264,10 +1276,12 @@ const MarkdownContent = memo(function MarkdownContent({
   content,
   variant,
   onOpenFilePath,
+  onFollowUp,
 }: {
   content: string
   variant: MarkdownVariant
   onOpenFilePath?: (path: string) => Promise<void> | void
+  onFollowUp?: (prompt: string) => void
 }) {
   const inverted = variant === 'inverted'
   const plan = variant === 'plan'
@@ -1293,6 +1307,21 @@ const MarkdownContent = memo(function MarkdownContent({
 
   const components = useMemo<Components>(
     () => ({
+        button: ({ children, node }) => {
+          const prompt = node?.properties['data-codex-followup']
+          if (typeof prompt !== 'string' || !onFollowUp) return <span>{children}</span>
+          return (
+            <button
+              type="button"
+              title={prompt}
+              className="my-1 inline-flex min-h-9 max-w-full items-center gap-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-1.5 text-left text-sm font-medium text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => onFollowUp(prompt)}
+            >
+              <span className="min-w-0 whitespace-pre-wrap break-words">{children}</span>
+              <ArrowUpRight className="size-4 shrink-0" aria-hidden="true" />
+            </button>
+          )
+        },
         p: ({ children }) => (
           <p className="my-2 first:mt-0 last:mb-0 whitespace-pre-wrap break-words leading-relaxed">{children}</p>
         ),
@@ -1384,12 +1413,12 @@ const MarkdownContent = memo(function MarkdownContent({
         th: ({ children }) => <th className="border px-2 py-1 text-left font-medium">{children}</th>,
         td: ({ children }) => <td className="border px-2 py-1 align-top">{children}</td>,
     }),
-    [inverted, onOpenFilePath, plan, variant],
+    [inverted, onOpenFilePath, onFollowUp, plan, variant],
   )
 
   return (
     <div ref={contentRef} className="contents">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={onFollowUp ? [remarkGfm, remarkDirective, remarkCodexFollowups] : [remarkGfm]} components={components}>
         {displayedContent}
       </ReactMarkdown>
     </div>

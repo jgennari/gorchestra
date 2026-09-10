@@ -13,7 +13,7 @@ import type {
 } from '@/lib/api'
 import type { StreamState } from '@/hooks/use-session-events'
 import { ChatTranscript } from '@/components/chat-transcript'
-import { PromptComposer } from '@/components/prompt-composer'
+import { PromptComposer, type PromptInsertion } from '@/components/prompt-composer'
 import { PermissionQueue } from '@/components/permission-queue'
 import { SessionTitle } from '@/components/session-title-editor'
 import { UserInputCard } from '@/components/user-input-card'
@@ -115,6 +115,14 @@ export function SessionDetail({
 }: Props) {
   const bottomInsetRef = useRef<HTMLDivElement>(null)
   const [bottomInsetHeight, setBottomInsetHeight] = useState(0)
+  const [promptInsertion, setPromptInsertion] = useState<PromptInsertion | null>(null)
+  const followUpSessionID = session?.id
+  const handleFollowUp = useCallback((prompt: string) => {
+    if (followUpSessionID) setPromptInsertion({ sessionID: followUpSessionID, prompt })
+  }, [followUpSessionID])
+  const handlePromptInserted = useCallback((insertion: PromptInsertion) => {
+    setPromptInsertion((current) => current === insertion ? null : current)
+  }, [])
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatTranscriptMessage[]>([])
   const [pendingSubmissions, setPendingSubmissions] = useState<PendingSubmission[]>([])
   const [pendingLoaded, setPendingLoaded] = useState(false)
@@ -428,6 +436,7 @@ export function SessionDetail({
           onJumpToLatest={onJumpToLatest}
           onFollowingTailChange={onFollowingTailChange}
           onOpenFilePath={onOpenFilePath}
+          onFollowUp={handleFollowUp}
           focusSeq={focusedEventSeq}
           focusRequest={focusedEventRequest}
           onVisibleSequenceRangeChange={onVisibleSequenceRangeChange}
@@ -507,6 +516,8 @@ export function SessionDetail({
             onError={onErrorMessageChange}
             onFocus={onComposerFocus}
             focusRequest={composerFocusRequest}
+            promptInsertion={promptInsertion}
+            onPromptInserted={handlePromptInserted}
             offline={offline}
             submissionBlocked={!pendingLoaded || pendingSubmissions.length > 0}
             prepareBeforeClear

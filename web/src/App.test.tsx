@@ -1074,12 +1074,12 @@ test('primary navigation has four views and only the active Settings section loa
   const sectionRequests = () => fetch.mock.calls.map(([url]) => String(url)).filter((url) => /\/sessions\/sess_1\/(schedules|repository-skills|host)(\/logs)?$/.test(url))
   const header = within(screen.getByTestId('floating-session-header'))
   expect(header.getAllByRole('button', { name: /^Show / }).map((button) => button.getAttribute('aria-label'))).toEqual([
-    'Show chat', 'Show console', 'Show files', 'Show session settings',
+    'Show chat', 'Show files', 'Show console', 'Show session settings',
   ])
   const mobileHeader = within(screen.getByTestId('mobile-floating-session-header'))
   await user.click(mobileHeader.getByRole('button', { name: 'More session actions' }))
   const menu = within(mobileHeader.getByRole('menu'))
-  expect(menu.getAllByRole('menuitem').slice(0, 4).map((item) => item.textContent)).toEqual(['Chat', 'Console', 'Files', 'Settings'])
+  expect(menu.getAllByRole('menuitem').slice(0, 4).map((item) => item.textContent)).toEqual(['Chat', 'Files', 'Console', 'Settings'])
   for (const name of ['Scheduled tasks', 'Repository skills', 'Hosted preview']) expect(menu.queryByRole('menuitem', { name })).not.toBeInTheDocument()
   expect(sectionRequests()).toEqual([])
 

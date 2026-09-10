@@ -7,8 +7,13 @@ import type { Session } from '@/lib/api'
 import { consoleWebSocketURL, getConsoleStatus, killConsole } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { SessionTitle } from '@/components/session-title-editor'
-import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
 import { cn } from '@/lib/utils'
+
+export type ConsoleActions = {
+  pending: boolean
+  onRestart: () => void
+  onStop: () => void
+}
 
 type ConsoleMessage = {
   type: string
@@ -27,7 +32,7 @@ export function HostConsole({
   session: Session | null
   resolvingSessionID?: string | null
   resolvedTheme: 'light' | 'dark'
-  headerActions?: ReactNode
+  headerActions?: ReactNode | ((actions: ConsoleActions) => ReactNode)
   mobileLeadingAction?: ReactNode
 }) {
   const terminalElementRef = useRef<HTMLDivElement | null>(null)
@@ -38,6 +43,7 @@ export function HostConsole({
   const [errorMessage, setErrorMessage] = useState('')
   const [restartKey, setRestartKey] = useState(0)
   const [restarting, setRestarting] = useState(false)
+  const [stopping, setStopping] = useState(false)
 
   const sessionID = session?.id ?? ''
 
@@ -187,7 +193,7 @@ export function HostConsole({
   }, [fit, resolvedTheme, restartKey, sessionID])
 
   async function handleRestart() {
-    if (!sessionID) {
+    if (!sessionID || restarting || stopping) {
       return
     }
     setRestarting(true)
@@ -201,6 +207,26 @@ export function HostConsole({
       setRestartKey((value) => value + 1)
     }
   }
+
+  async function handleStop() {
+    if (!sessionID || restarting || stopping) return
+    setStopping(true)
+    setErrorMessage('')
+    try {
+      await killConsole(sessionID)
+    } catch (error) {
+      setErrorMessage(messageFromUnknown(error))
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  const consoleActions: ConsoleActions = {
+    pending: restarting || stopping,
+    onRestart: () => void handleRestart(),
+    onStop: () => void handleStop(),
+  }
+  const navigation = typeof headerActions === 'function' ? headerActions(consoleActions) : headerActions
 
   if (!session) {
     if (resolvingSessionID) {
@@ -231,10 +257,10 @@ export function HostConsole({
         <ConsoleHeader
           session={session}
           restarting={restarting}
+          actions={consoleActions}
+          mobile
           leadingAction={mobileLeadingAction}
-          headerActions={headerActions}
-          onRestart={() => void handleRestart()}
-          onStop={() => void killConsole(sessionID)}
+          headerActions={navigation}
           className="command-chat-header pointer-events-auto rounded-xl border border-border/90 px-3 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
         />
       </div>
@@ -242,9 +268,8 @@ export function HostConsole({
         <ConsoleHeader
           session={session}
           restarting={restarting}
-          headerActions={headerActions}
-          onRestart={() => void handleRestart()}
-          onStop={() => void killConsole(sessionID)}
+          actions={consoleActions}
+          headerActions={navigation}
           className="command-chat-header pointer-events-auto rounded-xl border border-border/90 px-3 shadow-[0_10px_30px_hsl(var(--foreground)/0.10)]"
         />
       </div>
@@ -266,18 +291,18 @@ export function HostConsole({
 function ConsoleHeader({
   session,
   restarting,
+  actions,
+  mobile = false,
   leadingAction,
   headerActions,
-  onRestart,
-  onStop,
   className,
 }: {
   session: Session
   restarting: boolean
+  actions: ConsoleActions
+  mobile?: boolean
   leadingAction?: ReactNode
   headerActions?: ReactNode
-  onRestart: () => void
-  onStop: () => void
   className?: string
 }) {
   return (
@@ -287,64 +312,20 @@ function ConsoleHeader({
         <SessionTitle title={session.title} />
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <ConsoleActionsMenu restarting={restarting} onRestart={onRestart} onStop={onStop} />
+        {!mobile ? <>
+          <Button type="button" size="icon" variant="ghost" aria-label="Restart console" title="Restart console" disabled={actions.pending} onClick={actions.onRestart} className="h-8 w-8 text-muted-foreground hover:text-foreground">
+            <RefreshCw className={cn(restarting && 'animate-spin')} aria-hidden="true" />
+          </Button>
+          <Button type="button" size="icon" variant="ghost" aria-label="Stop console" title="Stop console" disabled={actions.pending} onClick={actions.onStop} className="h-8 w-8 text-destructive hover:bg-destructive/10 hover:text-destructive">
+            <Square aria-hidden="true" />
+          </Button>
+        </> : null}
         {headerActions}
       </div>
     </div>
   )
 }
 
-function ConsoleActionsMenu({ restarting, onRestart, onStop }: { restarting: boolean; onRestart: () => void; onStop: () => void }) {
-  const menuRef = useRef<HTMLDivElement>(null)
-  const [open, setOpen] = useState(false)
-  const { triggerRef, popoverStyle } = useAnchoredPopover(open, 224)
-
-  useEffect(() => {
-    if (!open) return
-    function handlePointerDown(event: PointerEvent) {
-      if (!menuRef.current?.contains(event.target as Node)) setOpen(false)
-    }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('pointerdown', handlePointerDown)
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown)
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [open])
-
-  return (
-    <div ref={menuRef} className="relative shrink-0">
-      <Button
-        ref={triggerRef}
-        type="button"
-        size="icon"
-        variant="ghost"
-        className="h-8 w-8 text-muted-foreground hover:bg-background/50 hover:text-foreground"
-        aria-label="Console actions"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <Terminal aria-hidden="true" />
-      </Button>
-      {open ? (
-        <div role="menu" aria-label="Console actions" style={popoverStyle} className="z-50 overflow-y-auto rounded-lg border border-border/80 bg-popover p-1.5 text-sm text-popover-foreground shadow-lg">
-          <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:opacity-50" disabled={restarting} onClick={() => { onRestart(); setOpen(false) }}>
-            <RefreshCw className={cn('size-4', restarting && 'animate-spin')} />
-            Restart console
-          </button>
-          <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-destructive hover:bg-destructive/10" onClick={() => { onStop(); setOpen(false) }}>
-            <Square className="size-4" />
-            Stop console
-          </button>
-        </div>
-      ) : null}
-    </div>
-  )
-}
 function parseConsoleMessage(data: string): ConsoleMessage | null {
   try {
     return JSON.parse(data) as ConsoleMessage

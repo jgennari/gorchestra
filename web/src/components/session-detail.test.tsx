@@ -415,3 +415,30 @@ function event(seq: number, type: string, payload: Record<string, unknown>): Age
     created_at: '2026-06-12T16:00:00Z',
   }
 }
+
+test('follow-up buttons append to the draft, focus it, and never send or duplicate after switching sessions', async () => {
+  const onSubmitPrompt = vi.fn(async () => undefined)
+  const events = [event(1, 'agent.message.completed', { text: ':codex-followup[Check status]{prompt="Check the job status."}' })]
+  const view = renderDetail({ events, onSubmitPrompt })
+  const prompt = screen.getByLabelText('Prompt')
+  fireEvent.change(prompt, { target: { value: 'Existing draft' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Check status' }))
+  await waitFor(() => expect(prompt).toHaveValue('Existing draft\n\nCheck the job status.'))
+  expect(prompt).toHaveFocus()
+  expect((prompt as HTMLTextAreaElement).selectionStart).toBe('Existing draft\n\nCheck the job status.'.length)
+  expect(onSubmitPrompt).not.toHaveBeenCalled()
+  await waitFor(() => expect(window.localStorage.getItem('gorchestra.session-composer.sess_1')).toContain('Check the job status.'))
+  rerenderDetail(view.rerender, { session: { ...baseSession, id: 'sess_2' }, events: [], onSubmitPrompt })
+  expect(screen.getByLabelText('Prompt')).toHaveValue('')
+  rerenderDetail(view.rerender, { events, onSubmitPrompt })
+  expect(screen.getByLabelText('Prompt')).toHaveValue('Existing draft\n\nCheck the job status.')
+})
+
+test('follow-ups remain editable while a run is active without submitting or steering', async () => {
+  const onSubmitPrompt = vi.fn(async () => undefined)
+  renderDetail({ session: { ...baseSession, status: 'running' }, onSubmitPrompt,
+    events: [event(1, 'agent.message.completed', { text: ':codex-followup[Next check]{prompt="Run the next check."}' })] })
+  fireEvent.click(screen.getByRole('button', { name: 'Next check' }))
+  await waitFor(() => expect(screen.getByLabelText('Prompt')).toHaveValue('Run the next check.'))
+  expect(onSubmitPrompt).not.toHaveBeenCalled()
+})

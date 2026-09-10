@@ -2157,3 +2157,47 @@ function event(seq: number, type: string, role: string, status: string, payload:
     created_at: '2026-06-12T16:00:00Z',
   }
 }
+
+test('renders follow-up directives as labelled buttons with exact decoded prompts', () => {
+  const onFollowUp = vi.fn()
+  const text = '- :codex-followup[Check status]{prompt="Check the job status."}\n- :codex-followup[Review **changes**]{prompt="Review &quot;draft&quot; &amp; tests."}'
+  render(<ChatTranscript onFollowUp={onFollowUp} events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text })]} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Check status' }))
+  expect(onFollowUp).toHaveBeenLastCalledWith('Check the job status.')
+  fireEvent.click(screen.getByRole('button', { name: 'Review changes' }))
+  expect(onFollowUp).toHaveBeenLastCalledWith('Review "draft" & tests.')
+  expect(screen.getByRole('log')).not.toHaveTextContent(':codex-followup')
+})
+
+test('keeps code, unknown directives, incomplete prompts, and unsafe attributes inert', () => {
+  const text = [
+    '`'+':codex-followup[Code]{prompt="Do not run"}'+'`',
+    '```text\n:codex-followup[Fenced]{prompt="Do not run"}\n```',
+    ':codex-file-citation{path="/tmp/example.txt" purpose="source"}',
+    ':codex-followup[Missing]',
+    ':codex-followup[Partial]{prompt="unfinished',
+    ':codex-followup[Empty]{prompt=" "}',
+    ':codex-followup[Unsafe]{prompt="Do not run" onclick="alert(1)"}',
+    '[A :codex-followup[Nested]{prompt="Do not run"} link](https://example.com)',
+  ].join('\n\n')
+  render(<ChatTranscript onFollowUp={vi.fn()} events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text })]} />)
+  for (const name of ['Code', 'Fenced', 'Missing', 'Partial', 'Empty', 'Unsafe', 'Nested']) {
+    expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+  }
+  expect(screen.getByRole('log')).toHaveTextContent(':codex-file-citation{path="/tmp/example.txt" purpose="source"}')
+  expect(screen.getByRole('log')).toHaveTextContent(':codex-followup[Partial]{prompt="unfinished')
+})
+
+test('activates a follow-up only when its streaming directive is complete and keeps user examples literal', () => {
+  const onFollowUp = vi.fn()
+  const partial = ':codex-followup[Continue]{prompt="Continue the checks.'
+  const { rerender } = render(<ChatTranscript onFollowUp={onFollowUp} events={[event(1, 'agent.message.delta', 'assistant', 'delta', { text: partial })]} />)
+  expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
+  const full = partial + '"}'
+  rerender(<ChatTranscript onFollowUp={onFollowUp} events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text: full })]} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(onFollowUp).toHaveBeenCalledWith('Continue the checks.')
+  rerender(<ChatTranscript onFollowUp={onFollowUp} events={[event(1, 'user.message.completed', 'user', 'completed', { text: full })]} />)
+  expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
+  expect(screen.getByRole('log')).toHaveTextContent(full)
+})

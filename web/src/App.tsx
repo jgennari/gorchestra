@@ -1,4 +1,4 @@
-import { Archive, Bug, Eraser, Folder, Loader2, Menu, MessageSquare, Minimize2, MoreHorizontal, Plus, Settings, Terminal, WifiOff, X } from 'lucide-react'
+import { Archive, Bug, Eraser, Folder, Loader2, Menu, MessageSquare, Minimize2, MoreHorizontal, Plus, RefreshCw, Settings, Square, Terminal, WifiOff, X } from 'lucide-react'
 import {
   lazy,
   Suspense,
@@ -83,7 +83,7 @@ import {
 import { AppMenu } from '@/components/app-menu'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
 import { DashboardOverview } from '@/components/dashboard-overview'
-import { HostConsole } from '@/components/host-console'
+import { HostConsole, type ConsoleActions } from '@/components/host-console'
 import { NotificationsPopover } from '@/components/notifications-popover'
 import { RunHealthRail } from '@/components/run-health-rail'
 import { ContextTokenMeter } from '@/components/context-token-meter'
@@ -1738,11 +1738,12 @@ function App() {
     ? (sessions.find((session) => session.id === confirmArchiveSessionID) ?? null)
     : null
   const confirmArchivePending = confirmArchiveSessionID !== null && archivingSessionID === confirmArchiveSessionID
-  const viewToggle = (
+  const renderViewToggle = (consoleActions?: ConsoleActions) => (
     <SessionViewNavigation
       session={selectedSession}
       events={events}
       view={displayedAppView}
+      consoleActions={consoleActions}
       onSelect={(view) => {
         if (serverReachable) selectAppView(view)
       }}
@@ -1764,6 +1765,7 @@ function App() {
       archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
     />
   )
+  const viewToggle = renderViewToggle()
   const openSessionsButton = (
     <Button
       type="button"
@@ -1889,7 +1891,7 @@ function App() {
               session={selectedSession}
               resolvingSessionID={resolvingSelectedSessionID}
               resolvedTheme={theme.resolvedTheme}
-              headerActions={viewToggle}
+              headerActions={renderViewToggle}
               mobileLeadingAction={openSessionsButton}
             />
           ) : displayedAppView === 'files' ? (
@@ -2204,6 +2206,7 @@ function SessionViewNavigation({
   clearPending,
   compactPending,
   archivePending,
+  consoleActions,
 }: {
   session: Session | null
   events: AgentEvent[]
@@ -2217,6 +2220,7 @@ function SessionViewNavigation({
   clearPending: boolean
   compactPending: boolean
   archivePending: boolean
+  consoleActions?: ConsoleActions
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -2224,8 +2228,8 @@ function SessionViewNavigation({
   const { triggerRef, popoverStyle } = useAnchoredPopover(open, 288)
   const views: Array<{ view: AppView; label: string; shortLabel: string; icon: ReactNode }> = [
     { view: 'session', label: 'Show chat', shortLabel: 'Chat', icon: <MessageSquare className="size-4" /> },
-    { view: 'console', label: 'Show console', shortLabel: 'Console', icon: <Terminal className="size-4" /> },
     { view: 'files', label: 'Show files', shortLabel: 'Files', icon: <Folder className="size-4" /> },
+    { view: 'console', label: 'Show console', shortLabel: 'Console', icon: <Terminal className="size-4" /> },
     { view: 'settings', label: 'Show session settings', shortLabel: 'Settings', icon: <Settings className="size-4" /> },
   ]
   const primaryView = isSessionSettingsView(view) ? 'settings' : view
@@ -2310,6 +2314,16 @@ function SessionViewNavigation({
                 {item.icon}<span className="flex-1">{item.shortLabel}</span>
               </button>
             ))}
+            {view === 'console' && consoleActions ? <>
+              <div className="my-1 border-t border-border/70" />
+              <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Console</p>
+              <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:opacity-50" disabled={consoleActions.pending} onClick={() => { setOpen(false); consoleActions.onRestart() }}>
+                <RefreshCw className="size-4" aria-hidden="true" />Restart console
+              </button>
+              <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-destructive hover:bg-destructive/10 disabled:opacity-50" disabled={consoleActions.pending} onClick={() => { setOpen(false); consoleActions.onStop() }}>
+                <Square className="size-4" aria-hidden="true" />Stop console
+              </button>
+            </> : null}
             <div className="my-1 border-t border-border/70" />
             <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Workspace details</p>
             {session ? <div className="px-2 py-2" data-testid="mobile-context-meter">

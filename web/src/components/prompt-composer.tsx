@@ -74,6 +74,8 @@ const claudeModelOptions = [
 ]
 const claudeEffortOptions = ['low', 'medium', 'high', 'xhigh', 'max'].map((value) => ({ value, label: value }))
 
+export type PromptInsertion = { sessionID: string; prompt: string }
+
 type Props = {
   sessionID?: string
   agentType?: AgentType
@@ -105,6 +107,8 @@ type Props = {
   onError?: (message: string) => void
   onFocus?: () => void
   focusRequest?: number
+  promptInsertion?: PromptInsertion | null
+  onPromptInserted?: (insertion: PromptInsertion) => void
   offline?: boolean
   submissionBlocked?: boolean
   prepareBeforeClear?: boolean
@@ -183,6 +187,8 @@ export function PromptComposer({
   onError,
   onFocus,
   focusRequest = 0,
+  promptInsertion,
+  onPromptInserted,
   offline = false,
   submissionBlocked = false,
   prepareBeforeClear = false,
@@ -638,6 +644,26 @@ export function PromptComposer({
       textareaRef.current?.focus({ preventScroll: true })
     }
   }, [focusRequest])
+
+  const appliedInsertionRef = useRef<PromptInsertion | null>(null)
+  const insertionNeedsFocusRef = useRef(false)
+  useEffect(() => {
+    if (!promptInsertion || promptInsertion.sessionID !== sessionID ||
+      appliedInsertionRef.current === promptInsertion || submitting) return
+    appliedInsertionRef.current = promptInsertion
+    setContent((current) => current ? `${current}\n\n${promptInsertion.prompt}` : promptInsertion.prompt)
+    setSkillTypeahead(null)
+    insertionNeedsFocusRef.current = true
+    onPromptInserted?.(promptInsertion)
+  }, [onPromptInserted, promptInsertion, sessionID, submitting])
+
+  useLayoutEffect(() => {
+    if (!insertionNeedsFocusRef.current) return
+    insertionNeedsFocusRef.current = false
+    textareaRef.current?.focus({ preventScroll: true })
+    textareaRef.current?.setSelectionRange(content.length, content.length)
+    promptSelectionRef.current = { start: content.length, end: content.length }
+  }, [content])
 
   useEffect(() => {
     removedQueueIDsRef.current.clear()

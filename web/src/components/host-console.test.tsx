@@ -1,7 +1,7 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HostConsole } from '@/components/host-console'
-import type { Session } from '@/lib/api'
+import { killConsole, type Session } from '@/lib/api'
 
 vi.mock('@xterm/addon-fit', () => ({
   FitAddon: class {
@@ -117,7 +117,7 @@ test('console shows loading while a routed session resolves', () => {
   expect(screen.queryByText('Select a session to open a console.')).not.toBeInTheDocument()
 })
 
-test('console-specific actions remain available without a session settings gear', async () => {
+test('desktop console actions are inline buttons and mobile leaves actions to the shared menu', async () => {
   const user = userEvent.setup()
 
   render(
@@ -132,8 +132,13 @@ test('console-specific actions remain available without a session settings gear'
   expect(mobileHeader).not.toBeNull()
   expect(within(mobileHeader as HTMLElement).queryByRole('button', { name: 'Session settings' })).not.toBeInTheDocument()
 
-  await user.click(within(mobileHeader as HTMLElement).getByRole('button', { name: 'Console actions' }))
-
-  expect(within(mobileHeader as HTMLElement).getByRole('menuitem', { name: 'Restart console' })).toBeInTheDocument()
-  expect(within(mobileHeader as HTMLElement).getByRole('menuitem', { name: 'Stop console' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Console actions' })).not.toBeInTheDocument()
+  expect(within(mobileHeader as HTMLElement).queryByRole('button', { name: 'Restart console' })).not.toBeInTheDocument()
+  const restart = screen.getByRole('button', { name: 'Restart console' })
+  const stop = screen.getByRole('button', { name: 'Stop console' })
+  expect(restart).not.toHaveAttribute('aria-haspopup')
+  await user.click(stop)
+  expect(killConsole).toHaveBeenCalledWith('sess_1')
+  await user.click(restart)
+  expect(killConsole).toHaveBeenCalledTimes(2)
 })
