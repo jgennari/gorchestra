@@ -239,8 +239,29 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
       }
     }
 
-    const unsubscribeSharedEvents = subscribeClientSessionEvents(activeSessionID, (event) => {
+    const unsubscribeSharedEvents = subscribeClientSessionEvents(activeSessionID, (event, snapshot) => {
       if (closed) return
+      if (event === null) {
+        const mergedLive = mergeTransientSnapshot(liveEventsRef.current, snapshot.events)
+        const bounded = boundEventWindow(mergedLive, 'latest', liveEventWindowPolicy)
+        liveEventsRef.current = bounded.events
+        setLiveEvents(bounded.events)
+        if (followingTailRef.current) {
+          setEvents((current) => {
+            const visible = boundEventWindow(
+              mergeTransientSnapshot(current, snapshot.events),
+              'latest',
+              residentEventWindowPolicy,
+            )
+            oldestSeqRef.current = firstSeq(visible.events)
+            newestSeqRef.current = lastSeq(visible.events)
+            setHasOlderEvents(snapshot.hasOlderEvents || visible.trimmedStart)
+            setHasNewerEvents(false)
+            return visible.events
+          })
+        }
+        return
+      }
       applyEvent(event)
       if (activeIncludeDebugEvents && !isTransientEvent(event)) {
         writeCachedSessionEvents(
@@ -261,11 +282,13 @@ export function useSessionEvents(sessionID: string | null, options: Options = {}
         ? liveEventsRef.current
         : (readClientSessionEvents(activeSessionID)?.events ?? [])
       const serverLastSeq = history.page?.server_last_seq ?? lastDurableSeq(history.events)
+      const sharedTransientEvents = sharedEvents.filter(isTransientEvent)
       // The response owns its range; only append stream events newer than its
-      // watermark. Old cache fragments can be separated by an unfilled gap.
+      // watermark. The live snapshot owns transient state when present because
+      // history may contain only the final portion of a long-running item.
       const normalizedHistoryEvents = appendEvents([], [
-        ...history.events,
-        ...sharedEvents.filter((event) => event.seq > serverLastSeq),
+        ...history.events.filter((event) => sharedTransientEvents.length === 0 || !isTransientEvent(event)),
+        ...sharedEvents.filter((event) => isTransientEvent(event) || event.seq > serverLastSeq),
       ])
       const historyLastSeq = lastSeq(normalizedHistoryEvents)
       lastSeqRef.current = Math.max(lastSeqRef.current, history.page?.server_last_seq ?? 0, historyLastSeq)
@@ -851,6 +874,14 @@ function mergeLiveTailWindow(current: AgentEvent[], tail: AgentEvent[]) {
   return tail.length > 0 && firstSeq(tail) <= lastSeq(current)
     ? mergeBoundedEvents(current, tail, 'latest', residentEventWindowPolicy)
     : boundEventWindow(tail, 'latest', residentEventWindowPolicy)
+}
+
+function mergeTransientSnapshot(current: AgentEvent[], snapshot: AgentEvent[]) {
+  return appendEvents([], [
+    ...current.filter((event) => !isTransientEvent(event)),
+    ...snapshot.filter((event) => !isTransientEvent(event)),
+    ...snapshot.filter(isTransientEvent),
+  ])
 }
 
 function sessionEventCacheKey(sessionID: string, includeDebugEvents: boolean) {

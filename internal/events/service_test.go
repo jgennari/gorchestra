@@ -161,7 +161,7 @@ func TestTransientDeltasBroadcastOnlyToSessionSubscribers(t *testing.T) {
 func TestSessionActivitySubscriberReceivesDurableEventsAndOnlyWatchedTransientEvents(t *testing.T) {
 	ctx := context.Background()
 	service := newTestService(t, newFakeStore())
-	ch, unsubscribe := service.SubscribeSessionActivity("browser-one", "sess_one", false)
+	ch, unsubscribe := service.SubscribeSessionActivity("browser-one", "sess_one", false, false)
 	defer unsubscribe()
 
 	if _, err := service.Append(ctx, appendParams("sess_two", "agent.message.delta")); err != nil {
@@ -206,10 +206,106 @@ func TestSessionActivitySubscriberReceivesDurableEventsAndOnlyWatchedTransientEv
 	}
 }
 
+func TestSessionActivitySubscriberCanReceiveEveryTransientEvent(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t, newFakeStore())
+	ch, unsubscribe := service.SubscribeSessionActivity("browser-one", "sess_one", false, true)
+	defer unsubscribe()
+
+	first, err := service.Append(ctx, appendParams("sess_one", "agent.message.delta"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Append(ctx, appendParams("sess_two", "agent.message.delta"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivered := receiveEvent(t, ch); delivered.ID != first.ID {
+		t.Fatalf("expected first session delta, got %#v", delivered)
+	}
+	if delivered := receiveEvent(t, ch); delivered.ID != second.ID {
+		t.Fatalf("expected background session delta, got %#v", delivered)
+	}
+}
+
+func TestLiveSnapshotAccumulatesAndClearsTransientOutput(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t, newFakeStore())
+	first := appendParams("sess_one", "agent.message.delta")
+	first.Payload = json.RawMessage(`{"message_id":"msg_1","text":"Hello "}`)
+	second := first
+	second.Payload = json.RawMessage(`{"message_id":"msg_1","text":"world"}`)
+	if _, err := service.Append(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Append(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := service.LiveSnapshot()
+	if len(snapshot.Events) != 1 || !strings.Contains(string(snapshot.Events[0].Payload), `"text":"Hello world"`) {
+		t.Fatalf("expected accumulated live message, got %#v", snapshot)
+	}
+	if snapshot.Watermarks["sess_one"] != 2 {
+		t.Fatalf("expected snapshot watermark 2, got %#v", snapshot.Watermarks)
+	}
+	completed := appendParams("sess_one", "agent.message.completed")
+	completed.Payload = json.RawMessage(`{"message_id":"msg_1","text":"Hello world"}`)
+	if _, err := service.Append(ctx, completed); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := service.LiveSnapshot(); len(snapshot.Events) != 0 {
+		t.Fatalf("expected completed message removed from live snapshot, got %#v", snapshot)
+	}
+}
+
+func TestLiveSnapshotMarksOversizedOutputAsTruncated(t *testing.T) {
+	service := newTestService(t, newFakeStore())
+	first := appendParams("sess_one", "agent.message.delta")
+	first.Payload = json.RawMessage(`{"message_id":"msg_first","text":"earlier output"}`)
+	if _, err := service.Append(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"message_id": "msg_large",
+		"text":       strings.Repeat("x", MaxLiveSessionBytes+1024),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := appendParams("sess_one", "agent.message.delta")
+	params.Payload = payload
+	if _, err := service.Append(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := service.LiveSnapshot()
+	totalBytes := 0
+	var truncated store.Event
+	for _, event := range snapshot.Events {
+		totalBytes += len(event.Payload)
+		if payloadBool(event.Payload, "_gorchestra_live_truncated") {
+			truncated = event
+		}
+	}
+	if totalBytes > MaxLiveSessionBytes {
+		t.Fatalf("expected bounded live snapshot, got %d events and %d bytes", len(snapshot.Events), totalBytes)
+	}
+	if truncated.ID == "" || !strings.Contains(string(truncated.Payload), "Live output truncated") {
+		t.Fatalf("expected explicit truncation marker, got %#v", snapshot.Events)
+	}
+	if service.SessionActivityStats().LiveBytes > MaxLiveSessionBytes {
+		t.Fatalf("expected live projection within its byte limit, got %#v", service.SessionActivityStats())
+	}
+	if service.SessionActivityStats().LiveTruncations != 1 {
+		t.Fatalf("expected one truncation, got %#v", service.SessionActivityStats())
+	}
+}
+
 func TestReplacingSessionActivitySubscriberDoesNotLetStaleCleanupRemoveReplacement(t *testing.T) {
 	service := newTestService(t, newFakeStore())
-	first, unsubscribeFirst := service.SubscribeSessionActivity("browser-one", "sess_one", false)
-	second, unsubscribeSecond := service.SubscribeSessionActivity("browser-one", "sess_two", false)
+	first, unsubscribeFirst := service.SubscribeSessionActivity("browser-one", "sess_one", false, false)
+	second, unsubscribeSecond := service.SubscribeSessionActivity("browser-one", "sess_two", false, false)
 	defer unsubscribeSecond()
 
 	assertClosed(t, first)

@@ -1368,7 +1368,7 @@ export function eventStreamURL(sessionID: string, afterSeq: number, options: Eve
 
 export function sessionActivityStreamURL(
   afterCursor?: number | null,
-  options: { clientID?: string; watchSessionID?: string | null; includeDebug?: boolean } = {},
+  options: { clientID?: string; watchSessionID?: string | null; includeDebug?: boolean; liveScope?: 'watched' | 'all' } = {},
 ) {
   const params = new URLSearchParams()
   if (afterCursor !== undefined && afterCursor !== null) {
@@ -1377,6 +1377,7 @@ export function sessionActivityStreamURL(
   if (options.clientID) params.set('client_id', options.clientID)
   if (options.watchSessionID) params.set('watch_session_id', options.watchSessionID)
   if (options.includeDebug) params.set('include_debug', 'true')
+  if (options.liveScope === 'all') params.set('live_scope', 'all')
   return withQuery('/api/sessions/activity/stream', params)
 }
 
@@ -1385,7 +1386,7 @@ export async function watchSessionActivity(
   sessionID: string | null,
   includeDebug = false,
 ) {
-  return requestJSON<{ connected: boolean; session_id: string }>('/api/sessions/activity/watch', {
+  return requestJSON<{ connected: boolean; session_id: string; events?: AgentEvent[]; watermark?: number }>('/api/sessions/activity/watch', {
     method: 'PUT',
     body: JSON.stringify({
       client_id: clientID,

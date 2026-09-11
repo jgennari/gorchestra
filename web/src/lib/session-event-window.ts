@@ -4,17 +4,18 @@ import { appendEvent, appendEvents, isTerminalEvent, isTransientEvent } from '@/
 export const residentEventWindowPolicy = {
   maxTurns: 50,
   maxDurableEvents: 5000,
-  maxBytes: 8 * 1024 * 1024,
+  // Leave room for the event envelope around an 8 MiB server live projection.
+  maxBytes: 9 * 1024 * 1024,
   maxTransientEvents: 200,
-  maxTransientBytes: 512 * 1024,
+  maxTransientBytes: 9 * 1024 * 1024,
 } as const
 
 export const liveEventWindowPolicy = {
   maxTurns: 50,
   maxDurableEvents: 1000,
-  maxBytes: 2 * 1024 * 1024,
+  maxBytes: 9 * 1024 * 1024,
   maxTransientEvents: 200,
-  maxTransientBytes: 512 * 1024,
+  maxTransientBytes: 9 * 1024 * 1024,
 } as const
 
 export const cachedEventWindowPolicy = {

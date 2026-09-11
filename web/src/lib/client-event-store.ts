@@ -4,7 +4,6 @@ import { isTransientEvent, lastSeq } from '@/lib/events'
 import {
   appendBoundedEvent,
   boundEventWindow,
-  cachedEventWindowPolicy,
   eventWindowStats,
   mergeBoundedEvents,
 } from '@/lib/session-event-window'
@@ -25,22 +24,47 @@ type ClientSessionEventEntry = ClientSessionEventSnapshot & {
   bytes: number
 }
 
-type SessionEventListener = (event: AgentEvent, snapshot: ClientSessionEventSnapshot) => void
+type SessionEventListener = (event: AgentEvent | null, snapshot: ClientSessionEventSnapshot) => void
 
 const memoryEventBytesLimit = 32 * 1024 * 1024
 const memoryEventEntryLimit = 50
+const sharedEventWindowPolicy = {
+  maxTurns: 50,
+  maxDurableEvents: 1000,
+  // The server caps live payloads at 8 MiB; the extra MiB covers event JSON.
+  maxBytes: 9 * 1024 * 1024,
+  maxTransientEvents: 200,
+  maxTransientBytes: 9 * 1024 * 1024,
+} as const
 const entries = new Map<string, ClientSessionEventEntry>()
 const cursors = new Map<string, number>()
+const liveSnapshotCursors = new Map<string, number>()
 const listeners = new Map<string, Set<SessionEventListener>>()
 
 export function ingestClientEvent(event: AgentEvent) {
-  if (!event.session_id || isTransientEvent(event)) return false
+  if (!event.session_id) return false
+
+  if (isTransientEvent(event)) {
+    if (event.seq <= (liveSnapshotCursors.get(event.session_id) ?? 0)) return false
+    const current = entries.get(event.session_id)
+    if (current?.events.some((existing) => existing.id === event.id || existing.seq === event.seq)) return false
+    const bounded = appendBoundedEvent(current?.events ?? [], event, sharedEventWindowPolicy)
+    const snapshot = setEntry(event.session_id, bounded.events, {
+      inputEvents: current?.inputEvents,
+      lastSeq: current?.lastSeq ?? cursors.get(event.session_id) ?? 0,
+      hasOlderEvents: Boolean(current?.hasOlderEvents) || bounded.trimmedStart,
+      hasNewerEvents: false,
+      tailHydrated: current?.tailHydrated === true,
+    })
+    for (const listener of listeners.get(event.session_id) ?? []) listener(event, snapshot)
+    return true
+  }
 
   const cursor = cursors.get(event.session_id) ?? 0
   if (event.seq <= cursor) return false
 
   const current = entries.get(event.session_id)
-  const bounded = appendBoundedEvent(current?.events ?? [], event, cachedEventWindowPolicy)
+  const bounded = appendBoundedEvent(current?.events ?? [], event, sharedEventWindowPolicy)
   const snapshot = setEntry(event.session_id, bounded.events, {
     inputEvents: unresolvedInputEvents([...(current?.inputEvents ?? []), event]),
     lastSeq: event.seq,
@@ -57,8 +81,62 @@ export function ingestClientEvent(event: AgentEvent) {
   return true
 }
 
-// Selected-session events that must not enter the normal durable cache (live
-// deltas and opt-in provider diagnostics) still use the same listener path.
+export function replaceClientLiveEvents(events: AgentEvent[], watermarks: Record<string, number> = {}) {
+  const liveBySession = new Map<string, AgentEvent[]>()
+  for (const event of events) {
+    if (!event.session_id || !isTransientEvent(event)) continue
+    const sessionEvents = liveBySession.get(event.session_id) ?? []
+    sessionEvents.push(event)
+    liveBySession.set(event.session_id, sessionEvents)
+  }
+
+  const sessionIDs = new Set([...entries.keys(), ...liveBySession.keys()])
+  for (const [sessionID, seq] of Object.entries(watermarks)) {
+    liveSnapshotCursors.set(sessionID, Math.max(liveSnapshotCursors.get(sessionID) ?? 0, seq))
+    sessionIDs.add(sessionID)
+  }
+  for (const sessionID of sessionIDs) {
+    const current = entries.get(sessionID)
+    const durable = (current?.events ?? []).filter((event) => !isTransientEvent(event))
+    const bounded = boundEventWindow([...durable, ...(liveBySession.get(sessionID) ?? [])], 'latest', sharedEventWindowPolicy)
+    if (!current && bounded.events.length === 0) continue
+    const snapshot = setEntry(sessionID, bounded.events, {
+      inputEvents: current?.inputEvents,
+      lastSeq: current?.lastSeq ?? cursors.get(sessionID) ?? 0,
+      hasOlderEvents: Boolean(current?.hasOlderEvents) || bounded.trimmedStart,
+      hasNewerEvents: false,
+      tailHydrated: current?.tailHydrated === true,
+    })
+    for (const listener of listeners.get(sessionID) ?? []) listener(null, snapshot)
+  }
+}
+
+export function replaceClientSessionLiveEvents(sessionID: string, events: AgentEvent[], watermark: number) {
+  const current = entries.get(sessionID)
+  const retained = (current?.events ?? []).filter((event) =>
+    !isTransientEvent(event) || event.seq > watermark,
+  )
+  const snapshotLive = events.filter((event) => event.session_id === sessionID && isTransientEvent(event))
+  const combined = [...retained.filter((event) => !isTransientEvent(event)), ...snapshotLive]
+  for (const event of retained.filter((event) => isTransientEvent(event)).sort((left, right) => left.seq - right.seq)) {
+    const next = appendBoundedEvent(combined, event, sharedEventWindowPolicy)
+    combined.splice(0, combined.length, ...next.events)
+  }
+  liveSnapshotCursors.set(sessionID, Math.max(liveSnapshotCursors.get(sessionID) ?? 0, watermark))
+  const bounded = boundEventWindow(combined, 'latest', sharedEventWindowPolicy)
+  if (!current && bounded.events.length === 0) return
+  const snapshot = setEntry(sessionID, bounded.events, {
+    inputEvents: current?.inputEvents,
+    lastSeq: current?.lastSeq ?? cursors.get(sessionID) ?? 0,
+    hasOlderEvents: Boolean(current?.hasOlderEvents) || bounded.trimmedStart,
+    hasNewerEvents: false,
+    tailHydrated: current?.tailHydrated === true,
+  })
+  for (const listener of listeners.get(sessionID) ?? []) listener(null, snapshot)
+}
+
+// Selected-session provider diagnostics that must not enter the normal durable
+// cache still use the same listener path.
 export function publishClientSessionEvent(event: AgentEvent) {
   if (!event.session_id) return false
   const snapshot = readClientSessionEvents(event.session_id) ?? emptySnapshot()
@@ -83,8 +161,8 @@ export function seedClientSessionEvents(
   const durableEvents = events.filter((event) => !isTransientEvent(event))
   const current = entries.get(sessionID)
   const bounded = options.replace
-    ? boundEventWindow(durableEvents, 'latest', cachedEventWindowPolicy)
-    : mergeBoundedEvents(current?.events ?? [], durableEvents, 'latest', cachedEventWindowPolicy)
+    ? boundEventWindow(events, 'latest', sharedEventWindowPolicy)
+    : mergeBoundedEvents(current?.events ?? [], events, 'latest', sharedEventWindowPolicy)
   const cursor = Math.max(cursors.get(sessionID) ?? 0, options.lastSeq ?? 0, lastSeq(durableEvents))
   cursors.set(sessionID, cursor)
   return setEntry(sessionID, bounded.events, {
@@ -136,6 +214,7 @@ export function clientEventStoreStats() {
 export function clearClientEventStoreForTest() {
   entries.clear()
   cursors.clear()
+  liveSnapshotCursors.clear()
   listeners.clear()
 }
 
@@ -150,7 +229,7 @@ function setEntry(
   const entry: ClientSessionEventEntry = {
     events,
     inputEvents: options.inputEvents,
-    lastSeq: Math.max(options.lastSeq, lastSeq(events)),
+    lastSeq: Math.max(options.lastSeq, lastSeq(events.filter((event) => !isTransientEvent(event)))),
     oldestSeq: firstSeq(events),
     hasOlderEvents: options.hasOlderEvents,
     hasNewerEvents: options.hasNewerEvents,

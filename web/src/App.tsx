@@ -126,7 +126,12 @@ import { cn } from '@/lib/utils'
 import { applySessionEvent } from '@/lib/session-events'
 import { readFileDraft } from '@/lib/file-drafts'
 import { useAnchoredPopover } from '@/hooks/use-anchored-popover'
-import { ingestClientEvent, publishClientSessionEvent } from '@/lib/client-event-store'
+import {
+  ingestClientEvent,
+  publishClientSessionEvent,
+  replaceClientLiveEvents,
+  replaceClientSessionLiveEvents,
+} from '@/lib/client-event-store'
 import { ClientDebugPanel } from '@/components/client-debug-panel'
 import {
   ClientDebugContext,
@@ -578,7 +583,11 @@ function App() {
       activityClientIDRef.current,
       selectedSessionID,
       showDebugEvents,
-    ).catch(() => undefined)
+    ).then((snapshot) => {
+      if (snapshot.connected && snapshot.session_id && snapshot.events) {
+        replaceClientSessionLiveEvents(snapshot.session_id, snapshot.events, snapshot.watermark ?? 0)
+      }
+    }).catch(() => undefined)
   }, [activityCursorReady, selectedSessionID, showDebugEvents])
 
   useEffect(() => {
@@ -829,9 +838,14 @@ function App() {
 
   const handleActivityEvent = useCallback(
     (event: AgentEvent) => {
-      if (isTransientEvent(event) || isDebugOnlyEvent(event)) {
+      if (isDebugOnlyEvent(event)) {
         publishClientSessionEvent(event)
-        if (!isTransientEvent(event)) applyIngestedSessionEvent(event)
+        applyIngestedSessionEvent(event)
+        scheduleDashboardRefresh()
+        return
+      }
+      if (isTransientEvent(event)) {
+        ingestClientEvent(event)
         scheduleDashboardRefresh()
         return
       }
@@ -1159,6 +1173,7 @@ function App() {
         clientID: activityClientIDRef.current,
         watchSessionID: selectedSessionIDRef.current,
         includeDebug: showDebugEventsRef.current,
+        liveScope: 'all',
       }))
       source = connectedSource
       source.onopen = () => {
@@ -1184,6 +1199,18 @@ function App() {
       }
       source.addEventListener('stream.resync.required', () => {
         if (source === connectedSource) handleResyncRequired('stream.resync.required')
+      })
+      source.addEventListener('session.live.snapshot', (message) => {
+        if (closed || source !== connectedSource) return
+        try {
+          const snapshot = JSON.parse((message as MessageEvent<string>).data) as {
+            events?: AgentEvent[]
+            watermarks?: Record<string, number>
+          }
+          replaceClientLiveEvents(snapshot.events ?? [], snapshot.watermarks ?? {})
+        } catch {
+          debugTransport.rejected += 1
+        }
       })
     }
 

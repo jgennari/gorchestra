@@ -112,9 +112,12 @@ type EventService interface {
 }
 
 type SessionActivityEventService interface {
-	SubscribeSessionActivity(clientID string, watchedSessionID string, includeDebug bool) (<-chan store.Event, func())
+	SubscribeSessionActivity(clientID string, watchedSessionID string, includeDebug bool, allTransient bool) (<-chan store.Event, func())
 	WatchSessionActivity(clientID string, watchedSessionID string, includeDebug bool) bool
 	SessionActivityWatch(clientID string) (watchedSessionID string, includeDebug bool, ok bool)
+	SessionActivityReceivesAllTransient(clientID string) bool
+	LiveSnapshot() eventservice.SessionLiveSnapshot
+	LiveSessionSnapshot(sessionID string) eventservice.SessionLiveSnapshot
 }
 
 type SessionActivityStatsService interface {
@@ -1119,6 +1122,7 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 	excludedSessionID := strings.TrimSpace(r.URL.Query().Get("exclude_session_id"))
 	clientID := strings.TrimSpace(r.URL.Query().Get("client_id"))
 	watchedSessionID := strings.TrimSpace(r.URL.Query().Get("watch_session_id"))
+	allTransient := strings.TrimSpace(r.URL.Query().Get("live_scope")) == "all"
 	if clientID != "" && !validActivityClientID(clientID) {
 		writeError(w, http.StatusBadRequest, "client_id is invalid")
 		return
@@ -1127,7 +1131,7 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 	var liveEvents <-chan store.Event
 	var unsubscribe func()
 	if multiplexed && clientID != "" {
-		liveEvents, unsubscribe = activityEvents.SubscribeSessionActivity(clientID, watchedSessionID, filter.IncludeDebug)
+		liveEvents, unsubscribe = activityEvents.SubscribeSessionActivity(clientID, watchedSessionID, filter.IncludeDebug, allTransient)
 	} else {
 		liveEvents, unsubscribe = api.events.SubscribeAll()
 	}
@@ -1194,6 +1198,22 @@ func (api API) sessionActivityStreamHandler(w http.ResponseWriter, r *http.Reque
 			highestCursorSent = event.GlobalSeq
 		}
 	}
+	if multiplexed && clientID != "" && allTransient {
+		snapshot := activityEvents.LiveSnapshot()
+		responses := make([]eventResponse, 0, len(snapshot.Events))
+		for _, event := range snapshot.Events {
+			if eventVisible(event, store.EventListFilter{}) {
+				responses = append(responses, newLiveEventResponse(event))
+			}
+		}
+		if err := writeSSEControl(w, "session.live.snapshot", map[string]any{
+			"events":     responses,
+			"watermarks": snapshot.Watermarks,
+		}); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
 
 	heartbeat := time.NewTicker(streamHeartbeat)
 	defer heartbeat.Stop()
@@ -1258,10 +1278,20 @@ func (api API) watchSessionActivityHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	connected := activityEvents.WatchSessionActivity(request.ClientID, request.SessionID, request.IncludeDebug)
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"connected":  connected,
 		"session_id": request.SessionID,
-	})
+	}
+	if connected && request.SessionID != "" && activityEvents.SessionActivityReceivesAllTransient(request.ClientID) {
+		snapshot := activityEvents.LiveSessionSnapshot(request.SessionID)
+		events := make([]eventResponse, 0, len(snapshot.Events))
+		for _, event := range snapshot.Events {
+			events = append(events, newLiveEventResponse(event))
+		}
+		response["events"] = events
+		response["watermark"] = snapshot.Watermarks[request.SessionID]
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func sessionActivityEventVisible(
@@ -1278,7 +1308,7 @@ func sessionActivityEventVisible(
 	if !ok {
 		return false
 	}
-	if event.Transient && event.SessionID != watchedSessionID {
+	if event.Transient && !activityEvents.SessionActivityReceivesAllTransient(clientID) && event.SessionID != watchedSessionID {
 		return false
 	}
 	return eventVisible(event, store.EventListFilter{
@@ -1761,6 +1791,12 @@ func newEventResponse(event store.Event) eventResponse {
 		CreatedAt: event.CreatedAt.UTC().Format(time.RFC3339Nano),
 		Transient: event.Transient,
 	}
+}
+
+func newLiveEventResponse(event store.Event) eventResponse {
+	response := newEventResponse(event)
+	response.Payload = append(json.RawMessage(nil), event.Payload...)
+	return response
 }
 
 func responseEventPayload(eventType string, payload json.RawMessage) json.RawMessage {

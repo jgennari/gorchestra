@@ -6,6 +6,8 @@ import {
   invalidateClientSessionEventTails,
   publishClientSessionEvent,
   readClientSessionEvents,
+  replaceClientLiveEvents,
+  replaceClientSessionLiveEvents,
   seedClientSessionEvents,
   subscribeClientSessionEvents,
 } from '@/lib/client-event-store'
@@ -71,6 +73,68 @@ test('publishes transient events without caching or advancing the durable cursor
   expect(listener).toHaveBeenCalledWith(transient, expect.objectContaining({ lastSeq: 8 }))
   expect(readClientSessionEvents('sess_1')?.events.map((item) => item.seq)).toEqual([8])
   expect(readClientSessionEvents('sess_1')?.lastSeq).toBe(8)
+})
+
+test('accumulates background transient events without advancing the durable cursor', () => {
+  seedClientSessionEvents('sess_1', [event('sess_1', 8)], { lastSeq: 8, replace: true })
+  const first = { ...event('sess_1', 9), id: 'delta_1', type: 'agent.message.delta', transient: true, payload: { message_id: 'msg_1', text: 'Hello ' } }
+  const second = { ...event('sess_1', 10), id: 'delta_2', type: 'agent.message.delta', transient: true, payload: { message_id: 'msg_1', text: 'world' } }
+
+  expect(ingestClientEvent(first)).toBe(true)
+  expect(ingestClientEvent(second)).toBe(true)
+  const snapshot = readClientSessionEvents('sess_1')
+  expect(snapshot?.lastSeq).toBe(8)
+  expect(snapshot?.events.find((item) => item.type === 'agent.message.delta')?.payload).toMatchObject({ text: 'Hello world' })
+})
+
+test('durable lifecycle events preserve live output until its completion arrives', () => {
+  ingestClientEvent({
+    ...event('sess_1', 2), id: 'delta_1', type: 'agent.message.delta', transient: true,
+    payload: { message_id: 'msg_1', text: 'Streaming' },
+  })
+  ingestClientEvent({ ...event('sess_1', 3), type: 'agent.status.started' })
+  expect(readClientSessionEvents('sess_1')?.events.some((item) => item.type === 'agent.message.delta')).toBe(true)
+
+  ingestClientEvent({
+    ...event('sess_1', 4), type: 'agent.message.completed', payload: { message_id: 'msg_1', text: 'Streaming done' },
+  })
+  expect(readClientSessionEvents('sess_1')?.events.some((item) => item.type === 'agent.message.delta')).toBe(false)
+})
+
+test('authoritative live snapshot replaces an incomplete local prefix', () => {
+  seedClientSessionEvents('sess_1', [event('sess_1', 8)], { lastSeq: 8, replace: true })
+  ingestClientEvent({ ...event('sess_1', 10), id: 'delta_2', type: 'agent.message.delta', transient: true, payload: { message_id: 'msg_1', text: 'world' } })
+
+  replaceClientLiveEvents([
+    { ...event('sess_1', 10), id: 'snapshot_1', type: 'agent.message.delta', transient: true, payload: { message_id: 'msg_1', text: 'Hello world' } },
+  ], { sess_1: 10 })
+
+  expect(ingestClientEvent({
+    ...event('sess_1', 9), id: 'queued_old', type: 'agent.message.delta', transient: true,
+    payload: { message_id: 'msg_1', text: ' duplicated' },
+  })).toBe(false)
+  expect(ingestClientEvent({
+    ...event('sess_1', 11), id: 'delta_new', type: 'agent.message.delta', transient: true,
+    payload: { message_id: 'msg_1', text: '!' },
+  })).toBe(true)
+
+  const deltas = readClientSessionEvents('sess_1')?.events.filter((item) => item.type === 'agent.message.delta') ?? []
+  expect(deltas).toHaveLength(1)
+  expect(deltas[0].payload).toMatchObject({ text: 'Hello world!' })
+})
+
+test('session snapshot retains deltas that raced ahead of its watermark', () => {
+  ingestClientEvent({
+    ...event('sess_1', 12), id: 'delta_new', type: 'agent.message.delta', transient: true,
+    payload: { message_id: 'msg_1', text: '!' },
+  })
+  replaceClientSessionLiveEvents('sess_1', [{
+    ...event('sess_1', 10), id: 'snapshot_1', type: 'agent.message.delta', transient: true,
+    payload: { message_id: 'msg_1', text: 'Hello world' },
+  }], 10)
+
+  const delta = readClientSessionEvents('sess_1')?.events.find((item) => item.type === 'agent.message.delta')
+  expect(delta?.payload).toMatchObject({ text: 'Hello world!' })
 })
 
 test('evicts cold transcript windows while retaining their sequence cursors', () => {

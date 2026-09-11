@@ -106,6 +106,9 @@ test('session API helpers build the expected URLs', async () => {
     watchSessionID: 'sess_1',
     includeDebug: true,
   })).toBe('/api/sessions/activity/stream?after_cursor=42&client_id=browser-one&watch_session_id=sess_1&include_debug=true')
+  expect(sessionActivityStreamURL(42, { clientID: 'browser-one', liveScope: 'all' })).toBe(
+    '/api/sessions/activity/stream?after_cursor=42&client_id=browser-one&live_scope=all',
+  )
 })
 
 test('session list helper includes status filters', async () => {

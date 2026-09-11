@@ -1,6 +1,6 @@
 # Global event stream plan
 
-Status: Stages 1–3 complete
+Status: Stages 1–4 complete
 
 Last updated: 2026-09-04
 
@@ -176,6 +176,27 @@ Validation checkpoint (2026-09-04):
   transcript windows without another GET.
 - Forced browser stalls were reported through the bounded long-task telemetry
   path. The browser recorded no console errors or uncaught page errors.
+
+## Stage 4 — seamless active-session switching
+
+Status: complete (2026-09-11)
+
+- Let the browser opt into transient console activity for every session on the
+  existing global SSE connection while retaining watched-session compatibility.
+- Accumulate bounded, in-progress items in server memory and send an authoritative
+  snapshot on connect or reconnect. Completed items and terminal runs clear their
+  temporary projections; no transient chunks are persisted.
+- Retain and merge transient items in the shared browser event store without
+  advancing durable replay cursors or writing them to IndexedDB.
+- Replace temporary client state from reconnect snapshots, then deduplicate newer
+  live events by event identity and per-session sequence.
+- Cap each server-side session projection at 8 MiB and all projections at
+  64 MiB, with explicit truncation in visible output and diagnostics. Keep the
+  shared browser cache bounded to 32 MiB.
+
+Exit criteria: switching among concurrently running sessions preserves the full
+in-progress output received by the browser, refresh/reconnect restores it from the
+running server, and the application continues to use one EventSource.
 
 ## Rollout and rollback
 

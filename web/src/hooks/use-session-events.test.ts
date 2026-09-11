@@ -10,7 +10,7 @@ import {
 } from '@/hooks/use-session-events'
 import { readCachedSessionEvents, writeCachedSessionEvents } from '@/lib/session-cache'
 import { createFakeIndexedDB } from '@/test/fake-indexeddb'
-import { ingestClientEvent, publishClientSessionEvent } from '@/lib/client-event-store'
+import { ingestClientEvent, publishClientSessionEvent, replaceClientLiveEvents } from '@/lib/client-event-store'
 import { pendingUserInputRequest } from '@/lib/events'
 
 test('question controls survive a truncated transcript and resolve from the shared stream', async () => {
@@ -372,6 +372,29 @@ test('a reload persists the durable cursor but not a multiplexed transient delta
   expect(fetchMock).toHaveBeenCalledTimes(2)
 
   second.unmount()
+  vi.unstubAllGlobals()
+})
+
+test('a live snapshot replaces transient output without erasing loaded history', async () => {
+  clearSessionEventCacheForTest()
+  const fetchMock = vi.fn(async () => jsonResponse({
+    events: [event(1, 'user.message.completed'), event(2, 'agent.message.completed')],
+    page: { ...historyPage(1, 2, false), server_last_seq: 2 },
+  }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  const { result, unmount } = renderHook(() => useSessionEvents('sess_test'))
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([1, 2]))
+
+  act(() => replaceClientLiveEvents([
+    { ...event(3, 'agent.message.delta'), transient: true, payload: { message_id: 'msg_live', text: 'Working' } },
+  ], { sess_test: 3 }))
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([1, 2, 3]))
+
+  act(() => replaceClientLiveEvents([], { sess_test: 3 }))
+  await waitFor(() => expect(result.current.events.map((item) => item.seq)).toEqual([1, 2]))
+
+  unmount()
   vi.unstubAllGlobals()
 })
 

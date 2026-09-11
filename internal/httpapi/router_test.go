@@ -2061,6 +2061,79 @@ func TestSessionActivityStreamUpdatesItsTransientWatchWithoutReconnecting(t *tes
 	}
 }
 
+func TestSessionActivityStreamCanReceiveEverySessionsTransientOutput(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	dbStore, events, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	first := createIntegrationSession(t, ctx, dbStore)
+	second := createIntegrationSession(t, ctx, dbStore)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/sessions/activity/stream?after_cursor=0&client_id=browser-one&watch_session_id="+first.ID+"&live_scope=all",
+		nil,
+	).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(rec, req)
+	}()
+	waitFor(t, func() bool { return events.SessionActivityStats().ActiveSubscribers == 1 })
+
+	if _, err := events.Append(ctx, eventservice.AppendParams{
+		SessionID: second.ID,
+		Type:      "agent.message.delta",
+		Role:      "assistant",
+		Status:    store.EventStatusDelta,
+		Payload:   json.RawMessage(`{"message_id":"msg_background","text":"background"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return events.SessionActivityStats().TransientDeliveries == 1 })
+	watchBody := bytes.NewBufferString(fmt.Sprintf(
+		`{"client_id":"browser-one","session_id":"%s","include_debug":false}`,
+		second.ID,
+	))
+	watchRec := httptest.NewRecorder()
+	handler.ServeHTTP(watchRec, httptest.NewRequest(http.MethodPut, "/api/sessions/activity/watch", watchBody))
+	if watchRec.Code != http.StatusOK || !strings.Contains(watchRec.Body.String(), "background") ||
+		!strings.Contains(watchRec.Body.String(), `"watermark":1`) {
+		t.Fatalf("expected selected-session live snapshot, got %d: %s", watchRec.Code, watchRec.Body.String())
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("activity stream did not close after cancellation")
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: session.live.snapshot\n") {
+		t.Fatalf("expected initial live snapshot in body:\n%s", body)
+	}
+	if !strings.Contains(body, `"session_id":"`+second.ID+`"`) || !strings.Contains(body, "background") {
+		t.Fatalf("expected background transient event in body:\n%s", body)
+	}
+}
+
+func TestLiveEventResponsePreservesBoundedSnapshotPayload(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"message_id": "msg_large",
+		"text":       strings.Repeat("x", maxOtherEventPayloadBytes+1024),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := testEvent(1, "agent.message.delta")
+	event.Payload = payload
+	event.Transient = true
+
+	response := newLiveEventResponse(event)
+	if !bytes.Equal(response.Payload, payload) {
+		t.Fatalf("expected live snapshot payload to remain intact: got %d bytes, want %d", len(response.Payload), len(payload))
+	}
+}
+
 func TestSessionActivityStreamReplaysAfterGlobalCursor(t *testing.T) {
 	baseStore := newFakeHTTPStore()
 	baseStore.addSession(testSessionID)

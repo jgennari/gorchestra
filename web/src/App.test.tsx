@@ -350,6 +350,56 @@ test('global activity multiplexes selected transient output into the transcript'
   expect(FakeEventSource.instances).toHaveLength(1)
 })
 
+test('switching to a background session restores its complete in-progress message', async () => {
+  const user = userEvent.setup()
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  expect(activitySource.url).toContain('live_scope=all')
+  act(() => {
+    activitySource.emit({
+      ...event(5, 'agent.message.delta', { message_id: 'msg_background', text: 'First half ' }, 'sess_2'),
+      transient: true,
+    })
+    activitySource.emit({
+      ...event(6, 'agent.message.delta', { message_id: 'msg_background', text: 'second half' }, 'sess_2'),
+      transient: true,
+    })
+  })
+
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+  expect(await screen.findByText('First half second half')).toBeInTheDocument()
+  expect(FakeEventSource.instances).toHaveLength(1)
+})
+
+test('live snapshot repairs an incomplete background message before selection', async () => {
+  const user = userEvent.setup()
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit({
+      ...event(6, 'agent.message.delta', { message_id: 'msg_background', text: 'second half' }, 'sess_2'),
+      transient: true,
+    })
+    activitySource.emitControl('session.live.snapshot', {
+      events: [{
+        ...event(6, 'agent.message.delta', { message_id: 'msg_background', text: 'First half second half' }, 'sess_2'),
+        id: 'snapshot_background',
+        transient: true,
+      }],
+    })
+  })
+
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+  expect(await screen.findByText('First half second half')).toBeInTheDocument()
+  expect(screen.queryByText('second half')).not.toBeInTheDocument()
+})
+
 test('selecting a background session keeps its global events while hydrating the server tail', async () => {
   const user = userEvent.setup()
   const fetch = fetchMock()
