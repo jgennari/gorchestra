@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -19,12 +21,63 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if payload := os.Getenv("GORCHESTRA_FAKE_CODEX_PROCESS_OUTPUT"); payload != "" {
+		_, _ = os.Stdout.WriteString(payload)
+		return
+	}
 	if mode := os.Getenv("GORCHESTRA_FAKE_CODEX_APP_SERVER"); mode != "" {
 		recordFakeAppServerStart()
 		runFakeAppServer(mode)
 		return
 	}
 	os.Exit(m.Run())
+}
+
+func TestWaitProcessAllowsOutputReadersToDrain(t *testing.T) {
+	t.Setenv("GORCHESTRA_FAKE_CODEX_PROCESS_OUTPUT", "{\"id\":1,\"result\":{}}\n")
+	cmd := exec.Command(os.Args[0])
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := startAppServerOutput(context.Background(), &delayedReader{Reader: stdout, delay: 50 * time.Millisecond}, stderr)
+	process := waitProcess(cmd, output.done)
+	if _, ok := process.waitTimeout(5 * time.Second); !ok {
+		process.kill()
+		t.Fatal("process did not finish after output readers drained")
+	}
+
+	var response *rpcMessage
+	for incoming := range output.incoming {
+		if incoming.ReadErr != nil {
+			t.Fatal(incoming.ReadErr)
+		}
+		if incoming.Message != nil {
+			response = incoming.Message
+		}
+	}
+	if response == nil || response.idKey() != "1" {
+		t.Fatalf("expected final response after process exit, got %#v", response)
+	}
+}
+
+type delayedReader struct {
+	io.Reader
+	delay time.Duration
+	once  sync.Once
+}
+
+func (r *delayedReader) Read(buffer []byte) (int, error) {
+	r.once.Do(func() { time.Sleep(r.delay) })
+	return r.Reader.Read(buffer)
 }
 
 func TestAvailabilityDetection(t *testing.T) {

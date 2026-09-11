@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"sync"
@@ -15,11 +17,62 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if payload := os.Getenv("GORCHESTRA_FAKE_CLAUDE_PROCESS_OUTPUT"); payload != "" {
+		_, _ = os.Stdout.WriteString(payload)
+		return
+	}
 	if os.Getenv("GORCHESTRA_FAKE_CLAUDE_STREAM") != "" {
 		runFakeClaude()
 		return
 	}
 	os.Exit(m.Run())
+}
+
+func TestWaitProcessAllowsOutputReadersToDrain(t *testing.T) {
+	t.Setenv("GORCHESTRA_FAKE_CLAUDE_PROCESS_OUTPUT", "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"session_fake\"}\n")
+	cmd := exec.Command(os.Args[0])
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := startStream(context.Background(), &delayedReader{Reader: stdout, delay: 50 * time.Millisecond}, stderr)
+	process := waitProcess(cmd, output.done)
+	if _, ok := process.waitTimeout(5 * time.Second); !ok {
+		process.kill()
+		t.Fatal("process did not finish after output readers drained")
+	}
+
+	var event *streamEvent
+	for incoming := range output.incoming {
+		if incoming.ReadErr != nil {
+			t.Fatal(incoming.ReadErr)
+		}
+		if incoming.Event != nil {
+			event = incoming.Event
+		}
+	}
+	if event == nil || event.Type != "result" {
+		t.Fatalf("expected final result after process exit, got %#v", event)
+	}
+}
+
+type delayedReader struct {
+	io.Reader
+	delay time.Duration
+	once  sync.Once
+}
+
+func (r *delayedReader) Read(buffer []byte) (int, error) {
+	r.once.Do(func() { time.Sleep(r.delay) })
+	return r.Reader.Read(buffer)
 }
 
 func TestAvailabilityDetection(t *testing.T) {

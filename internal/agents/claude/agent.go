@@ -174,7 +174,9 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	process := waitProcess(cmd)
+	outputCtx, cancelOutput := context.WithCancel(runCtx)
+	output := startStream(outputCtx, stdout, stderr)
+	process := waitProcess(cmd, output.done)
 	// A large image may fill stdin before execute reaches its select loop.
 	// Cancellation must be able to unblock that write even if Claude stops reading.
 	go func() {
@@ -185,17 +187,18 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 		}
 	}()
 	run := &streamRun{
-		agent:       a,
-		incoming:    readStream(runCtx, stdout, stderr),
-		process:     process,
-		emit:        emit,
-		normalizer:  newNormalizer(),
-		stdin:       stdin,
-		sessionID:   input.SessionID,
-		content:     content,
-		userInput:   input.UserInput,
-		permissions: input.Permissions,
-		options:     options,
+		agent:        a,
+		incoming:     output.incoming,
+		process:      process,
+		cancelOutput: cancelOutput,
+		emit:         emit,
+		normalizer:   newNormalizer(),
+		stdin:        stdin,
+		sessionID:    input.SessionID,
+		content:      content,
+		userInput:    input.UserInput,
+		permissions:  input.Permissions,
+		options:      options,
 	}
 	err = run.execute(runCtx)
 	if ctx.Err() != nil {
@@ -308,6 +311,7 @@ type streamRun struct {
 	agent          *Agent
 	incoming       <-chan incomingMessage
 	process        *processState
+	cancelOutput   context.CancelFunc
 	emit           agents.EmitFunc
 	normalizer     *normalizer
 	stdin          io.WriteCloser
@@ -358,6 +362,7 @@ func (r *streamRun) execute(ctx context.Context) error {
 	r.controlResults = make(chan controlResult)
 	defer func() {
 		cancel()
+		r.cancelOutput()
 		for _, pending := range r.controls {
 			pending.cancel()
 			pending.close()
@@ -536,8 +541,18 @@ func (e *ParseError) Error() string {
 	return fmt.Sprintf("parse claude stream JSON line %d: %v", e.Line, e.Err)
 }
 
+type streamOutput struct {
+	incoming <-chan incomingMessage
+	done     <-chan struct{}
+}
+
 func readStream(ctx context.Context, stdout io.Reader, stderr io.Reader) <-chan incomingMessage {
+	return startStream(ctx, stdout, stderr).incoming
+}
+
+func startStream(ctx context.Context, stdout io.Reader, stderr io.Reader) streamOutput {
 	incoming := make(chan incomingMessage, 128)
+	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -551,8 +566,9 @@ func readStream(ctx context.Context, stdout io.Reader, stderr io.Reader) <-chan 
 	go func() {
 		wg.Wait()
 		close(incoming)
+		close(done)
 	}()
-	return incoming
+	return streamOutput{incoming: incoming, done: done}
 }
 
 func scanStream(ctx context.Context, reader io.Reader, incoming chan<- incomingMessage) {
@@ -657,12 +673,13 @@ type processState struct {
 	waitErr error
 }
 
-func waitProcess(cmd *exec.Cmd) *processState {
+func waitProcess(cmd *exec.Cmd, outputDone <-chan struct{}) *processState {
 	state := &processState{
 		cmd:  cmd,
 		done: make(chan struct{}),
 	}
 	go func() {
+		<-outputDone
 		err := cmd.Wait()
 		state.mu.Lock()
 		state.waitErr = err

@@ -337,11 +337,14 @@ func (a *Agent) startProbe(workdir string) (*appServerProbe, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start codex probe app-server: %w", err)
 	}
+	outputCtx, cancelOutput := context.WithCancel(context.Background())
+	output := startAppServerOutput(outputCtx, stdout, stderr)
 
 	return &appServerProbe{
 		rpc:            newRPCClient(stdin),
-		incoming:       readAppServer(stdout, stderr),
-		process:        waitProcess(cmd),
+		incoming:       output.incoming,
+		process:        waitProcess(cmd, output.done),
+		cancelOutput:   cancelOutput,
 		interruptGrace: a.interruptGrace,
 	}, nil
 }
@@ -397,12 +400,15 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start codex app-server: %w", err)
 	}
+	outputCtx, cancelOutput := context.WithCancel(context.Background())
+	output := startAppServerOutput(outputCtx, stdout, stderr)
 
 	run := &appServerRun{
 		agent:             a,
 		rpc:               newRPCClient(stdin),
-		incoming:          readAppServer(stdout, stderr),
-		process:           waitProcess(cmd),
+		incoming:          output.incoming,
+		process:           waitProcess(cmd, output.done),
+		cancelOutput:      cancelOutput,
 		emit:              emit,
 		normalizer:        newNormalizer(),
 		options:           runOptionsFromMetadata(input.Metadata),
@@ -499,6 +505,7 @@ type appServerProbe struct {
 	rpc            *rpcClient
 	incoming       <-chan incomingMessage
 	process        *processState
+	cancelOutput   context.CancelFunc
 	interruptGrace time.Duration
 }
 
@@ -707,7 +714,7 @@ func (p *appServerProbe) awaitResponse(ctx context.Context, requestID string) (*
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-p.process.done:
-			return nil, p.processExitBeforeResponse(requestID)
+			return p.awaitResponseAfterProcessExit(requestID)
 		case incoming, ok := <-p.incoming:
 			if !ok {
 				return nil, fmt.Errorf("codex app-server closed before response %s", requestID)
@@ -731,6 +738,21 @@ func (p *appServerProbe) awaitResponse(ctx context.Context, requestID string) (*
 	}
 }
 
+func (p *appServerProbe) awaitResponseAfterProcessExit(requestID string) (*rpcMessage, error) {
+	for incoming := range p.incoming {
+		if incoming.ParseErr != nil {
+			return nil, incoming.ParseErr
+		}
+		if incoming.ReadErr != nil {
+			return nil, incoming.ReadErr
+		}
+		if incoming.Message != nil && len(incoming.Message.ID) != 0 && incoming.Message.idKey() == requestID {
+			return incoming.Message, nil
+		}
+	}
+	return nil, p.processExitBeforeResponse(requestID)
+}
+
 func (p *appServerProbe) processExitBeforeResponse(requestID string) error {
 	if err := p.process.err(); err != nil {
 		return fmt.Errorf("codex app-server exited before response %s: %w", requestID, err)
@@ -739,6 +761,7 @@ func (p *appServerProbe) processExitBeforeResponse(requestID string) error {
 }
 
 func (p *appServerProbe) stop() {
+	p.cancelOutput()
 	_ = p.rpc.Close()
 	if _, ok := p.process.waitTimeout(p.interruptGrace); ok {
 		return
@@ -805,6 +828,7 @@ type appServerRun struct {
 	rpc               *rpcClient
 	incoming          <-chan incomingMessage
 	process           *processState
+	cancelOutput      context.CancelFunc
 	emit              agents.EmitFunc
 	normalizer        *normalizer
 	options           codexRunOptions
@@ -1190,7 +1214,7 @@ func (r *appServerRun) awaitResponse(ctx context.Context, requestID string) (*rp
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-r.process.done:
-			return nil, r.processExitBeforeTerminal(ctx)
+			return r.awaitResponseAfterProcessExit(ctx, requestID)
 		case incoming, ok := <-r.incoming:
 			if !ok {
 				return nil, fmt.Errorf("codex app-server closed before response %s", requestID)
@@ -1204,6 +1228,19 @@ func (r *appServerRun) awaitResponse(ctx context.Context, requestID string) (*rp
 			}
 		}
 	}
+}
+
+func (r *appServerRun) awaitResponseAfterProcessExit(ctx context.Context, requestID string) (*rpcMessage, error) {
+	for incoming := range r.incoming {
+		response, matched, _, err := r.handleIncoming(ctx, incoming, requestID)
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			return response, nil
+		}
+	}
+	return nil, r.processExitBeforeTerminal(ctx)
 }
 
 func (r *appServerRun) awaitTerminal(ctx context.Context) error {
@@ -1761,6 +1798,7 @@ func (r *appServerRun) interruptOrKill() {
 }
 
 func (r *appServerRun) stopServer() {
+	r.cancelOutput()
 	_ = r.rpc.Close()
 	if _, ok := r.process.waitTimeout(r.agent.interruptGrace); ok {
 		return
@@ -1810,26 +1848,37 @@ func (e *ParseError) Error() string {
 	return fmt.Sprintf("parse codex app-server JSON-RPC line %d: %v", e.Line, e.Err)
 }
 
+type appServerOutput struct {
+	incoming <-chan incomingMessage
+	done     <-chan struct{}
+}
+
 func readAppServer(stdout io.Reader, stderr io.Reader) <-chan incomingMessage {
+	return startAppServerOutput(context.Background(), stdout, stderr).incoming
+}
+
+func startAppServerOutput(ctx context.Context, stdout io.Reader, stderr io.Reader) appServerOutput {
 	incoming := make(chan incomingMessage, 128)
+	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		scanJSONRPC(stdout, incoming)
+		scanJSONRPC(ctx, stdout, incoming)
 	}()
 	go func() {
 		defer wg.Done()
-		scanStderr(stderr, incoming)
+		scanStderr(ctx, stderr, incoming)
 	}()
 	go func() {
 		wg.Wait()
 		close(incoming)
+		close(done)
 	}()
-	return incoming
+	return appServerOutput{incoming: incoming, done: done}
 }
 
-func scanJSONRPC(reader io.Reader, incoming chan<- incomingMessage) {
+func scanJSONRPC(ctx context.Context, reader io.Reader, incoming chan<- incomingMessage) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxJSONRPCLineBytes)
 	line := 0
@@ -1841,19 +1890,23 @@ func scanJSONRPC(reader io.Reader, incoming chan<- incomingMessage) {
 		}
 		message, err := parseRPCMessage([]byte(raw))
 		if err != nil {
-			incoming <- incomingMessage{ParseErr: &ParseError{Line: line, Raw: raw, Err: err}}
+			if !sendAppServerIncoming(ctx, incoming, incomingMessage{ParseErr: &ParseError{Line: line, Raw: raw, Err: err}}) {
+				return
+			}
 			continue
 		}
-		incoming <- incomingMessage{Message: message}
+		if !sendAppServerIncoming(ctx, incoming, incomingMessage{Message: message}) {
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		if !errors.Is(err, os.ErrClosed) {
-			incoming <- incomingMessage{ReadErr: fmt.Errorf("read codex app-server stdout: %w; max JSON-RPC line size is %d bytes", err, maxJSONRPCLineBytes)}
+			sendAppServerIncoming(ctx, incoming, incomingMessage{ReadErr: fmt.Errorf("read codex app-server stdout: %w; max JSON-RPC line size is %d bytes", err, maxJSONRPCLineBytes)})
 		}
 	}
 }
 
-func scanStderr(reader io.Reader, incoming chan<- incomingMessage) {
+func scanStderr(ctx context.Context, reader io.Reader, incoming chan<- incomingMessage) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxStderrLineBytes)
 	for scanner.Scan() {
@@ -1861,12 +1914,23 @@ func scanStderr(reader io.Reader, incoming chan<- incomingMessage) {
 		if line == "" {
 			continue
 		}
-		incoming <- incomingMessage{Stderr: line}
+		if !sendAppServerIncoming(ctx, incoming, incomingMessage{Stderr: line}) {
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		if !errors.Is(err, os.ErrClosed) {
-			incoming <- incomingMessage{ReadErr: fmt.Errorf("read codex app-server stderr: %w", err)}
+			sendAppServerIncoming(ctx, incoming, incomingMessage{ReadErr: fmt.Errorf("read codex app-server stderr: %w", err)})
 		}
+	}
+}
+
+func sendAppServerIncoming(ctx context.Context, incoming chan<- incomingMessage, message incomingMessage) bool {
+	select {
+	case incoming <- message:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -2121,12 +2185,13 @@ type processState struct {
 	waitErr error
 }
 
-func waitProcess(cmd *exec.Cmd) *processState {
+func waitProcess(cmd *exec.Cmd, outputDone <-chan struct{}) *processState {
 	state := &processState{
 		cmd:  cmd,
 		done: make(chan struct{}),
 	}
 	go func() {
+		<-outputDone
 		err := cmd.Wait()
 		state.mu.Lock()
 		state.waitErr = err
