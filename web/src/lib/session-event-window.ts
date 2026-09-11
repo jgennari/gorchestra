@@ -43,6 +43,7 @@ export type BoundedEventWindow = {
 }
 
 const eventByteCache = new WeakMap<object, number>()
+const transientTextSegments = new WeakMap<object, Array<{ seq: number; text: string }>>()
 
 export function appendBoundedEvent(
   events: AgentEvent[],
@@ -157,10 +158,33 @@ function appendLiveEvent(events: AgentEvent[], event: AgentEvent) {
 
   const existing = events[existingIndex]
   const next = events.filter((_, index) => index !== existingIndex)
-  return appendEvent(next, {
+  const merged = {
     ...event,
     payload: mergeTransientPayload(existing.payload, event.payload),
-  })
+  }
+  const previousText = payloadTextValue(existing.payload)
+  const nextText = payloadTextValue(event.payload)
+  if (previousText !== null && nextText !== null) {
+    transientTextSegments.set(merged, [
+      ...(transientTextSegments.get(existing) ?? [{ seq: existing.seq, text: previousText }]),
+      { seq: event.seq, text: nextText },
+    ])
+  }
+  return appendEvent(next, merged)
+}
+
+export function transientEventAfter(event: AgentEvent, afterSeq: number): AgentEvent | null {
+  if (!isTransientEvent(event) || event.seq <= afterSeq) return null
+  const segments = transientTextSegments.get(event)
+  if (!segments) return event
+  const retained = segments.filter((segment) => segment.seq > afterSeq)
+  if (retained.length === 0) return null
+  const payload = isRecord(event.payload)
+    ? { ...event.payload, text: retained.map((segment) => segment.text).join('') }
+    : event.payload
+  const sliced = { ...event, seq: retained[retained.length - 1].seq, payload }
+  transientTextSegments.set(sliced, retained)
+  return sliced
 }
 
 function transientKey(event: AgentEvent) {
@@ -185,6 +209,10 @@ function mergeTransientPayload(previous: unknown, next: unknown) {
     ...next,
     ...(previousText || nextText ? { text: `${previousText}${nextText}` } : {}),
   }
+}
+
+function payloadTextValue(payload: unknown) {
+  return isRecord(payload) && typeof payload.text === 'string' ? payload.text : null
 }
 
 function uniqueEvents(events: AgentEvent[]) {

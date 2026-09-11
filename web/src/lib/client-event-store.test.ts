@@ -123,11 +123,27 @@ test('authoritative live snapshot replaces an incomplete local prefix', () => {
   expect(deltas[0].payload).toMatchObject({ text: 'Hello world!' })
 })
 
+test('history hydration cannot replace a complete live snapshot with its transient suffix', () => {
+  seedClientSessionEvents('sess_1', [event('sess_1', 8)], { lastSeq: 8, replace: true })
+  replaceClientLiveEvents([
+    { ...event('sess_1', 10), id: 'snapshot_1', type: 'agent.message.delta', transient: true, payload: { message_id: 'msg_1', text: 'Hello world' } },
+  ], { sess_1: 10 })
+
+  seedClientSessionEvents('sess_1', [
+    event('sess_1', 8),
+    { ...event('sess_1', 10), id: 'history_tail', type: 'agent.message.delta', transient: true, payload: { message_id: 'msg_1', text: 'world' } },
+  ], { lastSeq: 8, tailHydrated: true, replace: true })
+
+  const snapshot = readClientSessionEvents('sess_1')
+  expect(snapshot?.events.filter((item) => item.type === 'agent.message.delta')).toHaveLength(1)
+  expect(snapshot?.events.find((item) => item.type === 'agent.message.delta')?.payload).toMatchObject({ text: 'Hello world' })
+  expect(snapshot?.tailHydrated).toBe(true)
+})
+
 test('session snapshot retains deltas that raced ahead of its watermark', () => {
-  ingestClientEvent({
-    ...event('sess_1', 12), id: 'delta_new', type: 'agent.message.delta', transient: true,
-    payload: { message_id: 'msg_1', text: '!' },
-  })
+  ingestClientEvent({ ...event('sess_1', 9), id: 'delta_old_1', type: 'agent.message.delta', transient: true, payload: { message_id: 'msg_1', text: 'Hello ' } })
+  ingestClientEvent({ ...event('sess_1', 10), id: 'delta_old_2', type: 'agent.message.delta', transient: true, payload: { message_id: 'msg_1', text: 'world' } })
+  ingestClientEvent({ ...event('sess_1', 12), id: 'delta_new', type: 'agent.message.delta', transient: true, payload: { message_id: 'msg_1', text: '!' } })
   replaceClientSessionLiveEvents('sess_1', [{
     ...event('sess_1', 10), id: 'snapshot_1', type: 'agent.message.delta', transient: true,
     payload: { message_id: 'msg_1', text: 'Hello world' },

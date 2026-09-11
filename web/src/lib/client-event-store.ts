@@ -6,6 +6,7 @@ import {
   boundEventWindow,
   eventWindowStats,
   mergeBoundedEvents,
+  transientEventAfter,
 } from '@/lib/session-event-window'
 import { writeCachedSessionEvent as writePersistentCachedSessionEvent } from '@/lib/session-cache'
 
@@ -113,12 +114,14 @@ export function replaceClientLiveEvents(events: AgentEvent[], watermarks: Record
 
 export function replaceClientSessionLiveEvents(sessionID: string, events: AgentEvent[], watermark: number) {
   const current = entries.get(sessionID)
-  const retained = (current?.events ?? []).filter((event) =>
-    !isTransientEvent(event) || event.seq > watermark,
-  )
+  const retainedDurable = (current?.events ?? []).filter((event) => !isTransientEvent(event))
+  const racedTransient = (current?.events ?? []).flatMap((event) => {
+    const retained = transientEventAfter(event, watermark)
+    return retained ? [retained] : []
+  })
   const snapshotLive = events.filter((event) => event.session_id === sessionID && isTransientEvent(event))
-  const combined = [...retained.filter((event) => !isTransientEvent(event)), ...snapshotLive]
-  for (const event of retained.filter((event) => isTransientEvent(event)).sort((left, right) => left.seq - right.seq)) {
+  const combined = [...retainedDurable, ...snapshotLive]
+  for (const event of racedTransient.sort((left, right) => left.seq - right.seq)) {
     const next = appendBoundedEvent(combined, event, sharedEventWindowPolicy)
     combined.splice(0, combined.length, ...next.events)
   }
@@ -160,9 +163,14 @@ export function seedClientSessionEvents(
 ) {
   const durableEvents = events.filter((event) => !isTransientEvent(event))
   const current = entries.get(sessionID)
+  // History responses may include only the bounded tail of an in-progress
+  // item. Keep transient state owned by the global stream and its snapshots so
+  // a later history hydration cannot replace a complete live projection with
+  // that suffix.
+  const currentTransientEvents = (current?.events ?? []).filter(isTransientEvent)
   const bounded = options.replace
-    ? boundEventWindow(events, 'latest', sharedEventWindowPolicy)
-    : mergeBoundedEvents(current?.events ?? [], events, 'latest', sharedEventWindowPolicy)
+    ? boundEventWindow([...durableEvents, ...currentTransientEvents], 'latest', sharedEventWindowPolicy)
+    : mergeBoundedEvents(current?.events ?? [], durableEvents, 'latest', sharedEventWindowPolicy)
   const cursor = Math.max(cursors.get(sessionID) ?? 0, options.lastSeq ?? 0, lastSeq(durableEvents))
   cursors.set(sessionID, cursor)
   return setEntry(sessionID, bounded.events, {
