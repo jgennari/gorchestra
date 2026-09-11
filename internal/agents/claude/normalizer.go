@@ -27,6 +27,7 @@ type normalizer struct {
 	runStarted       bool
 	currentMessageID string
 	messageText      string
+	turnActivity     bool
 	terminal         bool
 	terminalKind     terminalKind
 	terminalError    string
@@ -109,6 +110,9 @@ func (n *normalizer) normalizeAnthropicStreamEvent(input *streamEvent) []normali
 	}
 
 	payload := basePayload(input)
+	if input.ParentToolUseID == "" {
+		n.turnActivity = true
+	}
 	payload["provider_event_type"] = providerEventType
 	payload["raw_event"] = rawOrNil(input.Event)
 	if input.ParentToolUseID != "" {
@@ -188,6 +192,9 @@ func (n *normalizer) normalizeAnthropicStreamEvent(input *streamEvent) []normali
 }
 
 func (n *normalizer) normalizeAssistant(input *streamEvent) []normalizedEvent {
+	if input.ParentToolUseID == "" {
+		n.turnActivity = true
+	}
 	payload := basePayload(input)
 	payload["provider_event_type"] = "assistant"
 	payload["raw_message"] = rawOrNil(input.Message)
@@ -253,6 +260,18 @@ func (n *normalizer) normalizeUser(input *streamEvent) []normalizedEvent {
 func (n *normalizer) normalizeResult(input *streamEvent) normalizedEvent {
 	payload := basePayload(input)
 	payload["provider_event_type"] = "result"
+	if input.Subtype != "" {
+		payload["subtype"] = input.Subtype
+	}
+	if input.Origin != nil {
+		payload["origin"] = rawOrNil(input.Origin)
+	}
+	if input.NumTurns > 0 {
+		payload["num_turns"] = input.NumTurns
+	}
+	if input.TerminalReason != "" {
+		payload["terminal_reason"] = input.TerminalReason
+	}
 	if n.usageModel != "" {
 		payload["model"] = n.usageModel
 	}
@@ -281,9 +300,25 @@ func (n *normalizer) normalizeResult(input *streamEvent) normalizedEvent {
 	if input.PermissionDenials != nil {
 		payload["permission_denials"] = rawOrNil(input.PermissionDenials)
 	}
+	if stringAt(input.Origin, "kind") == "task-notification" {
+		n.turnActivity = false
+		n.currentMessageID = ""
+		n.messageText = ""
+		status := "completed"
+		if input.IsError {
+			status = "failed"
+		}
+		return normalizedEvent{Event: agentEvent("provider.claude.event", "system", status, payload)}
+	}
 
 	if input.IsError {
 		message := firstNonEmpty(input.Result, "claude run failed")
+		payload["error"] = message
+		n.markTerminal(terminalFailed, message)
+		return normalizedEvent{Event: agentEvent("agent.run.failed", "assistant", "failed", payload), Terminal: terminalFailed}
+	}
+	if strings.TrimSpace(input.Result) == "" && !n.turnActivity {
+		message := "claude ended without responding"
 		payload["error"] = message
 		n.markTerminal(terminalFailed, message)
 		return normalizedEvent{Event: agentEvent("agent.run.failed", "assistant", "failed", payload), Terminal: terminalFailed}

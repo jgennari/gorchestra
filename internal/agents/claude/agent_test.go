@@ -300,6 +300,57 @@ func TestResultErrorNormalizesFailedTerminal(t *testing.T) {
 	}
 }
 
+func TestBackgroundTaskResultDoesNotCompleteHumanRun(t *testing.T) {
+	events := normalizeLines(t, []string{
+		`{"type":"system","subtype":"task_notification","status":"stopped","session_id":"session_1"}`,
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":35,"origin":{"kind":"task-notification"},"num_turns":1,"terminal_reason":"completed","session_id":"session_1"}`,
+		`{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-opus-5","id":"msg_human"}},"session_id":"session_1"}`,
+		`{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_human","content":[{"type":"text","text":"Working on it"}]},"session_id":"session_1"}`,
+		`{"type":"result","subtype":"success","is_error":false,"result":"Working on it","origin":{"kind":"human"},"num_turns":1,"terminal_reason":"completed","session_id":"session_1"}`,
+	})
+
+	assertAgentEventTypes(t, events, []string{
+		"provider.claude.event",
+		"provider.claude.event",
+		"agent.status.started",
+		"agent.message.completed",
+		"agent.run.completed",
+	})
+	assertTerminalCount(t, events, 1)
+	background := events[1].Event.Payload.(map[string]any)
+	origin := background["origin"].(map[string]any)
+	if origin["kind"] != "task-notification" || background["num_turns"] != 1 || background["terminal_reason"] != "completed" {
+		t.Fatalf("expected background result diagnostics, got %#v", background)
+	}
+}
+
+func TestBackgroundTaskFailureDoesNotFailHumanRun(t *testing.T) {
+	events := normalizeLines(t, []string{
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"background task failed","origin":{"kind":"task-notification"},"session_id":"session_1"}`,
+		`{"type":"result","subtype":"success","is_error":false,"result":"Human response","origin":{"kind":"human"},"session_id":"session_1"}`,
+	})
+
+	assertAgentEventTypes(t, events, []string{"provider.claude.event", "agent.run.completed"})
+	assertTerminalCount(t, events, 1)
+	if events[0].Event.Status != "failed" {
+		t.Fatalf("expected failed background status, got %#v", events[0].Event)
+	}
+}
+
+func TestEmptyResultWithoutActivityFailsVisibly(t *testing.T) {
+	events := normalizeLines(t, []string{
+		`{"type":"system","subtype":"init","model":"claude-opus-5","session_id":"session_1"}`,
+		`{"type":"result","subtype":"success","is_error":false,"origin":{"kind":"human"},"session_id":"session_1"}`,
+	})
+
+	assertAgentEventTypes(t, events, []string{"agent.run.started", "agent.run.failed"})
+	assertTerminalCount(t, events, 1)
+	payload := events[1].Event.Payload.(map[string]any)
+	if payload["error"] != "claude ended without responding" {
+		t.Fatalf("expected visible empty-result error, got %#v", payload)
+	}
+}
+
 func TestInvalidJSONProducesParseError(t *testing.T) {
 	incoming := readStream(context.Background(), strings.NewReader("{"), strings.NewReader(""))
 	message, ok := <-incoming
@@ -343,6 +394,32 @@ func TestAgentRunsFakeClaudeStream(t *testing.T) {
 	if got := os.Getenv("GORCHESTRA_AGENT_RUN_TEST_VALUE"); got != "parent" {
 		t.Fatalf("expected parent environment to remain unchanged, got %q", got)
 	}
+}
+
+func TestAgentWaitsPastBackgroundTaskResult(t *testing.T) {
+	t.Setenv("GORCHESTRA_FAKE_CLAUDE_STREAM", "1")
+	t.Setenv("GORCHESTRA_FAKE_CLAUDE_BACKGROUND_RESULT", "1")
+	agent := fakeClaudeAgent(t)
+	recorder := newEventRecorder()
+
+	err := agent.Run(context.Background(), agents.AgentInput{
+		SessionID: "sess_test",
+		Message:   "hello",
+		Workdir:   t.TempDir(),
+	}, recorder.emit)
+	if err != nil {
+		t.Fatalf("run agent: %v", err)
+	}
+
+	assertAgentEventTypes(t, recorder.snapshot(), []string{
+		"agent.run.started",
+		"provider.claude.event",
+		"provider.claude.event",
+		"agent.status.started",
+		"agent.message.delta",
+		"agent.message.completed",
+		"agent.run.completed",
+	})
 }
 
 func normalizeLines(t *testing.T, lines []string) []normalizedEvent {
@@ -435,6 +512,10 @@ func runFakeClaude() {
 	if mapString(initialize, "type") != "control_request" || mapString(user, "type") != "user" {
 		os.Exit(21)
 	}
+	origin, _ := user["origin"].(map[string]any)
+	if mapString(origin, "kind") != "human" {
+		os.Exit(22)
+	}
 	if capture := os.Getenv("GORCHESTRA_FAKE_CLAUDE_CAPTURE"); capture != "" {
 		data, _ := json.Marshal(user)
 		_ = os.WriteFile(capture, data, 0600)
@@ -452,6 +533,22 @@ func runFakeClaude() {
 		"subtype":    "init",
 		"session_id": "session_fake",
 	})
+	if os.Getenv("GORCHESTRA_FAKE_CLAUDE_BACKGROUND_RESULT") != "" {
+		_ = encoder.Encode(map[string]any{
+			"type":       "system",
+			"subtype":    "task_notification",
+			"status":     "stopped",
+			"session_id": "session_fake",
+		})
+		_ = encoder.Encode(map[string]any{
+			"type":        "result",
+			"subtype":     "success",
+			"is_error":    false,
+			"duration_ms": 35,
+			"origin":      map[string]any{"kind": "task-notification"},
+			"session_id":  "session_fake",
+		})
+	}
 	if scenario := os.Getenv("GORCHESTRA_FAKE_CLAUDE_CONTROL"); scenario != "" {
 		runFakeClaudeControl(scenario, decoder, encoder)
 	}

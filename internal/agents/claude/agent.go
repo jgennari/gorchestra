@@ -327,7 +327,13 @@ func (r *streamRun) startInteractive() error {
 	if err := r.writeJSON(map[string]any{"type": "control_request", "request_id": requestID, "request": map[string]any{"subtype": "initialize", "hooks": nil}}); err != nil {
 		return err
 	}
-	return r.writeJSON(map[string]any{"type": "user", "session_id": "", "message": map[string]any{"role": "user", "content": r.content}, "parent_tool_use_id": nil})
+	return r.writeJSON(map[string]any{
+		"type":               "user",
+		"session_id":         "",
+		"message":            map[string]any{"role": "user", "content": r.content},
+		"parent_tool_use_id": nil,
+		"origin":             map[string]any{"kind": "human"},
+	})
 }
 
 func (r *streamRun) writeJSON(value any) error {
@@ -637,6 +643,9 @@ type streamEvent struct {
 	ModelUsage        json.RawMessage `json:"modelUsage,omitempty"`
 	RateLimitInfo     json.RawMessage `json:"rate_limit_info,omitempty"`
 	PermissionDenials json.RawMessage `json:"permission_denials,omitempty"`
+	Origin            json.RawMessage `json:"origin,omitempty"`
+	NumTurns          int             `json:"num_turns,omitempty"`
+	TerminalReason    string          `json:"terminal_reason,omitempty"`
 	Raw               json.RawMessage `json:"-"`
 }
 
