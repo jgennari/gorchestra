@@ -1325,3 +1325,63 @@ test('chat transcript does not synthesize duplicate Claude tools when canonical 
     text: 'pwd\n/Users/joey/Source',
   })
 })
+
+test.each([false, true])('Claude selects the main model window regardless of model map order (%s)', (reverse) => {
+  const entries: [string, { contextWindow: number }][] = [
+    ['claude-haiku-4-5', { contextWindow: 200_000 }],
+    ['claude-opus-4-6', { contextWindow: 1_000_000 }],
+  ]
+  const history = [
+    event(1, 'agent.run.started', { provider: 'claude', provider_event_type: 'system/init', model: 'claude-opus-4-6' }),
+    event(2, 'agent.status.started', { provider: 'claude', provider_event_type: 'message_start', raw_event: { message: { id: 'msg_1', model: 'claude-opus-4-6', usage: { input_tokens: 10, cache_read_input_tokens: 150_000 } } } }),
+    event(3, 'provider.claude.event', { provider: 'claude', provider_event_type: 'message_delta', usage: { output_tokens: 100 } }),
+    event(4, 'agent.run.completed', { provider: 'claude', provider_event_type: 'result', usage: { input_tokens: 50, cache_read_input_tokens: 900_000, output_tokens: 1000 }, model_usage: Object.fromEntries(reverse ? entries.reverse() : entries) }),
+  ]
+  const result = latestTokenUsage(history)
+  expect(result).toMatchObject({ modelContextWindow: 1_000_000, last: { totalTokens: 150_110 }, total: { totalTokens: 901_050 } })
+  const resumed = [...history,
+    event(5, 'agent.run.started', { provider: 'claude', provider_event_type: 'system/init', model: 'claude-opus-4-6' }),
+    event(6, 'agent.status.started', { provider: 'claude', provider_event_type: 'message_start', message_id: 'msg_2', usage: { input_tokens: 10, cache_read_input_tokens: 151_000 } }),
+  ]
+  expect(latestTokenUsage(resumed)).toMatchObject({ modelContextWindow: 1_000_000, last: { totalTokens: 151_010 } })
+  // Reconnect overlap and input ordering do not change the derived state.
+  expect(latestTokenUsage([...resumed].reverse().concat(history))).toEqual(latestTokenUsage(resumed))
+})
+
+test('Claude merges snapshots, ignores subagents, and allows context to shrink after compaction', () => {
+  const history = [
+    event(1, 'agent.status.started', { provider: 'claude', provider_event_type: 'message_start', model: 'sonnet', message_id: 'one', usage: { input_tokens: 10, cache_read_input_tokens: 100_000, output_tokens: 2 } }),
+    event(2, 'provider.claude.event', { provider: 'claude', provider_event_type: 'message_delta', usage: { output_tokens: 50 } }),
+    event(3, 'provider.claude.event', { provider: 'claude', provider_event_type: 'message_delta', usage: { output_tokens: 60 } }),
+    event(4, 'agent.message.completed', { provider: 'claude', provider_event_type: 'assistant', message_id: 'one', raw_message: { usage: { input_tokens: 10, cache_read_input_tokens: 100_000, output_tokens: 2 } } }),
+    event(5, 'agent.message.completed', { provider: 'claude', provider_event_type: 'assistant', parent_tool_use_id: 'tool', model: 'haiku', raw_message: { id: 'helper', usage: { input_tokens: 50_000, output_tokens: 10 } } }),
+  ]
+  expect(latestTokenUsage(history)).toMatchObject({ modelContextWindow: null, last: { totalTokens: 100_070 }, total: { totalTokens: 100_070 } })
+  history.push(event(6, 'agent.status.started', { provider: 'claude', provider_event_type: 'message_start', model: 'sonnet', message_id: 'two', usage: { input_tokens: 10_000, output_tokens: 2 } }))
+  expect(latestTokenUsage(history)).toMatchObject({ last: { totalTokens: 10_002 }, total: { totalTokens: 110_072 } })
+})
+
+test('Claude local Sonnet fixture retains the reported 200k window and current message usage', () => {
+  expect(latestTokenUsage([
+    event(1, 'agent.run.started', { provider: 'claude', provider_event_type: 'system/init', model: 'claude-sonnet-4-6' }),
+    event(2, 'agent.status.started', { provider: 'claude', provider_event_type: 'message_start', raw_event: { message: { id: 'main', model: 'claude-sonnet-4-6', usage: { input_tokens: 3, cache_creation_input_tokens: 21331, output_tokens: 2 } } } }),
+    event(3, 'provider.claude.event', { provider: 'claude', provider_event_type: 'message_delta', usage: { input_tokens: 3, cache_creation_input_tokens: 21331, output_tokens: 18 } }),
+    event(4, 'agent.run.completed', { provider: 'claude', provider_event_type: 'result', usage: { input_tokens: 3, cache_creation_input_tokens: 21331, output_tokens: 18 }, model_usage: { 'claude-haiku-4-5-20251001': { contextWindow: 200_000 }, 'claude-sonnet-4-6': { contextWindow: 200_000 } } }),
+  ])).toMatchObject({ modelContextWindow: 200_000, last: { totalTokens: 21352 } })
+})
+
+test('Claude partial history never substitutes aggregate or output-only usage for context', () => {
+  expect(latestTokenUsage([
+    event(1, 'provider.claude.event', { provider: 'claude', provider_event_type: 'message_delta', usage: { output_tokens: 100 } }),
+    event(2, 'agent.run.completed', { provider: 'claude', provider_event_type: 'result', usage: { input_tokens: 700_000, output_tokens: 100 }, model_usage: { haiku: { contextWindow: 200_000 }, opus: { contextWindow: 1_000_000 } } }),
+  ])).toMatchObject({ last: null, modelContextWindow: null, total: { totalTokens: 700_100 } })
+})
+
+test('Claude matches canonical model IDs and invalidates limits on model changes', () => {
+  const history = [
+    event(1, 'agent.run.completed', { provider: 'claude', provider_event_type: 'result', model: 'claude-sonnet-4-6', usage: { input_tokens: 100 }, model_usage: { provider_alias: { canonicalModel: 'claude-sonnet-4-6', contextWindow: 1_000_000 } } }),
+  ]
+  expect(latestTokenUsage(history)?.modelContextWindow).toBe(1_000_000)
+  history.push(event(2, 'agent.run.started', { provider: 'claude', provider_event_type: 'system/init', model: 'claude-haiku-4-5' }))
+  expect(latestTokenUsage(history)).toMatchObject({ modelContextWindow: null, last: null })
+})

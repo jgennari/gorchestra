@@ -222,6 +222,7 @@ func TestClaudeImagesUseStdinInEveryPermissionMode(t *testing.T) {
 			defer cancel()
 			attachment := agents.Attachment{MediaType: "image/png", DataURL: "data:image/png;base64,aW1hZ2U="}
 			if err := fakeClaudeAgent(t).Run(ctx, agents.AgentInput{
+				Skills:  []agents.SkillReference{{Name: "review", Path: "/repo with spaces/.claude/skills/review/SKILL.md"}},
 				Message: "inspect", Context: "Runtime context", Attachments: []agents.Attachment{attachment, attachment},
 				Metadata: map[string]any{"claude_options": map[string]any{"permission_policy": policy}},
 			}, newEventRecorder().emit); err != nil {
@@ -244,7 +245,7 @@ func TestClaudeImagesUseStdinInEveryPermissionMode(t *testing.T) {
 				t.Fatal(err)
 			}
 			blocks := user.Message.Content
-			if len(blocks) != 3 || blocks[0].Type != "text" || !strings.Contains(blocks[0].Text, "Runtime context") || blocks[1].Type != "image" || blocks[2].Source["data"] != "aW1hZ2U=" || blocks[2].Source["media_type"] != "image/png" {
+			if len(blocks) != 3 || blocks[0].Type != "text" || !strings.Contains(blocks[0].Text, "Runtime context") || !strings.Contains(blocks[0].Text, "/repo with spaces/.claude/skills/review/SKILL.md") || !strings.Contains(blocks[0].Text, "Use each selected skill") || blocks[1].Type != "image" || blocks[2].Source["data"] != "aW1hZ2U=" || blocks[2].Source["media_type"] != "image/png" {
 				t.Fatalf("invalid content blocks: %s", data)
 			}
 		})

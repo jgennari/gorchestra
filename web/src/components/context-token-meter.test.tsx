@@ -47,3 +47,15 @@ function usage(tokens: number, modelContextWindow: number): TokenUsageSummary {
   const snapshot = { totalTokens: tokens, inputTokens: tokens, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0 }
   return { total: { ...snapshot, totalTokens: 8_000_000 }, last: snapshot, modelContextWindow, seq: 1, updatedAt: '2026-09-07T12:00:00Z' }
 }
+
+test('unknown context windows show usage without a guessed percentage', () => {
+  render(<ContextTokenMeter usage={{ ...usage(53_000, 200_000), modelContextWindow: null }} compact />)
+  expect(screen.getByText('53k current · limit unknown')).toBeInTheDocument()
+  expect(screen.queryByRole('meter')).not.toBeInTheDocument()
+})
+
+test('missing current context never falls back to cumulative usage', () => {
+  render(<ContextTokenMeter usage={{ ...usage(53_000, 200_000), last: null }} />)
+  expect(screen.getByText('Current context unavailable')).toBeInTheDocument()
+  expect(screen.queryByRole('meter')).not.toBeInTheDocument()
+})

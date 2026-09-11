@@ -22,6 +22,8 @@ type normalizedEvent struct {
 }
 
 type normalizer struct {
+	usageModel       string
+	usageMessageID   string
 	runStarted       bool
 	currentMessageID string
 	messageText      string
@@ -89,6 +91,9 @@ func (n *normalizer) normalizeSystem(input *streamEvent) []normalizedEvent {
 	}
 	if input.Model != "" {
 		payload["model"] = input.Model
+		if input.ParentToolUseID == "" {
+			n.usageModel = input.Model
+		}
 	}
 
 	if input.Subtype == "init" {
@@ -112,6 +117,15 @@ func (n *normalizer) normalizeAnthropicStreamEvent(input *streamEvent) []normali
 
 	switch providerEventType {
 	case "message_start":
+		if input.ParentToolUseID == "" {
+			n.usageMessageID = stringAt(input.Event, "message", "id")
+			if model := stringAt(input.Event, "message", "model"); model != "" {
+				n.usageModel = model
+			}
+		}
+		if usage := anyAt(input.Event, "message", "usage"); usage != nil {
+			payload["usage"] = usage
+		}
 		n.messageText = ""
 		if model := stringAt(input.Event, "message", "model"); model != "" {
 			payload["model"] = model
@@ -139,6 +153,14 @@ func (n *normalizer) normalizeAnthropicStreamEvent(input *streamEvent) []normali
 		payload["index"] = anyAt(input.Event, "index")
 		return []normalizedEvent{{Event: agentEvent("agent.message.delta", "assistant", "delta", payload)}}
 	case "message_delta":
+		if input.ParentToolUseID == "" {
+			if n.usageMessageID != "" {
+				payload["message_id"] = n.usageMessageID
+			}
+			if n.usageModel != "" {
+				payload["model"] = n.usageModel
+			}
+		}
 		if stopReason := stringAt(input.Event, "delta", "stop_reason"); stopReason != "" {
 			payload["stop_reason"] = stopReason
 		}
@@ -169,6 +191,9 @@ func (n *normalizer) normalizeAssistant(input *streamEvent) []normalizedEvent {
 	payload := basePayload(input)
 	payload["provider_event_type"] = "assistant"
 	payload["raw_message"] = rawOrNil(input.Message)
+	if usage := anyAt(input.Message, "usage"); usage != nil {
+		payload["usage"] = usage
+	}
 	text := textFromAssistantMessage(input.Message)
 	if text == "" && !assistantMessageHasToolUse(input.Message) {
 		text = n.messageText
@@ -228,6 +253,9 @@ func (n *normalizer) normalizeUser(input *streamEvent) []normalizedEvent {
 func (n *normalizer) normalizeResult(input *streamEvent) normalizedEvent {
 	payload := basePayload(input)
 	payload["provider_event_type"] = "result"
+	if n.usageModel != "" {
+		payload["model"] = n.usageModel
+	}
 	payload["is_error"] = input.IsError
 	if input.Result != "" {
 		payload["text"] = input.Result
@@ -514,6 +542,9 @@ func basePayload(input *streamEvent) map[string]any {
 	}
 	if input.UUID != "" {
 		payload["uuid"] = input.UUID
+	}
+	if input.ParentToolUseID != "" {
+		payload["parent_tool_use_id"] = input.ParentToolUseID
 	}
 	return payload
 }

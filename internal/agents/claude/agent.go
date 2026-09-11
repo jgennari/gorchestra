@@ -146,7 +146,7 @@ func (a *Agent) Run(ctx context.Context, input agents.AgentInput, emit agents.Em
 	}
 
 	options := runOptionsFromMetadata(input.Metadata)
-	message := input.ProviderMessage()
+	message := messageWithSkills(input.ProviderMessage(), input.Skills)
 	content, err := userMessageContent(message, input.Attachments)
 	if err != nil {
 		return err

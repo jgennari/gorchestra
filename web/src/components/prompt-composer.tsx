@@ -294,6 +294,7 @@ export function PromptComposer({
         : 'Ask the agent to work on this repository...'
   const codexToolbarVisible = agentType === 'codex'
   const claudeToolbarVisible = agentType === 'claude'
+  const skillsSupported = agentType === 'codex' || agentType === 'claude'
   const opencodeToolbarVisible = agentType === 'opencode'
   const piToolbarVisible = agentType === 'pi'
   const selectedCodexModel = useMemo(
@@ -496,7 +497,7 @@ export function PromptComposer({
   }, [agentType, offline])
 
   useEffect(() => {
-    if (agentType !== 'codex' || !sessionID) {
+    if (!skillsSupported || !sessionID) {
       skillsLoadedSessionRef.current = ''
       setSkills([])
       setSkillErrors([])
@@ -551,7 +552,7 @@ export function PromptComposer({
     return () => {
       cancelled = true
     }
-  }, [agentType, offline, sessionID, onError, shouldLoadSkills])
+  }, [skillsSupported, offline, sessionID, onError, shouldLoadSkills])
 
   useEffect(() => {
     if (offline || agentType !== 'opencode') {
@@ -899,7 +900,7 @@ export function PromptComposer({
       end: event.target.selectionEnd ?? caret,
     }
     setSelectedSkills((current) => inlineSkillReferences(nextContent, sortedSkills, current))
-    setSkillTypeahead(agentType === 'codex' ? skillTypeaheadAt(nextContent, caret) : null)
+    setSkillTypeahead(skillsSupported ? skillTypeaheadAt(nextContent, caret) : null)
     setSkillHighlight(0)
   }
 
@@ -945,7 +946,7 @@ export function PromptComposer({
   }
 
   async function refreshSkills() {
-    if (offline || !sessionID || agentType !== 'codex' || skillsLoading) {
+    if (offline || !sessionID || !skillsSupported || skillsLoading) {
       return
     }
     setSkillsLoading(true)
@@ -1309,7 +1310,7 @@ export function PromptComposer({
           />
         </div>
         <div className="mt-2 flex min-h-8 flex-wrap items-center gap-1.5">
-          {agentType === 'codex' && sessionID ? (
+          {skillsSupported && sessionID ? (
             <SkillBrowser
               open={skillsOpen}
               onOpenChange={setSkillsOpen}
@@ -3412,8 +3413,10 @@ function runtimeAgentOptionsFromSession(
   ])) {
     return {
       claude: {
-        model: options.claude.model,
-        effort: options.claude.effort,
+        // Match the picker defaults: the server omits an empty model. Different
+        // keys leave adoptingServerKey set and suppress subsequent user edits.
+        model: options.claude.model ?? '',
+        effort: options.claude.effort ?? 'medium',
         planning_mode: options.claude.planning_mode ?? false,
       },
     }

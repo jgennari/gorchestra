@@ -12,7 +12,16 @@ export function ContextTokenMeter({ usage, compact = false }: {
     </div>
   }
 
-  const tokens = usage.last.totalTokens > 0 ? usage.last.totalTokens : usage.total.totalTokens
+  if (!usage.last) {
+    return <p className="text-[11px] text-muted-foreground">Current context unavailable</p>
+  }
+  const tokens = usage.last.totalTokens
+  if (!usage.modelContextWindow || usage.modelContextWindow <= 0) {
+    return <div className="flex flex-wrap items-baseline justify-between gap-2 text-[11px] text-muted-foreground">
+      <span className="font-medium">Context</span>
+      <span>{formatTokenCount(tokens)} current · limit unknown</span>
+    </div>
+  }
   const percent = tokens / usage.modelContextWindow
   const counts = `${formatTokenCount(tokens)} / ${formatTokenCount(usage.modelContextWindow)}`
   const percentage = `${Math.round(percent * 100)}%`

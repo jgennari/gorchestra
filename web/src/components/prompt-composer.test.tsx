@@ -1380,3 +1380,78 @@ function jsonResponse(body: unknown) {
     headers: { 'Content-Type': 'application/json' },
   })
 }
+
+test('Claude skills support discovery, refresh, inline selection and structured submission', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn(async () => undefined)
+  const skill = { name: 'review', description: 'Review this repository', path: '/repo/.claude/skills/review/SKILL.md', scope: 'repo', enabled: true }
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    const path = String(url)
+    if (path.startsWith('/api/sessions/sess_1/skills')) return jsonResponse({ skills: [skill], errors: [] })
+    if (path.endsWith('/queued-messages')) return jsonResponse({ messages: [] })
+    throw new Error(`unexpected URL ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<PromptComposer sessionID="sess_1" agentType="claude" disabled={false} disabledReason="" onSubmit={onSubmit} />)
+  await user.click(screen.getByRole('button', { name: 'Skills' }))
+  const browser = await screen.findByRole('dialog', { name: 'Available skills' })
+  expect(await within(browser).findByText('Review this repository')).toBeInTheDocument()
+  await user.click(within(browser).getByRole('button', { name: /Refresh/ }))
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/skills?refresh=true'))).toBe(true))
+  await user.click(within(browser).getByText('review'))
+  expect(screen.getByLabelText('Prompt')).toHaveValue('$review ')
+  await user.type(screen.getByLabelText('Prompt'), 'check this{enter}')
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('$review check this', expect.objectContaining({ claude: expect.any(Object) }), undefined, false, [{ name: skill.name, path: skill.path }]))
+})
+
+test('Claude saves a model selected from Default and retains it across runs and remounts', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ messages: [] })))
+  const onSubmit = vi.fn(async () => undefined)
+  const onUpdate = vi.fn(async (
+    _sessionID: string,
+    options: Parameters<NonNullable<Parameters<typeof PromptComposer>[0]['onUpdateRuntimeAgentOptions']>>[1],
+  ) => runtimeOptionsUpdateResponse(options, 2))
+  const props = {
+    sessionID: 'sess_claude_persist', agentType: 'claude' as const,
+    disabled: false, disabledReason: '', onSubmit, onUpdateRuntimeAgentOptions: onUpdate,
+  }
+  const view = render(<PromptComposer {...props} sessionAgentOptions={{ claude: { effort: 'medium', planning_mode: false } }} sessionAgentOptionsSeq={1} />)
+  await user.click(screen.getByRole('button', { name: 'Model' }))
+  await user.click(screen.getByRole('option', { name: 'Opus' }))
+  const saved = { claude: { model: 'opus', effort: 'medium', planning_mode: false } }
+  await waitFor(() => expect(onUpdate).toHaveBeenCalledWith(props.sessionID, saved, false))
+  await user.type(screen.getByLabelText('Prompt'), 'First run{enter}')
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('First run', saved))
+  view.rerender(<PromptComposer {...props} sessionAgentOptions={saved} sessionAgentOptionsSeq={3} sessionStatus="running" />)
+  view.rerender(<PromptComposer {...props} sessionAgentOptions={saved} sessionAgentOptionsSeq={4} sessionStatus="idle" />)
+  expect(screen.getByRole('button', { name: 'Model' })).toHaveTextContent('Opus')
+  await user.type(screen.getByLabelText('Prompt'), 'Second run{enter}')
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('Second run', saved))
+  view.unmount()
+  render(<PromptComposer {...props} sessionAgentOptions={saved} sessionAgentOptionsSeq={4} />)
+  expect(screen.getByRole('button', { name: 'Model' })).toHaveTextContent('Opus')
+  expect(onUpdate).toHaveBeenCalledTimes(1)
+})
+
+test('Claude can return to Default and then save another model when the server omits empty defaults', async () => {
+  const user = userEvent.setup()
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ messages: [] })))
+  let seq = 1
+  const onUpdate = vi.fn(async (
+    _sessionID: string,
+    options: Parameters<NonNullable<Parameters<typeof PromptComposer>[0]['onUpdateRuntimeAgentOptions']>>[1],
+  ) => runtimeOptionsUpdateResponse({ claude: {
+    ...(options.claude?.model ? { model: options.claude.model } : {}),
+    effort: options.claude?.effort, planning_mode: options.claude?.planning_mode ?? false,
+  } }, ++seq))
+  render(<PromptComposer sessionID="sess_claude_defaults" agentType="claude" sessionAgentOptions={{ claude: { model: 'opus', planning_mode: false } }} sessionAgentOptionsSeq={1} disabled={false} disabledReason="" onSubmit={async () => undefined} onUpdateRuntimeAgentOptions={onUpdate} />)
+  await user.click(screen.getByRole('button', { name: 'Model' }))
+  await user.click(screen.getByRole('option', { name: 'Default' }))
+  await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('sess_claude_defaults', { claude: { model: '', effort: 'medium', planning_mode: false } }, false))
+  await user.click(screen.getByRole('button', { name: 'Model' }))
+  await user.click(screen.getByRole('option', { name: 'Sonnet' }))
+  await waitFor(() => expect(onUpdate).toHaveBeenLastCalledWith('sess_claude_defaults', { claude: { model: 'sonnet', effort: 'medium', planning_mode: false } }, false))
+  expect(screen.getByRole('button', { name: 'Model' })).toHaveTextContent('Sonnet')
+  expect(onUpdate).toHaveBeenCalledTimes(2)
+})

@@ -269,8 +269,8 @@ export type TokenUsageSnapshot = {
 export type TokenUsageSummary = {
   kind?: 'tokens' | 'context'
   total: TokenUsageSnapshot
-  last: TokenUsageSnapshot
-  modelContextWindow: number
+  last: TokenUsageSnapshot | null
+  modelContextWindow: number | null
   sessionTotalTokens?: number
   cost?: {
     amount: number
@@ -667,8 +667,9 @@ export function latestTerminalEvent(events: AgentEvent[]) {
 
 export function latestTokenUsage(events: AgentEvent[]) {
   let latest: TokenUsageSummary | null = null
+  const claudeUsage = claudeTokenUsageReducer()
   for (const event of sortedUniqueEvents(events)) {
-    const summary = tokenUsageFromEvent(event)
+    const summary = claudeUsage(event) ?? tokenUsageFromEvent(event)
     if (summary) {
       latest = summary
     }
@@ -2387,11 +2388,6 @@ function userInputRequestFromEvent(event: AgentEvent): PendingUserInputRequest |
 }
 
 function tokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
-  const claudeUsage = claudeTokenUsageFromEvent(event)
-  if (claudeUsage) {
-    return claudeUsage
-  }
-
   const openCodeUsage = openCodeTokenUsageFromEvent(event)
   if (openCodeUsage) {
     return openCodeUsage
@@ -2470,31 +2466,72 @@ function openCodeTokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | nul
   }
 }
 
-function claudeTokenUsageFromEvent(event: AgentEvent): TokenUsageSummary | null {
-  if (!isRecord(event.payload) || event.payload.provider !== 'claude') {
-    return null
-  }
-  const usage = isRecord(event.payload.usage) ? event.payload.usage : null
-  if (!usage) {
-    return null
-  }
-  if (event.type !== 'provider.claude.event' && event.type !== 'agent.run.completed') {
-    return null
-  }
+// Claude's result usage is a run total; message usage describes the current context.
+// Reduce durable events so refresh/replay and live updates use the same accounting.
+function claudeTokenUsageReducer() {
+  let model = ''
+  let window: number | null = null
+  let last: TokenUsageSnapshot | null = null
+  let messageID = ''
+  let runID = ''
+  const messages = new Map<string, Record<string, unknown>>()
+  let total: TokenUsageSnapshot = emptyTokenUsage()
 
-  const snapshot = claudeTokenUsageSnapshot(usage)
-  if (!snapshot) {
-    return null
-  }
+  return (event: AgentEvent): TokenUsageSummary | null => {
+    const payload = event.payload
+    if (!isRecord(payload) || payload.provider !== 'claude' || payloadString(payload, ['parent_tool_use_id'])) return null
+    const type = payloadString(payload, ['provider_event_type'])
+    const nextRun = payloadString(payload, ['run_id'])
+    if ((nextRun && nextRun !== runID) || type === 'system/init') {
+      runID = nextRun
+      messages.clear()
+      total = emptyTokenUsage()
+      messageID = ''
+    }
+    const rawEvent = isRecord(payload.raw_event) ? payload.raw_event : {}
+    const rawMessage = isRecord(payload.raw_message) ? payload.raw_message
+      : isRecord(rawEvent.message) ? rawEvent.message : {}
+    const nextModel = payloadString(payload, ['model']) || payloadString(rawMessage, ['model'])
+    if (nextModel && nextModel !== model) {
+      model = nextModel
+      window = null
+      last = null
+    }
 
-  return {
-    kind: 'tokens',
-    total: snapshot,
-    last: snapshot,
-    modelContextWindow: claudeModelContextWindow(event.payload),
-    updatedAt: event.created_at,
-    seq: event.seq,
+    const isResult = type === 'result'
+    const isMessage = type === 'message_start' || type === 'message_delta' || type === 'assistant'
+    if (isMessage) {
+      const id = payloadString(payload, ['message_id']) || payloadString(rawMessage, ['id'])
+      if (id) messageID = id
+      else if (!messageID) messageID = `message:${event.seq}`
+      const usage = isRecord(payload.usage) ? payload.usage
+        : isRecord(rawMessage.usage) ? rawMessage.usage : isRecord(rawEvent.usage) ? rawEvent.usage : null
+      if (usage) {
+        const previous = messages.get(messageID) ?? {}
+        const merged = { ...previous, ...usage }
+        // The completed assistant envelope can repeat the initial output count.
+        merged.output_tokens = Math.max(payloadNumber(previous, ['output_tokens']), payloadNumber(usage, ['output_tokens']))
+        messages.set(messageID, merged)
+        last = ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'].some((key) => typeof merged[key] === 'number')
+          ? claudeTokenUsageSnapshot(merged) : null
+        total = emptyTokenUsage()
+        for (const value of messages.values()) {
+          const snapshot = claudeTokenUsageSnapshot(value)
+          if (snapshot) for (const key of Object.keys(total) as (keyof TokenUsageSnapshot)[]) total[key] += snapshot[key]
+        }
+      }
+    }
+    if (isResult) {
+      window = claudeModelContextWindow(payload, model) ?? window
+      if (isRecord(payload.usage)) total = claudeTokenUsageSnapshot(payload.usage) ?? total
+    }
+    if (!isMessage && !isResult && type !== 'system/init') return null
+    return { kind: 'tokens', total, last, modelContextWindow: window, updatedAt: event.created_at, seq: event.seq }
   }
+}
+
+function emptyTokenUsage(): TokenUsageSnapshot {
+  return { totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 }
 }
 
 function openCodeCost(usageUpdate: Record<string, unknown>) {
@@ -2531,16 +2568,15 @@ function claudeTokenUsageSnapshot(usage: Record<string, unknown>): TokenUsageSna
   }
 }
 
-function claudeModelContextWindow(payload: Record<string, unknown>) {
-  const modelUsage = payload.model_usage
-  if (isRecord(modelUsage)) {
-    for (const value of Object.values(modelUsage)) {
-      if (!isRecord(value)) continue
-      const contextWindow = payloadNumber(value, ['contextWindow'])
-      if (contextWindow > 0) return contextWindow
-    }
-  }
-  return 1000000
+function claudeModelContextWindow(payload: Record<string, unknown>, model: string): number | null {
+  if (!isRecord(payload.model_usage)) return null
+  const entries = Object.entries(payload.model_usage).filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]))
+  const exact = entries.find(([name]) => name === model)
+  const canonical = entries.filter(([, value]) => model && value.canonicalModel === model)
+  const match = exact ?? (canonical.length === 1 ? canonical[0] : undefined)
+    ?? (!model && entries.length === 1 ? entries[0] : undefined)
+  const size = match ? payloadNumber(match[1], ['contextWindow']) : 0
+  return size > 0 ? size : null
 }
 
 function tokenUsageSnapshot(value: unknown): TokenUsageSnapshot | null {

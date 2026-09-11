@@ -39,6 +39,11 @@ Protocol references: [Claude user input](https://code.claude.com/docs/en/agent-s
 [streaming image input](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode),
 and [permission evaluation](https://code.claude.com/docs/en/agent-sdk/permissions).
 
+Model, effort, and plan selections are saved in server-owned session settings and
+remain selected across runs and refreshes. The frontend normalizes omitted Claude
+model/effort fields to the same Default/medium values used by the controls so an
+initial server-settings update cannot suppress subsequent selection changes.
+
 Validation covers fake CLI round trips, original question and metadata retention,
 multi-select and custom answers, permission decisions, plan mode, image blocks,
 provider withdrawal/exit, user cancellation, blocked stdin, persistence failure,
@@ -48,3 +53,27 @@ interaction checks. The installed Claude `2.1.226` binary also successfully
 acknowledged a streaming initialization request with plan mode and the stdio
 control channel; no user prompt was sent in that check. A real model-driven
 question and image-analysis run remains a manual acceptance check.
+
+## Skill selection and context usage
+
+Claude sessions expose the composer Skills picker and `$name` typeahead. Discovery
+reads personal `.claude/skills` (or `CLAUDE_CONFIG_DIR/skills`) and repository/ancestor
+`.claude/skills` directories, including symlinked skill folders. Personal skills
+win name conflicts; nearer project directories win among project sources.
+`user-invocable: false` entries are hidden. Discovery errors are returned alongside
+valid skills, and refresh and submission validation reread the files.
+
+Selected skills use the existing structured name/path references. Claude receives
+an explicit request to read and follow those exact files; Gorchestra does not
+expand skill bodies, run dynamic skill commands, or emulate native slash-command
+execution. Commands, plugin catalogs, and the managed Skills screens are outside
+this filesystem picker integration.
+
+The context meter reduces main-session message usage across persisted events.
+Message-start and message-delta snapshots merge without double counting, while
+result usage remains a separate run total. The context limit comes from the active
+model's result metadata, not the first model in the result map. A known limit is
+retained across updates for that model and invalidated when the model changes.
+Until it is reported, the meter displays "limit unknown". Truncated histories with
+only run totals or output deltas show current context as unavailable. This remains
+a token-based context estimate, not a native `/context` snapshot.
