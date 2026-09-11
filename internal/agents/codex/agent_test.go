@@ -996,8 +996,37 @@ func TestResumeThreadUsesExistingProviderSessionID(t *testing.T) {
 	if request.Params["serviceTier"] != "priority" {
 		t.Fatalf("expected service tier override, got %#v", request.Params["serviceTier"])
 	}
+	if request.Params["excludeTurns"] != true {
+		t.Fatalf("expected resumed thread history to be excluded, got %#v", request.Params["excludeTurns"])
+	}
 	if got := run.getThreadID(); got != "thread_existing" {
 		t.Fatalf("expected stored thread id thread_existing, got %q", got)
+	}
+}
+
+func TestResumeThreadReadErrorIncludesRPCContext(t *testing.T) {
+	var written bytes.Buffer
+	incoming := make(chan incomingMessage, 1)
+	incoming <- incomingMessage{ReadErr: errors.New("response exceeded read limit")}
+
+	run := &appServerRun{
+		agent:      New(),
+		rpc:        newRPCClient(bufferWriteCloser{Buffer: &written}),
+		incoming:   incoming,
+		process:    &processState{done: make(chan struct{})},
+		emit:       func(context.Context, agents.AgentEvent) error { return nil },
+		normalizer: newNormalizer(),
+	}
+
+	err := run.resumeThread(context.Background(), "thread_large", "/tmp/workspace")
+	if err == nil {
+		t.Fatal("expected resume read error")
+	}
+	if !strings.Contains(err.Error(), `codex thread/resume for thread "thread_large" failed while awaiting response`) {
+		t.Fatalf("expected RPC context in resume error, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "response exceeded read limit") {
+		t.Fatalf("expected underlying read error to be preserved, got %q", err)
 	}
 }
 
@@ -1407,6 +1436,10 @@ func runFakeAppServer(mode string) {
 				},
 			})
 		case "thread/resume":
+			var params map[string]any
+			if err := json.Unmarshal(request.Params, &params); err != nil || params["excludeTurns"] != true {
+				os.Exit(14)
+			}
 			fakeRespond(request.ID, map[string]any{
 				"thread": map[string]any{
 					"id":        "thread_fake",

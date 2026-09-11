@@ -956,6 +956,7 @@ func (r *appServerRun) resumeThread(ctx context.Context, providerSessionID strin
 		"cwd":            workdir,
 		"approvalPolicy": r.approvalPolicy(),
 		"sandbox":        r.sandboxMode(),
+		"excludeTurns":   true,
 	}
 	if r.agent.model != "" {
 		params["model"] = r.agent.model
@@ -974,7 +975,7 @@ func (r *appServerRun) resumeThread(ctx context.Context, providerSessionID strin
 
 	response, err := r.awaitResponse(ctx, id)
 	if err != nil {
-		return err
+		return fmt.Errorf("codex thread/resume for thread %q failed while awaiting response: %w", threadID, err)
 	}
 	if response.Error != nil {
 		return fmt.Errorf("codex thread/resume failed: %s", response.Error.Message)
