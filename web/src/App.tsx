@@ -1,4 +1,4 @@
-import { Archive, Bug, Eraser, Folder, Loader2, Menu, MessageSquare, Minimize2, MoreHorizontal, Plus, RefreshCw, Settings, Square, Terminal, WifiOff, X } from 'lucide-react'
+import { Folder, Menu, MessageSquare, MoreHorizontal, Plus, RefreshCw, Settings, Square, Terminal, WifiOff, X } from 'lucide-react'
 import {
   lazy,
   Suspense,
@@ -58,7 +58,6 @@ import {
   isTerminalEvent,
   knownEventTypes,
   lastSeq,
-  latestTokenUsage,
   shouldRefreshWorkspaceFilesForEvent,
   statusFromEvent,
 } from '@/lib/events'
@@ -86,7 +85,6 @@ import { DashboardOverview } from '@/components/dashboard-overview'
 import { HostConsole, type ConsoleActions } from '@/components/host-console'
 import { NotificationsPopover } from '@/components/notifications-popover'
 import { RunHealthRail } from '@/components/run-health-rail'
-import { ContextTokenMeter } from '@/components/context-token-meter'
 import { ChatSessionHeader, SessionDetail } from '@/components/session-detail'
 import { SessionList } from '@/components/session-list'
 import { SessionSettingsPage } from '@/components/session-settings-page'
@@ -1767,29 +1765,11 @@ function App() {
   const confirmArchivePending = confirmArchiveSessionID !== null && archivingSessionID === confirmArchiveSessionID
   const renderViewToggle = (consoleActions?: ConsoleActions) => (
     <SessionViewNavigation
-      session={selectedSession}
-      events={events}
       view={displayedAppView}
       consoleActions={consoleActions}
       onSelect={(view) => {
         if (serverReachable) selectAppView(view)
       }}
-      debugEnabled={clientDebug}
-      onToggleDebug={toggleClientDebug}
-      onClear={() => requestSessionAction('clear')}
-      onCompact={() => requestSessionAction('compact')}
-      onToggleArchive={requestArchiveSession}
-      clearPending={
-        selectedSession
-          ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
-          : false
-      }
-      compactPending={
-        selectedSession
-          ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
-          : false
-      }
-      archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
     />
   )
   const viewToggle = renderViewToggle()
@@ -1903,6 +1883,43 @@ function App() {
                 onSelectSection={selectAppView}
                 scheduleRefreshKey={events.filter((event) => event.type.startsWith('schedule.')).length}
                 onOpenFile={(path) => void handleOpenWorkspacePath(path)}
+                mobileSessionOverview={(
+                  <RunHealthRail
+                    session={selectedSession}
+                    resolvingSessionID={resolvingSelectedSessionID}
+                    events={events}
+                    activityEvents={liveEvents}
+                    streamState={streamState}
+                    streamError={chatErrorMessage}
+                    showUtilityContent={false}
+                    onClear={() => {
+                      requestSessionAction('clear')
+                      return Promise.resolve()
+                    }}
+                    onCompact={() => {
+                      requestSessionAction('compact')
+                      return Promise.resolve()
+                    }}
+                    onToggleArchive={() => {
+                      requestArchiveSession()
+                      return Promise.resolve()
+                    }}
+                    clearPending={
+                      selectedSession
+                        ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'clear'
+                        : false
+                    }
+                    compactPending={
+                      selectedSession
+                        ? pendingSessionAction?.sessionID === selectedSession.id && pendingSessionAction.action === 'compact'
+                        : false
+                    }
+                    archivePending={selectedSession ? archivingSessionID === selectedSession.id : false}
+                    offline={!serverReachable}
+                    debugEnabled={clientDebug}
+                    onToggleDebug={toggleClientDebug}
+                  />
+                )}
                 session={selectedSession}
                 resolvingSessionID={resolvingSelectedSessionID}
                 showDebugEvents={showDebugEvents}
@@ -2221,51 +2238,25 @@ function OfflineGlobalView({ onOpenSessions }: { onOpenSessions: () => void }) {
 }
 
 function SessionViewNavigation({
-  session,
-  events,
   view,
   onSelect,
-  debugEnabled,
-  onToggleDebug,
-  onClear,
-  onCompact,
-  onToggleArchive,
-  clearPending,
-  compactPending,
-  archivePending,
   consoleActions,
 }: {
-  session: Session | null
-  events: AgentEvent[]
   view: AppView
   onSelect: (view: AppView) => void
-  debugEnabled: boolean
-  onToggleDebug: () => void
-  onClear: () => void
-  onCompact: () => void
-  onToggleArchive: () => void
-  clearPending: boolean
-  compactPending: boolean
-  archivePending: boolean
   consoleActions?: ConsoleActions
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
-  const tokenUsage = useMemo(() => open ? latestTokenUsage(events) : null, [events, open])
-  const { triggerRef, popoverStyle } = useAnchoredPopover(open, 288)
-  const views: Array<{ view: AppView; label: string; shortLabel: string; icon: ReactNode }> = [
-    { view: 'session', label: 'Show chat', shortLabel: 'Chat', icon: <MessageSquare className="size-4" /> },
-    { view: 'files', label: 'Show files', shortLabel: 'Files', icon: <Folder className="size-4" /> },
-    { view: 'console', label: 'Show console', shortLabel: 'Console', icon: <Terminal className="size-4" /> },
-    { view: 'settings', label: 'Show session settings', shortLabel: 'Settings', icon: <Settings className="size-4" /> },
+  const { triggerRef, popoverStyle } = useAnchoredPopover(open, 208)
+  const views: Array<{ view: AppView; label: string; icon: ReactNode }> = [
+    { view: 'session', label: 'Show chat', icon: <MessageSquare className="size-4" /> },
+    { view: 'files', label: 'Show files', icon: <Folder className="size-4" /> },
+    { view: 'console', label: 'Show console', icon: <Terminal className="size-4" /> },
+    { view: 'settings', label: 'Show session settings', icon: <Settings className="size-4" /> },
   ]
   const primaryView = isSessionSettingsView(view) ? 'settings' : view
   const activeIndex = Math.max(0, views.findIndex((item) => item.view === primaryView))
-  const actionPending = clearPending || compactPending || archivePending
-  const codexActionDisabled =
-    !session || session.agent_type !== 'codex' || session.status === 'running' || Boolean(session.archived_at) || actionPending
-  const compactDisabled = codexActionDisabled || !session?.provider_session_id
-  const archiveDisabled = !session || session.status === 'running' || archivePending
 
   useEffect(() => {
     if (!open) return
@@ -2284,13 +2275,12 @@ function SessionViewNavigation({
   }, [open])
 
   function select(nextView: AppView) {
-    setOpen(false)
-    onSelect(nextView)
+    onSelect(nextView === 'settings' && window.innerWidth < 1024 ? 'activity' : nextView)
   }
 
   return (
-    <>
-      <div className="relative hidden shrink-0 grid-cols-4 rounded-md bg-muted p-1 shadow-inner lg:grid">
+    <div className="flex shrink-0 items-center gap-1">
+      <div className="relative grid shrink-0 grid-cols-4 rounded-md bg-muted p-1 shadow-inner">
         <span
           aria-hidden="true"
           className="absolute bottom-1 left-1 top-1 w-8 rounded-sm bg-background shadow-sm transition-transform duration-150 ease-out"
@@ -2312,14 +2302,14 @@ function SessionViewNavigation({
           </button>
         ))}
       </div>
-      <div ref={menuRef} className="relative shrink-0 lg:hidden">
+      {consoleActions ? <div ref={menuRef} className="relative shrink-0 lg:hidden">
         <Button
           ref={triggerRef}
           type="button"
           variant="ghost"
           size="icon"
           className="h-9 w-9 text-muted-foreground hover:bg-background/50 hover:text-foreground"
-          aria-label="More session actions"
+          aria-label="Console actions"
           aria-haspopup="menu"
           aria-expanded={open}
           onClick={() => setOpen((value) => !value)}
@@ -2327,60 +2317,17 @@ function SessionViewNavigation({
           <MoreHorizontal aria-hidden="true" />
         </Button>
         {open ? (
-          <div role="menu" aria-label="Session navigation and actions" style={popoverStyle} className="z-50 overflow-y-auto rounded-lg border border-border/80 bg-popover p-1.5 text-sm text-popover-foreground shadow-lg">
-            <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Views</p>
-            {views.map((item) => (
-              <button
-                key={item.view}
-                type="button"
-                role="menuitem"
-                aria-current={primaryView === item.view ? 'page' : undefined}
-                className={cn('flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground', primaryView === item.view && 'bg-accent/65 text-accent-foreground')}
-                onClick={() => select(item.view)}
-              >
-                {item.icon}<span className="flex-1">{item.shortLabel}</span>
-              </button>
-            ))}
-            {view === 'console' && consoleActions ? <>
-              <div className="my-1 border-t border-border/70" />
-              <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Console</p>
-              <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:opacity-50" disabled={consoleActions.pending} onClick={() => { setOpen(false); consoleActions.onRestart() }}>
-                <RefreshCw className="size-4" aria-hidden="true" />Restart console
-              </button>
-              <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-destructive hover:bg-destructive/10 disabled:opacity-50" disabled={consoleActions.pending} onClick={() => { setOpen(false); consoleActions.onStop() }}>
-                <Square className="size-4" aria-hidden="true" />Stop console
-              </button>
-            </> : null}
-            <div className="my-1 border-t border-border/70" />
-            <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Workspace details</p>
-            {session ? <div className="px-2 py-2" data-testid="mobile-context-meter">
-              <ContextTokenMeter usage={tokenUsage} compact />
-            </div> : null}
-            <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45" disabled={codexActionDisabled} onClick={() => { setOpen(false); onClear() }}>
-              {clearPending ? <Loader2 className="size-4 animate-spin" /> : <Eraser className="size-4" />}<span>{clearPending ? 'Clearing' : 'Clear context'}</span>
+          <div role="menu" aria-label="Console actions" style={popoverStyle} className="z-50 rounded-lg border border-border/80 bg-popover p-1.5 text-sm text-popover-foreground shadow-lg">
+            <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:opacity-50" disabled={consoleActions.pending} onClick={() => { setOpen(false); consoleActions.onRestart() }}>
+              <RefreshCw className="size-4" aria-hidden="true" />Restart console
             </button>
-            <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45" disabled={compactDisabled} onClick={() => { setOpen(false); onCompact() }}>
-              {compactPending ? <Loader2 className="size-4 animate-spin" /> : <Minimize2 className="size-4" />}<span>{compactPending ? 'Compacting' : 'Compact context'}</span>
-            </button>
-            <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-45" disabled={archiveDisabled} onClick={() => { setOpen(false); onToggleArchive() }}>
-              {archivePending ? <Loader2 className="size-4 animate-spin" /> : <Archive className="size-4" />}
-              <span>{archivePending ? (session?.archived_at ? 'Restoring' : 'Archiving') : session?.archived_at ? 'Restore session' : 'Archive session'}</span>
-            </button>
-            <div className="my-1 border-t border-border/70" />
-            <button
-              type="button"
-              role="menuitemcheckbox"
-              aria-checked={debugEnabled}
-              className={cn('flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent hover:text-accent-foreground', debugEnabled && 'text-primary')}
-              onClick={() => { setOpen(false); onToggleDebug(); triggerRef.current?.focus() }}
-            >
-              <Bug className="size-4" aria-hidden="true" /><span className="flex-1">Debug</span>
-              <span aria-hidden="true" className="text-xs text-muted-foreground">{debugEnabled ? 'On' : 'Off'}</span>
+            <button type="button" role="menuitem" className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-destructive hover:bg-destructive/10 disabled:opacity-50" disabled={consoleActions.pending} onClick={() => { setOpen(false); consoleActions.onStop() }}>
+              <Square className="size-4" aria-hidden="true" />Stop console
             </button>
           </div>
         ) : null}
-      </div>
-    </>
+      </div> : null}
+    </div>
   )
 }
 

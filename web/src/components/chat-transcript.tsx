@@ -32,7 +32,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import remarkGfm from 'remark-gfm'
 import remarkDirective from 'remark-directive'
-import { remarkCodexFollowups } from '@/lib/remark-codex-followups'
+import { remarkCodexDirectives } from '@/lib/remark-codex-followups'
 import type { AgentEvent } from '@/lib/api'
 import type {
   ChatActionBreak,
@@ -129,6 +129,7 @@ export function ChatTranscript({
   focusRequest = 0,
   onVisibleSequenceRangeChange,
 }: Props) {
+  const sessionID = events.find((event) => event.session_id)?.session_id ?? ''
   const timeline = useMemo(() => [
     ...buildChatTimeline(events, showDebugEvents),
     ...optimisticUserMessages.map((message) => ({
@@ -771,6 +772,7 @@ export function ChatTranscript({
                 item={item}
                 focusSeq={focusSeq}
                 collapseExtraTools={item.kind === 'message' && timelineIndex < latestMessageIndex}
+                sessionID={sessionID}
                 onOpenFilePath={onOpenFilePath}
                 onFollowUp={onFollowUp}
               />
@@ -946,12 +948,14 @@ function timelineItemContainsSeq(item: ChatTimelineItem, seq: number) {
 function ChatTimelineRow({
   item,
   collapseExtraTools,
+  sessionID,
   onOpenFilePath,
   onFollowUp,
   focusSeq,
 }: {
   item: ChatTimelineItem
   collapseExtraTools: boolean
+  sessionID: string
   onOpenFilePath?: (path: string) => Promise<void> | void
   onFollowUp?: (prompt: string) => void
   focusSeq: number
@@ -969,6 +973,7 @@ function ChatTimelineRow({
     <ChatMessageRow
       message={item.message}
       collapseExtraTools={collapseExtraTools}
+      sessionID={sessionID}
       onOpenFilePath={onOpenFilePath}
       onFollowUp={onFollowUp}
       focusSeq={focusSeq}
@@ -1001,12 +1006,14 @@ function ActionBreakRow({ action }: { action: ChatActionBreak }) {
 function ChatMessageRow({
   message,
   collapseExtraTools,
+  sessionID,
   onOpenFilePath,
   onFollowUp,
   focusSeq,
 }: {
   message: ChatTranscriptMessage
   collapseExtraTools: boolean
+  sessionID: string
   onOpenFilePath?: (path: string) => Promise<void> | void
   onFollowUp?: (prompt: string) => void
   focusSeq: number
@@ -1107,6 +1114,10 @@ function ChatMessageRow({
             <MarkdownContent
               content={message.text}
               variant={user ? 'inverted' : plan ? 'plan' : 'default'}
+              renderCodexDirectives={!user}
+              fileCitationBaseURL={sessionID && message.endSeq > 0
+                ? `/api/sessions/${encodeURIComponent(sessionID)}/events/${message.endSeq}/file-citation`
+                : undefined}
               onOpenFilePath={onOpenFilePath}
               onFollowUp={user ? undefined : onFollowUp}
             />
@@ -1275,11 +1286,15 @@ type MarkdownVariant = 'default' | 'inverted' | 'plan'
 const MarkdownContent = memo(function MarkdownContent({
   content,
   variant,
+  renderCodexDirectives,
+  fileCitationBaseURL,
   onOpenFilePath,
   onFollowUp,
 }: {
   content: string
   variant: MarkdownVariant
+  renderCodexDirectives: boolean
+  fileCitationBaseURL?: string
   onOpenFilePath?: (path: string) => Promise<void> | void
   onFollowUp?: (prompt: string) => void
 }) {
@@ -1287,13 +1302,15 @@ const MarkdownContent = memo(function MarkdownContent({
   const plan = variant === 'plan'
   const contentRef = useRef<HTMLDivElement>(null)
   const latestContentRef = useRef(content)
+  const fileCitationBaseURLRef = useRef(fileCitationBaseURL)
   const [displayedContent, setDisplayedContent] = useState(content)
 
   useLayoutEffect(() => {
+    fileCitationBaseURLRef.current = fileCitationBaseURL
     latestContentRef.current = content
     if (content === displayedContent || hasActiveSelectionWithin(contentRef.current)) return
     setDisplayedContent(content)
-  }, [content, displayedContent])
+  }, [content, displayedContent, fileCitationBaseURL])
 
   useEffect(() => {
     function flushHeldContent() {
@@ -1325,13 +1342,19 @@ const MarkdownContent = memo(function MarkdownContent({
         p: ({ children }) => (
           <p className="my-2 first:mt-0 last:mb-0 whitespace-pre-wrap break-words leading-relaxed">{children}</p>
         ),
-        a: ({ children, href }) => {
+        a: ({ children, href, title, node }) => {
+          const citedPath = node?.properties['data-codex-file-citation']
+          const citationBaseURL = fileCitationBaseURLRef.current
+          const citationHref = typeof citedPath === 'string' && citationBaseURL
+            ? `${citationBaseURL}?${new URLSearchParams({ path: citedPath })}`
+            : ''
           const filePath = markdownFilePathFromHref(href)
-          const opensFileEditor = Boolean(filePath && onOpenFilePath)
+          const opensFileEditor = Boolean(!citationHref && filePath && onOpenFilePath)
 
           return (
             <a
-              href={href}
+              href={citationHref || href}
+              title={title}
               target={opensFileEditor ? undefined : '_blank'}
               rel={opensFileEditor ? undefined : 'noreferrer'}
               className={cn(
@@ -1418,7 +1441,12 @@ const MarkdownContent = memo(function MarkdownContent({
 
   return (
     <div ref={contentRef} className="contents">
-      <ReactMarkdown remarkPlugins={onFollowUp ? [remarkGfm, remarkDirective, remarkCodexFollowups] : [remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={renderCodexDirectives && (onFollowUp || onOpenFilePath)
+          ? [remarkGfm, remarkDirective, remarkCodexDirectives]
+          : [remarkGfm]}
+        components={components}
+      >
         {displayedContent}
       </ReactMarkdown>
     </div>

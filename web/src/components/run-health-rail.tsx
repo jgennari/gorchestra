@@ -2,6 +2,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import {
   Activity,
   Archive,
+  Bug,
   Check,
   Clock3,
   Eraser,
@@ -60,6 +61,8 @@ type Props = {
   compactPending?: boolean
   archivePending?: boolean
   offline?: boolean
+  debugEnabled?: boolean
+  onToggleDebug?: () => void
 }
 
 export function RunHealthRail({
@@ -92,6 +95,8 @@ export function RunHealthRail({
   compactPending = false,
   archivePending = false,
   offline = false,
+  debugEnabled = false,
+  onToggleDebug,
 }: Props) {
   const desktopLayout = useDesktopLayout()
   const [blocksMounted, setBlocksMounted] = useState(contentMode === 'blocks')
@@ -205,7 +210,7 @@ export function RunHealthRail({
         </div>
       ) : null}
 
-      <div className="mt-auto space-y-3 pt-3">
+      <div className={cn('space-y-3 pt-3', showUtilityContent && 'mt-auto')}>
         {showTokenPanel ? (
           <RailPanel>
             <RailSectionTitle icon={Gauge} label="Tokens" />
@@ -242,6 +247,23 @@ export function RunHealthRail({
           <Archive aria-hidden="true" />
           {archivePending ? (session?.archived_at ? 'Restoring' : 'Archiving') : session?.archived_at ? 'Restore' : 'Archive'}
         </Button>
+
+        {onToggleDebug ? (
+          <Button
+            type="button"
+            role="switch"
+            aria-label="Client debug"
+            aria-checked={debugEnabled}
+            aria-pressed={debugEnabled}
+            variant="outline"
+            className="w-full justify-start border-border/70 bg-background/40 text-muted-foreground hover:bg-background/70"
+            onClick={onToggleDebug}
+          >
+            <Bug aria-hidden="true" />
+            <span>Client debug</span>
+            <span aria-hidden="true" className="ml-auto text-xs">{debugEnabled ? 'On' : 'Off'}</span>
+          </Button>
+        ) : null}
       </div>
     </aside>
   )

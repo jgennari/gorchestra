@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"mime"
@@ -12,7 +14,9 @@ import (
 	"os/exec"
 	pathpkg "path"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -289,6 +293,98 @@ func (api API) sessionFileRawHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	serveLocalFile(w, r, filePath)
+}
+
+var fileCitationAttributesPattern = regexp.MustCompile(`^(?:path="([^"]+)"\s+purpose="([^"]+)"|purpose="([^"]+)"\s+path="([^"]+)")$`)
+
+func (api API) eventFileCitationHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+	if !api.sessionExists(w, r, sessionID) {
+		return
+	}
+	seq, err := strconv.ParseInt(chi.URLParam(r, "seq"), 10, 64)
+	if err != nil || seq <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid event sequence")
+		return
+	}
+	requestedPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if requestedPath == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	event, err := api.store.GetEvent(r.Context(), sessionID, seq)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "event not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load event")
+		return
+	}
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if event.Type != "agent.message.completed" || event.Role != "assistant" ||
+		event.Status != store.EventStatusCompleted || json.Unmarshal(event.Payload, &payload) != nil ||
+		!messageCitesFilePath(payload.Text, requestedPath) {
+		writeError(w, http.StatusNotFound, "file citation not found")
+		return
+	}
+	filePath, err := api.workspaces.allowedFilePath(requestedPath)
+	if err != nil {
+		writeWorkspacePathError(w, err)
+		return
+	}
+	serveLocalFile(w, r, filePath)
+}
+
+func messageCitesFilePath(message string, requestedPath string) bool {
+	const marker = ":codex-file-citation{"
+	for remaining := message; ; {
+		start := strings.Index(remaining, marker)
+		if start < 0 {
+			return false
+		}
+		remaining = remaining[start+len(marker):]
+		end := strings.IndexByte(remaining, '}')
+		if end < 0 {
+			return false
+		}
+		matches := fileCitationAttributesPattern.FindStringSubmatch(strings.TrimSpace(remaining[:end]))
+		if len(matches) > 0 {
+			path := matches[1]
+			purpose := matches[2]
+			if path == "" {
+				path = matches[4]
+				purpose = matches[3]
+			}
+			if strings.TrimSpace(purpose) != "" && html.UnescapeString(path) == requestedPath {
+				return true
+			}
+		}
+		remaining = remaining[end+1:]
+	}
+}
+
+func (c workspaceConfig) allowedFilePath(value string) (string, error) {
+	absolute, err := filepath.Abs(strings.TrimSpace(value))
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	evaluated, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", fmt.Errorf("path is unavailable: %w", err)
+	}
+	for _, root := range c.roots {
+		if isPathWithin(root.Path, evaluated) {
+			return evaluated, nil
+		}
+	}
+	return "", errors.New("path is outside allowed roots")
+}
+
+func serveLocalFile(w http.ResponseWriter, r *http.Request, filePath string) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		writeWorkspacePathError(w, fmt.Errorf("read file: %w", err))

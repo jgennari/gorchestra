@@ -344,6 +344,95 @@ func TestSessionFileRawStreamsMediaAndDownloads(t *testing.T) {
 	}
 }
 
+func TestCompletedAssistantFileCitationStreamsAllowedFileOutsideSessionWorkspace(t *testing.T) {
+	ctx := context.Background()
+	root := canonicalPath(t, t.TempDir())
+	workspace := filepath.Join(root, "project")
+	outputDirectory := filepath.Join(root, "Documents", "Ryann Responses")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := os.MkdirAll(outputDirectory, 0o755); err != nil {
+		t.Fatalf("create output directory: %v", err)
+	}
+	outputPath := filepath.Join(outputDirectory, "certificate-of-completion-OPP_17893173627841.pdf")
+	output := []byte("%PDF-1.7\nverified")
+	if err := os.WriteFile(outputPath, output, 0o644); err != nil {
+		t.Fatalf("write cited output: %v", err)
+	}
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, root, fake.New())
+	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title:         "Cited output",
+		AgentType:     "fake",
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"text": fmt.Sprintf(":codex-file-citation{path=%q purpose=\"output\"}", outputPath),
+	})
+	if err != nil {
+		t.Fatalf("marshal event payload: %v", err)
+	}
+	event, err := dbStore.AppendEvent(ctx, store.AppendEventParams{
+		SessionID: session.ID,
+		Type:      "agent.message.completed",
+		Role:      "assistant",
+		Status:    store.EventStatusCompleted,
+		Payload:   payload,
+	})
+	if err != nil {
+		t.Fatalf("append cited output event: %v", err)
+	}
+
+	path := fmt.Sprintf("/api/sessions/%s/events/%d/file-citation?path=%s", session.ID, event.Seq, url.QueryEscape(outputPath))
+	rec := get(handler, path)
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), output) {
+		t.Fatalf("expected cited output, got status %d and body %q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/pdf" {
+		t.Fatalf("expected PDF content type, got %q", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != `inline; filename=certificate-of-completion-OPP_17893173627841.pdf` {
+		t.Fatalf("expected inline citation, got %q", got)
+	}
+
+	unreferenced := filepath.Join(root, "Documents", "unreferenced.pdf")
+	if err := os.WriteFile(unreferenced, []byte("private"), 0o644); err != nil {
+		t.Fatalf("write unreferenced file: %v", err)
+	}
+	rejected := get(handler, fmt.Sprintf("/api/sessions/%s/events/%d/file-citation?path=%s", session.ID, event.Seq, url.QueryEscape(unreferenced)))
+	if rejected.Code != http.StatusNotFound {
+		t.Fatalf("expected unreferenced path status %d, got %d", http.StatusNotFound, rejected.Code)
+	}
+
+	outsidePath := filepath.Join(canonicalPath(t, t.TempDir()), "cited-secret.pdf")
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside cited file: %v", err)
+	}
+	outsidePayload, err := json.Marshal(map[string]any{
+		"text": fmt.Sprintf(":codex-file-citation{path=%q purpose=\"output\"}", outsidePath),
+	})
+	if err != nil {
+		t.Fatalf("marshal outside event payload: %v", err)
+	}
+	outsideEvent, err := dbStore.AppendEvent(ctx, store.AppendEventParams{
+		SessionID: session.ID,
+		Type:      "agent.message.completed",
+		Role:      "assistant",
+		Status:    store.EventStatusCompleted,
+		Payload:   outsidePayload,
+	})
+	if err != nil {
+		t.Fatalf("append outside cited output event: %v", err)
+	}
+	outsideRec := get(handler, fmt.Sprintf("/api/sessions/%s/events/%d/file-citation?path=%s", session.ID, outsideEvent.Seq, url.QueryEscape(outsidePath)))
+	if outsideRec.Code != http.StatusForbidden {
+		t.Fatalf("expected outside-root path status %d, got %d", http.StatusForbidden, outsideRec.Code)
+	}
+}
+
 func TestSessionFileRawRejectsUnsafePathsAndDirectories(t *testing.T) {
 	ctx := context.Background()
 	workspace := canonicalPath(t, t.TempDir())

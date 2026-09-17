@@ -47,6 +47,7 @@ const secondSession = session('sess_2', 'Write docs', '2026-06-12T16:01:00Z')
 
 beforeEach(() => {
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
   window.history.replaceState({}, '', '/sessions/sess_1')
   window.localStorage.clear()
   clearSessionEventCacheForTest()
@@ -928,63 +929,66 @@ test('mobile sessions button opens a floating session dialog', async () => {
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Sessions' })).not.toBeInTheDocument())
 })
 
-test('mobile session menu toggles debug in place and replaces workspace details', async () => {
+test('mobile header shows the four-view switcher and moves session details into Settings activity', async () => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
   const user = userEvent.setup()
-  const fetch = fetchMock()
-  vi.stubGlobal('fetch', fetch)
   render(<App />)
-  const source = await findEventSource('/api/sessions/activity/stream')
+  await findEventSource('/api/sessions/activity/stream')
   const header = within(screen.getByTestId('mobile-floating-session-header'))
-  const prompt = screen.getByRole('textbox', { name: 'Prompt' })
-  fireEvent.change(prompt, { target: { value: 'Keep this unsent draft' } })
-  const trigger = header.getByRole('button', { name: 'More session actions' })
-  await user.click(trigger)
-  const menuElement = header.getByRole('menu')
-  const menu = within(menuElement)
-  expect(menu.queryByRole('menuitem', { name: 'Workspace details' })).not.toBeInTheDocument()
-  const workspaceHeading = menu.getByText('Workspace details')
-  expect(workspaceHeading.tagName).toBe('P')
-  expect(workspaceHeading.className).toBe(menu.getByText('Views').className)
-  expect(workspaceHeading.compareDocumentPosition(menu.getByTestId('mobile-context-meter')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  expect(menuElement.lastElementChild).toBe(menu.getByRole('menuitemcheckbox', { name: 'Debug' }))
-  expect(menu.getByRole('menuitemcheckbox', { name: 'Debug' })).not.toBeChecked()
-  const requestsBefore = fetch.mock.calls.length
-  const pathBefore = window.location.pathname
-  await user.click(menu.getByRole('menuitemcheckbox', { name: 'Debug' }))
-  expect(screen.getByRole('complementary', { name: 'Client debug' })).toBeVisible()
-  expect(header.queryByRole('menu')).not.toBeInTheDocument()
-  expect(trigger).toHaveFocus()
-  expect(window.location.pathname).toBe(pathBefore)
-  expect(window.location.search).toBe('?debug=1')
-  expect(prompt).toHaveValue('Keep this unsent draft')
-  expect(source.closed).toBe(false)
-  expect(FakeEventSource.instances).toHaveLength(1)
-  expect(fetch.mock.calls.length).toBe(requestsBefore)
+  expect(header.getAllByRole('button', { name: /^Show / }).map((button) => button.getAttribute('aria-label'))).toEqual([
+    'Show chat', 'Show files', 'Show console', 'Show session settings',
+  ])
+  expect(header.queryByRole('button', { name: 'More session actions' })).not.toBeInTheDocument()
 
-  await user.click(trigger)
-  expect(header.getByRole('menuitemcheckbox', { name: 'Debug' })).toBeChecked()
-  await user.click(header.getByRole('menuitemcheckbox', { name: 'Debug' }))
-  expect(screen.queryByRole('complementary', { name: 'Client debug' })).not.toBeInTheDocument()
-  expect(window.location.search).toBe('')
-  expect(screen.queryByRole('dialog', { name: 'Workspace details' })).not.toBeInTheDocument()
+  await user.click(header.getByRole('button', { name: 'Show session settings' }))
+  expect(window.location.pathname).toBe('/sessions/inspect-repo/settings/activity')
+  expect(screen.getByRole('tab', { name: 'Activity' })).toHaveAttribute('aria-selected', 'true')
+  const activityPanel = within(screen.getByRole('tabpanel', { name: 'Activity' }))
+  expect(activityPanel.getByText('Events')).toBeInTheDocument()
+  expect(activityPanel.getByText('Tools')).toBeInTheDocument()
+  expect(activityPanel.getByText('Tokens')).toBeInTheDocument()
+  expect(activityPanel.getByRole('button', { name: 'Archive selected session' })).toBeInTheDocument()
+})
+
+test('mobile console keeps its restart and stop actions beside the view switcher', async () => {
+  const user = userEvent.setup()
+  render(<App />)
+  await findEventSource('/api/sessions/activity/stream')
+  const sessionHeader = within(screen.getByTestId('mobile-floating-session-header'))
+  await user.click(sessionHeader.getByRole('button', { name: 'Show console' }))
+
+  const consoleHeaderElement = screen.getByRole('button', { name: 'Open sessions' }).closest('.mobile-floating-header-shell')
+  expect(consoleHeaderElement).not.toBeNull()
+  const consoleHeader = within(consoleHeaderElement as HTMLElement)
+  expect(consoleHeader.getByRole('button', { name: 'Show chat' })).toBeInTheDocument()
+  await user.click(consoleHeader.getByRole('button', { name: 'Console actions' }))
+  const menu = within(consoleHeader.getByRole('menu', { name: 'Console actions' }))
+  expect(menu.getByRole('menuitem', { name: 'Restart console' })).toBeInTheDocument()
+  expect(menu.getByRole('menuitem', { name: 'Stop console' })).toBeInTheDocument()
 })
 
 test('mobile debug toggle reflects URL, keyboard, and panel close state', async () => {
   window.history.replaceState({}, '', '/sessions/sess_1?debug=1')
+  const user = userEvent.setup()
   render(<App />)
   await findEventSource('/api/sessions/activity/stream')
   const header = within(screen.getByTestId('mobile-floating-session-header'))
-  fireEvent.click(header.getByRole('button', { name: 'More session actions' }))
-  expect(header.getByRole('menuitemcheckbox', { name: 'Debug' })).toBeChecked()
+  await user.click(header.getByRole('button', { name: 'Show session settings' }))
+  await user.click(await screen.findByRole('tab', { name: 'Activity' }))
+  const debug = await screen.findByRole('switch', { name: 'Client debug' })
+  expect(debug).toBeChecked()
   fireEvent.click(screen.getByRole('button', { name: 'Close debug view' }))
-  expect(header.getByRole('menuitemcheckbox', { name: 'Debug' })).not.toBeChecked()
+  expect(debug).not.toBeChecked()
   fireEvent.keyDown(window, { key: 'd', metaKey: true })
-  expect(header.getByRole('menuitemcheckbox', { name: 'Debug' })).toBeChecked()
+  expect(debug).toBeChecked()
   expect(screen.getByRole('complementary', { name: 'Client debug' })).toBeVisible()
 })
 
-test('mobile actions show a live context counter without fetching more data or closing the menu', async () => {
-  const fetch = fetchMock()
+test('mobile Activity settings show live context usage without fetching more data', async () => {
+  const user = userEvent.setup()
+  const fetch = fetchMock({
+    sessions: [{ ...firstSession, agent_type: 'codex', provider_session_id: 'thread_1' }, secondSession],
+  })
   vi.stubGlobal('fetch', fetch)
   render(<App />)
   const source = await findEventSource('/api/sessions/activity/stream')
@@ -1001,28 +1005,35 @@ test('mobile actions show a live context counter without fetching more data or c
   act(() => source.emit(usageEvent(5, 128_000)))
   await waitFor(() => expect(screen.getByText('128k / 256k current')).toBeInTheDocument())
   const requestCount = fetch.mock.calls.length
-  fireEvent.click(header.getByRole('button', { name: 'More session actions' }))
-  const menu = header.getByRole('menu', { name: 'Session navigation and actions' })
-  const meter = within(menu).getByRole('meter', { name: 'Context token usage' })
-  expect(within(menu).getByText('128k / 256k')).toBeInTheDocument()
-  expect(within(menu).getByText('50%')).toBeInTheDocument()
-  expect(meter.compareDocumentPosition(within(menu).getByRole('menuitem', { name: 'Clear context' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  await user.click(header.getByRole('button', { name: 'Show session settings' }))
+  await user.click(screen.getByRole('tab', { name: 'Activity' }))
+  const panel = within(screen.getByRole('tabpanel', { name: 'Activity' }))
+  const meter = panel.getByRole('meter', { name: 'Context token usage' })
+  expect(panel.getByText(/128k \/ 256k/)).toBeInTheDocument()
+  expect(panel.getByText('50%')).toBeInTheDocument()
+  expect(meter.compareDocumentPosition(panel.getByRole('button', { name: 'Clear Codex context' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   expect(fetch.mock.calls.length).toBe(requestCount)
 
   act(() => source.emit(usageEvent(6, 192_000)))
-  await waitFor(() => expect(within(menu).getByText('192k / 256k')).toBeInTheDocument())
-  expect(within(menu).getByText('75%')).toBeInTheDocument()
-  expect(header.getByRole('button', { name: 'More session actions' })).toHaveAttribute('aria-expanded', 'true')
+  await waitFor(() => {
+    const updatedPanel = within(screen.getByRole('tabpanel', { name: 'Activity' }))
+    expect(updatedPanel.getByText(/192k \/ 256k/)).toBeInTheDocument()
+    expect(updatedPanel.getByText('75%')).toBeInTheDocument()
+  })
 })
 
 test('mobile context meter does not invent counts before usage has arrived', async () => {
+  const user = userEvent.setup()
   render(<App />)
   await findEventSource('/api/sessions/activity/stream')
   const header = within(screen.getByTestId('mobile-floating-session-header'))
-  fireEvent.click(header.getByRole('button', { name: 'More session actions' }))
-  const menu = within(header.getByRole('menu'))
-  expect(menu.getByText('No token usage yet')).toBeInTheDocument()
-  expect(menu.queryByRole('meter')).not.toBeInTheDocument()
+  await user.click(header.getByRole('button', { name: 'Show session settings' }))
+  await user.click(await screen.findByRole('tab', { name: 'Activity' }))
+  const panel = within(await screen.findByRole('tabpanel', { name: 'Activity' }))
+  expect(panel.queryByText('No token usage yet')).not.toBeInTheDocument()
+  expect(panel.queryByRole('meter')).not.toBeInTheDocument()
+  expect(panel.getByRole('button', { name: 'Archive selected session' })).toBeInTheDocument()
+  expect(panel.getByRole('switch', { name: 'Client debug' })).toBeInTheDocument()
 })
 
 test('header files view opens workspace files inline', async () => {
@@ -1082,17 +1093,14 @@ test('schedules view uses the shared floating session header', async () => {
   expect(scheduleInfo?.closest('.session-settings-page')).toBeTruthy()
 })
 
-test('session settings is a routed card page and mobile views live in an overflow menu', async () => {
+test('session settings is a routed card page reached from the mobile view switcher', async () => {
   const user = userEvent.setup()
 
   render(<App />)
 
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
   const mobileHeader = screen.getByTestId('mobile-floating-session-header')
-  expect(within(mobileHeader).queryByRole('button', { name: 'Session settings' })).not.toBeInTheDocument()
-
-  await user.click(within(mobileHeader).getByRole('button', { name: 'More session actions' }))
-  await user.click(within(mobileHeader).getByRole('menuitem', { name: 'Settings' }))
+  await user.click(within(mobileHeader).getByRole('button', { name: 'Show session settings' }))
 
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/settings'))
   const card = screen.getByRole('heading', { name: 'Session settings' }).closest('section')
@@ -1127,13 +1135,12 @@ test('primary navigation has four views and only the active Settings section loa
     'Show chat', 'Show files', 'Show console', 'Show session settings',
   ])
   const mobileHeader = within(screen.getByTestId('mobile-floating-session-header'))
-  await user.click(mobileHeader.getByRole('button', { name: 'More session actions' }))
-  const menu = within(mobileHeader.getByRole('menu'))
-  expect(menu.getAllByRole('menuitem').slice(0, 4).map((item) => item.textContent)).toEqual(['Chat', 'Files', 'Console', 'Settings'])
-  for (const name of ['Scheduled tasks', 'Repository skills', 'Hosted preview']) expect(menu.queryByRole('menuitem', { name })).not.toBeInTheDocument()
+  expect(mobileHeader.getAllByRole('button', { name: /^Show / }).map((button) => button.getAttribute('aria-label'))).toEqual([
+    'Show chat', 'Show files', 'Show console', 'Show session settings',
+  ])
   expect(sectionRequests()).toEqual([])
 
-  await user.click(menu.getByRole('menuitem', { name: 'Settings' }))
+  await user.click(mobileHeader.getByRole('button', { name: 'Show session settings' }))
   expect(await screen.findByRole('region', { name: 'Session configuration' })).toBeInTheDocument()
   expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true')
   expect(sectionRequests()).toEqual([])

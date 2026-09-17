@@ -2158,34 +2158,84 @@ function event(seq: number, type: string, role: string, status: string, payload:
   }
 }
 
-test('renders follow-up directives as labelled buttons with exact decoded prompts', () => {
+test('renders every supported follow-up directive form as buttons with exact decoded prompts', () => {
   const onFollowUp = vi.fn()
-  const text = '- :codex-followup[Check status]{prompt="Check the job status."}\n- :codex-followup[Review **changes**]{prompt="Review &quot;draft&quot; &amp; tests."}'
+  const text = [
+    '- :codex-followup[Check status]{prompt="Check the job status."}',
+    '- :codex-followup[Review **changes**]{prompt="Review &quot;draft&quot; &amp; tests."}',
+    '- :codex-followup{prompt="Find the missing permits and paid-in-full receipts."}',
+    '- :codex-followup[Prepare the PDF for the selected print shop.]',
+  ].join('\n')
   render(<ChatTranscript onFollowUp={onFollowUp} events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text })]} />)
   fireEvent.click(screen.getByRole('button', { name: 'Check status' }))
   expect(onFollowUp).toHaveBeenLastCalledWith('Check the job status.')
   fireEvent.click(screen.getByRole('button', { name: 'Review changes' }))
   expect(onFollowUp).toHaveBeenLastCalledWith('Review "draft" & tests.')
+  fireEvent.click(screen.getByRole('button', { name: 'Find the missing permits and paid-in-full receipts.' }))
+  expect(onFollowUp).toHaveBeenLastCalledWith('Find the missing permits and paid-in-full receipts.')
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare the PDF for the selected print shop.' }))
+  expect(onFollowUp).toHaveBeenLastCalledWith('Prepare the PDF for the selected print shop.')
   expect(screen.getByRole('log')).not.toHaveTextContent(':codex-followup')
 })
 
-test('keeps code, unknown directives, incomplete prompts, and unsafe attributes inert', () => {
+test('renders file citations as verified event links and keeps unsupported directives inert', () => {
+  const onOpenFilePath = vi.fn()
   const text = [
     '`'+':codex-followup[Code]{prompt="Do not run"}'+'`',
     '```text\n:codex-followup[Fenced]{prompt="Do not run"}\n```',
     ':codex-file-citation{path="/tmp/example.txt" purpose="source"}',
-    ':codex-followup[Missing]',
+    ':codex-file-citation{path="/tmp/unsafe.txt" purpose="source" onclick="alert(1)"}',
     ':codex-followup[Partial]{prompt="unfinished',
     ':codex-followup[Empty]{prompt=" "}',
     ':codex-followup[Unsafe]{prompt="Do not run" onclick="alert(1)"}',
     '[A :codex-followup[Nested]{prompt="Do not run"} link](https://example.com)',
   ].join('\n\n')
-  render(<ChatTranscript onFollowUp={vi.fn()} events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text })]} />)
-  for (const name of ['Code', 'Fenced', 'Missing', 'Partial', 'Empty', 'Unsafe', 'Nested']) {
+  render(
+    <ChatTranscript
+      onFollowUp={vi.fn()}
+      onOpenFilePath={onOpenFilePath}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text })]}
+    />,
+  )
+  for (const name of ['Code', 'Fenced', 'Partial', 'Empty', 'Unsafe', 'Nested']) {
     expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
   }
-  expect(screen.getByRole('log')).toHaveTextContent(':codex-file-citation{path="/tmp/example.txt" purpose="source"}')
+  const citation = screen.getByRole('link', { name: 'example.txt' })
+  expect(citation).toHaveAttribute('title', '/tmp/example.txt')
+  expect(citation).toHaveAttribute('href', '/api/sessions/sess_1/events/1/file-citation?path=%2Ftmp%2Fexample.txt')
+  expect(citation).toHaveAttribute('target', '_blank')
+  expect(onOpenFilePath).not.toHaveBeenCalled()
+  expect(screen.getByRole('log')).not.toHaveTextContent(':codex-file-citation{path="/tmp/example.txt" purpose="source"}')
+  expect(screen.getByRole('log')).toHaveTextContent(':codex-file-citation{path="/tmp/unsafe.txt"')
   expect(screen.getByRole('log')).toHaveTextContent(':codex-followup[Partial]{prompt="unfinished')
+})
+
+test('renders an output file citation with spaces and underscores in its absolute path', () => {
+  const onOpenFilePath = vi.fn()
+  const path = '/Users/joey/Documents/Legal/Divorce/Ryann Responses/certificate-of-completion-OPP_17893173627841.pdf'
+  const text = [
+    'Done. I created `Ryann Responses` inside the divorce folder and saved the verified attachment there:',
+    '',
+    `:codex-file-citation{path="${path}" purpose="output"}`,
+    '',
+    'It confirms her 12-hour co-parenting course completion on September 13, 2026.',
+  ].join('\n')
+  render(
+    <ChatTranscript
+      onOpenFilePath={onOpenFilePath}
+      events={[event(1, 'agent.message.completed', 'assistant', 'completed', { text })]}
+    />,
+  )
+
+  const citation = screen.getByRole('link', { name: 'certificate-of-completion-OPP_17893173627841.pdf' })
+  expect(citation).toHaveAttribute('title', path)
+  expect(citation).toHaveAttribute(
+    'href',
+    '/api/sessions/sess_1/events/1/file-citation?path=%2FUsers%2Fjoey%2FDocuments%2FLegal%2FDivorce%2FRyann+Responses%2Fcertificate-of-completion-OPP_17893173627841.pdf',
+  )
+  expect(citation).toHaveAttribute('target', '_blank')
+  expect(onOpenFilePath).not.toHaveBeenCalled()
+  expect(screen.getByRole('log')).not.toHaveTextContent(':codex-file-citation')
 })
 
 test('activates a follow-up only when its streaming directive is complete and keeps user examples literal', () => {
@@ -2200,4 +2250,16 @@ test('activates a follow-up only when its streaming directive is complete and ke
   rerender(<ChatTranscript onFollowUp={onFollowUp} events={[event(1, 'user.message.completed', 'user', 'completed', { text: full })]} />)
   expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
   expect(screen.getByRole('log')).toHaveTextContent(full)
+})
+
+test('keeps file citation examples in user messages literal', () => {
+  const citation = ':codex-file-citation{path="/tmp/example.txt" purpose="source"}'
+  render(
+    <ChatTranscript
+      onOpenFilePath={vi.fn()}
+      events={[event(1, 'user.message.completed', 'user', 'completed', { text: citation })]}
+    />,
+  )
+  expect(screen.queryByRole('link', { name: 'example.txt' })).not.toBeInTheDocument()
+  expect(screen.getByRole('log')).toHaveTextContent(citation)
 })

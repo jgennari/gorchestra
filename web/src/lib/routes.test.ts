@@ -98,6 +98,7 @@ test('session route helpers parse and build session paths', () => {
   expect(sessionPath('sess_123', 'console')).toBe('/sessions/sess_123/console')
   expect(sessionPath('sess_123', 'schedules')).toBe('/sessions/sess_123/settings/schedules')
   expect(sessionPath('sess_123', 'skills')).toBe('/sessions/sess_123/settings/skills')
+  expect(sessionPath('sess_123', 'activity')).toBe('/sessions/sess_123/settings/activity')
   expect(sessionPath('sess_123', 'files')).toBe('/sessions/sess_123/files')
   expect(sessionPath('sess_123', 'host')).toBe('/sessions/sess_123/settings/hosting')
   expect(sessionPath('sess_123', 'settings')).toBe('/sessions/sess_123/settings')
@@ -114,7 +115,7 @@ test('session route helpers parse and build session paths', () => {
 })
 
 test.each(['sess_123', 'gorchestra-ui'])('Settings sections round-trip for %s and retain legacy links', (key) => {
-  for (const [view, segment] of [['schedules', 'schedules'], ['skills', 'skills'], ['host', 'hosting']] as const) {
+  for (const [view, segment] of [['activity', 'activity'], ['schedules', 'schedules'], ['skills', 'skills'], ['host', 'hosting']] as const) {
     const canonical = `/sessions/${key}/settings/${segment}`
     expect(sessionPath(key, view)).toBe(canonical)
     expect(sessionSlugPath(key, view)).toBe(canonical)
