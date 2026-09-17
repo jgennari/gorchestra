@@ -15,6 +15,7 @@ export function applySessionEvent(session: Session, event: AgentEvent, status: S
   const pendingPermissionCount = pendingPermissionCountFromEvent(session.pending_permission_count ?? 0, event)
   const updatedAgentOptions = sessionAgentOptionsFromEvent(event)
   const updatedPinnedAt = sessionPinnedAtFromEvent(event)
+  const updatedArchivedAt = sessionArchivedAtFromEvent(event)
   if (!status) {
     return {
       ...session,
@@ -31,6 +32,12 @@ export function applySessionEvent(session: Session, event: AgentEvent, status: S
           }
         : {}),
       ...(updatedPinnedAt !== undefined ? { pinned_at: updatedPinnedAt } : {}),
+      ...(updatedArchivedAt !== undefined
+        ? {
+            archived_at: updatedArchivedAt,
+            updated_at: payloadString(event.payload, 'updated_at') ?? event.created_at,
+          }
+        : {}),
     }
   }
 
@@ -52,6 +59,20 @@ export function applySessionEvent(session: Session, event: AgentEvent, status: S
     updated_at: updatedAt,
     completed_at: completedAt,
   }
+}
+
+function sessionArchivedAtFromEvent(event: AgentEvent): string | null | undefined {
+  if (
+    (event.type !== 'session.archived' && event.type !== 'session.restored') ||
+    typeof event.payload !== 'object' ||
+    event.payload === null ||
+    Array.isArray(event.payload) ||
+    !('archived_at' in event.payload)
+  ) {
+    return undefined
+  }
+  const archivedAt = (event.payload as Record<string, unknown>).archived_at
+  return typeof archivedAt === 'string' ? archivedAt : archivedAt === null ? null : undefined
 }
 
 function sessionPinnedAtFromEvent(event: AgentEvent): string | null | undefined {

@@ -758,7 +758,7 @@ function App() {
     }
     setSessions((current) => {
       let changed = false
-      const next = sortSessions(
+      const updated = sortSessions(
         current.map((session) => {
           if (session.id !== event.session_id) {
             return session
@@ -770,6 +770,11 @@ function App() {
           return updatedSession
         }),
       )
+      const next = updated.filter(
+        (session) => !session.archived_at || session.id === selectedSessionIDRef.current,
+      )
+      if (next.length !== updated.length) changed = true
+      if (changed) sessionsRef.current = next
       return changed ? next : current
     })
   }, [])
@@ -801,6 +806,7 @@ function App() {
 
   const applyIngestedSessionEvent = useCallback(
     (event: AgentEvent) => {
+      const knownSession = sessionsRef.current.find((session) => session.id === event.session_id)
       applySessionActivityEvent(event)
       const selected = event.session_id === selectedSessionIDRef.current
       if (selected) selectedEventsRef.current = appendEvent(selectedEventsRef.current, event)
@@ -812,7 +818,6 @@ function App() {
       if (shouldRefreshWorkspaceFilesForEvent(event) && selected) {
         setFileRefreshKey((value) => value + 1)
       }
-      const knownSession = sessionsRef.current.find((session) => session.id === event.session_id)
       const terminalUnselected = isTerminalEvent(event.type) && !selected
       if (terminalUnselected && event.seq >= latestSessionSeq(knownSession ?? null)) {
         markSessionUnseenAfter(event.session_id, event.seq)

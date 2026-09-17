@@ -1953,6 +1953,62 @@ test('session pin events update pin state without changing activity recency', ()
   expect(updated.last_event_seq).toBe(1)
 })
 
+test('session archive lifecycle events update the cached session snapshot', () => {
+  const archived = applySessionEvent(
+    firstSession,
+    event(1, 'session.archived', {
+      archived_at: '2026-06-12T16:20:00Z',
+      updated_at: '2026-06-12T16:20:00Z',
+    }),
+    null,
+  )
+  expect(archived.archived_at).toBe('2026-06-12T16:20:00Z')
+  expect(archived.updated_at).toBe('2026-06-12T16:20:00Z')
+
+  const restored = applySessionEvent(
+    archived,
+    event(2, 'session.restored', {
+      archived_at: null,
+      updated_at: '2026-06-12T16:21:00Z',
+    }),
+    null,
+  )
+  expect(restored.archived_at).toBeNull()
+  expect(restored.updated_at).toBe('2026-06-12T16:21:00Z')
+})
+
+test('global archive activity removes an unselected child and its parent expander', async () => {
+  const parent: Session = { ...firstSession, id: 'sess_parent', title: 'Parent', child_count: 1 }
+  const child: Session = {
+    ...secondSession,
+    id: 'sess_child',
+    title: 'Child',
+    parent_session_id: parent.id,
+    lineage_depth: 1,
+  }
+  window.history.replaceState({}, '', '/sessions/sess_parent')
+  vi.stubGlobal('fetch', fetchMock({ sessions: [parent, child] }))
+
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  expect(await screen.findByRole('button', { name: 'Child' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Collapse Parent' })).toBeInTheDocument()
+
+  act(() => {
+    activitySource.emit({
+      ...event(1, 'session.archived', {
+        archived_at: '2026-06-12T16:20:00Z',
+        updated_at: '2026-06-12T16:20:00Z',
+      }, 'sess_child'),
+      global_seq: 45,
+    })
+  })
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Child' })).not.toBeInTheDocument())
+  expect(screen.queryByRole('button', { name: 'Collapse Parent' })).not.toBeInTheDocument()
+})
+
 test('global pin activity moves a background session above newer recent activity', async () => {
   render(<App />)
 

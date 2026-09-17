@@ -1767,6 +1767,15 @@ func TestArchiveSessionSetsArchivedAtAndHidesFromList(t *testing.T) {
 	if response.ArchivedAt == nil {
 		t.Fatal("expected archived_at in response")
 	}
+	if response.EventCount != 2 || response.LastEventSeq != 2 {
+		t.Fatalf("expected response to include archive event counters, got %#v", response)
+	}
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"schedule.archived", "session.archived"})
+	payload := decodeEventPayload(t, events[1])
+	if payload["archived_at"] != *response.ArchivedAt {
+		t.Fatalf("expected archive event timestamp %q, got %#v", *response.ArchivedAt, payload["archived_at"])
+	}
 
 	updated, err := dbStore.GetSession(ctx, session.ID)
 	if err != nil {
@@ -1833,6 +1842,15 @@ func TestRestoreSessionClearsArchivedAtAndReturnsToList(t *testing.T) {
 	}
 	if response.ArchivedAt != nil {
 		t.Fatalf("expected restored response archived_at nil, got %v", response.ArchivedAt)
+	}
+	if response.EventCount != 1 || response.LastEventSeq != 1 {
+		t.Fatalf("expected response to include restore event counters, got %#v", response)
+	}
+	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+	assertEventTypes(t, events, []string{"session.restored"})
+	payload := decodeEventPayload(t, events[0])
+	if payload["archived_at"] != nil {
+		t.Fatalf("expected restore event archived_at null, got %#v", payload["archived_at"])
 	}
 
 	updated, err := dbStore.GetSession(ctx, session.ID)

@@ -759,6 +759,15 @@ func (api API) archiveSessionHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to archive session")
 		return
 	}
+	if err := api.appendSessionArchiveUpdated(r.Context(), archived, "session.archived"); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist session archive update")
+		return
+	}
+	archived, err = api.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reload session")
+		return
+	}
 
 	response, err := api.sessionResponse(r.Context(), archived)
 	if err != nil {
@@ -783,6 +792,15 @@ func (api API) restoreSessionHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to restore session")
+		return
+	}
+	if err := api.appendSessionArchiveUpdated(r.Context(), restored, "session.restored"); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist session restore update")
+		return
+	}
+	restored, err = api.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reload session")
 		return
 	}
 
@@ -2336,6 +2354,29 @@ func (api API) appendSessionPinUpdated(ctx context.Context, session store.Sessio
 	_, err = api.events.Append(ctx, eventservice.AppendParams{
 		SessionID: session.ID,
 		Type:      "session.pin.updated",
+		Role:      "system",
+		Status:    store.EventStatusCompleted,
+		Payload:   payload,
+	})
+	return err
+}
+
+func (api API) appendSessionArchiveUpdated(ctx context.Context, session store.Session, eventType string) error {
+	var archivedAt any
+	if session.ArchivedAt != nil {
+		archivedAt = session.ArchivedAt.UTC().Format(time.RFC3339Nano)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"archived_at": archivedAt,
+		"updated_at":  session.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal session archive update payload: %w", err)
+	}
+
+	_, err = api.events.Append(ctx, eventservice.AppendParams{
+		SessionID: session.ID,
+		Type:      eventType,
 		Role:      "system",
 		Status:    store.EventStatusCompleted,
 		Payload:   payload,
