@@ -146,6 +146,7 @@ type submitMessageRequest struct {
 	Steer              bool                   `json:"steer,omitempty"`
 	ExpectedRunID      string                 `json:"expected_run_id,omitempty"`
 	ClientSubmissionID string                 `json:"client_submission_id,omitempty"`
+	RejectIfBusy       bool                   `json:"reject_if_busy,omitempty"`
 }
 
 type submitSkillReference struct {
@@ -1351,6 +1352,10 @@ func (api API) submitDecodedMessage(w http.ResponseWriter, r *http.Request, requ
 		writeError(w, http.StatusBadRequest, "expected_run_id requires steer")
 		return
 	}
+	if session.Status == store.SessionStatusRunning && request.RejectIfBusy && !request.Queue {
+		writeError(w, http.StatusConflict, "session is busy; use queue or steer explicitly")
+		return
+	}
 	if request.Queue || session.Status == store.SessionStatusRunning {
 		if len(attachments) > 0 {
 			writeError(w, http.StatusBadRequest, "queued messages cannot include image attachments")
@@ -1730,7 +1735,7 @@ func (api API) startSessionRunWithID(
 	appendErrorMessage string,
 	runID string,
 ) (store.Session, string, bool) {
-	runCtx, cleanup, err := api.runs.Register(context.Background(), session.ID)
+	runCtx, cleanup, err := api.runs.RegisterRun(context.Background(), session.ID, runID)
 	if err != nil {
 		if errors.Is(err, runcontrol.ErrRunAlreadyActive) {
 			writeError(w, http.StatusConflict, "session is already running")
@@ -1873,7 +1878,13 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		}
 	}
 
-	runCtx, cleanup, err := api.runs.Register(context.Background(), session.ID)
+	runID, err := store.NewRunID()
+	if err != nil {
+		log.Printf("failed to create queued message run: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
+		release()
+		return false
+	}
+	runCtx, cleanup, err := api.runs.RegisterRun(context.Background(), session.ID, runID)
 	if err != nil {
 		if !errors.Is(err, runcontrol.ErrRunAlreadyActive) {
 			log.Printf("failed to register queued message run: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
@@ -1881,14 +1892,6 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		release()
 		return false
 	}
-	runID, err := store.NewRunID()
-	if err != nil {
-		cleanup()
-		log.Printf("failed to create queued message run: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
-		release()
-		return false
-	}
-
 	if err := api.appendUserMessage(ctx, session.ID, queued.Content, nil, skills, eventOptions, sourceMetadata, queued.ID); err != nil {
 		cleanup()
 		log.Printf("failed to append queued user message: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)

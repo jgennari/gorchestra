@@ -25,6 +25,7 @@ type Manager struct {
 }
 
 type run struct {
+	runID              string
 	cancel             context.CancelFunc
 	cancelled          bool
 	cancellation       Cancellation
@@ -76,6 +77,10 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) Register(parent context.Context, sessionID string) (context.Context, func(), error) {
+	return m.RegisterRun(parent, sessionID, "")
+}
+
+func (m *Manager) RegisterRun(parent context.Context, sessionID string, runID string) (context.Context, func(), error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, nil, ErrInvalidSessionID
 	}
@@ -84,7 +89,7 @@ func (m *Manager) Register(parent context.Context, sessionID string) (context.Co
 	}
 
 	ctx, cancel := context.WithCancel(parent)
-	activeRun := &run{cancel: cancel}
+	activeRun := &run{runID: strings.TrimSpace(runID), cancel: cancel}
 
 	m.mu.Lock()
 	if _, exists := m.runs[sessionID]; exists {
@@ -109,6 +114,40 @@ func (m *Manager) Register(parent context.Context, sessionID string) (context.Co
 	}
 
 	return ctx, cleanup, nil
+}
+
+// CancelRun cancels only when runID still identifies the active run. This
+// prevents a delayed controller request from cancelling a successor run.
+func (m *Manager) CancelRun(sessionID string, runID string, cancellation Cancellation) error {
+	sessionID = strings.TrimSpace(sessionID)
+	runID = strings.TrimSpace(runID)
+	if sessionID == "" || runID == "" {
+		return ErrInvalidSessionID
+	}
+	m.mu.Lock()
+	activeRun, exists := m.runs[sessionID]
+	if !exists || activeRun.runID != runID {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrRunNotActive, runID)
+	}
+	if activeRun.cancelled {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrRunAlreadyCanceled, runID)
+	}
+	cancellation.Source = strings.TrimSpace(cancellation.Source)
+	cancellation.Reason = strings.TrimSpace(cancellation.Reason)
+	if cancellation.Source == "" {
+		cancellation.Source = defaultCancellation.Source
+	}
+	if cancellation.Reason == "" {
+		cancellation.Reason = defaultCancellation.Reason
+	}
+	activeRun.cancelled = true
+	activeRun.cancellation = cancellation
+	cancel := activeRun.cancel
+	m.mu.Unlock()
+	cancel()
+	return nil
 }
 
 func (m *Manager) Cancel(sessionID string, cancellation Cancellation) error {
@@ -160,6 +199,13 @@ func (m *Manager) Active(sessionID string) bool {
 
 	_, exists := m.runs[sessionID]
 	return exists
+}
+
+func (m *Manager) ActiveRun(sessionID string, runID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	activeRun, exists := m.runs[strings.TrimSpace(sessionID)]
+	return exists && activeRun.runID == strings.TrimSpace(runID) && !activeRun.cancelled
 }
 
 func (m *Manager) OpenUserInput(ctx context.Context, request agents.UserInputRequest) (agents.UserInputWaiter, error) {

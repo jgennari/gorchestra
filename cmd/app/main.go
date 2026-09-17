@@ -76,12 +76,12 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) > 1 && isControlCommand(os.Args[1]) {
+	if len(os.Args) > 1 && (isControlCommand(os.Args[1]) || (os.Args[1] != "serve" && !strings.HasPrefix(os.Args[1], "-"))) {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := (controlcli.CLI{}).Run(ctx, os.Args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "gorchestra: %v\n", err)
-			os.Exit(1)
+			os.Exit(controlcli.ExitCode(err))
 		}
 		return
 	}
@@ -262,7 +262,7 @@ func main() {
 
 func isControlCommand(command string) bool {
 	switch command {
-	case "commands", "help", "-h", "--help", "agents", "run", "runs":
+	case "commands", "help", "-h", "--help", "agents", "run", "runs", "sessions", "requests":
 		return true
 	default:
 		return false

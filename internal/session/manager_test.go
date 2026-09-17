@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jgennari/gorchestra/internal/agents"
 )
@@ -80,6 +81,34 @@ func TestManagerCancelMissingRun(t *testing.T) {
 	err := manager.Cancel("sess_missing", Cancellation{})
 	if !errors.Is(err, ErrRunNotActive) {
 		t.Fatalf("expected ErrRunNotActive, got %v", err)
+	}
+}
+
+func TestManagerCancelRunRejectsStaleRunIdentity(t *testing.T) {
+	manager := NewManager()
+	ctx, cleanup, err := manager.RegisterRun(context.Background(), "sess_one", "run_new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if err := manager.CancelRun("sess_one", "run_old", Cancellation{}); !errors.Is(err, ErrRunNotActive) {
+		t.Fatalf("expected stale identity rejection, got %v", err)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("stale cancellation stopped active run")
+	default:
+	}
+	if !manager.ActiveRun("sess_one", "run_new") || manager.ActiveRun("sess_one", "run_old") {
+		t.Fatal("active run identity lookup is incorrect")
+	}
+	if err := manager.CancelRun("sess_one", "run_new", Cancellation{Source: "cli", Reason: "requested"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("exact cancellation did not stop run")
 	}
 }
 

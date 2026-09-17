@@ -138,9 +138,12 @@ type AgentRegistry interface {
 
 type RunManager interface {
 	Register(parent context.Context, sessionID string) (context.Context, func(), error)
+	RegisterRun(parent context.Context, sessionID string, runID string) (context.Context, func(), error)
 	Cancel(sessionID string, cancellation runcontrol.Cancellation) error
+	CancelRun(sessionID string, runID string, cancellation runcontrol.Cancellation) error
 	Cancellation(sessionID string) (runcontrol.Cancellation, bool)
 	Active(sessionID string) bool
+	ActiveRun(sessionID string, runID string) bool
 	OpenUserInput(ctx context.Context, request agents.UserInputRequest) (agents.UserInputWaiter, error)
 	PendingUserInput(sessionID string, requestID string) (agents.UserInputRequest, error)
 	AnswerUserInputWithPersistence(ctx context.Context, sessionID string, requestID string, response agents.UserInputResponse, persist func() error) error
@@ -322,6 +325,12 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Post("/api/runs", api.createRunHandler)
 		r.Get("/api/runs/{runId}", api.getRunHandler)
 		r.Get("/api/runs/{runId}/report", api.getRunReportHandler)
+		r.Get("/api/runs/{runId}/events", api.getRunEventsHandler)
+		r.Get("/api/runs/{runId}/events/stream", api.runEventStreamHandler)
+		r.Get("/api/runs/{runId}/requests", api.getRunRequestsHandler)
+		r.Post("/api/runs/{runId}/cancel", api.cancelRunHandler)
+		r.Post("/api/runs/{runId}/requests/{requestId}/answer", api.answerRunRequestHandler)
+		r.Post("/api/runs/{runId}/permissions/{requestId}/resolve", api.resolveRunPermissionHandler)
 		r.Get("/api/workspaces/roots", api.workspaceRootsHandler)
 		r.Get("/api/workspaces/browse", api.workspaceBrowseHandler)
 		r.Post("/api/sessions", api.createSessionHandler)

@@ -1,6 +1,6 @@
 # Agent control CLI and child sessions
 
-Status: Stage 1 implemented; Stages 2-4 pending
+Status: Stages 1-2 implemented; Stages 3-4 pending
 
 Date: 2026-09-17
 
@@ -278,7 +278,7 @@ for human intervention. Child completion does not inject a parent message in V1.
    help/manifest, capability discovery, exact run receipts, durable create/start,
    run inspection, and report projection. Preserve current server and host usage.
    Demonstrate detached creation and an unambiguous report after completion.
-2. **Observation and control.** Add text/JSON/NDJSON renderers, paginated history,
+2. **Observation and control — complete.** Add text/JSON/NDJSON renderers, paginated history,
    SSE follow/resync, wait-any/all, exact cancellation, follow-up/queue/steer, and
    question handling. Demonstrate a process streaming tools and output, exiting
    on its own run's terminal event, and later reconstructing the same result.
@@ -294,6 +294,12 @@ Stage 1 verification on 2026-09-17 covered the complete Go test suite, `go vet`,
 an isolated compiled-binary service, offline command discovery, provider discovery,
 detached fake-agent creation, terminal report retrieval, and an idempotent retry
 that returned the original session and run IDs.
+
+Stage 2 verification on 2026-09-17 covered run-bounded paginated history and SSE,
+foreground text/JSON/NDJSON rendering, completed-before-attach handling, explicit
+resync, wait-any/all with timeouts, exact-run cancellation, explicit follow-up
+queue/steer behavior, and durable question/permission discovery and response.
+The CLI emits documented exit codes and keeps machine-format stdout parseable.
 
 Required test coverage includes duplicate submissions and lost responses;
 acceptance/startup crash boundaries; exactly one terminal result; wait finishing

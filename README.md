@@ -194,9 +194,10 @@ Codex shell commands run with network access enabled by default. Codex native we
 
 ### Agent control CLI
 
-The same binary can create durable runs through an already-running Gorchestra
-service. Stage 1 returns a detached receipt with exact session and run IDs; live
-streaming and wait commands arrive in Stage 2.
+The same binary can create and control durable runs through an already-running
+Gorchestra service. Runs stream by default; `--detach` returns immediately with
+exact session and run IDs. JSON output waits quietly for a terminal report,
+while NDJSON emits an accepted record, normalized events, and a final result.
 
 ```sh
 gorchestra commands --json
@@ -205,17 +206,35 @@ gorchestra agents options codex --json
 
 gorchestra run --agent codex --model MODEL_ID \
   --thinking high --fast=true --plan=true \
-  --prompt-file task.md --detach --json
+  --prompt-file task.md --format ndjson
+
+gorchestra run --agent codex --prompt-file task.md --detach --json
 
 gorchestra runs show RUN_ID --json
+gorchestra runs watch RUN_ID --format ndjson
+gorchestra runs watch RUN_ID --until-attention --json
+gorchestra runs wait RUN_ID --timeout 10m --json
 gorchestra runs report RUN_ID --json
+gorchestra runs cancel RUN_ID --json
+
+gorchestra sessions send SESSION_ID --prompt-file follow-up.md --format ndjson
+gorchestra sessions send SESSION_ID --prompt "do this next" --queue --detach --json
+gorchestra sessions send SESSION_ID --prompt "change direction" \
+  --steer --expected-run-id RUN_ID --json
+
+gorchestra requests list RUN_ID --json
+gorchestra requests answer RUN_ID REQUEST_ID --answers-json answers.json --json
+gorchestra requests resolve RUN_ID REQUEST_ID --option OPTION_ID --json
 ```
 
 Set `GORCHESTRA_API_URL` or pass `--server` to target a service other than
 `http://127.0.0.1:8080`. Use `--request-id` when a caller may retry after losing
 the response; identical retries return the original IDs and different content is
 rejected. `runs report` returns the full final assistant response and recorded run
-metadata after the run reaches a terminal state.
+metadata after the run reaches a terminal state. A foreground observer may be
+stopped without cancelling server work; use `runs watch` with the run ID to
+reattach, and use `runs cancel` only when the work itself should stop. Busy
+session follow-ups require an explicit `--queue` or exact-run `--steer`.
 
 ## Hosted Development Previews
 

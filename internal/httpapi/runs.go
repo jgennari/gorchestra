@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jgennari/gorchestra/internal/agents"
+	runcontrol "github.com/jgennari/gorchestra/internal/session"
 	"github.com/jgennari/gorchestra/internal/store"
 )
 
@@ -21,6 +24,22 @@ type runControlStore interface {
 	GetRunSubmissionByRunID(context.Context, string) (store.RunSubmission, error)
 	UpdateRunSubmission(context.Context, string, string, string) error
 	GetRun(context.Context, string) (store.Run, error)
+}
+
+type runEventStore interface {
+	runControlStore
+	ListEventsFiltered(context.Context, string, int64, int, store.EventListFilter) ([]store.Event, error)
+	ListPendingInputEvents(context.Context, string, int64) ([]store.Event, error)
+	ListPendingPermissionEvents(context.Context, string, int64) ([]store.Event, error)
+}
+
+type runEventsResponse struct {
+	SchemaVersion int             `json:"schema_version"`
+	RunID         string          `json:"run_id"`
+	SessionID     string          `json:"session_id"`
+	Events        []eventResponse `json:"events"`
+	NextAfterSeq  int64           `json:"next_after_seq"`
+	HasMore       bool            `json:"has_more"`
 }
 
 type createRunRequest struct {
@@ -342,6 +361,316 @@ func (api API) getRunReportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, runToResponse(run))
+}
+
+func (api API) getRunEventsHandler(w http.ResponseWriter, r *http.Request) {
+	persistence, ok := api.store.(runEventStore)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "run events are unavailable")
+		return
+	}
+	run, err := persistence.GetRun(r.Context(), chi.URLParam(r, "runId"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load run")
+		return
+	}
+	after := run.StartSeq - 1
+	if raw := strings.TrimSpace(r.URL.Query().Get("after_seq")); raw != "" {
+		value, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || value < 0 {
+			writeError(w, http.StatusBadRequest, "after_seq must be a non-negative integer")
+			return
+		}
+		if value > after {
+			after = value
+		}
+	}
+	limit := 500
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 1 || value > 1000 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 1000")
+			return
+		}
+		limit = value
+	}
+	events, err := persistence.ListEventsFiltered(r.Context(), run.SessionID, after, limit+1, store.EventListFilter{})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list run events")
+		return
+	}
+	events = eventsWithinRun(events, run)
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+	responses := make([]eventResponse, 0, len(events))
+	next := after
+	for _, event := range events {
+		responses = append(responses, newEventResponse(event))
+		if !event.Transient && event.Seq > next {
+			next = event.Seq
+		}
+	}
+	writeJSON(w, http.StatusOK, runEventsResponse{SchemaVersion: 1, RunID: run.ID, SessionID: run.SessionID, Events: responses, NextAfterSeq: next, HasMore: hasMore})
+}
+
+func (api API) runEventStreamHandler(w http.ResponseWriter, r *http.Request) {
+	persistence, ok := api.store.(runEventStore)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "run events are unavailable")
+		return
+	}
+	run, err := persistence.GetRun(r.Context(), chi.URLParam(r, "runId"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load run")
+		return
+	}
+	after := run.StartSeq - 1
+	if raw := strings.TrimSpace(r.URL.Query().Get("after_seq")); raw != "" {
+		value, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || value < 0 {
+			writeError(w, http.StatusBadRequest, "after_seq must be a non-negative integer")
+			return
+		}
+		if value > after {
+			after = value
+		}
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming is not supported")
+		return
+	}
+	live, unsubscribe := api.events.Subscribe(run.SessionID)
+	defer unsubscribe()
+	replayed, resync, err := api.replayEvents(r.Context(), run.SessionID, after, store.EventListFilter{})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to replay run events")
+		return
+	}
+	replayed = eventsWithinRun(replayed, run)
+	headers := w.Header()
+	headers.Set("Content-Type", "text/event-stream")
+	headers.Set("Cache-Control", "no-cache")
+	headers.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	_ = writeSSEComment(w, "connected")
+	flusher.Flush()
+	if resync {
+		_ = writeSSEControl(w, streamResyncEventType, map[string]any{"reason": "replay_window_exceeded", "after_seq": after})
+		flusher.Flush()
+		return
+	}
+	highest := after
+	for _, event := range replayed {
+		if err := writeSSE(w, event); err != nil {
+			return
+		}
+		flusher.Flush()
+		if event.Seq > highest {
+			highest = event.Seq
+		}
+		if run.TerminalSeq > 0 && event.Seq >= run.TerminalSeq {
+			return
+		}
+	}
+	if run.TerminalSeq > 0 {
+		return
+	}
+	heartbeat := time.NewTicker(streamHeartbeat)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			if err := writeSSEComment(w, "heartbeat"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case event, open := <-live:
+			if !open {
+				return
+			}
+			if event.Seq <= highest || event.Seq < run.StartSeq {
+				continue
+			}
+			if err := writeSSE(w, event); err != nil {
+				return
+			}
+			flusher.Flush()
+			if !event.Transient {
+				highest = event.Seq
+			}
+			if eventRunID(event) == run.ID && isTerminalRunEvent(event.Type) {
+				return
+			}
+		}
+	}
+}
+
+func eventsWithinRun(events []store.Event, run store.Run) []store.Event {
+	result := events[:0]
+	for _, event := range events {
+		if event.Seq < run.StartSeq || (run.TerminalSeq > 0 && event.Seq > run.TerminalSeq) {
+			continue
+		}
+		result = append(result, event)
+	}
+	return result
+}
+
+func eventRunID(event store.Event) string {
+	var payload struct {
+		RunID string `json:"run_id"`
+	}
+	_ = json.Unmarshal(event.Payload, &payload)
+	return strings.TrimSpace(payload.RunID)
+}
+
+func (api API) cancelRunHandler(w http.ResponseWriter, r *http.Request) {
+	persistence, ok := api.store.(runControlStore)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "run control is unavailable")
+		return
+	}
+	run, err := persistence.GetRun(r.Context(), chi.URLParam(r, "runId"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load run")
+		return
+	}
+	if run.Status != "running" {
+		writeError(w, http.StatusConflict, "run is not running")
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 && !decodeJSONBody(w, r, &body) {
+		return
+	}
+	reason := strings.TrimSpace(body.Reason)
+	if reason == "" {
+		reason = "requested"
+	}
+	if err := api.runs.CancelRun(run.SessionID, run.ID, runcontrol.Cancellation{Source: "cli", Reason: reason}); err != nil {
+		if errors.Is(err, runcontrol.ErrRunNotActive) || errors.Is(err, runcontrol.ErrRunAlreadyCanceled) {
+			writeError(w, http.StatusConflict, "run is no longer active")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to cancel run")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"schema_version": 1, "run_id": run.ID, "session_id": run.SessionID, "status": "cancelling"})
+}
+
+func (api API) getRunRequestsHandler(w http.ResponseWriter, r *http.Request) {
+	persistence, ok := api.store.(runEventStore)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "run requests are unavailable")
+		return
+	}
+	run, err := persistence.GetRun(r.Context(), chi.URLParam(r, "runId"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load run")
+		return
+	}
+	through := run.TerminalSeq
+	if through == 0 {
+		session, loadErr := api.store.GetSession(r.Context(), run.SessionID)
+		if loadErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load session")
+			return
+		}
+		through = session.LastEventSeq
+	}
+	pending, err := persistence.ListPendingInputEvents(r.Context(), run.SessionID, through)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load requests")
+		return
+	}
+	permissions, err := persistence.ListPendingPermissionEvents(r.Context(), run.SessionID, through)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load permission requests")
+		return
+	}
+	pending = append(pending, permissions...)
+	sort.Slice(pending, func(left, right int) bool { return pending[left].Seq < pending[right].Seq })
+	responses := make([]eventResponse, 0, len(pending))
+	for _, event := range pending {
+		if event.Seq >= run.StartSeq && (run.TerminalSeq == 0 || event.Seq <= run.TerminalSeq) {
+			responses = append(responses, newEventResponse(event))
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"schema_version": 1, "run_id": run.ID, "session_id": run.SessionID, "requests": responses})
+}
+
+func (api API) answerRunRequestHandler(w http.ResponseWriter, r *http.Request) {
+	run, ok := api.requireActiveRun(w, r)
+	if !ok {
+		return
+	}
+	api.withSessionParam(r, run.SessionID, api.answerUserInputHandler, w)
+}
+
+func (api API) resolveRunPermissionHandler(w http.ResponseWriter, r *http.Request) {
+	run, ok := api.requireActiveRun(w, r)
+	if !ok {
+		return
+	}
+	api.withSessionParam(r, run.SessionID, api.resolvePermissionHandler, w)
+}
+
+func (api API) requireActiveRun(w http.ResponseWriter, r *http.Request) (store.Run, bool) {
+	persistence, ok := api.store.(runControlStore)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "run control is unavailable")
+		return store.Run{}, false
+	}
+	run, err := persistence.GetRun(r.Context(), chi.URLParam(r, "runId"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "run not found")
+		return store.Run{}, false
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load run")
+		return store.Run{}, false
+	}
+	if run.Status != "running" {
+		writeError(w, http.StatusConflict, "run is not running")
+		return store.Run{}, false
+	}
+	if !api.runs.ActiveRun(run.SessionID, run.ID) {
+		writeError(w, http.StatusConflict, "run is no longer active")
+		return store.Run{}, false
+	}
+	return run, true
+}
+
+func (api API) withSessionParam(r *http.Request, sessionID string, handler http.HandlerFunc, w http.ResponseWriter) {
+	ctx := chi.NewRouteContext()
+	if existing := chi.RouteContext(r.Context()); existing != nil {
+		*ctx = *existing
+	}
+	ctx.URLParams.Add("sessionId", sessionID)
+	handler(w, r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, ctx)))
 }
 
 func runToResponse(run store.Run) runResponse {

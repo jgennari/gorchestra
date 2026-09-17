@@ -102,6 +102,45 @@ func TestRunReportRejectsRunningRun(t *testing.T) {
 	})
 }
 
+func TestRunEventsAndExactCancellation(t *testing.T) {
+	ctx := context.Background()
+	barrier := make(chan struct{})
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New(fake.WithStepBarrier(barrier)))
+	receiptRecorder := postJSON(handler, "/api/runs", `{"agent_type":"fake","prompt":"wait"}`)
+	var receipt runReceiptResponse
+	decodeJSON(t, receiptRecorder, &receipt)
+
+	eventsRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(eventsRecorder, httptest.NewRequest(http.MethodGet, "/api/runs/"+receipt.RunID+"/events?limit=2", nil))
+	if eventsRecorder.Code != http.StatusOK {
+		t.Fatalf("expected run events, got %d: %s", eventsRecorder.Code, eventsRecorder.Body.String())
+	}
+	var page runEventsResponse
+	decodeJSON(t, eventsRecorder, &page)
+	if page.RunID != receipt.RunID || page.SessionID != receipt.SessionID || len(page.Events) == 0 {
+		t.Fatalf("unexpected run event page: %#v", page)
+	}
+	for _, event := range page.Events {
+		if event.Seq < 1 {
+			t.Fatalf("invalid run event boundary: %#v", event)
+		}
+	}
+
+	cancel := postJSON(handler, "/api/runs/"+receipt.RunID+"/cancel", `{}`)
+	if cancel.Code != http.StatusAccepted {
+		t.Fatalf("expected exact cancellation, got %d: %s", cancel.Code, cancel.Body.String())
+	}
+	close(barrier)
+	waitFor(t, func() bool {
+		run, err := dbStore.GetRun(ctx, receipt.RunID)
+		return err == nil && run.Status == "cancelled"
+	})
+	stale := postJSON(handler, "/api/runs/"+receipt.RunID+"/cancel", `{}`)
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("expected terminal run conflict, got %d: %s", stale.Code, stale.Body.String())
+	}
+}
+
 func TestCreateAgentOptionsPreservesExplicitFalseModes(t *testing.T) {
 	var input createAgentOptions
 	if err := json.Unmarshal([]byte(`{"codex":{"model":"example","fast_mode":false,"planning_mode":false}}`), &input); err != nil {
@@ -143,6 +182,33 @@ func TestMessageSubmissionReturnsExactRunID(t *testing.T) {
 	if _, err := dbStore.GetRun(ctx, response.RunID); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestMessageSubmissionCanRejectImplicitQueueWhenBusy(t *testing.T) {
+	ctx := context.Background()
+	barrier := make(chan struct{})
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New(fake.WithStepBarrier(barrier)))
+	session := createIntegrationSession(t, ctx, dbStore)
+	first := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"first"}`)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("start first run: %d %s", first.Code, first.Body.String())
+	}
+	rejected := postJSON(handler, "/api/sessions/"+session.ID+"/messages", `{"content":"second","reject_if_busy":true}`)
+	if rejected.Code != http.StatusConflict || !strings.Contains(rejected.Body.String(), "queue or steer") {
+		t.Fatalf("expected explicit queue/steer conflict, got %d: %s", rejected.Code, rejected.Body.String())
+	}
+	queued, err := dbStore.ListQueuedMessages(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("rejected follow-up was queued: %#v", queued)
+	}
+	close(barrier)
+	waitFor(t, func() bool {
+		current, err := dbStore.GetSession(ctx, session.ID)
+		return err == nil && current.Status == store.SessionStatusIdle
+	})
 }
 
 func TestRunReportKeepsFullFinalResponse(t *testing.T) {

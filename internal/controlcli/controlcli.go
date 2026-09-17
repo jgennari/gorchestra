@@ -47,7 +47,7 @@ var commandSpecs = []commandSpec{
 	{Command: "help [command]", Description: "Show CLI help without contacting the service."},
 	{Command: "agents list", Description: "List registered agent providers."},
 	{Command: "agents options <provider>", Description: "Show models and modes reported by a provider."},
-	{Command: "run", Description: "Create a session and start its first run; Stage 1 returns a detached receipt.", Flags: []flagSpec{
+	{Command: "run", Description: "Create a session and start its first run; stream until terminal unless detached.", Flags: []flagSpec{
 		{Name: "agent", Type: "string", Description: "agent provider (required)"},
 		{Name: "model", Type: "string", Description: "provider model override"},
 		{Name: "thinking", Type: "string", Description: "reasoning effort or thinking level"},
@@ -57,10 +57,42 @@ var commandSpecs = []commandSpec{
 		{Name: "prompt", Type: "string", Description: "task prompt"},
 		{Name: "prompt-file", Type: "path|-", Description: "read task prompt from a file or stdin"},
 		{Name: "request-id", Type: "string", Description: "idempotency key"},
-		{Name: "detach", Type: "boolean", Default: true, Description: "return after durable acceptance"},
+		{Name: "detach", Type: "boolean", Default: false, Description: "return after durable acceptance"},
+		{Name: "format", Type: "string", Default: "text", Description: "text, json, or ndjson"},
+		{Name: "timeout", Type: "duration", Description: "maximum foreground observation time"},
+		{Name: "until-attention", Type: "boolean", Description: "return with code 6 when input is required"},
 	}},
 	{Command: "runs show <run-id>", Description: "Inspect an exact run."},
+	{Command: "runs watch <run-id>", Description: "Replay and follow an exact run until terminal.", Flags: []flagSpec{
+		{Name: "after-seq", Type: "integer", Default: 0, Description: "resume after a durable event sequence"},
+		{Name: "format", Type: "string", Default: "json", Description: "text, json, or ndjson"},
+		{Name: "timeout", Type: "duration", Description: "maximum observation time"},
+		{Name: "until-attention", Type: "boolean", Description: "return with code 6 when input is required"},
+	}},
+	{Command: "runs wait <run-id>...", Description: "Wait quietly for one or more exact runs.", Flags: []flagSpec{
+		{Name: "any", Type: "boolean", Description: "return when the first run becomes terminal"},
+		{Name: "all", Type: "boolean", Default: true, Description: "return after every run is terminal"},
+		{Name: "timeout", Type: "duration", Description: "maximum wait time"},
+	}},
 	{Command: "runs report <run-id>", Description: "Retrieve a terminal run report."},
+	{Command: "runs cancel <run-id>", Description: "Cancel only the specified active run.", Flags: []flagSpec{
+		{Name: "reason", Type: "string", Description: "human-readable cancellation reason"},
+	}},
+	{Command: "sessions send <session-id>", Description: "Send, queue, or steer a follow-up message.", Flags: []flagSpec{
+		{Name: "prompt", Type: "string", Description: "follow-up prompt"},
+		{Name: "prompt-file", Type: "path|-", Description: "read the prompt from a file or stdin"},
+		{Name: "queue", Type: "boolean", Description: "queue behind the active run"},
+		{Name: "steer", Type: "boolean", Description: "steer the exact active run"},
+		{Name: "expected-run-id", Type: "string", Description: "required exact run ID for steering"},
+		{Name: "model", Type: "string", Description: "model override for the follow-up run"},
+		{Name: "thinking", Type: "string", Description: "reasoning effort or thinking level"},
+		{Name: "fast", Type: "boolean", Description: "Codex fast mode"},
+		{Name: "plan", Type: "boolean", Description: "planning mode"},
+		{Name: "detach", Type: "boolean", Description: "return after acceptance"},
+	}},
+	{Command: "requests list <run-id>", Description: "List unresolved questions and permissions for a run."},
+	{Command: "requests answer <run-id> <request-id>", Description: "Answer an input request using JSON."},
+	{Command: "requests resolve <run-id> <request-id>", Description: "Resolve a permission request with an offered option."},
 	{Command: "serve", Description: "Run the Gorchestra service."},
 	{Command: "host status", Description: "Show hosted-preview status."},
 	{Command: "host validate", Description: "Validate a hosted-preview recipe."},
@@ -86,14 +118,18 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.run(ctx, args[1:])
 	case "runs":
 		return c.runs(ctx, args[1:])
+	case "sessions":
+		return c.sessions(ctx, args[1:])
+	case "requests":
+		return c.requests(ctx, args[1:])
 	default:
-		return fmt.Errorf("unknown command %q; run 'gorchestra commands --json' to discover commands", args[0])
+		return usageError("unknown command %q; run 'gorchestra commands --json' to discover commands", args[0])
 	}
 }
 
 func (c CLI) defaults() CLI {
 	if c.Client == nil {
-		c.Client = &http.Client{Timeout: 30 * time.Second}
+		c.Client = &http.Client{}
 	}
 	if c.Stdout == nil {
 		c.Stdout = os.Stdout
@@ -115,9 +151,18 @@ func (c CLI) defaults() CLI {
 
 func (c CLI) commands(args []string) error {
 	if len(args) != 1 || args[0] != "--json" {
-		return errors.New("usage: gorchestra commands --json")
+		return usageError("usage: gorchestra commands --json")
 	}
-	return writeJSON(c.Stdout, map[string]any{"schema_version": 1, "commands": commandSpecs})
+	return writeJSON(c.Stdout, map[string]any{
+		"schema_version": 1,
+		"commands":       commandSpecs,
+		"output_formats": []string{"text", "json", "ndjson"},
+		"exit_codes": map[string]int{
+			"success": 0, "run_failed": ExitRunFailed, "usage": ExitUsage,
+			"transport": ExitTransport, "timeout": ExitTimeout, "cancelled": ExitCancelled,
+			"needs_input": ExitNeedsInput, "interrupted": ExitInterrupted,
+		},
+	})
 }
 
 func (c CLI) help(args []string) error {
@@ -131,9 +176,14 @@ Agent control commands:
   commands --json                machine-readable command catalog
   agents list                    list registered providers
   agents options <provider>      list models and modes
-  run [flags]                    start a detached run
+  run [flags]                    start and stream a run
   runs show <run-id>             inspect a run
+  runs watch <run-id>            replay and follow a run
+  runs wait <run-id>...          wait for exact runs
   runs report <run-id>           retrieve a terminal report
+  runs cancel <run-id>           cancel an exact run
+  sessions send <session-id>     send, queue, or steer a follow-up
+  requests <command>             inspect or answer agent requests
 
 Server and preview commands:
   serve [flags]                  run the Gorchestra service
@@ -144,17 +194,33 @@ Run "gorchestra help run" or "gorchestra commands --json" for details.`)
 	}
 	for _, spec := range commandSpecs {
 		if strings.HasPrefix(spec.Command, strings.Join(args, " ")) {
-			_, err := fmt.Fprintf(c.Stdout, "%s\n\n%s\n", spec.Command, spec.Description)
-			return err
+			if _, err := fmt.Fprintf(c.Stdout, "%s\n\n%s\n", spec.Command, spec.Description); err != nil {
+				return err
+			}
+			if len(spec.Flags) > 0 {
+				if _, err := fmt.Fprintln(c.Stdout, "\nFlags:"); err != nil {
+					return err
+				}
+				for _, option := range spec.Flags {
+					defaultText := ""
+					if option.Default != nil {
+						defaultText = fmt.Sprintf(" (default %v)", option.Default)
+					}
+					if _, err := fmt.Fprintf(c.Stdout, "  --%-18s %s%s\n", option.Name, option.Description, defaultText); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
 		}
 	}
-	return fmt.Errorf("unknown help topic %q", strings.Join(args, " "))
+	return usageError("unknown help topic %q", strings.Join(args, " "))
 }
 
 func (c CLI) agents(ctx context.Context, args []string) error {
 	server, args, err := parseCommonServer(args, c.server())
 	if err != nil {
-		return err
+		return usageError("%v", err)
 	}
 	args = removeJSONFlag(args)
 	if len(args) == 1 && args[0] == "list" {
@@ -163,7 +229,7 @@ func (c CLI) agents(ctx context.Context, args []string) error {
 	if len(args) == 2 && args[0] == "options" {
 		return c.getJSON(ctx, server+"/api/agents/"+url.PathEscape(args[1])+"/options")
 	}
-	return errors.New("usage: gorchestra agents list | gorchestra agents options <provider>")
+	return usageError("usage: gorchestra agents list | gorchestra agents options <provider>")
 }
 
 type optionalBool struct{ set, value bool }
@@ -184,12 +250,23 @@ func (b *optionalBool) Set(value string) error {
 }
 func (b *optionalBool) IsBoolFlag() bool { return true }
 
-func (c CLI) run(ctx context.Context, args []string) error {
+func (c CLI) run(ctx context.Context, args []string) (resultErr error) {
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		var exit *ExitError
+		if !errors.As(resultErr, &exit) && !errors.Is(resultErr, context.Canceled) && !errors.Is(resultErr, context.DeadlineExceeded) {
+			resultErr = usageError("%v", resultErr)
+		}
+	}()
 	flags := flag.NewFlagSet("gorchestra run", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
 	var server, agent, model, thinking, cwd, prompt, promptFile, title, requestID, permissionPolicy, format string
 	var detach bool
 	var jsonOutput bool
+	var timeout time.Duration
+	var untilAttention bool
 	var fast, plan optionalBool
 	flags.StringVar(&server, "server", c.server(), "Gorchestra API base URL")
 	flags.StringVar(&agent, "agent", "", "agent provider")
@@ -203,23 +280,30 @@ func (c CLI) run(ctx context.Context, args []string) error {
 	flags.StringVar(&title, "title", "", "session title")
 	flags.StringVar(&requestID, "request-id", "", "idempotency key")
 	flags.StringVar(&permissionPolicy, "permission-policy", "", "ask, deny, or bypass")
-	flags.StringVar(&format, "format", "json", "output format (json)")
+	flags.StringVar(&format, "format", "text", "output format (text, json, or ndjson)")
 	flags.BoolVar(&jsonOutput, "json", false, "shorthand for --format json")
-	flags.BoolVar(&detach, "detach", true, "return after durable acceptance")
+	flags.BoolVar(&detach, "detach", false, "return after durable acceptance")
+	flags.DurationVar(&timeout, "timeout", 0, "stop observing after this duration")
+	flags.BoolVar(&untilAttention, "until-attention", false, "return with exit code 6 when input is required")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
+	if timeout < 0 {
+		return usageError("--timeout cannot be negative")
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	if jsonOutput {
 		format = "json"
 	}
-	if format != "json" {
-		return errors.New("Stage 1 supports only --format json")
-	}
-	if !detach {
-		return errors.New("foreground streaming is introduced in Stage 2; use --detach")
+	if !validFormat(format) {
+		return usageError("--format must be text, json, or ndjson")
 	}
 	agent = strings.TrimSpace(agent)
 	if agent == "" {
@@ -318,23 +402,23 @@ func (c CLI) run(ctx context.Context, args []string) error {
 	if len(providerOptions) > 0 {
 		request["agent_options"] = map[string]any{agent: providerOptions}
 	}
-	return c.requestJSON(ctx, http.MethodPost, strings.TrimRight(server, "/")+"/api/runs", request)
+	var receipt runReceipt
+	if err := c.doJSON(ctx, http.MethodPost, strings.TrimRight(server, "/")+"/api/runs", request, &receipt); err != nil {
+		return err
+	}
+	if detach {
+		return c.renderValue(format, "accepted", receipt)
+	}
+	if format != "json" {
+		if err := c.renderValue(format, "accepted", receipt); err != nil {
+			return err
+		}
+	}
+	return c.watchRun(ctx, server, receipt.RunID, format, 0, untilAttention)
 }
 
 func (c CLI) runs(ctx context.Context, args []string) error {
-	server, args, err := parseCommonServer(args, c.server())
-	if err != nil {
-		return err
-	}
-	args = removeJSONFlag(args)
-	if len(args) != 2 || (args[0] != "show" && args[0] != "report") {
-		return errors.New("usage: gorchestra runs show <run-id> | gorchestra runs report <run-id>")
-	}
-	path := "/api/runs/" + url.PathEscape(args[1])
-	if args[0] == "report" {
-		path += "/report"
-	}
-	return c.getJSON(ctx, server+path)
+	return c.runCommands(ctx, args)
 }
 
 func parseCommonServer(args []string, fallback string) (string, []string, error) {
@@ -384,6 +468,14 @@ func (c CLI) getJSON(ctx context.Context, target string) error {
 }
 
 func (c CLI) requestJSON(ctx context.Context, method, target string, body any) error {
+	var value any
+	if err := c.doJSON(ctx, method, target, body, &value); err != nil {
+		return err
+	}
+	return writeJSON(c.Stdout, value)
+}
+
+func (c CLI) doJSON(ctx context.Context, method, target string, body any, output any) error {
 	var input io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -401,12 +493,15 @@ func (c CLI) requestJSON(ctx context.Context, method, target string, body any) e
 	}
 	response, err := c.Client.Do(req)
 	if err != nil {
-		return fmt.Errorf("Gorchestra service %s: %w", target, err)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return transportError("Gorchestra service %s: %v", target, err)
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(response.Body)
 	if err != nil {
-		return err
+		return transportError("read Gorchestra response: %v", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var value struct {
@@ -416,13 +511,12 @@ func (c CLI) requestJSON(ctx context.Context, method, target string, body any) e
 		if value.Error == "" {
 			value.Error = strings.TrimSpace(string(raw))
 		}
-		return fmt.Errorf("Gorchestra service returned %s: %s", response.Status, value.Error)
+		return transportError("Gorchestra service returned %s: %s", response.Status, value.Error)
 	}
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return fmt.Errorf("decode Gorchestra response: %w", err)
+	if err := json.Unmarshal(raw, output); err != nil {
+		return transportError("decode Gorchestra response: %v", err)
 	}
-	return writeJSON(c.Stdout, value)
+	return nil
 }
 
 func writeJSON(output io.Writer, value any) error {

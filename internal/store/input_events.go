@@ -38,6 +38,37 @@ func (s *Store) ListPendingInputEvents(ctx context.Context, sessionID string, th
 	return events, rows.Err()
 }
 
+// ListPendingPermissionEvents is the permission counterpart to
+// ListPendingInputEvents. Permission option IDs are part of the persisted
+// request payload and can therefore be presented safely to non-browser clients.
+func (s *Store) ListPendingPermissionEvents(ctx context.Context, sessionID string, throughSeq int64) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH current_permissions AS (
+			SELECT * FROM events WHERE session_id = ? AND seq <= ?
+			AND type IN ('agent.permission.requested', 'agent.permission.resolved', 'agent.permission.cancelled')
+			AND seq > COALESCE((SELECT MAX(seq) FROM events WHERE session_id = ? AND seq <= ?
+			AND type IN ('agent.run.completed', 'agent.run.failed', 'agent.run.cancelled')), 0)
+		)
+		SELECT id, session_id, seq, type, role, status, payload_json, created_at FROM current_permissions AS pending
+		WHERE type = 'agent.permission.requested' AND NOT EXISTS (
+			SELECT 1 FROM current_permissions AS resolved WHERE resolved.type IN ('agent.permission.resolved', 'agent.permission.cancelled')
+			AND json_extract(resolved.payload_json, '$.request_id') = json_extract(pending.payload_json, '$.request_id')
+		) ORDER BY seq`, sessionID, throughSeq, sessionID, throughSeq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []Event
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
 // An answer can race a provider withdrawal or arrive after a run finishes.
 // Resolve a control only once, and never decrement a successor run's count.
 func controlResolutionDelta(ctx context.Context, tx *sql.Tx, event Event) (int, error) {

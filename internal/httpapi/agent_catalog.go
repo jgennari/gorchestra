@@ -22,6 +22,8 @@ func (api API) capabilitiesHandler(w http.ResponseWriter, _ *http.Request) {
 		"schema_version": 1,
 		"capabilities": []string{
 			"agents.list", "agents.options", "runs.create", "runs.show", "runs.report",
+			"runs.events", "runs.stream", "runs.wait", "runs.cancel",
+			"sessions.send", "sessions.queue", "sessions.steer", "requests.control",
 		},
 	})
 }

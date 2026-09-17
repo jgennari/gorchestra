@@ -53,6 +53,22 @@ func TestWithdrawnQuestionDisappearsFromReplayAndPendingCount(t *testing.T) {
 	}
 }
 
+func TestPendingPermissionEventsTracksResolution(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t, ctx)
+	session := createTestSession(t, ctx, s)
+	appendTestEventWithType(t, ctx, s, session.ID, "agent.permission.requested", `{"request_id":"permission","options":[{"id":"allow"}]}`)
+	events, err := s.ListPendingPermissionEvents(ctx, session.ID, 2)
+	if err != nil || len(events) != 1 || events[0].Type != "agent.permission.requested" {
+		t.Fatalf("pending permission: %#v %v", events, err)
+	}
+	appendTestEventWithType(t, ctx, s, session.ID, "agent.permission.resolved", `{"request_id":"permission","option_id":"allow"}`)
+	events, err = s.ListPendingPermissionEvents(ctx, session.ID, 3)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("resolved permission still pending: %#v %v", events, err)
+	}
+}
+
 func TestControlResolutionRacesDoNotConsumeAnotherRequestsCount(t *testing.T) {
 	for _, kind := range []string{"input", "permission"} {
 		for _, cancelFirst := range []bool{false, true} {

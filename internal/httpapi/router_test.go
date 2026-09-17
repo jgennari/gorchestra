@@ -59,13 +59,19 @@ func (noopRunManager) Register(context.Context, string) (context.Context, func()
 	return context.Background(), func() {}, nil
 }
 
-func (noopRunManager) Cancel(string, runcontrol.Cancellation) error { return nil }
+func (noopRunManager) RegisterRun(context.Context, string, string) (context.Context, func(), error) {
+	return context.Background(), func() {}, nil
+}
+
+func (noopRunManager) Cancel(string, runcontrol.Cancellation) error            { return nil }
+func (noopRunManager) CancelRun(string, string, runcontrol.Cancellation) error { return nil }
 
 func (noopRunManager) Cancellation(string) (runcontrol.Cancellation, bool) {
 	return runcontrol.Cancellation{}, false
 }
 
-func (noopRunManager) Active(string) bool { return false }
+func (noopRunManager) Active(string) bool            { return false }
+func (noopRunManager) ActiveRun(string, string) bool { return false }
 
 func (noopRunManager) OpenUserInput(context.Context, agents.UserInputRequest) (agents.UserInputWaiter, error) {
 	return nil, nil
