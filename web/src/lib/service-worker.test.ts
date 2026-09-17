@@ -13,10 +13,13 @@ function fixture() {
       }
     },
   }
-  const fetch = vi.fn(async (path: string) => new Response('asset', { headers: { 'Content-Type': path.endsWith('.css') ? 'text/css' : 'application/javascript' } }))
+  const fetch = vi.fn(async (path: RequestInfo | URL) => new Response('asset', { headers: { 'Content-Type': String(path).endsWith('.css') ? 'text/css' : 'application/javascript' } }))
   const worker = new Function('self', 'caches', 'fetch', workerSource +
     '\nreturn {cacheAppShellResponse, appShellResponse}')( { addEventListener: vi.fn() }, caches, fetch,
-  ) as { cacheAppShellResponse: (response: Response) => Promise<void> }
+  ) as {
+    cacheAppShellResponse: (response: Response) => Promise<void>
+    appShellResponse: (event: { request: Request; waitUntil: (task: Promise<void>) => void }) => Promise<Response>
+  }
   const shell = (version: string) => new Response(
     `<script src="/assets/${version}.js"></script><link href="/assets/${version}.css">`,
     { headers: { 'Content-Type': 'text/html' } },
@@ -48,5 +51,41 @@ describe('atomic offline shell updates', () => {
     finish(new Response('asset b', { headers: { 'Content-Type': 'application/javascript' } }))
     await update
     expect(await cachedShell()).toContain('/assets/b.js')
+  })
+})
+
+describe('app shell navigation', () => {
+  it('serves the current network shell instead of a stale cached shell', async () => {
+    const { worker, fetch, shell, cachedShell } = fixture()
+    await worker.cacheAppShellResponse(shell('a'))
+    fetch.mockImplementation(async (input) => {
+      if (input instanceof Request) return shell('b')
+      return new Response('asset b', {
+        headers: { 'Content-Type': String(input).endsWith('.css') ? 'text/css' : 'application/javascript' },
+      })
+    })
+    const backgroundTasks: Promise<void>[] = []
+
+    const response = await worker.appShellResponse({
+      request: new Request('https://gorchestra.test/sessions/example'),
+      waitUntil: (task) => backgroundTasks.push(task),
+    })
+
+    expect(await response.text()).toContain('/assets/b.js')
+    await Promise.all(backgroundTasks)
+    expect(await cachedShell()).toContain('/assets/b.js')
+  })
+
+  it('uses the cached shell when navigation is offline', async () => {
+    const { worker, fetch, shell } = fixture()
+    await worker.cacheAppShellResponse(shell('a'))
+    fetch.mockRejectedValue(new Error('offline'))
+
+    const response = await worker.appShellResponse({
+      request: new Request('https://gorchestra.test/sessions/example'),
+      waitUntil: () => undefined,
+    })
+
+    expect(await response.text()).toContain('/assets/a.js')
   })
 })
