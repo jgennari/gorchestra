@@ -112,6 +112,10 @@ type createSessionResponse struct {
 
 type sessionResponse struct {
 	ID                       string  `json:"id"`
+	ParentSessionID          string  `json:"parent_session_id,omitempty"`
+	SpawnedByRunID           string  `json:"spawned_by_run_id,omitempty"`
+	LineageDepth             int     `json:"lineage_depth"`
+	ChildCount               int     `json:"child_count"`
 	Title                    string  `json:"title"`
 	AgentType                string  `json:"agent_type"`
 	Status                   string  `json:"status"`
@@ -259,11 +263,19 @@ func (api API) listSessionsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sessions, err := api.store.ListSessions(r.Context(), store.ListSessionsParams{
-		Limit:           limit,
-		Status:          status,
-		IncludeArchived: includeArchived,
-	})
+	var sessions []store.Session
+	var err error
+	if status == "" {
+		if hierarchy, ok := api.store.(interface {
+			ListSessionTree(context.Context, int, bool) ([]store.Session, error)
+		}); ok {
+			sessions, err = hierarchy.ListSessionTree(r.Context(), limit, includeArchived)
+		} else {
+			sessions, err = api.store.ListSessions(r.Context(), store.ListSessionsParams{Limit: limit, IncludeArchived: includeArchived})
+		}
+	} else {
+		sessions, err = api.store.ListSessions(r.Context(), store.ListSessionsParams{Limit: limit, Status: status, IncludeArchived: includeArchived})
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list sessions")
 		return
@@ -297,6 +309,51 @@ func (api API) getSessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+type sessionChildrenStore interface {
+	ListSessionChildren(context.Context, string, bool, bool) ([]store.Session, error)
+}
+
+func (api API) listSessionChildrenHandler(w http.ResponseWriter, r *http.Request) {
+	lineage, ok := api.store.(sessionChildrenStore)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "session lineage is unavailable")
+		return
+	}
+	parentID := chi.URLParam(r, "sessionId")
+	if _, err := api.store.GetSession(r.Context(), parentID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load session")
+		return
+	}
+	recursive := false
+	if raw := strings.TrimSpace(r.URL.Query().Get("recursive")); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "recursive must be a boolean")
+			return
+		}
+		recursive = value
+	}
+	includeArchived, valid := parseIncludeArchived(w, r)
+	if !valid {
+		return
+	}
+	children, err := lineage.ListSessionChildren(r.Context(), parentID, recursive, includeArchived)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list child sessions")
+		return
+	}
+	responses, err := api.sessionResponses(r.Context(), children)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load child session activity")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"schema_version": 1, "parent_session_id": parentID, "recursive": recursive, "sessions": responses})
 }
 
 func (api API) clearSessionNotificationAttentionHandler(w http.ResponseWriter, r *http.Request) {
@@ -782,6 +839,10 @@ func sessionResponseFromStore(session store.Session, pendingInput bool, pendingP
 
 	return sessionResponse{
 		ID:                       session.ID,
+		ParentSessionID:          session.ParentSessionID,
+		SpawnedByRunID:           session.SpawnedByRunID,
+		LineageDepth:             session.LineageDepth,
+		ChildCount:               session.ChildCount,
 		Title:                    session.Title,
 		AgentType:                session.AgentType,
 		Status:                   string(session.Status),
@@ -1735,6 +1796,7 @@ func (api API) startSessionRunWithID(
 	appendErrorMessage string,
 	runID string,
 ) (store.Session, string, bool) {
+	initialDelegation := session.ParentSessionID != "" && session.EventCount == 0
 	runCtx, cleanup, err := api.runs.RegisterRun(context.Background(), session.ID, runID)
 	if err != nil {
 		if errors.Is(err, runcontrol.ErrRunAlreadyActive) {
@@ -1790,12 +1852,42 @@ func (api API) startSessionRunWithID(
 	go func() {
 		completed := api.runAgent(runCtx, updatedSession, message, attachments, skills, agent, metadata, action, runID)
 		cleanup()
+		if initialDelegation {
+			api.appendDelegationCompletion(session, runID)
+		}
 		if completed {
 			api.startQueuedMessageRun(context.Background(), session.ID)
 		}
 	}()
 
 	return updatedSession, runID, true
+}
+
+func (api API) appendDelegationCompletion(child store.Session, childRunID string) {
+	status := "unknown"
+	finalResponse := ""
+	if persistence, ok := api.store.(runControlStore); ok {
+		if run, err := persistence.GetRun(context.Background(), childRunID); err == nil {
+			status, finalResponse = run.Status, run.FinalResponse
+		}
+	}
+	eventStatus := store.EventStatusCompleted
+	if status == "failed" {
+		eventStatus = store.EventStatusFailed
+	}
+	if status == "cancelled" {
+		eventStatus = store.EventStatusCancelled
+	}
+	payload := map[string]any{"parent_session_id": child.ParentSessionID, "child_session_id": child.ID,
+		"child_run_id": childRunID, "status": status, "agent_type": child.AgentType}
+	if strings.TrimSpace(finalResponse) != "" {
+		payload["summary"] = finalResponse
+	}
+	if err := api.appendAgentEvent(context.Background(), child.ParentSessionID, agents.AgentEvent{
+		Type: "agent.delegation.completed", Role: "assistant", Status: string(eventStatus), Payload: payload,
+	}, child.SpawnedByRunID); err != nil {
+		log.Printf("failed to persist delegation completion: parent_session_id=%s child_session_id=%s child_run_id=%s error=%v", child.ParentSessionID, child.ID, childRunID, err)
+	}
 }
 
 func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool {
@@ -2351,7 +2443,7 @@ func (api API) runAgent(
 		Message:           message,
 		Workdir:           sessionWorkspacePath(session, api.workdir),
 		Environment:       api.agentRuntimeEnvironment(session.ID, runID),
-		Context:           api.agentHostingContext(sessionWorkspacePath(session, api.workdir)),
+		Context:           api.agentRuntimeContext(sessionWorkspacePath(session, api.workdir)),
 		Metadata:          metadata,
 		Attachments:       attachments,
 		Skills:            skills,
@@ -2444,6 +2536,16 @@ func (api API) agentHostingContext(workspacePath string) string {
 	}
 	return `This workspace has a Gorchestra hosted-preview recipe at .gorchestra/host.yaml.
 Use "$GORCHESTRA_BIN" host validate|status|start|stop|restart|check|logs|url to manage this session's preview. The CLI targets this session automatically through GORCHESTRA_SESSION_ID and GORCHESTRA_API_URL.`
+}
+
+func (api API) agentRuntimeContext(workspacePath string) string {
+	parts := []string{`Gorchestra agent control is available in this run.
+Use "$GORCHESTRA_BIN" commands --json to discover the current CLI contract.
+Use "$GORCHESTRA_BIN" run --prompt-file <path> to delegate work to a child session. Inside a run, children inherit this session's provider, resolved options, and workspace unless you explicitly override supported provider settings. Use --detach to receive IDs immediately, runs wait or runs watch to observe exact runs, and runs report to retrieve durable results. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.`}
+	if hosting := api.agentHostingContext(workspacePath); hosting != "" {
+		parts = append(parts, hosting)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func (api API) persistProviderSessionIDFromEvent(

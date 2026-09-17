@@ -86,6 +86,10 @@ export type UserSkillCatalog = {
 
 export type Session = {
   id: string
+  parent_session_id?: string
+  spawned_by_run_id?: string
+  lineage_depth?: number
+  child_count?: number
   title: string
   agent_type: AgentType
   status: SessionStatus

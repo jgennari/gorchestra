@@ -131,7 +131,9 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 		        durable_event_count, last_durable_event_seq, materialized_tool_count, materialized_token_count,
 		        pending_input_count, pending_permission_count,
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
-		        created_at, updated_at, completed_at, archived_at, pinned_at
+		        created_at, updated_at, completed_at, archived_at, pinned_at,
+		        parent_session_id, spawned_by_run_id, lineage_depth,
+		        (SELECT COUNT(*) FROM sessions children WHERE children.parent_session_id = sessions.id) AS child_count
 		 FROM sessions
 		 WHERE id = ?`,
 		id,
@@ -155,7 +157,9 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 		        durable_event_count, last_durable_event_seq, materialized_tool_count, materialized_token_count,
 		        pending_input_count, pending_permission_count,
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
-		        created_at, updated_at, completed_at, archived_at, pinned_at
+		        created_at, updated_at, completed_at, archived_at, pinned_at,
+		        parent_session_id, spawned_by_run_id, lineage_depth,
+		        (SELECT COUNT(*) FROM sessions children WHERE children.parent_session_id = sessions.id) AS child_count
 		 FROM sessions`
 	args := []any{}
 	filters := make([]string, 0, 2)
@@ -1627,6 +1631,10 @@ func scanSession(row rowScanner) (Session, error) {
 	var completedAt sql.NullString
 	var archivedAt sql.NullString
 	var pinnedAt sql.NullString
+	var parentSessionID sql.NullString
+	var spawnedByRunID sql.NullString
+	var lineageDepth int
+	var childCount int
 
 	if err := row.Scan(
 		&session.ID,
@@ -1648,6 +1656,10 @@ func scanSession(row rowScanner) (Session, error) {
 		&completedAt,
 		&archivedAt,
 		&pinnedAt,
+		&parentSessionID,
+		&spawnedByRunID,
+		&lineageDepth,
+		&childCount,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
@@ -1709,6 +1721,10 @@ func scanSession(row rowScanner) (Session, error) {
 		}
 		session.PinnedAt = &parsedPinnedAt
 	}
+	session.ParentSessionID = parentSessionID.String
+	session.SpawnedByRunID = spawnedByRunID.String
+	session.LineageDepth = lineageDepth
+	session.ChildCount = childCount
 
 	return session, nil
 }

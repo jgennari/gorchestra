@@ -63,6 +63,66 @@ func TestRunSendsProviderOptionsAndPrintsReceipt(t *testing.T) {
 	}
 }
 
+func TestRunDefaultsToCurrentSessionParent(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/sessions/sess_parent":
+			_, _ = w.Write([]byte(`{"id":"sess_parent","agent_type":"fake"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/runs":
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"schema_version":1,"session_id":"sess_child","run_id":"run_child","status":"running","parent_session_id":"sess_parent","spawned_by_run_id":"run_parent"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	getenv := func(name string) string {
+		switch name {
+		case "GORCHESTRA_SESSION_ID":
+			return "sess_parent"
+		case "GORCHESTRA_RUN_ID":
+			return "run_parent"
+		}
+		return ""
+	}
+	var stdout bytes.Buffer
+	cli := CLI{Stdout: &stdout, Stderr: &bytes.Buffer{}, Getenv: getenv}
+	if err := cli.Run(context.Background(), []string{"run", "--server", server.URL, "--prompt", "delegate", "--detach", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if received["parent_session_id"] != "sess_parent" || received["spawned_by_run_id"] != "run_parent" || received["agent_type"] != "fake" {
+		t.Fatalf("unexpected child request: %#v", received)
+	}
+	if _, ok := received["workspace_path"]; ok {
+		t.Fatalf("child request should inherit workspace: %#v", received)
+	}
+}
+
+func TestSessionsChildrenRequestsRecursiveLineage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/sessions/sess_parent/children" || r.URL.Query().Get("recursive") != "true" {
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"schema_version":1,"parent_session_id":"sess_parent","recursive":true,"sessions":[{"id":"sess_child","parent_session_id":"sess_parent"}]}`))
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	cli := CLI{Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"sessions", "children", "sess_parent", "--recursive", "--server", server.URL, "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"id": "sess_child"`) {
+		t.Fatalf("missing child response: %s", stdout.String())
+	}
+}
+
 func TestRunForegroundReplaysStreamsAndReturnsResult(t *testing.T) {
 	var runReads atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

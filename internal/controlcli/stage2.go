@@ -58,13 +58,15 @@ func transportError(message string, args ...any) error {
 }
 
 type runReceipt struct {
-	SchemaVersion int    `json:"schema_version"`
-	RequestID     string `json:"request_id,omitempty"`
-	SessionID     string `json:"session_id"`
-	RunID         string `json:"run_id"`
-	Status        string `json:"status"`
-	AgentType     string `json:"agent_type,omitempty"`
-	WorkspacePath string `json:"workspace_path,omitempty"`
+	SchemaVersion   int    `json:"schema_version"`
+	RequestID       string `json:"request_id,omitempty"`
+	SessionID       string `json:"session_id"`
+	RunID           string `json:"run_id"`
+	Status          string `json:"status"`
+	AgentType       string `json:"agent_type,omitempty"`
+	WorkspacePath   string `json:"workspace_path,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	SpawnedByRunID  string `json:"spawned_by_run_id,omitempty"`
 }
 
 type runRecord struct {
@@ -91,6 +93,8 @@ type runRecord struct {
 	PermissionRequestCount int64   `json:"permission_request_count"`
 	TokenCount             *int64  `json:"token_count,omitempty"`
 	Cost                   any     `json:"cost,omitempty"`
+	ParentSessionID        string  `json:"parent_session_id,omitempty"`
+	SpawnedByRunID         string  `json:"spawned_by_run_id,omitempty"`
 }
 
 type eventRecord struct {
@@ -588,7 +592,47 @@ func (c CLI) sessions(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(rest) < 2 || rest[0] != "send" {
+	if len(rest) == 0 {
+		return usageError("usage: gorchestra sessions list|show|children|send")
+	}
+	switch rest[0] {
+	case "list":
+		if len(rest) != 1 {
+			return usageError("sessions list takes no arguments")
+		}
+		var value any
+		if err := c.doJSON(ctx, http.MethodGet, server+"/api/sessions?limit=100", nil, &value); err != nil {
+			return err
+		}
+		return c.renderValue(format, "sessions", value)
+	case "show":
+		if len(rest) != 2 {
+			return usageError("sessions show requires one session ID")
+		}
+		var value any
+		if err := c.doJSON(ctx, http.MethodGet, server+"/api/sessions/"+url.PathEscape(rest[1]), nil, &value); err != nil {
+			return err
+		}
+		return c.renderValue(format, "session", value)
+	case "children":
+		if len(rest) < 2 || len(rest) > 3 {
+			return usageError("sessions children requires one session ID and optional --recursive")
+		}
+		recursive := len(rest) == 3 && rest[2] == "--recursive"
+		if len(rest) == 3 && !recursive {
+			return usageError("unknown sessions children option %q", rest[2])
+		}
+		var value any
+		target := server + "/api/sessions/" + url.PathEscape(rest[1]) + "/children?recursive=" + strconv.FormatBool(recursive)
+		if err := c.doJSON(ctx, http.MethodGet, target, nil, &value); err != nil {
+			return err
+		}
+		return c.renderValue(format, "children", value)
+	case "send":
+	default:
+		return usageError("unknown sessions command %q", rest[0])
+	}
+	if len(rest) < 2 {
 		return usageError("usage: gorchestra sessions send <session-id> --prompt <text> [--queue|--steer]")
 	}
 	sessionID := rest[1]

@@ -1,5 +1,5 @@
-import { Archive, BookOpen, LayoutDashboard, Pin, Plus, Search } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { Archive, BookOpen, ChevronDown, ChevronRight, GitBranch, LayoutDashboard, Pin, Plus, Search } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -50,6 +50,8 @@ export function SessionList({
   variant = 'full',
 }: Props) {
   const showHeader = variant === 'full'
+  const [collapsedSessionIDs, setCollapsedSessionIDs] = useState<ReadonlySet<string>>(new Set())
+  const treeRows = buildSessionTreeRows(sessions, collapsedSessionIDs, lastSeenSeqBySession)
 
   return (
     <aside
@@ -134,7 +136,7 @@ export function SessionList({
           <div className="p-4 text-sm text-muted-foreground">No sessions yet.</div>
         ) : (
           <div className="session-list-rows space-y-1.5 p-2.5">
-            {sessions.map((session, index) => (
+            {treeRows.map(({ session, depth, hasChildren, activeDescendants, attentionDescendants }, index) => (
               <SessionRow
                 key={session.id}
                 session={session}
@@ -145,6 +147,12 @@ export function SessionList({
                 pinPending={pinningSessionIDs.has(session.id)}
                 onSelect={() => onSelect(session.id)}
                 onPinChange={onPinChange ? (pinned) => onPinChange(session.id, pinned) : undefined}
+                depth={depth}
+                hasChildren={hasChildren}
+                expanded={!collapsedSessionIDs.has(session.id)}
+                activeDescendants={activeDescendants}
+                attentionDescendants={attentionDescendants}
+                onToggle={() => setCollapsedSessionIDs((current) => toggleSetValue(current, session.id))}
               />
             ))}
           </div>
@@ -163,6 +171,12 @@ function SessionRow({
   pinPending,
   onSelect,
   onPinChange,
+  depth,
+  hasChildren,
+  expanded,
+  activeDescendants,
+  attentionDescendants,
+  onToggle,
 }: {
   session: Session
   shortcut?: string
@@ -172,6 +186,12 @@ function SessionRow({
   pinPending: boolean
   onSelect: () => void
   onPinChange?: (pinned: boolean) => void
+  depth: number
+  hasChildren: boolean
+  expanded: boolean
+  activeDescendants: number
+  attentionDescendants: number
+  onToggle: () => void
 }) {
   const title = session.title || 'Untitled session'
   const pinned = Boolean(session.pinned_at)
@@ -180,6 +200,8 @@ function SessionRow({
   return (
     <div
       data-session-id={session.id}
+      data-parent-session-id={session.parent_session_id || undefined}
+      data-lineage-depth={depth}
       data-pinned={pinned ? 'true' : undefined}
       className={cn(
         'session-row group flex w-full items-center rounded-md border border-transparent transition-colors hover:border-border/70 hover:bg-background/54 focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring',
@@ -187,7 +209,26 @@ function SessionRow({
         archived &&
           'border-dashed border-border/80 bg-surface-muted/65 text-muted-foreground hover:border-border hover:bg-surface-muted/80',
       )}
+      style={{
+        marginInlineStart: `${Math.min(depth, 4) * 12}px`,
+        width: `calc(100% - ${Math.min(depth, 4) * 12}px)`,
+      }}
     >
+      {hasChildren ? (
+        <button
+          type="button"
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${title}`}
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className="ml-1 flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background/70 hover:text-foreground"
+        >
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </button>
+      ) : depth > 0 ? (
+        <span className="ml-1 flex size-7 shrink-0 items-center justify-center text-muted-foreground/60" aria-hidden="true">
+          <GitBranch className="size-3.5" />
+        </span>
+      ) : null}
       <button
         type="button"
         onClick={onSelect}
@@ -213,6 +254,11 @@ function SessionRow({
               <Archive className="size-3" aria-hidden="true" />
               Archived
             </Badge>
+          </span>
+        ) : activeDescendants > 0 || attentionDescendants > 0 ? (
+          <span className="session-row-meta flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
+            {activeDescendants > 0 ? <Badge variant="default" className="min-h-5 px-1.5 py-0">{activeDescendants} active</Badge> : null}
+            {attentionDescendants > 0 ? <Badge variant="warning" className="min-h-5 px-1.5 py-0">{attentionDescendants} waiting</Badge> : null}
           </span>
         ) : null}
       </button>
@@ -241,6 +287,67 @@ function SessionRow({
       </div>
     </div>
   )
+}
+
+type SessionTreeRow = {
+  session: Session
+  depth: number
+  hasChildren: boolean
+  activeDescendants: number
+  attentionDescendants: number
+}
+
+function buildSessionTreeRows(
+  sessions: Session[],
+  collapsed: ReadonlySet<string>,
+  lastSeenSeqBySession: Record<string, number>,
+) {
+  const byID = new Map(sessions.map((session) => [session.id, session]))
+  const children = new Map<string, Session[]>()
+  const roots: Session[] = []
+  for (const session of sessions) {
+    if (session.parent_session_id && byID.has(session.parent_session_id)) {
+      const siblings = children.get(session.parent_session_id) ?? []
+      siblings.push(session)
+      children.set(session.parent_session_id, siblings)
+    } else {
+      roots.push(session)
+    }
+  }
+  const rows: SessionTreeRow[] = []
+  const visited = new Set<string>()
+  const summarize = (session: Session, stack = new Set<string>()): [number, number] => {
+    if (stack.has(session.id)) return [0, 0]
+    const nextStack = new Set(stack).add(session.id)
+    let active = 0
+    let attention = 0
+    for (const child of children.get(session.id) ?? []) {
+      if (child.status === 'running') active += 1
+      const childAttention = sessionAttention(child, lastSeenSeqBySession)
+      if (childAttention !== null) attention += 1
+      const [nestedActive, nestedAttention] = summarize(child, nextStack)
+      active += nestedActive
+      attention += nestedAttention
+    }
+    return [active, attention]
+  }
+  const visit = (session: Session, depth: number) => {
+    if (visited.has(session.id)) return
+    visited.add(session.id)
+    const descendants = children.get(session.id) ?? []
+    const [activeDescendants, attentionDescendants] = summarize(session)
+    rows.push({ session, depth, hasChildren: descendants.length > 0 || (session.child_count ?? 0) > 0, activeDescendants, attentionDescendants })
+    if (!collapsed.has(session.id)) descendants.forEach((child) => visit(child, depth + 1))
+  }
+  roots.forEach((session) => visit(session, 0))
+  return rows
+}
+
+function toggleSetValue(current: ReadonlySet<string>, value: string) {
+  const next = new Set(current)
+  if (next.has(value)) next.delete(value)
+  else next.add(value)
+  return next
 }
 
 function ShortcutHint({ shortcut }: { shortcut: string }) {

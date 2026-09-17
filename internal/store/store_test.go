@@ -54,6 +54,57 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertColumnExists(t, ctx, store, "queued_messages", "skills_json")
 	assertColumnExists(t, ctx, store, "queued_messages", "source_kind")
 	assertColumnExists(t, ctx, store, "queued_messages", "source_id")
+	assertColumnExists(t, ctx, store, "sessions", "parent_session_id")
+	assertColumnExists(t, ctx, store, "sessions", "spawned_by_run_id")
+	assertColumnExists(t, ctx, store, "sessions", "lineage_depth")
+}
+
+func TestChildSessionLineageBoundsAndArchivedAncestorVisibility(t *testing.T) {
+	ctx := context.Background()
+	dbStore := newTestStore(t, ctx)
+	parent, err := dbStore.CreateSession(ctx, CreateSessionParams{Title: "Parent", AgentType: "fake", WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, child, claimed, err := dbStore.CreateRunSubmission(ctx, CreateRunSubmissionParams{
+		RequestID: "child-one", RequestHash: "hash-one", RunID: "run_child_one", Prompt: "first child",
+		AgentType: "fake", WorkspacePath: parent.WorkspacePath, ParentSessionID: parent.ID,
+		MaxLineageDepth: 2, MaxActiveChildren: 1,
+	})
+	if err != nil || !claimed || first.SessionID != child.ID || child.LineageDepth != 1 {
+		t.Fatalf("create first child: submission=%#v child=%#v claimed=%v err=%v", first, child, claimed, err)
+	}
+	_, _, _, err = dbStore.CreateRunSubmission(ctx, CreateRunSubmissionParams{
+		RequestID: "child-two", RequestHash: "hash-two", RunID: "run_child_two", Prompt: "second child",
+		AgentType: "fake", WorkspacePath: parent.WorkspacePath, ParentSessionID: parent.ID,
+		MaxLineageDepth: 2, MaxActiveChildren: 1,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "active children") {
+		t.Fatalf("expected active child bound, got %v", err)
+	}
+	_, _, _, err = dbStore.CreateRunSubmission(ctx, CreateRunSubmissionParams{
+		RequestID: "grandchild", RequestHash: "hash-grandchild", RunID: "run_grandchild", Prompt: "nested child",
+		AgentType: "fake", WorkspacePath: parent.WorkspacePath, ParentSessionID: child.ID,
+		MaxLineageDepth: 1, MaxActiveChildren: 1,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "maximum child depth") {
+		t.Fatalf("expected depth bound, got %v", err)
+	}
+
+	children, err := dbStore.ListSessionChildren(ctx, parent.ID, true, false)
+	if err != nil || len(children) != 1 || children[0].ID != child.ID {
+		t.Fatalf("unexpected descendants: %#v err=%v", children, err)
+	}
+	if _, err := dbStore.ArchiveSession(ctx, ArchiveSessionParams{ID: parent.ID}); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := dbStore.ListSessionTree(ctx, 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree) != 2 || tree[0].ID != child.ID && tree[1].ID != child.ID {
+		t.Fatalf("archived ancestor or live child missing from tree: %#v", tree)
+	}
 }
 
 func TestMigrationsAreIdempotent(t *testing.T) {
@@ -68,8 +119,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 24 {
-		t.Fatalf("expected twenty-four recorded migrations, got %d", count)
+	if count != 25 {
+		t.Fatalf("expected twenty-five recorded migrations, got %d", count)
 	}
 }
 

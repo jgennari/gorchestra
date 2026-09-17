@@ -54,6 +54,7 @@ var commandSpecs = []commandSpec{
 		{Name: "fast", Type: "boolean", Description: "Codex fast mode"},
 		{Name: "plan", Type: "boolean", Description: "planning mode"},
 		{Name: "cwd", Type: "path", Description: "server-side workspace path"},
+		{Name: "parent", Type: "session-id|current|none", Description: "child parent; defaults to current inside a run"},
 		{Name: "prompt", Type: "string", Description: "task prompt"},
 		{Name: "prompt-file", Type: "path|-", Description: "read task prompt from a file or stdin"},
 		{Name: "request-id", Type: "string", Description: "idempotency key"},
@@ -89,6 +90,11 @@ var commandSpecs = []commandSpec{
 		{Name: "fast", Type: "boolean", Description: "Codex fast mode"},
 		{Name: "plan", Type: "boolean", Description: "planning mode"},
 		{Name: "detach", Type: "boolean", Description: "return after acceptance"},
+	}},
+	{Command: "sessions list", Description: "List sessions with lineage metadata."},
+	{Command: "sessions show <session-id>", Description: "Inspect a session and its parent linkage."},
+	{Command: "sessions children <session-id>", Description: "List direct children or all descendants.", Flags: []flagSpec{
+		{Name: "recursive", Type: "boolean", Description: "include all descendants"},
 	}},
 	{Command: "requests list <run-id>", Description: "List unresolved questions and permissions for a run."},
 	{Command: "requests answer <run-id> <request-id>", Description: "Answer an input request using JSON."},
@@ -182,6 +188,8 @@ Agent control commands:
   runs wait <run-id>...          wait for exact runs
   runs report <run-id>           retrieve a terminal report
   runs cancel <run-id>           cancel an exact run
+  sessions list                  list sessions and lineage
+  sessions children <session>    list child sessions
   sessions send <session-id>     send, queue, or steer a follow-up
   requests <command>             inspect or answer agent requests
 
@@ -262,7 +270,7 @@ func (c CLI) run(ctx context.Context, args []string) (resultErr error) {
 	}()
 	flags := flag.NewFlagSet("gorchestra run", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
-	var server, agent, model, thinking, cwd, prompt, promptFile, title, requestID, permissionPolicy, format string
+	var server, agent, model, thinking, cwd, prompt, promptFile, title, requestID, permissionPolicy, format, parent string
 	var detach bool
 	var jsonOutput bool
 	var timeout time.Duration
@@ -275,6 +283,7 @@ func (c CLI) run(ctx context.Context, args []string) (resultErr error) {
 	flags.Var(&fast, "fast", "Codex fast mode")
 	flags.Var(&plan, "plan", "planning mode")
 	flags.StringVar(&cwd, "cwd", "", "server-side workspace path")
+	flags.StringVar(&parent, "parent", "", "parent session ID, current, or none")
 	flags.StringVar(&prompt, "prompt", "", "task prompt")
 	flags.StringVar(&promptFile, "prompt-file", "", "read task prompt from file or -")
 	flags.StringVar(&title, "title", "", "session title")
@@ -306,8 +315,32 @@ func (c CLI) run(ctx context.Context, args []string) (resultErr error) {
 		return usageError("--format must be text, json, or ndjson")
 	}
 	agent = strings.TrimSpace(agent)
+	currentSessionID := strings.TrimSpace(c.Getenv("GORCHESTRA_SESSION_ID"))
+	currentRunID := strings.TrimSpace(c.Getenv("GORCHESTRA_RUN_ID"))
+	parent = strings.TrimSpace(parent)
+	if parent == "" && currentSessionID != "" {
+		parent = currentSessionID
+	}
+	if parent == "current" {
+		if currentSessionID == "" {
+			return errors.New("--parent current requires GORCHESTRA_SESSION_ID")
+		}
+		parent = currentSessionID
+	}
+	if parent == "none" {
+		parent = ""
+	}
+	if agent == "" && parent != "" {
+		var parentSession struct {
+			AgentType string `json:"agent_type"`
+		}
+		if err := c.doJSON(ctx, http.MethodGet, strings.TrimRight(server, "/")+"/api/sessions/"+url.PathEscape(parent), nil, &parentSession); err != nil {
+			return err
+		}
+		agent = parentSession.AgentType
+	}
 	if agent == "" {
-		return errors.New("--agent is required")
+		return errors.New("--agent is required for a root run")
 	}
 	if prompt != "" && promptFile != "" {
 		return errors.New("use only one of --prompt and --prompt-file")
@@ -328,7 +361,7 @@ func (c CLI) run(ctx context.Context, args []string) (resultErr error) {
 	if strings.TrimSpace(prompt) == "" {
 		return errors.New("--prompt or --prompt-file is required")
 	}
-	if cwd == "" {
+	if cwd == "" && parent == "" {
 		parsed, err := url.Parse(server)
 		if err != nil {
 			return fmt.Errorf("invalid --server: %w", err)
@@ -397,7 +430,16 @@ func (c CLI) run(ctx context.Context, args []string) (resultErr error) {
 	}
 	request := map[string]any{
 		"request_id": requestID, "title": title, "agent_type": agent,
-		"workspace_path": cwd, "prompt": prompt,
+		"prompt": prompt,
+	}
+	if cwd != "" {
+		request["workspace_path"] = cwd
+	}
+	if parent != "" {
+		request["parent_session_id"] = parent
+		if parent == currentSessionID && currentRunID != "" {
+			request["spawned_by_run_id"] = currentRunID
+		}
 	}
 	if len(providerOptions) > 0 {
 		request["agent_options"] = map[string]any{agent: providerOptions}

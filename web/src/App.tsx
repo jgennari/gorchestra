@@ -2073,6 +2073,7 @@ function App() {
               headerActions={viewToggle}
               mobileLeadingAction={openSessionsButton}
               offline={!serverReachable}
+              onSelectParent={(sessionID) => requestSessionSelection(sessionID, 'push')}
             />
           )}
         </div>

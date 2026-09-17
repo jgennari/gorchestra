@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,6 +82,88 @@ func TestCreateRunIsIdempotentAndProducesDurableReport(t *testing.T) {
 	if completed.FinalResponseSeq == 0 || completed.TerminalSeq == 0 || completed.CompletedAt == nil {
 		t.Fatalf("expected report boundaries: %#v", completed)
 	}
+}
+
+func TestCreateRunBuildsDurableChildLineageAndDelegationEvents(t *testing.T) {
+	ctx := context.Background()
+	barrier := make(chan struct{})
+	workspace := t.TempDir()
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New(fake.WithStepBarrier(barrier)))
+	parent, err := dbStore.CreateSession(ctx, store.CreateSessionParams{Title: "Parent", AgentType: "fake", WorkspacePath: workspace, AgentOptions: json.RawMessage(`{"fake":{"marker":"inherited"}}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentStart := postJSON(handler, "/api/sessions/"+parent.ID+"/messages", `{"content":"parent work"}`)
+	var parentRun submitMessageResponse
+	decodeJSON(t, parentStart, &parentRun)
+	if parentRun.RunID == "" {
+		t.Fatalf("missing parent run: %s", parentStart.Body.String())
+	}
+
+	childBody := fmt.Sprintf(`{"request_id":"delegated-child","prompt":"child work","parent_session_id":%q,"spawned_by_run_id":%q}`, parent.ID, parentRun.RunID)
+	childStart := postJSON(handler, "/api/runs", childBody)
+	if childStart.Code != http.StatusAccepted {
+		t.Fatalf("create child: %d %s", childStart.Code, childStart.Body.String())
+	}
+	var child runReceiptResponse
+	decodeJSON(t, childStart, &child)
+	if child.ParentSessionID != parent.ID || child.SpawnedByRunID != parentRun.RunID {
+		t.Fatalf("missing receipt lineage: %#v", child)
+	}
+	persisted, err := dbStore.GetSession(ctx, child.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.ParentSessionID != parent.ID || persisted.SpawnedByRunID != parentRun.RunID || persisted.LineageDepth != 1 {
+		t.Fatalf("unexpected child lineage: %#v", persisted)
+	}
+	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.AgentType != parent.AgentType || persisted.WorkspacePath != resolvedWorkspace || !strings.Contains(string(persisted.AgentOptions), `"marker":"inherited"`) {
+		t.Fatalf("child did not inherit parent settings: %#v", persisted)
+	}
+	children := get(handler, "/api/sessions/"+parent.ID+"/children?recursive=true")
+	if children.Code != http.StatusOK || !strings.Contains(children.Body.String(), child.SessionID) {
+		t.Fatalf("list children: %d %s", children.Code, children.Body.String())
+	}
+
+	close(barrier)
+	waitFor(t, func() bool {
+		run, err := dbStore.GetRun(ctx, child.RunID)
+		return err == nil && run.Status == "completed"
+	})
+	waitFor(t, func() bool {
+		run, err := dbStore.GetRun(ctx, parentRun.RunID)
+		return err == nil && run.Status == "completed"
+	})
+	repeated := postJSON(handler, "/api/runs", childBody)
+	if repeated.Code != http.StatusAccepted {
+		t.Fatalf("retry completed child: %d %s", repeated.Code, repeated.Body.String())
+	}
+	var repeatedChild runReceiptResponse
+	decodeJSON(t, repeated, &repeatedChild)
+	if repeatedChild.SessionID != child.SessionID || repeatedChild.RunID != child.RunID {
+		t.Fatalf("retry created different child: %#v vs %#v", child, repeatedChild)
+	}
+	waitFor(t, func() bool { return hasEventType(t, ctx, dbStore, parent.ID, "agent.delegation.completed") })
+	events, err := dbStore.ListEvents(ctx, parent.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eventTypeHasChild(events, "agent.delegation.started", child.SessionID) || !eventTypeHasChild(events, "agent.delegation.completed", child.SessionID) {
+		t.Fatalf("parent delegation events do not link child: %#v", events)
+	}
+}
+
+func eventTypeHasChild(events []store.Event, eventType, childSessionID string) bool {
+	for _, event := range events {
+		if event.Type == eventType && strings.Contains(string(event.Payload), childSessionID) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunReportRejectsRunningRun(t *testing.T) {

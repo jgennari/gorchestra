@@ -302,6 +302,26 @@ test('session list has no drag handle or drop target', () => {
   expect(screen.queryByTestId('session-pin-drop-target')).not.toBeInTheDocument()
 })
 
+test('session list renders expandable lineage with descendant activity', async () => {
+  const user = userEvent.setup()
+  const parent = { ...sessions[1], id: 'sess_parent', title: 'Parent', child_count: 2 }
+  const child = { ...sessions[0], id: 'sess_child', title: 'Child', parent_session_id: parent.id, lineage_depth: 1 }
+  const grandchild = { ...sessions[0], id: 'sess_grandchild', title: 'Grandchild', parent_session_id: child.id, lineage_depth: 2, status: 'idle' as const, pending_input: true }
+  const { container } = render(<SessionListHarness sessions={[grandchild, child, parent]} />)
+
+  expect(Array.from(container.querySelectorAll('.session-row'), (row) => row.getAttribute('data-session-id'))).toEqual([
+    'sess_parent', 'sess_child', 'sess_grandchild',
+  ])
+  expect(container.querySelector('[data-session-id="sess_child"]')).toHaveAttribute('data-lineage-depth', '1')
+  expect(screen.getByText('1 active')).toBeInTheDocument()
+  expect(screen.getAllByText('1 waiting')).toHaveLength(2)
+
+  await user.click(screen.getByRole('button', { name: 'Collapse Parent' }))
+  expect(screen.queryByRole('button', { name: 'Child' })).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Expand Parent' }))
+  expect(screen.getByRole('button', { name: 'Child' })).toBeInTheDocument()
+})
+
 function baseProps() {
   return {
     sessions: sessions.filter((session) => !session.archived_at),

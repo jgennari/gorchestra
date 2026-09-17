@@ -54,6 +54,10 @@ const (
 
 type Session struct {
 	ID                       string
+	ParentSessionID          string
+	SpawnedByRunID           string
+	LineageDepth             int
+	ChildCount               int
 	Title                    string
 	AgentType                string
 	Status                   SessionStatus
@@ -79,6 +83,8 @@ type Session struct {
 type Run struct {
 	ID                     string
 	SessionID              string
+	ParentSessionID        string
+	SpawnedByRunID         string
 	SessionTitle           string
 	Kind                   string
 	AgentType              string
@@ -295,14 +301,18 @@ type CreateSessionParams struct {
 }
 
 type CreateRunSubmissionParams struct {
-	RequestID     string
-	RequestHash   string
-	RunID         string
-	Prompt        string
-	Title         string
-	AgentType     string
-	WorkspacePath string
-	AgentOptions  json.RawMessage
+	RequestID         string
+	RequestHash       string
+	RunID             string
+	Prompt            string
+	Title             string
+	AgentType         string
+	WorkspacePath     string
+	AgentOptions      json.RawMessage
+	ParentSessionID   string
+	SpawnedByRunID    string
+	MaxLineageDepth   int
+	MaxActiveChildren int
 }
 
 type UpdateSessionStatusParams struct {

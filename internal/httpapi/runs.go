@@ -43,12 +43,14 @@ type runEventsResponse struct {
 }
 
 type createRunRequest struct {
-	RequestID    string              `json:"request_id,omitempty"`
-	Title        string              `json:"title,omitempty"`
-	AgentType    string              `json:"agent_type"`
-	Workspace    string              `json:"workspace_path,omitempty"`
-	AgentOptions *createAgentOptions `json:"agent_options,omitempty"`
-	Prompt       string              `json:"prompt"`
+	RequestID       string              `json:"request_id,omitempty"`
+	Title           string              `json:"title,omitempty"`
+	AgentType       string              `json:"agent_type"`
+	Workspace       string              `json:"workspace_path,omitempty"`
+	AgentOptions    *createAgentOptions `json:"agent_options,omitempty"`
+	Prompt          string              `json:"prompt"`
+	ParentSessionID string              `json:"parent_session_id,omitempty"`
+	SpawnedByRunID  string              `json:"spawned_by_run_id,omitempty"`
 }
 
 type runReceiptResponse struct {
@@ -62,6 +64,8 @@ type runReceiptResponse struct {
 	RequestedOptions any    `json:"requested_options"`
 	ResolvedOptions  any    `json:"resolved_options"`
 	CreatedAt        string `json:"created_at,omitempty"`
+	ParentSessionID  string `json:"parent_session_id,omitempty"`
+	SpawnedByRunID   string `json:"spawned_by_run_id,omitempty"`
 }
 
 type runResponse struct {
@@ -88,7 +92,14 @@ type runResponse struct {
 	PermissionRequestCount int64   `json:"permission_request_count"`
 	TokenCount             *int64  `json:"token_count,omitempty"`
 	Cost                   any     `json:"cost,omitempty"`
+	ParentSessionID        string  `json:"parent_session_id,omitempty"`
+	SpawnedByRunID         string  `json:"spawned_by_run_id,omitempty"`
 }
+
+const (
+	defaultMaxLineageDepth   = 6
+	defaultMaxActiveChildren = 8
+)
 
 func (api API) createRunHandler(w http.ResponseWriter, r *http.Request) {
 	persistence, ok := api.store.(runControlStore)
@@ -103,8 +114,34 @@ func (api API) createRunHandler(w http.ResponseWriter, r *http.Request) {
 	request.AgentType = strings.TrimSpace(request.AgentType)
 	request.Prompt = strings.TrimSpace(request.Prompt)
 	request.RequestID = strings.TrimSpace(request.RequestID)
-	if request.AgentType == "" || request.Prompt == "" {
-		writeError(w, http.StatusBadRequest, "agent_type and prompt are required")
+	request.ParentSessionID = strings.TrimSpace(request.ParentSessionID)
+	request.SpawnedByRunID = strings.TrimSpace(request.SpawnedByRunID)
+	if request.Prompt == "" {
+		writeError(w, http.StatusBadRequest, "prompt is required")
+		return
+	}
+	var parent store.Session
+	if request.ParentSessionID != "" {
+		var loadErr error
+		parent, loadErr = api.store.GetSession(r.Context(), request.ParentSessionID)
+		if errors.Is(loadErr, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "parent session not found")
+			return
+		}
+		if loadErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load parent session")
+			return
+		}
+		if parent.ArchivedAt != nil {
+			writeError(w, http.StatusConflict, "parent session is archived")
+			return
+		}
+		if request.AgentType == "" {
+			request.AgentType = parent.AgentType
+		}
+	}
+	if request.AgentType == "" {
+		writeError(w, http.StatusBadRequest, "agent_type is required for a root run")
 		return
 	}
 	if len(request.RequestID) > 128 {
@@ -119,12 +156,34 @@ func (api API) createRunHandler(w http.ResponseWriter, r *http.Request) {
 	if !api.agentAvailable(w, agent) {
 		return
 	}
-	workspace, err := api.workspaces.resolveWorkspacePath(request.Workspace)
+	workspaceRequest := request.Workspace
+	parentWorkspace := ""
+	if request.ParentSessionID != "" {
+		resolvedParentWorkspace, resolveErr := api.workspaces.resolveWorkspacePath(sessionWorkspacePath(parent, api.workdir))
+		if resolveErr != nil {
+			writeWorkspacePathError(w, resolveErr)
+			return
+		}
+		parentWorkspace = resolvedParentWorkspace
+		if strings.TrimSpace(workspaceRequest) == "" {
+			workspaceRequest = parentWorkspace
+		}
+	}
+	workspace, err := api.workspaces.resolveWorkspacePath(workspaceRequest)
 	if err != nil {
 		writeWorkspacePathError(w, err)
 		return
 	}
-	options, err := createSessionAgentOptions(request.AgentType, request.AgentOptions)
+	if request.ParentSessionID != "" && workspace != parentWorkspace {
+		writeError(w, http.StatusBadRequest, "child sessions must use the parent workspace")
+		return
+	}
+	var options json.RawMessage
+	if request.ParentSessionID != "" && request.AgentType == parent.AgentType {
+		options, err = mergeInheritedCreateOptions(parent.AgentOptions, request.AgentType, request.AgentOptions)
+	} else {
+		options, err = createSessionAgentOptions(request.AgentType, request.AgentOptions)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -156,9 +215,19 @@ func (api API) createRunHandler(w http.ResponseWriter, r *http.Request) {
 	submission, session, claimed, err := persistence.CreateRunSubmission(r.Context(), store.CreateRunSubmissionParams{
 		RequestID: request.RequestID, RequestHash: hex.EncodeToString(fingerprint[:]), RunID: runID,
 		Prompt: request.Prompt, Title: request.Title, AgentType: request.AgentType,
-		WorkspacePath: workspace, AgentOptions: options,
+		WorkspacePath: workspace, AgentOptions: options, ParentSessionID: request.ParentSessionID,
+		SpawnedByRunID: request.SpawnedByRunID, MaxLineageDepth: api.maxLineageDepth,
+		MaxActiveChildren: api.maxActiveChildren,
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrInvalidArgument) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "parent session not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to reserve run")
 		return
 	}
@@ -169,6 +238,20 @@ func (api API) createRunHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		api.writeExistingRunReceipt(w, r, persistence, submission, session)
 		return
+	}
+	if session.ParentSessionID != "" {
+		payload := map[string]any{"parent_session_id": session.ParentSessionID, "child_session_id": session.ID,
+			"child_run_id": submission.RunID, "agent_type": session.AgentType, "workspace_path": session.WorkspacePath}
+		if err := api.appendAgentEvent(r.Context(), session.ID, agents.AgentEvent{Type: "agent.delegation.created", Role: "system", Status: string(store.EventStatusCompleted), Payload: payload}, submission.RunID); err != nil {
+			_ = persistence.UpdateRunSubmission(context.Background(), submission.RunID, "failed", "failed to persist child linkage event")
+			writeError(w, http.StatusInternalServerError, "failed to persist child linkage")
+			return
+		}
+		if err := api.appendAgentEvent(r.Context(), session.ParentSessionID, agents.AgentEvent{Type: "agent.delegation.started", Role: "assistant", Status: string(store.EventStatusStarted), Payload: payload}, session.SpawnedByRunID); err != nil {
+			_ = persistence.UpdateRunSubmission(context.Background(), submission.RunID, "failed", "failed to persist parent delegation event")
+			writeError(w, http.StatusInternalServerError, "failed to persist parent delegation")
+			return
+		}
 	}
 
 	updated, startedRunID, started := api.startSessionRunWithID(
@@ -190,6 +273,7 @@ func (api API) createRunHandler(w http.ResponseWriter, r *http.Request) {
 		RunID: startedRunID, Status: "running", AgentType: updated.AgentType,
 		WorkspacePath: updated.WorkspacePath, RequestedOptions: decodeRawObject(options),
 		ResolvedOptions: metadata, CreatedAt: submission.CreatedAt.UTC().Format(time.RFC3339Nano),
+		ParentSessionID: updated.ParentSessionID, SpawnedByRunID: updated.SpawnedByRunID,
 	})
 }
 
@@ -288,6 +372,39 @@ func validateCreateRunOptions(ctx context.Context, agent agents.Agent, agentType
 	return nil
 }
 
+func mergeInheritedCreateOptions(parentOptions json.RawMessage, agentType string, requested *createAgentOptions) (json.RawMessage, error) {
+	if requested == nil {
+		return append(json.RawMessage(nil), parentOptions...), nil
+	}
+	var inherited map[string]any
+	if err := json.Unmarshal(parentOptions, &inherited); err != nil {
+		return nil, fmt.Errorf("decode parent agent options: %w", err)
+	}
+	rawOverride, err := json.Marshal(requested)
+	if err != nil {
+		return nil, fmt.Errorf("encode child agent options: %w", err)
+	}
+	var overrides map[string]any
+	if err := json.Unmarshal(rawOverride, &overrides); err != nil {
+		return nil, err
+	}
+	baseProvider, _ := inherited[agentType].(map[string]any)
+	if baseProvider == nil {
+		baseProvider = map[string]any{}
+	}
+	if requestedProvider, ok := overrides[agentType].(map[string]any); ok {
+		for key, value := range requestedProvider {
+			baseProvider[key] = value
+		}
+	}
+	inherited[agentType] = baseProvider
+	encoded, err := json.Marshal(inherited)
+	if err != nil {
+		return nil, fmt.Errorf("encode inherited agent options: %w", err)
+	}
+	return encoded, nil
+}
+
 func (api API) writeExistingRunReceipt(w http.ResponseWriter, r *http.Request, persistence runControlStore, submission store.RunSubmission, session store.Session) {
 	status := submission.State
 	resolved := any(map[string]any{})
@@ -302,6 +419,7 @@ func (api API) writeExistingRunReceipt(w http.ResponseWriter, r *http.Request, p
 		RunID: submission.RunID, Status: status, AgentType: session.AgentType,
 		WorkspacePath: session.WorkspacePath, RequestedOptions: requested,
 		ResolvedOptions: resolved, CreatedAt: submission.CreatedAt.UTC().Format(time.RFC3339Nano),
+		ParentSessionID: session.ParentSessionID, SpawnedByRunID: session.SpawnedByRunID,
 	})
 }
 
@@ -683,6 +801,7 @@ func runToResponse(run store.Run) runResponse {
 		FinalResponse: run.FinalResponse, FinalResponseSeq: run.FinalResponseSeq, Error: run.Error,
 		ToolCount: run.ToolCount, FileCount: run.FileCount, InputRequestCount: run.InputRequestCount,
 		PermissionRequestCount: run.PermissionRequestCount,
+		ParentSessionID:        run.ParentSessionID, SpawnedByRunID: run.SpawnedByRunID,
 	}
 	if run.CompletedAt != nil {
 		value := run.CompletedAt.UTC().Format(time.RFC3339Nano)

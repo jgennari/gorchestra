@@ -23,7 +23,12 @@ func (api API) capabilitiesHandler(w http.ResponseWriter, _ *http.Request) {
 		"capabilities": []string{
 			"agents.list", "agents.options", "runs.create", "runs.show", "runs.report",
 			"runs.events", "runs.stream", "runs.wait", "runs.cancel",
+			"sessions.list", "sessions.show", "sessions.lineage", "sessions.children",
 			"sessions.send", "sessions.queue", "sessions.steer", "requests.control",
+		},
+		"limits": map[string]int{
+			"max_lineage_depth":   api.maxLineageDepth,
+			"max_active_children": api.maxActiveChildren,
 		},
 	})
 }

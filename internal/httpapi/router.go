@@ -185,46 +185,50 @@ type HostingManager interface {
 }
 
 type Dependencies struct {
-	Store          Store
-	Events         EventService
-	Agents         AgentRegistry
-	Runs           RunManager
-	Console        *console.Manager
-	Notifications  NotificationService
-	Workdir        string
-	WorkspaceRoots []string
-	StaticAssets   fs.FS
-	AgentAPIURL    string
-	Executable     string
-	Hosting        HostingManager
-	HostStore      HostRuntimeStore
-	Schedules      *scheduler.Service
-	Maintenance    MaintenanceService
-	UserHome       string
+	Store             Store
+	Events            EventService
+	Agents            AgentRegistry
+	Runs              RunManager
+	Console           *console.Manager
+	Notifications     NotificationService
+	Workdir           string
+	WorkspaceRoots    []string
+	StaticAssets      fs.FS
+	AgentAPIURL       string
+	Executable        string
+	Hosting           HostingManager
+	HostStore         HostRuntimeStore
+	Schedules         *scheduler.Service
+	Maintenance       MaintenanceService
+	UserHome          string
+	MaxLineageDepth   int
+	MaxActiveChildren int
 }
 
 type API struct {
-	store            Store
-	events           EventService
-	agents           AgentRegistry
-	runs             RunManager
-	console          *console.Manager
-	notifications    NotificationService
-	workdir          string
-	workspaces       workspaceConfig
-	staticAssets     fs.FS
-	agentAPIURL      string
-	executable       string
-	hosting          HostingManager
-	hostStore        HostRuntimeStore
-	dashboard        DashboardStore
-	search           SearchStore
-	schedules        *scheduler.Service
-	maintenance      MaintenanceService
-	repositorySkills *reposkills.Manager
-	performance      *performanceDiagnosticsStore
-	agentOptionsMu   *sync.Mutex
-	userHome         string
+	store             Store
+	events            EventService
+	agents            AgentRegistry
+	runs              RunManager
+	console           *console.Manager
+	notifications     NotificationService
+	workdir           string
+	workspaces        workspaceConfig
+	staticAssets      fs.FS
+	agentAPIURL       string
+	executable        string
+	hosting           HostingManager
+	hostStore         HostRuntimeStore
+	dashboard         DashboardStore
+	search            SearchStore
+	schedules         *scheduler.Service
+	maintenance       MaintenanceService
+	repositorySkills  *reposkills.Manager
+	performance       *performanceDiagnosticsStore
+	agentOptionsMu    *sync.Mutex
+	userHome          string
+	maxLineageDepth   int
+	maxActiveChildren int
 }
 
 var _ RunManager = (*runcontrol.Manager)(nil)
@@ -273,8 +277,10 @@ type eventHistoryResult struct {
 
 func NewRouter(deps ...Dependencies) http.Handler {
 	api := API{
-		performance:    &performanceDiagnosticsStore{},
-		agentOptionsMu: &sync.Mutex{},
+		performance:       &performanceDiagnosticsStore{},
+		agentOptionsMu:    &sync.Mutex{},
+		maxLineageDepth:   defaultMaxLineageDepth,
+		maxActiveChildren: defaultMaxActiveChildren,
 	}
 	if len(deps) > 0 {
 		api.store = deps[0].Store
@@ -293,6 +299,12 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		api.schedules = deps[0].Schedules
 		api.maintenance = deps[0].Maintenance
 		api.userHome = strings.TrimSpace(deps[0].UserHome)
+		if deps[0].MaxLineageDepth > 0 {
+			api.maxLineageDepth = deps[0].MaxLineageDepth
+		}
+		if deps[0].MaxActiveChildren > 0 {
+			api.maxActiveChildren = deps[0].MaxActiveChildren
+		}
 		if dashboard, ok := deps[0].Store.(DashboardStore); ok {
 			api.dashboard = dashboard
 		}
@@ -389,6 +401,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 		r.Get("/api/sessions", api.listSessionsHandler)
 		r.Post("/api/sessions/notification-attention/clear", api.clearAllSessionNotificationAttentionHandler)
 		r.Get("/api/sessions/{sessionId}", api.getSessionHandler)
+		r.Get("/api/sessions/{sessionId}/children", api.listSessionChildrenHandler)
 		r.Post("/api/sessions/{sessionId}/notification-attention/clear", api.clearSessionNotificationAttentionHandler)
 		r.Get("/api/sessions/{sessionId}/events", api.eventHistoryHandler)
 		r.Get("/api/sessions/{sessionId}/events/{seq}/attachments/{attachmentIndex}", api.eventAttachmentHandler)

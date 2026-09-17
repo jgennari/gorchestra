@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -64,6 +65,8 @@ type config struct {
 	debugRetention     time.Duration
 	open               bool
 	showVersion        bool
+	maxLineageDepth    int
+	maxActiveChildren  int
 }
 
 func main() {
@@ -209,7 +212,7 @@ func main() {
 	if err != nil {
 		log.Printf("resolve gorchestra executable failed: %v", err)
 	}
-	handler := httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets, AgentAPIURL: listeningURL("127.0.0.1", cfg.port), Executable: executable, Hosting: hostingManager, HostStore: dbStore, Schedules: scheduleService, Maintenance: maintenanceService})
+	handler := httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets, AgentAPIURL: listeningURL("127.0.0.1", cfg.port), Executable: executable, Hosting: hostingManager, HostStore: dbStore, Schedules: scheduleService, Maintenance: maintenanceService, MaxLineageDepth: cfg.maxLineageDepth, MaxActiveChildren: cfg.maxActiveChildren})
 	if err := scheduleService.Start(ctx); err != nil {
 		log.Fatalf("schedule service startup failed: %v", err)
 	}
@@ -299,6 +302,8 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	flags.DurationVar(&cfg.debugRetention, "debug-retention", 7*24*time.Hour, "retention window for raw debug events; 0 disables expiry")
 	flags.BoolVar(&cfg.open, "open", false, "open the app in the default browser after startup")
 	flags.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
+	flags.IntVar(&cfg.maxLineageDepth, "max-lineage-depth", 6, "maximum delegated session nesting depth")
+	flags.IntVar(&cfg.maxActiveChildren, "max-active-children", 8, "maximum active child runs per session")
 	if err := flags.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -322,6 +327,8 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	debugRetentionFlag := flagWasSet(flags, "debug-retention")
 	openFlag := flagWasSet(flags, "open")
 	workspaceRootsFlag := flagWasSet(flags, "workspace-root")
+	maxLineageDepthFlag := flagWasSet(flags, "max-lineage-depth")
+	maxActiveChildrenFlag := flagWasSet(flags, "max-active-children")
 	if cfg.showVersion {
 		return cfg, nil
 	}
@@ -398,6 +405,21 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	}
 	if !openFlag {
 		cfg.open = envBool(configGetenv, "GORCHESTRA_OPEN", false)
+	}
+	if !maxLineageDepthFlag {
+		cfg.maxLineageDepth, err = envPositiveInt(configGetenv, "GORCHESTRA_MAX_LINEAGE_DEPTH", 6)
+		if err != nil {
+			return config{}, err
+		}
+	}
+	if !maxActiveChildrenFlag {
+		cfg.maxActiveChildren, err = envPositiveInt(configGetenv, "GORCHESTRA_MAX_ACTIVE_CHILDREN", 8)
+		if err != nil {
+			return config{}, err
+		}
+	}
+	if cfg.maxLineageDepth <= 0 || cfg.maxActiveChildren <= 0 {
+		return config{}, fmt.Errorf("delegation limits must be positive")
 	}
 	if err := hosting.ValidatePreviewURLTemplate(cfg.previewURLTemplate); err != nil {
 		return config{}, fmt.Errorf("preview URL template: %w", err)
@@ -601,6 +623,18 @@ func envBool(getenv func(string) string, key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func envPositiveInt(getenv func(string) string, key string, fallback int) (int, error) {
+	value := strings.TrimSpace(getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return parsed, nil
 }
 
 func defaultOpenCodeBin(getenv func(string) string) string {

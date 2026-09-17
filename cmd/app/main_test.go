@@ -78,6 +78,45 @@ func TestParseConfigDebugRetention(t *testing.T) {
 	}
 }
 
+func TestParseConfigDelegationLimits(t *testing.T) {
+	workspace := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	cfg, err := parseConfigArgs(
+		[]string{"--data-dir", dataDir, "--workspace", workspace},
+		envMap(map[string]string{
+			"GORCHESTRA_MAX_LINEAGE_DEPTH":   "4",
+			"GORCHESTRA_MAX_ACTIVE_CHILDREN": "3",
+		}),
+	)
+	if err != nil {
+		t.Fatalf("parse delegation limits: %v", err)
+	}
+	if cfg.maxLineageDepth != 4 || cfg.maxActiveChildren != 3 {
+		t.Fatalf("unexpected delegation limits: depth=%d active=%d", cfg.maxLineageDepth, cfg.maxActiveChildren)
+	}
+
+	cfg, err = parseConfigArgs(
+		[]string{"--data-dir", dataDir, "--workspace", workspace, "--max-lineage-depth", "2", "--max-active-children", "5"},
+		envMap(map[string]string{
+			"GORCHESTRA_MAX_LINEAGE_DEPTH":   "4",
+			"GORCHESTRA_MAX_ACTIVE_CHILDREN": "3",
+		}),
+	)
+	if err != nil {
+		t.Fatalf("parse delegation flags: %v", err)
+	}
+	if cfg.maxLineageDepth != 2 || cfg.maxActiveChildren != 5 {
+		t.Fatalf("flags did not override delegation limits: depth=%d active=%d", cfg.maxLineageDepth, cfg.maxActiveChildren)
+	}
+
+	if _, err := parseConfigArgs(
+		[]string{"--data-dir", dataDir, "--workspace", workspace},
+		envMap(map[string]string{"GORCHESTRA_MAX_LINEAGE_DEPTH": "0"}),
+	); err == nil {
+		t.Fatal("expected invalid delegation limit error")
+	}
+}
+
 func TestParseConfigExplicitDBOverridesDataDir(t *testing.T) {
 	workspace := t.TempDir()
 	dataDir := filepath.Join(t.TempDir(), "data")

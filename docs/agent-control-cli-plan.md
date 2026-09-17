@@ -1,6 +1,6 @@
 # Agent control CLI and child sessions
 
-Status: Stages 1-2 implemented; Stages 3-4 pending
+Status: Stages 1-3 implemented; Stage 4 pending
 
 Date: 2026-09-17
 
@@ -282,7 +282,7 @@ for human intervention. Child completion does not inject a parent message in V1.
    SSE follow/resync, wait-any/all, exact cancellation, follow-up/queue/steer, and
    question handling. Demonstrate a process streaming tools and output, exiting
    on its own run's terminal event, and later reconstructing the same result.
-3. **Delegation and UI.** Add lineage migration and transactional linkage, shared
+3. **Delegation and UI — complete.** Add lineage migration and transactional linkage, shared
    workspace/option inheritance, runtime instructions, bounds, delegation events,
    and the expandable session tree. Demonstrate one parent creating two children,
    fetching both reports, and all three sessions remaining inspectable in the UI.
@@ -300,6 +300,15 @@ foreground text/JSON/NDJSON rendering, completed-before-attach handling, explici
 resync, wait-any/all with timeouts, exact-run cancellation, explicit follow-up
 queue/steer behavior, and durable question/permission discovery and response.
 The CLI emits documented exit codes and keeps machine-format stdout parseable.
+
+Stage 3 verification on 2026-09-17 covered durable parent and spawning-run
+lineage, idempotent child creation, same-provider option and workspace inheritance,
+configurable depth and active-child bounds, runtime CLI discovery instructions,
+delegation lifecycle events, recursive child lookup, archived-parent visibility,
+and the expandable UI tree with parent navigation and descendant activity badges.
+Integration coverage exercises a live parent spawning a child and retrieving the
+child's durable result; isolated compiled-binary verification exercises two child
+runs under one parent.
 
 Required test coverage includes duplicate submissions and lost responses;
 acceptance/startup crash boundaries; exactly one terminal result; wait finishing

@@ -1,4 +1,4 @@
-import { Loader2, WifiOff } from 'lucide-react'
+import { GitBranch, Loader2, WifiOff } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   AgentEvent,
@@ -78,6 +78,7 @@ type Props = {
   focusedEventRequest?: number
   onVisibleSequenceRangeChange?: (range: TranscriptSequenceRange | null) => void
   offline?: boolean
+  onSelectParent?: (sessionID: string) => void
 }
 
 export function SessionDetail({
@@ -112,6 +113,7 @@ export function SessionDetail({
   focusedEventRequest = 0,
   onVisibleSequenceRangeChange,
   offline = false,
+  onSelectParent,
 }: Props) {
   const bottomInsetRef = useRef<HTMLDivElement>(null)
   const [bottomInsetHeight, setBottomInsetHeight] = useState(0)
@@ -449,6 +451,7 @@ export function SessionDetail({
             session={session}
             headerActions={headerActions}
             leadingAction={mobileLeadingAction}
+            onSelectParent={onSelectParent}
           />
         </div>
         <div
@@ -458,6 +461,7 @@ export function SessionDetail({
           <ChatSessionHeader
             session={session}
             headerActions={headerActions}
+            onSelectParent={onSelectParent}
           />
         </div>
       </div>
@@ -559,11 +563,13 @@ export function ChatSessionHeader({
   errorMessage = '',
   headerActions,
   leadingAction,
+  onSelectParent,
 }: {
   session: Session
   errorMessage?: string
   headerActions?: ReactNode
   leadingAction?: ReactNode
+  onSelectParent?: (sessionID: string) => void
 }) {
   return (
     <div className="pointer-events-auto">
@@ -576,6 +582,17 @@ export function ChatSessionHeader({
         {leadingAction ? <div className="shrink-0">{leadingAction}</div> : null}
         <div className="min-w-0 flex-1">
           <SessionTitle title={session.title} />
+          {session.parent_session_id ? (
+            <button
+              type="button"
+              onClick={() => onSelectParent?.(session.parent_session_id!)}
+              disabled={!onSelectParent}
+              className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:pointer-events-none"
+            >
+              <GitBranch className="size-3" />
+              Parent session
+            </button>
+          ) : null}
         </div>
         {headerActions}
       </div>

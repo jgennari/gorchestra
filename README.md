@@ -140,6 +140,8 @@ gorchestra --config ~/.config/gorchestra/gorchestra.env
 gorchestra --data-dir ~/.gorchestra-dev
 gorchestra --workspace /path/to/repo
 gorchestra --workspace-root /path/to/allowed/root
+gorchestra --max-lineage-depth 6
+gorchestra --max-active-children 8
 gorchestra --codex-bin /path/to/codex
 gorchestra --codex-model gpt-5
 gorchestra --codex-sandbox workspace-write
@@ -163,7 +165,7 @@ Linux: $XDG_DATA_HOME/gorchestra/gorchestra.db
 Linux fallback: ~/.local/share/gorchestra/gorchestra.db
 ```
 
-Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, `GORCHESTRA_PREVIEW_URL_TEMPLATE`, `GORCHESTRA_CLAUDE_BIN`, `GORCHESTRA_CLAUDE_MODEL`, `GORCHESTRA_OPENCODE_BIN`, `GORCHESTRA_PI_BIN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
+Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, `GORCHESTRA_PREVIEW_URL_TEMPLATE`, `GORCHESTRA_MAX_LINEAGE_DEPTH`, `GORCHESTRA_MAX_ACTIVE_CHILDREN`, `GORCHESTRA_CLAUDE_BIN`, `GORCHESTRA_CLAUDE_MODEL`, `GORCHESTRA_OPENCODE_BIN`, `GORCHESTRA_PI_BIN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
 
 Config files use the same env-style names:
 
@@ -175,6 +177,8 @@ GORCHESTRA_WORKSPACE=~
 GORCHESTRA_WORKSPACE_ROOTS=~
 GORCHESTRA_OPEN=false
 GORCHESTRA_PREVIEW_URL_TEMPLATE=http://{slug}.localhost:15173
+GORCHESTRA_MAX_LINEAGE_DEPTH=6
+GORCHESTRA_MAX_ACTIVE_CHILDREN=8
 GORCHESTRA_CODEX_BIN=codex
 GORCHESTRA_CLAUDE_BIN=claude
 GORCHESTRA_OPENCODE_BIN=opencode
@@ -210,6 +214,9 @@ gorchestra run --agent codex --model MODEL_ID \
 
 gorchestra run --agent codex --prompt-file task.md --detach --json
 
+# Inside a Gorchestra run, provider settings and workspace are inherited.
+gorchestra run --prompt-file delegated-task.md --detach --json
+
 gorchestra runs show RUN_ID --json
 gorchestra runs watch RUN_ID --format ndjson
 gorchestra runs watch RUN_ID --until-attention --json
@@ -221,6 +228,9 @@ gorchestra sessions send SESSION_ID --prompt-file follow-up.md --format ndjson
 gorchestra sessions send SESSION_ID --prompt "do this next" --queue --detach --json
 gorchestra sessions send SESSION_ID --prompt "change direction" \
   --steer --expected-run-id RUN_ID --json
+gorchestra sessions list --json
+gorchestra sessions show SESSION_ID --json
+gorchestra sessions children SESSION_ID --recursive --json
 
 gorchestra requests list RUN_ID --json
 gorchestra requests answer RUN_ID REQUEST_ID --answers-json answers.json --json
@@ -235,6 +245,13 @@ metadata after the run reaches a terminal state. A foreground observer may be
 stopped without cancelling server work; use `runs watch` with the run ID to
 reattach, and use `runs cancel` only when the work itself should stop. Busy
 session follow-ups require an explicit `--queue` or exact-run `--steer`.
+
+Child sessions remain ordinary durable sessions. They share their parent's
+resolved workspace, inherit same-provider settings unless overridden, and appear
+indented beneath the parent in the session sidebar. Use `--parent SESSION_ID`
+outside an agent run, `--parent current` for the explicit in-run form, or
+`--parent none` to create a root. Depth and per-parent active-child limits are
+reported by `/api/capabilities` and reject excess delegation visibly.
 
 ## Hosted Development Previews
 
