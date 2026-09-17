@@ -145,7 +145,8 @@ For normal message runs, it also prefixes the provider prompt with this text:
 
 ```xml
 <gorchestra_context>
-Gorchestra agent control is available in this run.
+This session is running inside Gorchestra, an agent orchestration service that coordinates multiple concurrent agents across supported providers.
+You can use Gorchestra's CLI to delegate independent work to child agents and monitor their exact runs.
 Use "$GORCHESTRA_BIN" commands --json to discover the current CLI contract.
 Use "$GORCHESTRA_BIN" run --prompt-file <path> to delegate work to a child session. Inside a run, children inherit this session's provider, resolved options, and workspace unless you explicitly override supported provider settings. Use --detach to receive IDs immediately, runs wait or runs watch to observe exact runs, and runs report to retrieve durable results. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.
 </gorchestra_context>

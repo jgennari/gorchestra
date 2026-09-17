@@ -21,6 +21,21 @@ func TestAgentRuntimeEnvironmentIncludesHostCLIContext(t *testing.T) {
 	}
 }
 
+func TestAgentRuntimeContextIntroducesOrchestrationAndDelegation(t *testing.T) {
+	context := (API{}).agentRuntimeContext(t.TempDir())
+	for _, expected := range []string{
+		"This session is running inside Gorchestra",
+		"agent orchestration service",
+		"multiple concurrent agents",
+		"delegate independent work to child agents",
+		`"$GORCHESTRA_BIN" commands --json`,
+	} {
+		if !strings.Contains(context, expected) {
+			t.Fatalf("runtime context missing %q: %s", expected, context)
+		}
+	}
+}
+
 func TestAgentHostingContextRequiresRecipe(t *testing.T) {
 	workspace := t.TempDir()
 	api := API{}
