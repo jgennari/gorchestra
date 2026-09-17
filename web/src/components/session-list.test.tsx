@@ -302,7 +302,7 @@ test('session list has no drag handle or drop target', () => {
   expect(screen.queryByTestId('session-pin-drop-target')).not.toBeInTheDocument()
 })
 
-test('session list renders expandable lineage with descendant activity', async () => {
+test('session list renders expandable lineage without descendant count badges', async () => {
   const user = userEvent.setup()
   const parent = { ...sessions[1], id: 'sess_parent', title: 'Parent', child_count: 2 }
   const child = { ...sessions[0], id: 'sess_child', title: 'Child', parent_session_id: parent.id, lineage_depth: 1 }
@@ -317,7 +317,7 @@ test('session list renders expandable lineage with descendant activity', async (
   expect(childRow).toHaveAttribute('data-lineage-depth', '1')
   expect(childRow?.querySelector('.lucide-git-branch')).not.toBeInTheDocument()
   expect(screen.queryByText(/active$/)).not.toBeInTheDocument()
-  expect(screen.getAllByText('1 waiting')).toHaveLength(2)
+  expect(screen.queryByText(/waiting$/)).not.toBeInTheDocument()
   expect(parentRow?.querySelector('[aria-label="Collapse Parent"]')).toHaveClass('size-5')
   expect(screen.getByRole('button', { name: 'Parent' })).toHaveClass('pl-1')
 

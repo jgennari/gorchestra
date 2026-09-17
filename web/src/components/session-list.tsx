@@ -51,7 +51,7 @@ export function SessionList({
 }: Props) {
   const showHeader = variant === 'full'
   const [collapsedSessionIDs, setCollapsedSessionIDs] = useState<ReadonlySet<string>>(new Set())
-  const treeRows = buildSessionTreeRows(sessions, collapsedSessionIDs, lastSeenSeqBySession)
+  const treeRows = buildSessionTreeRows(sessions, collapsedSessionIDs)
 
   return (
     <aside
@@ -136,7 +136,7 @@ export function SessionList({
           <div className="p-4 text-sm text-muted-foreground">No sessions yet.</div>
         ) : (
           <div className="session-list-rows space-y-1.5 p-2.5">
-            {treeRows.map(({ session, depth, hasChildren, attentionDescendants }, index) => (
+            {treeRows.map(({ session, depth, hasChildren }, index) => (
               <SessionRow
                 key={session.id}
                 session={session}
@@ -150,7 +150,6 @@ export function SessionList({
                 depth={depth}
                 hasChildren={hasChildren}
                 expanded={!collapsedSessionIDs.has(session.id)}
-                attentionDescendants={attentionDescendants}
                 onToggle={() => setCollapsedSessionIDs((current) => toggleSetValue(current, session.id))}
               />
             ))}
@@ -173,7 +172,6 @@ function SessionRow({
   depth,
   hasChildren,
   expanded,
-  attentionDescendants,
   onToggle,
 }: {
   session: Session
@@ -187,7 +185,6 @@ function SessionRow({
   depth: number
   hasChildren: boolean
   expanded: boolean
-  attentionDescendants: number
   onToggle: () => void
 }) {
   const title = session.title || 'Untitled session'
@@ -251,10 +248,6 @@ function SessionRow({
               Archived
             </Badge>
           </span>
-        ) : attentionDescendants > 0 ? (
-          <span className="session-row-meta flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
-            {attentionDescendants > 0 ? <Badge variant="warning" className="min-h-5 px-1.5 py-0">{attentionDescendants} waiting</Badge> : null}
-          </span>
         ) : null}
       </button>
       <div className="flex h-8 shrink-0 items-center">
@@ -288,13 +281,11 @@ type SessionTreeRow = {
   session: Session
   depth: number
   hasChildren: boolean
-  attentionDescendants: number
 }
 
 function buildSessionTreeRows(
   sessions: Session[],
   collapsed: ReadonlySet<string>,
-  lastSeenSeqBySession: Record<string, number>,
 ) {
   const byID = new Map(sessions.map((session) => [session.id, session]))
   const children = new Map<string, Session[]>()
@@ -310,23 +301,11 @@ function buildSessionTreeRows(
   }
   const rows: SessionTreeRow[] = []
   const visited = new Set<string>()
-  const summarizeAttention = (session: Session, stack = new Set<string>()): number => {
-    if (stack.has(session.id)) return 0
-    const nextStack = new Set(stack).add(session.id)
-    let attention = 0
-    for (const child of children.get(session.id) ?? []) {
-      const childAttention = sessionAttention(child, lastSeenSeqBySession)
-      if (childAttention !== null) attention += 1
-      attention += summarizeAttention(child, nextStack)
-    }
-    return attention
-  }
   const visit = (session: Session, depth: number) => {
     if (visited.has(session.id)) return
     visited.add(session.id)
     const descendants = children.get(session.id) ?? []
-    const attentionDescendants = summarizeAttention(session)
-    rows.push({ session, depth, hasChildren: descendants.length > 0, attentionDescendants })
+    rows.push({ session, depth, hasChildren: descendants.length > 0 })
     if (!collapsed.has(session.id)) descendants.forEach((child) => visit(child, depth + 1))
   }
   roots.forEach((session) => visit(session, 0))
