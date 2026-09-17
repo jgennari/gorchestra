@@ -55,6 +55,7 @@ var commandSpecs = []commandSpec{
 		{Name: "plan", Type: "boolean", Description: "planning mode"},
 		{Name: "cwd", Type: "path", Description: "server-side workspace path"},
 		{Name: "parent", Type: "session-id|current|none", Description: "child parent; defaults to current inside a run"},
+		{Name: "title", Type: "string", Description: "session title"},
 		{Name: "prompt", Type: "string", Description: "task prompt"},
 		{Name: "prompt-file", Type: "path|-", Description: "read task prompt from a file or stdin"},
 		{Name: "request-id", Type: "string", Description: "idempotency key"},

@@ -212,7 +212,8 @@ gorchestra run --agent codex --model MODEL_ID \
   --thinking high --fast=true --plan=true \
   --prompt-file task.md --format ndjson
 
-gorchestra run --agent codex --prompt-file task.md --detach --json
+gorchestra run --agent codex --title "Dependency audit" \
+  --prompt-file task.md --detach --json
 
 # Inside a Gorchestra run, provider settings and workspace are inherited.
 gorchestra run --prompt-file delegated-task.md --detach --json

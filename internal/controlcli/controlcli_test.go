@@ -28,15 +28,25 @@ func TestCommandsCatalogWorksOffline(t *testing.T) {
 	if catalog.SchemaVersion != 1 || len(catalog.Commands) < 6 {
 		t.Fatalf("unexpected catalog: %#v", catalog)
 	}
-	commands := make(map[string]bool, len(catalog.Commands))
+	commands := make(map[string]commandSpec, len(catalog.Commands))
 	for _, command := range catalog.Commands {
-		commands[command.Command] = true
+		commands[command.Command] = command
 	}
 	for _, command := range []string{"sessions archive <session-id>", "sessions restore <session-id>"} {
-		if !commands[command] {
+		if _, ok := commands[command]; !ok {
 			t.Fatalf("catalog missing %q", command)
 		}
 	}
+	run, ok := commands["run"]
+	if !ok {
+		t.Fatal("catalog missing run command")
+	}
+	for _, flag := range run.Flags {
+		if flag.Name == "title" && flag.Type == "string" {
+			return
+		}
+	}
+	t.Fatal("run command catalog missing string --title flag")
 }
 
 func TestRunSendsProviderOptionsAndPrintsReceipt(t *testing.T) {
@@ -58,13 +68,17 @@ func TestRunSendsProviderOptionsAndPrintsReceipt(t *testing.T) {
 	cli := CLI{Stdout: &stdout, Stderr: &bytes.Buffer{}, Getwd: func() (string, error) { return "/tmp/project", nil }}
 	err := cli.Run(context.Background(), []string{
 		"run", "--server", server.URL, "--agent", "codex", "--model", "gpt-test",
-		"--thinking", "high", "--fast=false", "--plan=true", "--prompt", "do work", "--detach", "--json",
+		"--thinking", "high", "--fast=false", "--plan=true", "--title", "Named child",
+		"--prompt", "do work", "--detach", "--json",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), `"run_id": "run_one"`) {
 		t.Fatalf("missing receipt: %s", stdout.String())
+	}
+	if received["title"] != "Named child" {
+		t.Fatalf("unexpected title: %#v", received["title"])
 	}
 	provider := received["agent_options"].(map[string]any)["codex"].(map[string]any)
 	if provider["fast_mode"] != false || provider["planning_mode"] != true || provider["reasoning_effort"] != "high" {
