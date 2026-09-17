@@ -47,6 +47,9 @@ func TestMigrationsRunAgainstEmptyDatabase(t *testing.T) {
 	assertColumnExists(t, ctx, store, "sessions", "pending_input_count")
 	assertColumnExists(t, ctx, store, "sessions", "pending_permission_count")
 	assertColumnExists(t, ctx, store, "sessions", "pinned_at")
+	assertColumnExists(t, ctx, store, "dashboard_runs", "requested_options_json")
+	assertColumnExists(t, ctx, store, "dashboard_runs", "resolved_options_json")
+	assertColumnExists(t, ctx, store, "dashboard_runs", "final_response")
 	assertColumnExists(t, ctx, store, "push_subscriptions", "origin")
 	assertColumnExists(t, ctx, store, "queued_messages", "skills_json")
 	assertColumnExists(t, ctx, store, "queued_messages", "source_kind")
@@ -65,8 +68,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 23 {
-		t.Fatalf("expected twenty-three recorded migrations, got %d", count)
+	if count != 24 {
+		t.Fatalf("expected twenty-four recorded migrations, got %d", count)
 	}
 }
 

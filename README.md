@@ -192,6 +192,31 @@ rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/gorchestra"
 
 Codex shell commands run with network access enabled by default. Codex native web search runs in live mode by default; use `--codex-web-search=cached` or `--codex-web-search=disabled` to change it.
 
+### Agent control CLI
+
+The same binary can create durable runs through an already-running Gorchestra
+service. Stage 1 returns a detached receipt with exact session and run IDs; live
+streaming and wait commands arrive in Stage 2.
+
+```sh
+gorchestra commands --json
+gorchestra agents list --json
+gorchestra agents options codex --json
+
+gorchestra run --agent codex --model MODEL_ID \
+  --thinking high --fast=true --plan=true \
+  --prompt-file task.md --detach --json
+
+gorchestra runs show RUN_ID --json
+gorchestra runs report RUN_ID --json
+```
+
+Set `GORCHESTRA_API_URL` or pass `--server` to target a service other than
+`http://127.0.0.1:8080`. Use `--request-id` when a caller may retry after losing
+the response; identical retries return the original IDs and different content is
+rejected. `runs report` returns the full final assistant response and recorded run
+metadata after the run reaches a terminal state.
+
 ## Hosted Development Previews
 
 A session can supervise a development stack declared in `<workspace>/.gorchestra/host.yaml`. Gorchestra runs the declared foreground processes outside the agent turn, waits for readiness, combines named services behind one stable host with path routes, and keeps bounded stdout/stderr logs in the session UI. The same lifecycle is available through `gorchestra host` for agents and terminal use.

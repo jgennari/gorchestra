@@ -1,6 +1,6 @@
 # Agent control CLI and child sessions
 
-Status: proposed implementation plan, not implemented
+Status: Stage 1 implemented; Stages 2-4 pending
 
 Date: 2026-09-17
 
@@ -62,7 +62,9 @@ Source review found:
 
 ## CLI contract
 
-These commands are proposed, not currently available:
+The table describes the intended complete surface. Stage 1 implements command
+discovery, agent discovery/options, detached `run`, `runs show`, and
+`runs report`. Later rows remain planned.
 
 | Command | Purpose |
 | --- | --- |
@@ -272,7 +274,7 @@ for human intervention. Child completion does not inject a parent message in V1.
 
 ## Implementation stages and acceptance gates
 
-1. **Run API and CLI foundation.** Introduce dispatch/client packages, offline
+1. **Run API and CLI foundation — complete.** Introduce dispatch/client packages, offline
    help/manifest, capability discovery, exact run receipts, durable create/start,
    run inspection, and report projection. Preserve current server and host usage.
    Demonstrate detached creation and an unambiguous report after completion.
@@ -287,6 +289,11 @@ for human intervention. Child completion does not inject a parent message in V1.
 4. **Release verification.** Exercise isolated fake-provider integration tests,
    adapter option boundaries, and a bounded real-provider smoke run when authorized
    for implementation. Update CLI documentation and distribution smoke tests.
+
+Stage 1 verification on 2026-09-17 covered the complete Go test suite, `go vet`,
+an isolated compiled-binary service, offline command discovery, provider discovery,
+detached fake-agent creation, terminal report retrieval, and an idempotent retry
+that returned the original session and run IDs.
 
 Required test coverage includes duplicate submissions and lost responses;
 acceptance/startup crash boundaries; exactly one terminal result; wait finishing

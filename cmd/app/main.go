@@ -26,6 +26,7 @@ import (
 	"github.com/jgennari/gorchestra/internal/agents/fake"
 	"github.com/jgennari/gorchestra/internal/agents/opencode"
 	"github.com/jgennari/gorchestra/internal/agents/pi"
+	"github.com/jgennari/gorchestra/internal/controlcli"
 	"github.com/jgennari/gorchestra/internal/events"
 	"github.com/jgennari/gorchestra/internal/hosting"
 	"github.com/jgennari/gorchestra/internal/httpapi"
@@ -75,8 +76,21 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && isControlCommand(os.Args[1]) {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := (controlcli.CLI{}).Run(ctx, os.Args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "gorchestra: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
-	cfg, err := parseConfig()
+	serverArgs := os.Args[1:]
+	if len(serverArgs) > 0 && serverArgs[0] == "serve" {
+		serverArgs = serverArgs[1:]
+	}
+	cfg, err := parseConfigArgs(serverArgs, os.Getenv)
 	if err != nil {
 		log.Fatalf("configuration failed: %v", err)
 	}
@@ -243,6 +257,15 @@ func main() {
 		if err := <-errc; err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("server failed: %v", err)
 		}
+	}
+}
+
+func isControlCommand(command string) bool {
+	switch command {
+	case "commands", "help", "-h", "--help", "agents", "run", "runs":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -775,6 +798,9 @@ func recoverInterruptedRuns(ctx context.Context, dbStore *store.Store, eventServ
 		}
 
 		log.Printf("marked interrupted run failed: session_id=%s agent_type=%s", session.ID, session.AgentType)
+	}
+	if err := dbStore.FailAcceptedRunSubmissions(ctx, "server restarted before the run started"); err != nil {
+		return err
 	}
 
 	return nil

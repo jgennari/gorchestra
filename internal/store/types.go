@@ -74,6 +74,48 @@ type Session struct {
 	PinnedAt                 *time.Time
 }
 
+// Run is the durable, event-derived record of one agent invocation. Events
+// remain canonical; this projection provides exact run lookup and reports.
+type Run struct {
+	ID                     string
+	SessionID              string
+	SessionTitle           string
+	Kind                   string
+	AgentType              string
+	WorkspacePath          string
+	Status                 string
+	StartSeq               int64
+	TerminalSeq            int64
+	StartedAt              time.Time
+	CompletedAt            *time.Time
+	RequestedOptions       json.RawMessage
+	ResolvedOptions        json.RawMessage
+	FinalResponse          string
+	FinalResponseSeq       int64
+	Error                  string
+	ToolCount              int64
+	FileCount              int64
+	InputRequestCount      int64
+	PermissionRequestCount int64
+	TokenCount             int64
+	HasTokenUsage          bool
+	CostAmount             float64
+	CostCurrency           string
+	HasCostUsage           bool
+}
+
+type RunSubmission struct {
+	RequestID   string
+	RequestHash string
+	SessionID   string
+	RunID       string
+	Prompt      string
+	State       string
+	Error       string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type Event struct {
 	ID        string
 	SessionID string
@@ -246,6 +288,17 @@ type PushDeliveryAttempt struct {
 }
 
 type CreateSessionParams struct {
+	Title         string
+	AgentType     string
+	WorkspacePath string
+	AgentOptions  json.RawMessage
+}
+
+type CreateRunSubmissionParams struct {
+	RequestID     string
+	RequestHash   string
+	RunID         string
+	Prompt        string
 	Title         string
 	AgentType     string
 	WorkspacePath string

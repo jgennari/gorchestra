@@ -271,8 +271,8 @@ func projectDashboardEvent(ctx context.Context, tx *sql.Tx, event Event) error {
 			return fmt.Errorf("project dashboard permission request: %w", err)
 		}
 	case "agent.message.completed":
-		if summary := dashboardPayloadString(event.Payload, "text"); summary != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE dashboard_runs SET summary = ? WHERE id = ?`, dashboardExcerpt(summary), runID); err != nil {
+		if finalResponse := dashboardPayloadRawString(event.Payload, "text"); strings.TrimSpace(finalResponse) != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE dashboard_runs SET summary = ?, final_response = ?, final_response_seq = ? WHERE id = ?`, dashboardExcerpt(finalResponse), finalResponse, event.Seq, runID); err != nil {
 				return fmt.Errorf("project dashboard summary: %w", err)
 			}
 		}
@@ -327,6 +327,11 @@ func projectDashboardEvent(ctx context.Context, tx *sql.Tx, event Event) error {
 			WHERE id = ?`, terminalStatus, event.Seq, formatTime(event.CreatedAt), dashboardExcerpt(errorText), runID); err != nil {
 			return fmt.Errorf("project dashboard terminal event: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE run_submissions SET state = ?, error = ?, updated_at = ? WHERE run_id = ?`,
+			terminalStatus, dashboardExcerpt(errorText), formatTime(event.CreatedAt), runID); err != nil {
+			return fmt.Errorf("project run submission terminal state: %w", err)
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -359,17 +364,44 @@ func projectDashboardRunStart(ctx context.Context, tx *sql.Tx, event Event) erro
 	if kind == "" {
 		kind = "unknown"
 	}
+	requestedOptions := dashboardPayloadJSON(event.Payload, "requested_agent_options")
+	resolvedOptions := dashboardPayloadJSON(event.Payload, "agent_options")
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO dashboard_runs (
 			id, session_id, kind, agent_type, workspace_path, status,
-			start_seq, last_projected_seq, started_at
-		) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)
+			start_seq, last_projected_seq, started_at, requested_options_json, resolved_options_json
+		) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)
 		ON CONFLICT(session_id, start_seq) DO NOTHING`,
-		runID, event.SessionID, kind, agentType, workspacePath, event.Seq, event.Seq, formatTime(event.CreatedAt),
+		runID, event.SessionID, kind, agentType, workspacePath, event.Seq, event.Seq, formatTime(event.CreatedAt), requestedOptions, resolvedOptions,
 	); err != nil {
 		return fmt.Errorf("project dashboard run start: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE run_submissions SET state = 'running', updated_at = ? WHERE run_id = ?`, formatTime(event.CreatedAt), runID); err != nil {
+		return fmt.Errorf("project run submission start: %w", err)
+	}
 	return nil
+}
+
+func dashboardPayloadJSON(payload json.RawMessage, key string) string {
+	var values map[string]json.RawMessage
+	if json.Unmarshal(payload, &values) != nil {
+		return "{}"
+	}
+	raw := values[key]
+	if len(raw) == 0 || !json.Valid(raw) || string(raw) == "null" {
+		return "{}"
+	}
+	return string(raw)
+}
+
+func dashboardPayloadRawString(payload json.RawMessage, key string) string {
+	var values map[string]json.RawMessage
+	if json.Unmarshal(payload, &values) != nil {
+		return ""
+	}
+	var value string
+	_ = json.Unmarshal(values[key], &value)
+	return value
 }
 
 func dashboardRunForEvent(ctx context.Context, tx *sql.Tx, event Event) (string, error) {

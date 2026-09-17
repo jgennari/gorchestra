@@ -2,11 +2,24 @@ package agents
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
 type Registry struct {
 	agents map[string]Agent
+}
+
+func (r *Registry) List() []Agent {
+	if r == nil {
+		return nil
+	}
+	result := make([]Agent, 0, len(r.agents))
+	for _, agent := range r.agents {
+		result = append(result, agent)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Type() < result[j].Type() })
+	return result
 }
 
 func NewRegistry(agentList ...Agent) (*Registry, error) {

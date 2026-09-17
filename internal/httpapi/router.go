@@ -316,7 +316,12 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	}
 
 	if api.store != nil && api.events != nil && api.agents != nil && api.runs != nil {
+		r.Get("/api/capabilities", api.capabilitiesHandler)
+		r.Get("/api/agents", api.agentsHandler)
 		r.Get("/api/agents/{agentType}/options", api.agentOptionsHandler)
+		r.Post("/api/runs", api.createRunHandler)
+		r.Get("/api/runs/{runId}", api.getRunHandler)
+		r.Get("/api/runs/{runId}/report", api.getRunReportHandler)
 		r.Get("/api/workspaces/roots", api.workspaceRootsHandler)
 		r.Get("/api/workspaces/browse", api.workspaceBrowseHandler)
 		r.Post("/api/sessions", api.createSessionHandler)

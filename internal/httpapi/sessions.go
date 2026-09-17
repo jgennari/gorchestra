@@ -48,8 +48,8 @@ type createCodexOptions struct {
 	PermissionPolicy string `json:"permission_policy,omitempty"`
 	Model            string `json:"model,omitempty"`
 	ReasoningEffort  string `json:"reasoning_effort,omitempty"`
-	FastMode         bool   `json:"fast_mode,omitempty"`
-	PlanningMode     bool   `json:"planning_mode,omitempty"`
+	FastMode         *bool  `json:"fast_mode,omitempty"`
+	PlanningMode     *bool  `json:"planning_mode,omitempty"`
 }
 
 type createClaudeOptions struct {
@@ -57,13 +57,13 @@ type createClaudeOptions struct {
 	PermissionPolicy string `json:"permission_policy,omitempty"`
 	Model            string `json:"model,omitempty"`
 	Effort           string `json:"effort,omitempty"`
-	PlanningMode     bool   `json:"planning_mode,omitempty"`
+	PlanningMode     *bool  `json:"planning_mode,omitempty"`
 }
 
 type createOpenCodeOptions struct {
 	PermissionPolicy string `json:"permission_policy,omitempty"`
 	Model            string `json:"model,omitempty"`
-	PlanningMode     bool   `json:"planning_mode,omitempty"`
+	PlanningMode     *bool  `json:"planning_mode,omitempty"`
 }
 
 type updateSessionRuntimeAgentOptionsRequest struct {
@@ -193,6 +193,7 @@ type submitAttachment struct {
 
 type submitMessageResponse struct {
 	SessionID     string                 `json:"session_id"`
+	RunID         string                 `json:"run_id,omitempty"`
 	Status        string                 `json:"status"`
 	AcceptedAs    string                 `json:"accepted_as,omitempty"`
 	QueuedMessage *queuedMessageResponse `json:"queued_message,omitempty"`
@@ -843,9 +844,9 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 		if effort := strings.TrimSpace(options.Codex.ReasoningEffort); effort != "" {
 			codexOptions["reasoning_effort"] = effort
 		}
-		if strings.TrimSpace(options.Codex.Model) != "" || strings.TrimSpace(options.Codex.ReasoningEffort) != "" || options.Codex.FastMode || options.Codex.PlanningMode {
-			codexOptions["fast_mode"] = options.Codex.FastMode
-			codexOptions["planning_mode"] = options.Codex.PlanningMode
+		if strings.TrimSpace(options.Codex.Model) != "" || strings.TrimSpace(options.Codex.ReasoningEffort) != "" || options.Codex.FastMode != nil || options.Codex.PlanningMode != nil {
+			codexOptions["fast_mode"] = boolOption(options.Codex.FastMode)
+			codexOptions["planning_mode"] = boolOption(options.Codex.PlanningMode)
 		}
 		if len(codexOptions) > 0 {
 			agentOptions["codex"] = codexOptions
@@ -872,8 +873,8 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 		if effort := strings.TrimSpace(options.Claude.Effort); effort != "" {
 			claudeOptions["effort"] = effort
 		}
-		if strings.TrimSpace(options.Claude.Model) != "" || strings.TrimSpace(options.Claude.Effort) != "" || options.Claude.PlanningMode {
-			claudeOptions["planning_mode"] = options.Claude.PlanningMode
+		if strings.TrimSpace(options.Claude.Model) != "" || strings.TrimSpace(options.Claude.Effort) != "" || options.Claude.PlanningMode != nil {
+			claudeOptions["planning_mode"] = boolOption(options.Claude.PlanningMode)
 		}
 		if len(claudeOptions) > 0 {
 			agentOptions["claude"] = claudeOptions
@@ -894,8 +895,8 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 		if model := strings.TrimSpace(options.OpenCode.Model); model != "" {
 			opencodeOptions["model"] = model
 		}
-		if strings.TrimSpace(options.OpenCode.Model) != "" || options.OpenCode.PlanningMode {
-			opencodeOptions["planning_mode"] = options.OpenCode.PlanningMode
+		if strings.TrimSpace(options.OpenCode.Model) != "" || options.OpenCode.PlanningMode != nil {
+			opencodeOptions["planning_mode"] = boolOption(options.OpenCode.PlanningMode)
 		}
 		if len(opencodeOptions) > 0 {
 			agentOptions["opencode"] = opencodeOptions
@@ -919,6 +920,10 @@ func createSessionAgentOptions(agentType string, options *createAgentOptions) (j
 		return nil, fmt.Errorf("marshal agent options: %w", err)
 	}
 	return encoded, nil
+}
+
+func boolOption(value *bool) bool {
+	return value != nil && *value
 }
 
 func mergeSessionPermissionAgentOptions(
@@ -1383,7 +1388,7 @@ func (api API) submitDecodedMessage(w http.ResponseWriter, r *http.Request, requ
 		sourceMetadata = map[string]any{"client_submission_id": clientSubmissionID}
 	}
 
-	updatedSession, ok := api.startSessionRun(
+	updatedSession, runID, ok := api.startSessionRun(
 		w,
 		r,
 		session,
@@ -1392,6 +1397,7 @@ func (api API) submitDecodedMessage(w http.ResponseWriter, r *http.Request, requ
 		skills,
 		agent,
 		metadata,
+		eventOptions,
 		agents.AgentActionMessage,
 		func(ctx context.Context) error {
 			return api.appendUserMessage(ctx, session.ID, content, attachments, skills, eventOptions, sourceMetadata, "")
@@ -1404,6 +1410,7 @@ func (api API) submitDecodedMessage(w http.ResponseWriter, r *http.Request, requ
 
 	writeJSON(w, http.StatusAccepted, submitMessageResponse{
 		SessionID:  updatedSession.ID,
+		RunID:      runID,
 		Status:     string(updatedSession.Status),
 		AcceptedAs: "run",
 	})
@@ -1659,7 +1666,7 @@ func (api API) compactSessionActionHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	updatedSession, ok := api.startSessionRun(
+	updatedSession, runID, ok := api.startSessionRun(
 		w,
 		r,
 		session,
@@ -1668,6 +1675,7 @@ func (api API) compactSessionActionHandler(w http.ResponseWriter, r *http.Reques
 		nil,
 		agent,
 		metadata,
+		nil,
 		agents.AgentActionCompact,
 		func(ctx context.Context) error {
 			return api.appendSessionAction(ctx, session.ID, agents.AgentActionCompact)
@@ -1680,6 +1688,7 @@ func (api API) compactSessionActionHandler(w http.ResponseWriter, r *http.Reques
 
 	writeJSON(w, http.StatusAccepted, submitMessageResponse{
 		SessionID: updatedSession.ID,
+		RunID:     runID,
 		Status:    string(updatedSession.Status),
 	})
 }
@@ -1693,23 +1702,42 @@ func (api API) startSessionRun(
 	skills []agents.SkillReference,
 	agent agents.Agent,
 	metadata map[string]any,
+	requestedOptions map[string]any,
 	action agents.AgentAction,
 	appendBeforeRun func(context.Context) error,
 	appendErrorMessage string,
-) (store.Session, bool) {
+) (store.Session, string, bool) {
 	runID, err := store.NewRunID()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create run")
-		return store.Session{}, false
+		return store.Session{}, "", false
 	}
+	return api.startSessionRunWithID(w, r, session, message, attachments, skills, agent, metadata, requestedOptions, action, appendBeforeRun, appendErrorMessage, runID)
+}
+
+func (api API) startSessionRunWithID(
+	w http.ResponseWriter,
+	r *http.Request,
+	session store.Session,
+	message string,
+	attachments []agents.Attachment,
+	skills []agents.SkillReference,
+	agent agents.Agent,
+	metadata map[string]any,
+	requestedOptions map[string]any,
+	action agents.AgentAction,
+	appendBeforeRun func(context.Context) error,
+	appendErrorMessage string,
+	runID string,
+) (store.Session, string, bool) {
 	runCtx, cleanup, err := api.runs.Register(context.Background(), session.ID)
 	if err != nil {
 		if errors.Is(err, runcontrol.ErrRunAlreadyActive) {
 			writeError(w, http.StatusConflict, "session is already running")
-			return store.Session{}, false
+			return store.Session{}, "", false
 		}
 		writeError(w, http.StatusInternalServerError, "failed to register run")
-		return store.Session{}, false
+		return store.Session{}, "", false
 	}
 
 	if appendBeforeRun != nil {
@@ -1717,14 +1745,14 @@ func (api API) startSessionRun(
 			cleanup()
 			if errors.Is(err, store.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "session not found")
-				return store.Session{}, false
+				return store.Session{}, "", false
 			}
 			if errors.Is(err, store.ErrInvalidArgument) {
 				writeError(w, http.StatusBadRequest, err.Error())
-				return store.Session{}, false
+				return store.Session{}, "", false
 			}
 			writeError(w, http.StatusInternalServerError, appendErrorMessage)
-			return store.Session{}, false
+			return store.Session{}, "", false
 		}
 	}
 
@@ -1736,21 +1764,22 @@ func (api API) startSessionRun(
 		cleanup()
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "session not found")
-			return store.Session{}, false
+			return store.Session{}, "", false
 		}
 		writeError(w, http.StatusInternalServerError, "failed to mark session running")
-		return store.Session{}, false
+		return store.Session{}, "", false
 	}
 	if err := api.appendSessionStatusUpdated(r.Context(), updatedSession, map[string]any{
-		"run_id":         runID,
-		"run_kind":       string(action),
-		"agent_type":     session.AgentType,
-		"workspace_path": sessionWorkspacePath(session, api.workdir),
-		"agent_options":  metadata,
+		"run_id":                  runID,
+		"run_kind":                string(action),
+		"agent_type":              session.AgentType,
+		"workspace_path":          sessionWorkspacePath(session, api.workdir),
+		"agent_options":           metadata,
+		"requested_agent_options": requestedOptions,
 	}); err != nil {
 		cleanup()
 		writeError(w, http.StatusInternalServerError, "failed to emit session status")
-		return store.Session{}, false
+		return store.Session{}, "", false
 	}
 
 	go func() {
@@ -1761,7 +1790,7 @@ func (api API) startSessionRun(
 		}
 	}()
 
-	return updatedSession, true
+	return updatedSession, runID, true
 }
 
 func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool {
@@ -1877,11 +1906,12 @@ func (api API) startQueuedMessageRun(ctx context.Context, sessionID string) bool
 		return false
 	}
 	if err := api.appendSessionStatusUpdated(ctx, updatedSession, map[string]any{
-		"run_id":         runID,
-		"run_kind":       string(agents.AgentActionMessage),
-		"agent_type":     session.AgentType,
-		"workspace_path": sessionWorkspacePath(session, api.workdir),
-		"agent_options":  metadata,
+		"run_id":                  runID,
+		"run_kind":                string(agents.AgentActionMessage),
+		"agent_type":              session.AgentType,
+		"workspace_path":          sessionWorkspacePath(session, api.workdir),
+		"agent_options":           metadata,
+		"requested_agent_options": eventOptions,
 	}); err != nil {
 		cleanup()
 		log.Printf("failed to emit queued session status: session_id=%s queue_item_id=%s error=%v", queued.SessionID, queued.ID, err)
