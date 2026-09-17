@@ -28,6 +28,15 @@ func TestCommandsCatalogWorksOffline(t *testing.T) {
 	if catalog.SchemaVersion != 1 || len(catalog.Commands) < 6 {
 		t.Fatalf("unexpected catalog: %#v", catalog)
 	}
+	commands := make(map[string]bool, len(catalog.Commands))
+	for _, command := range catalog.Commands {
+		commands[command.Command] = true
+	}
+	for _, command := range []string{"sessions archive <session-id>", "sessions restore <session-id>"} {
+		if !commands[command] {
+			t.Fatalf("catalog missing %q", command)
+		}
+	}
 }
 
 func TestRunSendsProviderOptionsAndPrintsReceipt(t *testing.T) {
@@ -120,6 +129,44 @@ func TestSessionsChildrenRequestsRecursiveLineage(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"id": "sess_child"`) {
 		t.Fatalf("missing child response: %s", stdout.String())
+	}
+}
+
+func TestSessionsArchiveAndRestore(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/sessions/sess_archive/archive":
+			_, _ = w.Write([]byte(`{"id":"sess_archive","status":"idle","archived_at":"2026-09-17T15:00:00Z"}`))
+		case "/api/sessions/sess_restore/restore":
+			_, _ = w.Write([]byte(`{"id":"sess_restore","status":"idle","archived_at":null}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	for _, test := range []struct {
+		command   string
+		sessionID string
+		want      string
+	}{
+		{command: "archive", sessionID: "sess_archive", want: `"archived_at": "2026-09-17T15:00:00Z"`},
+		{command: "restore", sessionID: "sess_restore", want: `"archived_at": null`},
+	} {
+		t.Run(test.command, func(t *testing.T) {
+			var stdout bytes.Buffer
+			cli := CLI{Stdout: &stdout, Stderr: &bytes.Buffer{}}
+			if err := cli.Run(context.Background(), []string{"sessions", test.command, test.sessionID, "--server", server.URL, "--json"}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(stdout.String(), test.want) {
+				t.Fatalf("missing %s in %s", test.want, stdout.String())
+			}
+		})
 	}
 }
 

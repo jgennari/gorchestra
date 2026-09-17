@@ -231,6 +231,8 @@ gorchestra sessions send SESSION_ID --prompt "change direction" \
 gorchestra sessions list --json
 gorchestra sessions show SESSION_ID --json
 gorchestra sessions children SESSION_ID --recursive --json
+gorchestra sessions archive SESSION_ID --json
+gorchestra sessions restore SESSION_ID --json
 
 gorchestra requests list RUN_ID --json
 gorchestra requests answer RUN_ID REQUEST_ID --answers-json answers.json --json

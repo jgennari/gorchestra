@@ -96,6 +96,8 @@ var commandSpecs = []commandSpec{
 	{Command: "sessions children <session-id>", Description: "List direct children or all descendants.", Flags: []flagSpec{
 		{Name: "recursive", Type: "boolean", Description: "include all descendants"},
 	}},
+	{Command: "sessions archive <session-id>", Description: "Archive an idle session without deleting its lineage."},
+	{Command: "sessions restore <session-id>", Description: "Restore an archived session to the active session list."},
 	{Command: "requests list <run-id>", Description: "List unresolved questions and permissions for a run."},
 	{Command: "requests answer <run-id> <request-id>", Description: "Answer an input request using JSON."},
 	{Command: "requests resolve <run-id> <request-id>", Description: "Resolve a permission request with an offered option."},
@@ -189,7 +191,10 @@ Agent control commands:
   runs report <run-id>           retrieve a terminal report
   runs cancel <run-id>           cancel an exact run
   sessions list                  list sessions and lineage
+  sessions show <session>        inspect a session
   sessions children <session>    list child sessions
+  sessions archive <session>     archive an idle session
+  sessions restore <session>     restore an archived session
   sessions send <session-id>     send, queue, or steer a follow-up
   requests <command>             inspect or answer agent requests
 

@@ -593,7 +593,7 @@ func (c CLI) sessions(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) == 0 {
-		return usageError("usage: gorchestra sessions list|show|children|send")
+		return usageError("usage: gorchestra sessions list|show|children|archive|restore|send")
 	}
 	switch rest[0] {
 	case "list":
@@ -628,6 +628,16 @@ func (c CLI) sessions(ctx context.Context, args []string) error {
 			return err
 		}
 		return c.renderValue(format, "children", value)
+	case "archive", "restore":
+		if len(rest) != 2 {
+			return usageError("sessions %s requires one session ID", rest[0])
+		}
+		var value any
+		target := server + "/api/sessions/" + url.PathEscape(rest[1]) + "/" + rest[0]
+		if err := c.doJSON(ctx, http.MethodPost, target, nil, &value); err != nil {
+			return err
+		}
+		return c.renderValue(format, "session", value)
 	case "send":
 	default:
 		return usageError("unknown sessions command %q", rest[0])
