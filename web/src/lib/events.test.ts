@@ -662,6 +662,74 @@ test('chat transcript merges streaming assistant deltas with completion text', (
   expect(transcript[1]).toMatchObject({ role: 'assistant', text: 'Hi there', streaming: false })
 })
 
+test('chat transcript hides OpenCode compaction summaries', () => {
+  const compactionSummary = `## Goal
+- Keep the session moving
+## Constraints & Preferences
+- (none)
+## Progress
+### Done
+- Read the request
+### In Progress
+- Continue the task
+### Blocked
+- (none)
+## Key Decisions
+- (none)
+## Next Steps
+- Answer the user
+## Critical Context
+- Session runs inside Gorchestra
+## Relevant Files
+- (none)`
+
+  const transcript = buildChatTranscript([
+    event(1, 'user.message.completed', { text: 'Who are you?' }),
+    event(2, 'agent.message.delta', {
+      provider: 'opencode',
+      item_id: 'message:summary',
+      text: compactionSummary.slice(0, 120),
+    }),
+    event(3, 'agent.message.delta', {
+      provider: 'opencode',
+      item_id: 'message:summary',
+      text: compactionSummary.slice(120),
+    }),
+    event(4, 'agent.message.delta', {
+      provider: 'opencode',
+      item_id: 'message:answer',
+      text: 'I am the OpenCode agent running through Gorchestra.',
+    }),
+  ])
+
+  expect(transcript.map((message) => message.text)).toEqual([
+    'Who are you?',
+    'I am the OpenCode agent running through Gorchestra.',
+  ])
+})
+
+test('chat transcript preserves similarly structured non-compaction responses', () => {
+  const response = `## Goal
+- Explain the project
+## Constraints & Preferences
+- Be concise
+## Progress
+### Done
+- Reviewed the repository`
+
+  expect(buildChatTranscript([
+    event(1, 'agent.message.completed', { provider: 'opencode', item_id: 'message:partial', text: response }),
+  ])).toHaveLength(1)
+
+  expect(buildChatTranscript([
+    event(2, 'agent.message.completed', {
+      provider: 'codex',
+      item_id: 'message:codex',
+      text: `${response}\n### In Progress\n- None\n### Blocked\n- None\n## Key Decisions\n- None\n## Next Steps\n- None\n## Critical Context\n- None\n## Relevant Files\n- None`,
+    }),
+  ])).toHaveLength(1)
+})
+
 test('chat transcript measures completed assistant responses from the run start', () => {
   const transcript = buildChatTranscript([
     timedEvent(1, 'user.message.completed', '2026-06-12T16:03:25Z', { text: 'Do the work' }),

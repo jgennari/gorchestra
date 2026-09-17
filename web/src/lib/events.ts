@@ -398,7 +398,8 @@ export function groupEvents(events: AgentEvent[]) {
       event.type === 'agent.message.delta' &&
       previous?.kind === 'agent-message' &&
       previous.events[previous.events.length - 1]?.type === 'agent.message.delta' &&
-      previous.events[previous.events.length - 1]?.session_id === event.session_id
+      previous.events[previous.events.length - 1]?.session_id === event.session_id &&
+      sameTransientMessage(previous.events[previous.events.length - 1], event)
     ) {
       appendToGroup(previous, event)
       continue
@@ -466,6 +467,13 @@ export function groupEvents(events: AgentEvent[]) {
   return groups
 }
 
+function sameTransientMessage(previous: AgentEvent | undefined, next: AgentEvent) {
+  if (!previous) return false
+  const previousID = transientCompletionIdentity(previous)
+  const nextID = transientCompletionIdentity(next)
+  return !previousID || !nextID || previousID === nextID
+}
+
 function eventsWithLegacyClaudeToolCalls(events: AgentEvent[]) {
   const canonicalToolIDs = new Set(
     events.flatMap((event) => (event.type.startsWith('tool.call') ? [toolGroupID(event)].filter(Boolean) : [])),
@@ -494,6 +502,7 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
   const messages: ChatTranscriptMessage[] = []
   let currentAssistant: ChatTranscriptMessage | null = null
   const assistantMessagesByItemID = new Map<string, ChatTranscriptMessage>()
+  const openCodeMessageIDs = new Set<string>()
 
   for (const group of groupEvents(events)) {
     if (group.kind === 'action-break') {
@@ -519,6 +528,9 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
     if (group.kind === 'agent-message' || group.kind === 'plan') {
       currentAssistant = assistantMessageForGroup(messages, currentAssistant, assistantMessagesByItemID, group)
       mergeAssistantMessage(currentAssistant, group)
+      if (group.events.some(isOpenCodeEvent)) {
+        openCodeMessageIDs.add(currentAssistant.id)
+      }
       syncMessageTimelineItem(items, currentAssistant)
       continue
     }
@@ -561,6 +573,9 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
     if (item.kind === 'debug' || item.kind === 'action' || item.kind === 'error') {
       return true
     }
+    if (openCodeMessageIDs.has(item.message.id) && isOpenCodeCompactionSummary(item.message.text)) {
+      return false
+    }
     return (
       item.message.text.trim() ||
       item.message.tools.length > 0 ||
@@ -568,6 +583,44 @@ export function buildChatTimeline(events: AgentEvent[], includeDebugEvents: bool
       item.message.skills.length > 0
     )
   })
+}
+
+const openCodeCompactionHeadings = [
+  '## Goal',
+  '## Constraints & Preferences',
+  '## Progress',
+  '### Done',
+  '### In Progress',
+  '### Blocked',
+  '## Key Decisions',
+  '## Next Steps',
+  '## Critical Context',
+  '## Relevant Files',
+]
+
+function isOpenCodeEvent(event: AgentEvent) {
+  return payloadString(event.payload, ['provider']).trim().toLowerCase() === 'opencode'
+}
+
+// OpenCode's ACP bridge currently emits generated compaction summaries as
+// ordinary assistant text and omits the message's `summary`/`compaction` mode.
+// Match the complete, fixed summary structure so it stays out of the chat
+// transcript without hiding normal OpenCode responses that use one heading.
+function isOpenCodeCompactionSummary(text: string) {
+  const normalized = text.trimStart()
+  if (!normalized.startsWith(openCodeCompactionHeadings[0])) {
+    return false
+  }
+
+  let after = 0
+  for (const heading of openCodeCompactionHeadings) {
+    const index = normalized.indexOf(heading, after)
+    if (index < after) {
+      return false
+    }
+    after = index + heading.length
+  }
+  return true
 }
 
 export function pendingUserInputRequest(events: AgentEvent[]) {

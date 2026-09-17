@@ -118,11 +118,14 @@ export function RunHealthRail({
   ).length
   const totalToolCount = Math.max(session?.tool_count ?? 0, loadedToolCount)
   const actionPending = clearPending || compactPending
-  const codexActionDisabled =
-    offline || !session || session.agent_type !== 'codex' || session.status === 'running' || Boolean(session.archived_at) || actionPending
-  const compactDisabled = codexActionDisabled || !session?.provider_session_id
-  const showCodexActions = session?.agent_type === 'codex'
-  const showTokenPanel = Boolean(tokenUsage) || cumulativeTokenCount > 0 || showCodexActions
+  const supportsClear = session?.agent_type === 'codex' || session?.agent_type === 'opencode'
+  const supportsCompact = session?.agent_type === 'codex'
+  const contextActionDisabled =
+    offline || !session || session.status === 'running' || Boolean(session.archived_at) || actionPending
+  const clearDisabled = contextActionDisabled || !supportsClear
+  const compactDisabled = contextActionDisabled || !supportsCompact || !session?.provider_session_id
+  const contextProviderLabel = session?.agent_type === 'opencode' ? 'OpenCode' : 'Codex'
+  const showTokenPanel = Boolean(tokenUsage) || cumulativeTokenCount > 0 || supportsClear
   const thinkingActive = session?.status === 'running' && activeThinking(activityEvents)
 
   return (
@@ -219,11 +222,13 @@ export function RunHealthRail({
             ) : (
               <TokenUsageEmptyState />
             )}
-            {showCodexActions ? (
-              <CodexContextActions
+            {supportsClear ? (
+              <ContextActions
+                providerLabel={contextProviderLabel}
+                showCompact={supportsCompact}
                 clearPending={clearPending}
                 compactPending={compactPending}
-                clearDisabled={codexActionDisabled}
+                clearDisabled={clearDisabled}
                 compactDisabled={compactDisabled}
                 onClear={onClear}
                 onCompact={onCompact}
@@ -435,7 +440,9 @@ function TokenUsageEmptyState() {
   return <p className="mt-3 text-[11px] text-muted-foreground">No token usage yet</p>
 }
 
-function CodexContextActions({
+function ContextActions({
+  providerLabel,
+  showCompact,
   clearPending,
   compactPending,
   clearDisabled,
@@ -443,6 +450,8 @@ function CodexContextActions({
   onClear,
   onCompact,
 }: {
+  providerLabel: 'Codex' | 'OpenCode'
+  showCompact: boolean
   clearPending: boolean
   compactPending: boolean
   clearDisabled: boolean
@@ -451,29 +460,31 @@ function CodexContextActions({
   onCompact: () => Promise<void>
 }) {
   return (
-    <div className="mt-3 grid grid-cols-2 gap-2">
+    <div className={cn('mt-3 grid gap-2', showCompact ? 'grid-cols-2' : 'grid-cols-1')}>
       <Button
         type="button"
         variant="outline"
         className="justify-center border-border/70 bg-background/40 px-2 text-muted-foreground hover:bg-background/70"
         disabled={clearDisabled}
         onClick={() => void onClear()}
-        aria-label="Clear Codex context"
+        aria-label={`Clear ${providerLabel} context`}
       >
         {clearPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Eraser aria-hidden="true" />}
         <span>{clearPending ? 'Clearing' : 'Clear'}</span>
       </Button>
-      <Button
-        type="button"
-        variant="outline"
-        className="justify-center border-border/70 bg-background/40 px-2 text-muted-foreground hover:bg-background/70"
-        disabled={compactDisabled}
-        onClick={() => void onCompact()}
-        aria-label="Compact Codex context"
-      >
-        {compactPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
-        <span>{compactPending ? 'Compacting' : 'Compact'}</span>
-      </Button>
+      {showCompact ? (
+        <Button
+          type="button"
+          variant="outline"
+          className="justify-center border-border/70 bg-background/40 px-2 text-muted-foreground hover:bg-background/70"
+          disabled={compactDisabled}
+          onClick={() => void onCompact()}
+          aria-label={`Compact ${providerLabel} context`}
+        >
+          {compactPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
+          <span>{compactPending ? 'Compacting' : 'Compact'}</span>
+        </Button>
+      ) : null}
     </div>
   )
 }

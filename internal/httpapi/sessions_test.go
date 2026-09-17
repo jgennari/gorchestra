@@ -2372,64 +2372,68 @@ func TestPiRunStartedPersistsProviderSessionID(t *testing.T) {
 	}
 }
 
-func TestClearCodexSessionClearsProviderSessionID(t *testing.T) {
-	ctx := context.Background()
-	agent := newBlockingAgent()
-	agent.agentType = "codex"
-	dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
-	session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
-		Title:     "Codex run",
-		AgentType: "codex",
-	})
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	if _, err := dbStore.SetSessionProviderSessionID(ctx, store.SetSessionProviderSessionIDParams{
-		ID:                session.ID,
-		ProviderSessionID: "thread_old",
-	}); err != nil {
-		t.Fatalf("set provider session id: %v", err)
-	}
-	if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
-		ID:     session.ID,
-		Status: store.SessionStatusFailed,
-	}); err != nil {
-		t.Fatalf("mark failed: %v", err)
-	}
+func TestClearSessionClearsProviderSessionID(t *testing.T) {
+	for _, agentType := range []string{"codex", "opencode"} {
+		t.Run(agentType, func(t *testing.T) {
+			ctx := context.Background()
+			agent := newBlockingAgent()
+			agent.agentType = agentType
+			dbStore, _, _, handler := newIntegrationAPI(t, ctx, agent)
+			session, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+				Title:     agentType + " run",
+				AgentType: agentType,
+			})
+			if err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			if _, err := dbStore.SetSessionProviderSessionID(ctx, store.SetSessionProviderSessionIDParams{
+				ID:                session.ID,
+				ProviderSessionID: "provider_session_old",
+			}); err != nil {
+				t.Fatalf("set provider session id: %v", err)
+			}
+			if _, err := dbStore.UpdateSessionStatus(ctx, store.UpdateSessionStatusParams{
+				ID:     session.ID,
+				Status: store.SessionStatusFailed,
+			}); err != nil {
+				t.Fatalf("mark failed: %v", err)
+			}
 
-	rec := postJSON(handler, "/api/sessions/"+session.ID+"/clear", ``)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
-	}
-	var response submitMessageResponse
-	decodeJSON(t, rec, &response)
-	if response.Status != string(store.SessionStatusIdle) {
-		t.Fatalf("expected idle response status, got %q", response.Status)
-	}
+			rec := postJSON(handler, "/api/sessions/"+session.ID+"/clear", ``)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("expected status %d, got %d with body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+			}
+			var response submitMessageResponse
+			decodeJSON(t, rec, &response)
+			if response.Status != string(store.SessionStatusIdle) {
+				t.Fatalf("expected idle response status, got %q", response.Status)
+			}
 
-	updated, err := dbStore.GetSession(ctx, session.ID)
-	if err != nil {
-		t.Fatalf("get session: %v", err)
-	}
-	if updated.ProviderSessionID != "" {
-		t.Fatalf("expected provider session id to be cleared, got %q", updated.ProviderSessionID)
-	}
-	if updated.Status != store.SessionStatusIdle {
-		t.Fatalf("expected session status idle, got %q", updated.Status)
-	}
+			updated, err := dbStore.GetSession(ctx, session.ID)
+			if err != nil {
+				t.Fatalf("get session: %v", err)
+			}
+			if updated.ProviderSessionID != "" {
+				t.Fatalf("expected provider session id to be cleared, got %q", updated.ProviderSessionID)
+			}
+			if updated.Status != store.SessionStatusIdle {
+				t.Fatalf("expected session status idle, got %q", updated.Status)
+			}
 
-	events := listIntegrationEvents(t, ctx, dbStore, session.ID)
-	assertEventTypes(t, events, []string{
-		"session.action.completed",
-		"session.status.updated",
-	})
-	assertPayloadAction(t, events[0], "clear")
-	assertPayloadStatus(t, events[1], store.SessionStatusIdle)
+			events := listIntegrationEvents(t, ctx, dbStore, session.ID)
+			assertEventTypes(t, events, []string{
+				"session.action.completed",
+				"session.status.updated",
+			})
+			assertPayloadAction(t, events[0], "clear")
+			assertPayloadStatus(t, events[1], store.SessionStatusIdle)
 
-	select {
-	case input := <-agent.started:
-		t.Fatalf("expected clear not to start codex agent, got %#v", input)
-	default:
+			select {
+			case input := <-agent.started:
+				t.Fatalf("expected clear not to start %s agent, got %#v", agentType, input)
+			default:
+			}
+		})
 	}
 }
 
@@ -2505,7 +2509,7 @@ func TestCompactCodexSessionWithoutProviderSessionIDReturnsConflict(t *testing.T
 	}
 }
 
-func TestSessionActionRejectsNonCodexSession(t *testing.T) {
+func TestClearSessionRejectsUnsupportedAgent(t *testing.T) {
 	ctx := context.Background()
 	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
 	session := createIntegrationSession(t, ctx, dbStore)
@@ -2514,7 +2518,7 @@ func TestSessionActionRejectsNonCodexSession(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
-	assertErrorResponse(t, rec, "session action requires a codex session")
+	assertErrorResponse(t, rec, "session clear requires a codex or opencode session")
 }
 
 func TestMessageSubmissionRejectsCodexOptionsForNonCodexSession(t *testing.T) {

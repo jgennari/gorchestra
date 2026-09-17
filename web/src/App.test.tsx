@@ -2027,7 +2027,7 @@ test('global archive activity removes an unselected child and its parent expande
   expect(screen.queryByRole('button', { name: 'Collapse Parent' })).not.toBeInTheDocument()
 })
 
-test('global archive activity removes the selected session and advances the selection', async () => {
+test('global archive activity removes the selected session and returns to the dashboard', async () => {
   render(<App />)
 
   const activitySource = await findEventSource('/api/sessions/activity/stream')
@@ -2042,7 +2042,8 @@ test('global archive activity removes the selected session and advances the sele
   })
 
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Inspect repo archived' })).not.toBeInTheDocument())
-  expect(screen.getByRole('button', { name: 'Write docs' })).toHaveAttribute('aria-current', 'true')
+  expect(await screen.findByRole('heading', { name: 'Your work at a glance' })).toBeInTheDocument()
+  expect(window.location.pathname).toBe('/')
 })
 
 test('app menu toggles archived sessions and remembers the preference', async () => {
@@ -2450,6 +2451,33 @@ test('codex session actions require dialog confirmation', async () => {
   )
 })
 
+test('OpenCode clear requires dialog confirmation', async () => {
+  const user = userEvent.setup()
+  const openCodeSession: Session = { ...firstSession, agent_type: 'opencode', provider_session_id: 'ses_1' }
+  const fetch = fetchMock({ sessions: [openCodeSession, secondSession] })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await user.click(await screen.findByRole('button', { name: 'Clear OpenCode context' }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'Clear context?' })
+  expect(within(dialog).getByText(/Start a fresh OpenCode session/)).toBeInTheDocument()
+  expect(fetch).not.toHaveBeenCalledWith(
+    '/api/sessions/sess_1/clear',
+    expect.objectContaining({ method: 'POST' }),
+  )
+
+  await user.click(within(dialog).getByRole('button', { name: 'Clear' }))
+
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/sess_1/clear',
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
+    ),
+  )
+})
+
 test('archive requires dialog confirmation', async () => {
   const user = userEvent.setup()
   const fetch = fetchMock()
@@ -2475,6 +2503,8 @@ test('archive requires dialog confirmation', async () => {
       expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ Accept: 'application/json' }) }),
     ),
   )
+  expect(await screen.findByRole('heading', { name: 'Your work at a glance' })).toBeInTheDocument()
+  expect(window.location.pathname).toBe('/')
 })
 
 test('archived session uses restore confirmation', async () => {

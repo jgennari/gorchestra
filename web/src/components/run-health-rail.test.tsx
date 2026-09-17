@@ -367,6 +367,29 @@ test('run health rail disables compact until a codex thread exists', () => {
   expect(screen.getByRole('button', { name: 'Compact Codex context' })).toBeDisabled()
 })
 
+test('run health rail exposes clear without compact for OpenCode sessions', async () => {
+  const user = userEvent.setup()
+  const onClear = vi.fn(async () => undefined)
+
+  render(
+    <RunHealthRail
+      session={{ ...session, agent_type: 'opencode', status: 'idle', provider_session_id: 'ses_1' }}
+      events={[]}
+      streamState="connected"
+      streamError=""
+      onToggleArchive={async () => undefined}
+      onClear={onClear}
+    />,
+  )
+
+  const tokenPanel = screen.getByText('No token usage yet').closest('section')
+  expect(tokenPanel).toBeInTheDocument()
+  await user.click(within(tokenPanel as HTMLElement).getByRole('button', { name: 'Clear OpenCode context' }))
+
+  expect(onClear).toHaveBeenCalledOnce()
+  expect(screen.queryByRole('button', { name: /Compact .* context/ })).not.toBeInTheDocument()
+})
+
 test('run health rail latest event shows provider event type', () => {
   render(
     <RunHealthRail

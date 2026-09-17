@@ -36,7 +36,7 @@ Versions came from local `--version`, not an inspection of binaries already exec
 | User-initiated “Send now” | Workspace | No | No | No | Only Codex registers `SteeringBroker`; the composer explicitly checks for Codex. |
 | Image attachments in prompts | Yes | No | Yes | Yes | Claude `Run` explicitly rejects attachments. The other three adapters encode image input. |
 | Discover and select skills in composer | Yes | No | No | No | Only Codex implements `SkillProvider`; API validation is already interface-based. |
-| Clear context, retaining Gorchestra history | Yes | No | No | No | HTTP action clears the provider session ID but is restricted to Codex. |
+| Clear context, retaining Gorchestra history | Yes | No | Yes | No | The HTTP action clears the provider session ID for Codex and OpenCode while preserving Gorchestra history. |
 | Manual compaction action | Yes | No | No | No | Codex `thread/compact/start`; other adapters reject non-message actions. |
 | Assistant and thinking streams | Yes | Yes | Yes | Yes | Explicit normalization in each adapter. |
 | Tool calls and command results | Yes | Yes | Yes | Yes | Claude returns command output at tool-result completion; this is not live stdout streaming. |
@@ -108,7 +108,7 @@ Sizes describe implementation scope, not delivery estimates: **S** is a containe
 | --- | --- | --- | --- |
 | 1 | Claude structured questions, including plan mode | Codex `UserInputBroker`, durable input events, question card, answer endpoint | M / high |
 | 2 | Claude image attachments | Codex/OpenCode/Pi attachment validation, composer, persistence | M / high |
-| 3 | Clear context for Claude, OpenCode, Pi | Existing provider-ID reset and preserved event history | S / high |
+| 3 | Clear context for Claude and Pi | Existing provider-ID reset and preserved event history | S / high |
 | 4 | Claude and Pi manual compaction | Codex action endpoint and activity lifecycle | M / high |
 | 5 | Pi “Send now”; then Claude live input | Workspace `SteeringBroker`, durable receipts, composer | Pi M / high; Claude L / conditional |
 | 6 | Claude skill selection and model discovery | Codex `SkillProvider` / `OptionsProvider`, generic API validation, menus | M / medium |

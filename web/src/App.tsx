@@ -61,7 +61,6 @@ import {
   shouldRefreshWorkspaceFilesForEvent,
   statusFromEvent,
 } from '@/lib/events'
-import { nextSessionIDAfterArchive } from '@/lib/sessions'
 import { invalidateSessionEventTails, useSessionEvents, type StreamState } from '@/hooks/use-session-events'
 import { useAppBadge } from '@/hooks/use-app-badge'
 import { useFavicon } from '@/hooks/use-favicon'
@@ -151,10 +150,10 @@ type PaneWidths = {
   left: number
   right: number
 }
-type CodexSessionAction = 'clear' | 'compact'
+type SessionContextAction = 'clear' | 'compact'
 type AppView = SessionRouteView
 type PendingSessionAction = {
-  action: CodexSessionAction
+  action: SessionContextAction
   sessionID: string
 }
 type InitialSessionState = {
@@ -825,11 +824,7 @@ function App() {
     (event: AgentEvent) => {
       const knownSession = sessionsRef.current.find((session) => session.id === event.session_id)
       const selected = event.session_id === selectedSessionIDRef.current
-      const archivedSelectedSession =
-        selected && event.type === 'session.archived' && !showArchivedSessionsRef.current
-      const nextSelectedSessionID = archivedSelectedSession
-        ? nextSessionIDAfterArchive(sessionsRef.current, event.session_id, selectedSessionIDRef.current)
-        : selectedSessionIDRef.current
+      const archivedSelectedSession = selected && event.type === 'session.archived'
       applySessionActivityEvent(event)
       if (selected) selectedEventsRef.current = appendEvent(selectedEventsRef.current, event)
       if (selected && document.visibilityState === 'visible') {
@@ -850,7 +845,7 @@ function App() {
         }, 250)
       }
       if (archivedSelectedSession) {
-        selectSession(nextSelectedSessionID, 'replace')
+        selectOverview('replace')
       }
       scheduleDashboardRefresh(isTerminalEvent(event.type))
     },
@@ -860,7 +855,7 @@ function App() {
       playSessionStopSound,
       refreshSession,
       scheduleDashboardRefresh,
-      selectSession,
+      selectOverview,
       acknowledgeSessionNotification,
     ],
   )
@@ -1538,13 +1533,19 @@ function App() {
     const sessionID = confirmArchiveSessionID
     const targetSession = sessions.find((session) => session.id === sessionID) ?? null
     const restoring = Boolean(targetSession?.archived_at)
-    const nextSelectedID = nextSessionIDAfterArchive(sessions, sessionID, selectedSessionID)
     setArchivingSessionID(sessionID)
     setError('')
     try {
       const updatedSession = restoring ? await restoreSession(sessionID) : await archiveSession(sessionID)
-      applySession(updatedSession)
-      selectSession(restoring ? sessionID : nextSelectedID, 'replace')
+      if (restoring) {
+        applySession(updatedSession)
+        selectSession(sessionID, 'replace')
+      } else {
+        if (selectedSessionIDRef.current === sessionID) {
+          selectOverview('replace')
+        }
+        applySession(updatedSession)
+      }
       setConfirmArchiveSessionID(null)
     } catch (archiveError) {
       setError(messageFromError(archiveError))
@@ -1556,7 +1557,7 @@ function App() {
     }
   }
 
-  function requestSessionAction(action: CodexSessionAction) {
+  function requestSessionAction(action: SessionContextAction) {
     if (!selectedSessionID) {
       return
     }
@@ -1761,16 +1762,10 @@ function App() {
 
       const selected = currentSessions.find((session) => session.id === selectedSessionIDRef.current)
       if (selected?.archived_at) {
-        const selectionCandidates = currentSessions.filter(
-          (session) => !session.archived_at || session.id === selected.id,
-        )
-        selectSession(
-          nextSessionIDAfterArchive(selectionCandidates, selected.id, selected.id),
-          'replace',
-        )
+        selectOverview('replace')
       }
     },
-    [selectSession],
+    [selectOverview],
   )
 
   const renderAppMenu = () => (
@@ -2489,7 +2484,7 @@ function SessionActionConfirmDialog({
   onConfirm: () => void
 }) {
   const action = request?.action ?? 'compact'
-  const copy = sessionActionDialogCopy(action)
+  const copy = sessionActionDialogCopy(action, session?.agent_type)
 
   return (
     <Dialog open={Boolean(request)} onOpenChange={onOpenChange}>
@@ -2563,12 +2558,13 @@ function ArchiveSessionConfirmDialog({
   )
 }
 
-function sessionActionDialogCopy(action: CodexSessionAction) {
+function sessionActionDialogCopy(action: SessionContextAction, agentType?: string) {
   if (action === 'clear') {
+    const providerName = agentType === 'opencode' ? 'OpenCode session' : 'Codex thread'
     return {
       title: 'Clear context?',
       description:
-        'Start a fresh Codex thread for this Gorchestra session. Existing Gorchestra activity stays visible in the transcript.',
+        `Start a fresh ${providerName} for this Gorchestra session. Existing Gorchestra activity stays visible in the transcript.`,
       confirmLabel: 'Clear',
       pendingLabel: 'Clearing',
     }

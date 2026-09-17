@@ -1710,8 +1710,8 @@ func (api API) clearSessionHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "session is archived")
 		return
 	}
-	if session.AgentType != "codex" {
-		writeError(w, http.StatusBadRequest, "session action requires a codex session")
+	if session.AgentType != "codex" && session.AgentType != "opencode" {
+		writeError(w, http.StatusBadRequest, "session clear requires a codex or opencode session")
 		return
 	}
 
