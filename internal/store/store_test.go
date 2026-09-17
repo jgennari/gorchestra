@@ -775,6 +775,58 @@ func TestCreateSessionPersistsIdleSession(t *testing.T) {
 	}
 }
 
+func TestCreateSessionPersistsBlankChildLineage(t *testing.T) {
+	ctx := context.Background()
+	testStore := newTestStore(t, ctx)
+	parent, err := testStore.CreateSession(ctx, CreateSessionParams{
+		Title: "Parent", AgentType: "codex", WorkspacePath: "/tmp/workspace",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	child, err := testStore.CreateSession(ctx, CreateSessionParams{
+		AgentType: "codex", WorkspacePath: parent.WorkspacePath,
+		ParentSessionID: parent.ID, MaxLineageDepth: 6,
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if child.ParentSessionID != parent.ID || child.LineageDepth != 1 {
+		t.Fatalf("unexpected child lineage: %#v", child)
+	}
+	if child.Title != "" || child.EventCount != 0 || child.Status != SessionStatusIdle {
+		t.Fatalf("expected blank idle child, got %#v", child)
+	}
+
+	persisted, err := testStore.GetSession(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("get child: %v", err)
+	}
+	if persisted.ParentSessionID != parent.ID || persisted.LineageDepth != 1 {
+		t.Fatalf("unexpected persisted lineage: %#v", persisted)
+	}
+}
+
+func TestCreateSessionRejectsChildOfArchivedParent(t *testing.T) {
+	ctx := context.Background()
+	testStore := newTestStore(t, ctx)
+	parent, err := testStore.CreateSession(ctx, CreateSessionParams{AgentType: "codex"})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := testStore.ArchiveSession(ctx, ArchiveSessionParams{ID: parent.ID}); err != nil {
+		t.Fatalf("archive parent: %v", err)
+	}
+
+	_, err = testStore.CreateSession(ctx, CreateSessionParams{
+		AgentType: "codex", ParentSessionID: parent.ID, MaxLineageDepth: 6,
+	})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "archived") {
+		t.Fatalf("expected archived parent error, got %v", err)
+	}
+}
+
 func TestCreateSessionRejectsEmptyAgentType(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)

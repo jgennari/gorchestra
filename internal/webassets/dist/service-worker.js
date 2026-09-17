@@ -180,23 +180,19 @@ async function precacheAppShell() {
 }
 
 async function appShellResponse(event) {
-  const cache = await caches.open(appShellCacheName)
-  const cached = await cache.match(appShellCacheKey)
-  const refresh = fetchAndCacheAppShell(event.request)
-  event.waitUntil(refresh.catch(() => undefined))
-
-  if (cached) {
-    return cached
+  try {
+    const response = await fetch(event.request)
+    if (!response.ok || !isHTMLResponse(response)) {
+      throw new Error(`App shell request failed: ${response.status}`)
+    }
+    event.waitUntil(cacheAppShellResponse(response.clone()).catch(() => undefined))
+    return response
+  } catch (error) {
+    const cache = await caches.open(appShellCacheName)
+    const cached = await cache.match(appShellCacheKey)
+    if (cached) return cached
+    throw error
   }
-
-  return refresh
-}
-
-async function fetchAndCacheAppShell(request) {
-  const version = ++appShellRequestVersion
-  const response = await fetch(request)
-  await cacheAppShellResponse(response, version)
-  return response
 }
 
 async function cacheAppShellResponse(response, version = ++appShellRequestVersion) {

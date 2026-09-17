@@ -78,7 +78,10 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) CreateSession(ctx context.Context, params CreateSessionParams) (Session, error) {
-	if strings.TrimSpace(params.AgentType) == "" {
+	params.AgentType = strings.TrimSpace(params.AgentType)
+	params.WorkspacePath = strings.TrimSpace(params.WorkspacePath)
+	params.ParentSessionID = strings.TrimSpace(params.ParentSessionID)
+	if params.AgentType == "" {
 		return Session{}, fmt.Errorf("%w: agent_type is required", ErrInvalidArgument)
 	}
 
@@ -93,7 +96,7 @@ func (s *Store) CreateSession(ctx context.Context, params CreateSessionParams) (
 		Title:         params.Title,
 		AgentType:     params.AgentType,
 		Status:        SessionStatusIdle,
-		WorkspacePath: strings.TrimSpace(params.WorkspacePath),
+		WorkspacePath: params.WorkspacePath,
 		AgentOptions:  json.RawMessage(`{}`),
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -105,10 +108,36 @@ func (s *Store) CreateSession(ctx context.Context, params CreateSessionParams) (
 		session.AgentOptions = append(json.RawMessage(nil), params.AgentOptions...)
 	}
 
-	if _, err := s.db.ExecContext(
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, fmt.Errorf("begin create session: %w", err)
+	}
+	defer rollback(tx)
+
+	if params.ParentSessionID != "" {
+		var parentDepth int
+		var archivedAt sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT lineage_depth, archived_at FROM sessions WHERE id = ?`, params.ParentSessionID).Scan(&parentDepth, &archivedAt); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return Session{}, fmt.Errorf("%w: parent session", ErrNotFound)
+			}
+			return Session{}, fmt.Errorf("load parent session: %w", err)
+		}
+		if archivedAt.Valid {
+			return Session{}, fmt.Errorf("%w: parent session is archived", ErrInvalidArgument)
+		}
+		session.ParentSessionID = params.ParentSessionID
+		session.LineageDepth = parentDepth + 1
+		if params.MaxLineageDepth > 0 && session.LineageDepth > params.MaxLineageDepth {
+			return Session{}, fmt.Errorf("%w: maximum child depth %d exceeded", ErrInvalidArgument, params.MaxLineageDepth)
+		}
+	}
+
+	if _, err := tx.ExecContext(
 		ctx,
-		`INSERT INTO sessions (id, title, agent_type, status, workspace_path, agent_options_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, title, agent_type, status, workspace_path, agent_options_json, created_at, updated_at,
+		                       parent_session_id, lineage_depth)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID,
 		session.Title,
 		session.AgentType,
@@ -117,8 +146,13 @@ func (s *Store) CreateSession(ctx context.Context, params CreateSessionParams) (
 		string(session.AgentOptions),
 		formatTime(session.CreatedAt),
 		formatTime(session.UpdatedAt),
+		nullIfEmpty(session.ParentSessionID),
+		session.LineageDepth,
 	); err != nil {
 		return Session{}, fmt.Errorf("insert session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Session{}, fmt.Errorf("commit create session: %w", err)
 	}
 
 	return session, nil

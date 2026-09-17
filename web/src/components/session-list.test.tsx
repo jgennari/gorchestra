@@ -1,5 +1,5 @@
 import type { ComponentProps } from 'react'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session } from '@/lib/api'
 import { SessionList } from '@/components/session-list'
@@ -119,11 +119,29 @@ test('session rows show status as a dot indicator', () => {
   expect(screen.queryByText('running')).not.toBeInTheDocument()
 })
 
-test('session rows omit agent and update time metadata', () => {
+test('session rows show the agent only as a lightweight hover badge and omit update time metadata', () => {
   const { container } = render(<SessionListHarness sessions={[sessions[0]]} />)
 
-  expect(screen.queryByText(/fake/)).not.toBeInTheDocument()
+  expect(screen.getByText('Fake')).toHaveClass(
+    'hidden',
+    'min-h-4',
+    'text-[9px]',
+    'font-normal',
+    'text-muted-foreground',
+    'group-hover:inline-flex',
+  )
   expect(container.querySelector('.session-row-meta')).not.toBeInTheDocument()
+})
+
+test.each([
+  ['codex', 'Codex'],
+  ['claude', 'Claude'],
+  ['opencode', 'OpenCode'],
+  ['pi', 'Pi'],
+] as const)('session rows label the %s agent badge as %s', (agentType, label) => {
+  render(<SessionListHarness sessions={[{ ...sessions[0], agent_type: agentType }]} />)
+
+  expect(screen.getByText(label)).toHaveClass('hidden', 'group-hover:inline-flex')
 })
 
 test('selected session row still shows the session status indicator', () => {
@@ -238,6 +256,44 @@ test('right-side pin action pins and unpins without selecting the session', asyn
   rerender(<SessionListHarness sessions={[pinned]} onPinChange={onPinChange} onSelect={onSelect} />)
   await user.click(screen.getByRole('button', { name: 'Unpin session' }))
   expect(onPinChange).toHaveBeenCalledWith('sess_failed', false)
+})
+
+test('session context menu creates a blank child for the clicked row', async () => {
+  const user = userEvent.setup()
+  const onCreateChild = vi.fn()
+  const onSelect = vi.fn()
+
+  const { container } = render(
+    <SessionListHarness onCreateChild={onCreateChild} onSelect={onSelect} />,
+  )
+  const row = container.querySelector('[data-session-id="sess_failed"]')
+  expect(row).not.toBeNull()
+  fireEvent.contextMenu(row!, { clientX: 24, clientY: 32 })
+
+  await user.click(await screen.findByRole('menuitem', { name: 'New child session' }))
+
+  expect(onCreateChild).toHaveBeenCalledWith('sess_failed')
+  expect(onSelect).not.toHaveBeenCalled()
+})
+
+test('session context menu targets archive and disables invalid child actions', async () => {
+  const onArchive = vi.fn()
+  const { container, unmount } = render(
+    <SessionListHarness sessions={[sessions[0]]} onArchive={onArchive} onCreateChild={() => undefined} />,
+  )
+  const row = container.querySelector('[data-session-id="sess_running"]')
+  fireEvent.contextMenu(row!, { clientX: 24, clientY: 32 })
+
+  expect(await screen.findByRole('menuitem', { name: 'Archive session…' })).toHaveAttribute('aria-disabled', 'true')
+  unmount()
+
+  const { container: archivedContainer } = render(
+    <SessionListHarness sessions={[sessions[2]]} onArchive={onArchive} onCreateChild={() => undefined} />,
+  )
+  fireEvent.contextMenu(archivedContainer.querySelector('[data-session-id="sess_archived"]')!, { clientX: 48, clientY: 48 })
+
+  expect(await screen.findByRole('menuitem', { name: 'New child session' })).toHaveAttribute('aria-disabled', 'true')
+  expect(screen.getByRole('menuitem', { name: 'Restore session' })).toBeInTheDocument()
 })
 
 test('unpinned session action stays visible on mobile and becomes hover-only on desktop', () => {

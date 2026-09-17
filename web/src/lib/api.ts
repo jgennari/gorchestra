@@ -831,10 +831,11 @@ export async function clearAllSessionNotificationAttention() {
 }
 
 export async function createSession(params: {
-  agent_type: AgentType
+  agent_type?: AgentType
   title?: string
   workspace_path?: string
   agent_options?: SessionAgentOptions
+  parent_session_id?: string
 }) {
   const data = await requestJSON<CreateSessionResponse>('/api/sessions', {
     method: 'POST',

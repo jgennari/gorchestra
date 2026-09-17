@@ -23,10 +23,11 @@ import (
 )
 
 type createSessionRequest struct {
-	AgentType     string              `json:"agent_type"`
-	Title         string              `json:"title"`
-	WorkspacePath string              `json:"workspace_path"`
-	AgentOptions  *createAgentOptions `json:"agent_options,omitempty"`
+	AgentType       string              `json:"agent_type"`
+	Title           string              `json:"title"`
+	WorkspacePath   string              `json:"workspace_path"`
+	AgentOptions    *createAgentOptions `json:"agent_options,omitempty"`
+	ParentSessionID string              `json:"parent_session_id,omitempty"`
 }
 
 type updateSessionRequest struct {
@@ -401,7 +402,29 @@ func (api API) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	request.ParentSessionID = strings.TrimSpace(request.ParentSessionID)
+	var parent store.Session
+	if request.ParentSessionID != "" {
+		var loadErr error
+		parent, loadErr = api.store.GetSession(r.Context(), request.ParentSessionID)
+		if errors.Is(loadErr, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "parent session not found")
+			return
+		}
+		if loadErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load parent session")
+			return
+		}
+		if parent.ArchivedAt != nil {
+			writeError(w, http.StatusConflict, "parent session is archived")
+			return
+		}
+	}
+
 	agentType := strings.TrimSpace(request.AgentType)
+	if agentType == "" && request.ParentSessionID != "" {
+		agentType = parent.AgentType
+	}
 	if agentType == "" {
 		writeError(w, http.StatusBadRequest, "agent_type is required")
 		return
@@ -415,24 +438,52 @@ func (api API) createSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workspacePath, err := api.workspaces.resolveWorkspacePath(request.WorkspacePath)
+	workspaceRequest := request.WorkspacePath
+	parentWorkspace := ""
+	if request.ParentSessionID != "" {
+		var resolveErr error
+		parentWorkspace, resolveErr = api.workspaces.resolveWorkspacePath(sessionWorkspacePath(parent, api.workdir))
+		if resolveErr != nil {
+			writeWorkspacePathError(w, resolveErr)
+			return
+		}
+		if strings.TrimSpace(workspaceRequest) == "" {
+			workspaceRequest = parentWorkspace
+		}
+	}
+	workspacePath, err := api.workspaces.resolveWorkspacePath(workspaceRequest)
 	if err != nil {
 		writeWorkspacePathError(w, err)
 		return
 	}
-	agentOptions, err := createSessionAgentOptions(agentType, request.AgentOptions)
+	if request.ParentSessionID != "" && workspacePath != parentWorkspace {
+		writeError(w, http.StatusBadRequest, "child sessions must use the parent workspace")
+		return
+	}
+	var agentOptions json.RawMessage
+	if request.ParentSessionID != "" && agentType == parent.AgentType {
+		agentOptions, err = mergeInheritedCreateOptions(parent.AgentOptions, agentType, request.AgentOptions)
+	} else {
+		agentOptions, err = createSessionAgentOptions(agentType, request.AgentOptions)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	session, err := api.store.CreateSession(r.Context(), store.CreateSessionParams{
-		Title:         request.Title,
-		AgentType:     agentType,
-		WorkspacePath: workspacePath,
-		AgentOptions:  agentOptions,
+		Title:           request.Title,
+		AgentType:       agentType,
+		WorkspacePath:   workspacePath,
+		AgentOptions:    agentOptions,
+		ParentSessionID: request.ParentSessionID,
+		MaxLineageDepth: defaultMaxLineageDepth,
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "parent session not found")
+			return
+		}
 		if errors.Is(err, store.ErrInvalidArgument) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

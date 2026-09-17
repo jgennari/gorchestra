@@ -1,4 +1,5 @@
-import { Archive, BookOpen, ChevronDown, ChevronRight, LayoutDashboard, Pin, Plus, Search } from 'lucide-react'
+import * as ContextMenu from '@radix-ui/react-context-menu'
+import { Archive, BookOpen, ChevronDown, ChevronRight, GitBranch, LayoutDashboard, MessageSquare, Pin, Plus, RotateCcw, Search } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -17,6 +18,10 @@ type Props = {
   onSelect: (sessionID: string) => void
   pinningSessionIDs?: ReadonlySet<string>
   onPinChange?: (sessionID: string, pinned: boolean) => void
+  creatingChildSessionIDs?: ReadonlySet<string>
+  onCreateChild?: (sessionID: string) => void
+  archivingSessionID?: string | null
+  onArchive?: (sessionID: string) => void
   overviewSelected?: boolean
   onOverview?: () => void
   userSkillsSelected?: boolean
@@ -38,6 +43,10 @@ export function SessionList({
   onSelect,
   pinningSessionIDs = new Set(),
   onPinChange,
+  creatingChildSessionIDs = new Set(),
+  onCreateChild,
+  archivingSessionID = null,
+  onArchive,
   overviewSelected = false,
   onOverview,
   userSkillsSelected = false,
@@ -145,8 +154,12 @@ export function SessionList({
                 hasError={errorSessionIDs.has(session.id)}
                 attention={sessionAttention(session, lastSeenSeqBySession)}
                 pinPending={pinningSessionIDs.has(session.id)}
+                childCreatePending={creatingChildSessionIDs.has(session.id)}
+                archivePending={archivingSessionID === session.id}
                 onSelect={() => onSelect(session.id)}
                 onPinChange={onPinChange ? (pinned) => onPinChange(session.id, pinned) : undefined}
+                onCreateChild={onCreateChild ? () => onCreateChild(session.id) : undefined}
+                onArchive={onArchive ? () => onArchive(session.id) : undefined}
                 depth={depth}
                 hasChildren={hasChildren}
                 expanded={!collapsedSessionIDs.has(session.id)}
@@ -167,8 +180,12 @@ function SessionRow({
   hasError,
   attention,
   pinPending,
+  childCreatePending,
+  archivePending,
   onSelect,
   onPinChange,
+  onCreateChild,
+  onArchive,
   depth,
   hasChildren,
   expanded,
@@ -180,8 +197,12 @@ function SessionRow({
   hasError: boolean
   attention: ReturnType<typeof sessionAttention>
   pinPending: boolean
+  childCreatePending: boolean
+  archivePending: boolean
   onSelect: () => void
   onPinChange?: (pinned: boolean) => void
+  onCreateChild?: () => void
+  onArchive?: () => void
   depth: number
   hasChildren: boolean
   expanded: boolean
@@ -191,7 +212,7 @@ function SessionRow({
   const pinned = Boolean(session.pinned_at)
   const archived = Boolean(session.archived_at)
 
-  return (
+  const row = (
     <div
       data-session-id={session.id}
       data-parent-session-id={session.parent_session_id || undefined}
@@ -231,12 +252,23 @@ function SessionRow({
       >
         <StatusBadge status={session.status} attention={attention} hasError={hasError} />
         <span
-          className={cn(
-            'flex min-w-0 items-center gap-1.5 text-sm font-medium',
-            archived && 'text-muted-foreground line-through decoration-muted-foreground/60',
-          )}
+          className="flex min-w-0 items-center gap-1.5 text-sm font-medium"
         >
-          <span className="truncate">{title}</span>
+          <span
+            className={cn(
+              'truncate',
+              archived && 'text-muted-foreground line-through decoration-muted-foreground/60',
+            )}
+          >
+            {title}
+          </span>
+          <Badge
+            aria-hidden="true"
+            variant="outline"
+            className="hidden min-h-4 shrink-0 whitespace-nowrap rounded px-1.5 py-0 text-[9px] font-normal leading-4 text-muted-foreground group-hover:inline-flex"
+          >
+            {agentLabel(session.agent_type)}
+          </Badge>
         </span>
         {archived ? (
           <span className="session-row-meta flex shrink-0 items-center text-[11px] text-muted-foreground">
@@ -275,6 +307,78 @@ function SessionRow({
       </div>
     </div>
   )
+
+  if (!onCreateChild && !onArchive && !onPinChange) return row
+
+  return (
+    <ContextMenu.Root>
+      <ContextMenu.Trigger asChild>{row}</ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content
+          collisionPadding={12}
+          className="z-50 min-w-52 overflow-hidden rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-xl"
+        >
+          <ContextMenu.Item onSelect={onSelect} className={contextMenuItemClass}>
+            <MessageSquare className="size-4 text-muted-foreground" aria-hidden="true" />
+            Open
+          </ContextMenu.Item>
+          <ContextMenu.Item
+            disabled={archived || childCreatePending || !onCreateChild}
+            onSelect={onCreateChild}
+            className={contextMenuItemClass}
+          >
+            <GitBranch className="size-4 text-muted-foreground" aria-hidden="true" />
+            {childCreatePending ? 'Creating child…' : 'New child session'}
+          </ContextMenu.Item>
+          {onPinChange && !archived ? (
+            <ContextMenu.Item
+              disabled={pinPending}
+              onSelect={() => onPinChange(!pinned)}
+              className={contextMenuItemClass}
+            >
+              <Pin className={cn('size-4 text-muted-foreground', pinned && 'fill-current')} aria-hidden="true" />
+              {pinPending ? 'Updating pin…' : pinned ? 'Unpin session' : 'Pin session'}
+            </ContextMenu.Item>
+          ) : null}
+          {onArchive ? (
+            <>
+              <ContextMenu.Separator className="my-1 h-px bg-border/70" />
+              <ContextMenu.Item
+                disabled={archivePending || (!archived && session.status === 'running')}
+                onSelect={onArchive}
+                className={cn(contextMenuItemClass, !archived && 'text-destructive focus:text-destructive')}
+              >
+                {archived ? (
+                  <RotateCcw className="size-4 text-muted-foreground" aria-hidden="true" />
+                ) : (
+                  <Archive className="size-4" aria-hidden="true" />
+                )}
+                {archivePending ? (archived ? 'Restoring…' : 'Archiving…') : archived ? 'Restore session' : 'Archive session…'}
+              </ContextMenu.Item>
+            </>
+          ) : null}
+        </ContextMenu.Content>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
+  )
+}
+
+const contextMenuItemClass =
+  'flex min-h-10 cursor-default select-none items-center gap-3 rounded-md px-2.5 py-2 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground'
+
+function agentLabel(agentType: Session['agent_type']) {
+  switch (agentType) {
+    case 'codex':
+      return 'Codex'
+    case 'claude':
+      return 'Claude'
+    case 'opencode':
+      return 'OpenCode'
+    case 'pi':
+      return 'Pi'
+    case 'fake':
+      return 'Fake'
+  }
 }
 
 type SessionTreeRow = {

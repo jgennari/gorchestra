@@ -391,6 +391,40 @@ test('create session can post agent options', async () => {
   expect(session.tool_count).toBe(0)
 })
 
+test('create session can create a blank child from only its parent id', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url) === '/api/sessions') {
+      expect(init?.method).toBe('POST')
+      expect(init?.body).toBe(JSON.stringify({ parent_session_id: 'sess_parent' }))
+      return jsonResponse({ session_id: 'sess_child' })
+    }
+    if (String(url) === '/api/sessions/sess_child') {
+      return jsonResponse({
+        id: 'sess_child',
+        parent_session_id: 'sess_parent',
+        lineage_depth: 1,
+        title: '',
+        agent_type: 'codex',
+        status: 'idle',
+        workspace_path: '/repo',
+        event_count: 0,
+        tool_count: 0,
+        created_at: '2026-09-17T14:00:00Z',
+        updated_at: '2026-09-17T14:00:00Z',
+        completed_at: null,
+        archived_at: null,
+      })
+    }
+    throw new Error(`unexpected URL ${String(url)}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const session = await createSession({ parent_session_id: 'sess_parent' })
+
+  expect(session.id).toBe('sess_child')
+  expect(session.parent_session_id).toBe('sess_parent')
+})
+
 test('archive session posts to the archive endpoint', async () => {
   const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     expect(String(url)).toBe('/api/sessions/sess_1/archive')

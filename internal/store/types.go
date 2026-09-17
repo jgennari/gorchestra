@@ -294,10 +294,12 @@ type PushDeliveryAttempt struct {
 }
 
 type CreateSessionParams struct {
-	Title         string
-	AgentType     string
-	WorkspacePath string
-	AgentOptions  json.RawMessage
+	Title           string
+	AgentType       string
+	WorkspacePath   string
+	AgentOptions    json.RawMessage
+	ParentSessionID string
+	MaxLineageDepth int
 }
 
 type CreateRunSubmissionParams struct {

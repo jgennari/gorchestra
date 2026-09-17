@@ -62,6 +62,61 @@ func TestCreateSessionCreatesIdleFakeAgentSession(t *testing.T) {
 	}
 }
 
+func TestCreateSessionCreatesBlankChildWithInheritedConfiguration(t *testing.T) {
+	ctx := context.Background()
+	workspace := canonicalPath(t, t.TempDir())
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
+	parent, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title: "Parent", AgentType: "fake", WorkspacePath: workspace,
+		AgentOptions: json.RawMessage(`{"fake":{"marker":"inherited"}}`),
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions", `{"parent_session_id":`+quoteJSON(parent.ID)+`}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+	var response createSessionResponse
+	decodeJSON(t, rec, &response)
+	child, err := dbStore.GetSession(ctx, response.SessionID)
+	if err != nil {
+		t.Fatalf("get child: %v", err)
+	}
+	if child.ParentSessionID != parent.ID || child.LineageDepth != 1 {
+		t.Fatalf("unexpected child lineage: %#v", child)
+	}
+	if child.AgentType != parent.AgentType || child.WorkspacePath != parent.WorkspacePath {
+		t.Fatalf("expected inherited agent and workspace, got %#v", child)
+	}
+	if string(child.AgentOptions) != string(parent.AgentOptions) {
+		t.Fatalf("expected inherited options %s, got %s", parent.AgentOptions, child.AgentOptions)
+	}
+	if child.Title != "" || child.EventCount != 0 || child.Status != store.SessionStatusIdle {
+		t.Fatalf("expected blank idle child, got %#v", child)
+	}
+}
+
+func TestCreateSessionRejectsArchivedParent(t *testing.T) {
+	ctx := context.Background()
+	workspace := canonicalPath(t, t.TempDir())
+	dbStore, _, _, handler := newIntegrationAPIWithWorkdir(t, ctx, workspace, fake.New())
+	parent, err := dbStore.CreateSession(ctx, store.CreateSessionParams{AgentType: "fake", WorkspacePath: workspace})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := dbStore.ArchiveSession(ctx, store.ArchiveSessionParams{ID: parent.ID}); err != nil {
+		t.Fatalf("archive parent: %v", err)
+	}
+
+	rec := postJSON(handler, "/api/sessions", `{"parent_session_id":`+quoteJSON(parent.ID)+`}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+	assertErrorResponse(t, rec, "parent session is archived")
+}
+
 func TestCreateSessionAcceptsWorkspaceInsideAllowedRoot(t *testing.T) {
 	ctx := context.Background()
 	root := canonicalPath(t, t.TempDir())

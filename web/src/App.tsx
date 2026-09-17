@@ -204,6 +204,7 @@ function App() {
   const [erroredSessionIDs, setErroredSessionIDs] = useState<ReadonlySet<string>>(() => new Set())
   const [showDebugEvents, setShowDebugEvents] = useState(false)
   const [archivingSessionID, setArchivingSessionID] = useState<string | null>(null)
+  const [creatingChildSessionIDs, setCreatingChildSessionIDs] = useState<ReadonlySet<string>>(() => new Set())
   const [pinningSessionIDs, setPinningSessionIDs] = useState<ReadonlySet<string>>(() => new Set())
   const [confirmArchiveSessionID, setConfirmArchiveSessionID] = useState<string | null>(null)
   const [confirmSessionAction, setConfirmSessionAction] = useState<PendingSessionAction | null>(null)
@@ -1296,6 +1297,25 @@ function App() {
     return session
   }
 
+  async function handleCreateChildSession(parentSessionID: string) {
+    setCreatingChildSessionIDs((current) => addSetValue(current, parentSessionID))
+    setError('')
+    try {
+      const session = await createSession({ parent_session_id: parentSessionID })
+      applySession(session)
+      setMobileListOpen(false)
+      appViewRef.current = 'session'
+      setAppView('session')
+      setComposerFocusRequest((current) => current + 1)
+      selectSession(session.id, 'push')
+      return session
+    } catch (createError) {
+      setError(messageFromError(createError))
+    } finally {
+      setCreatingChildSessionIDs((current) => removeSetValue(current, parentSessionID))
+    }
+  }
+
   async function handleSubmitPrompt(
     content: string,
     agentOptions?: SubmitAgentOptions,
@@ -1476,11 +1496,11 @@ function App() {
     }
   }, [applySession])
 
-  function requestArchiveSession() {
-    if (!selectedSessionID) {
+  function requestArchiveSession(sessionID = selectedSessionID) {
+    if (!sessionID) {
       return
     }
-    setConfirmArchiveSessionID(selectedSessionID)
+    setConfirmArchiveSessionID(sessionID)
   }
 
   async function handleConfirmArchiveSession() {
@@ -1740,6 +1760,14 @@ function App() {
     pinningSessionIDs,
     onPinChange: serverReachable
       ? (sessionID: string, pinned: boolean) => void handlePinSession(sessionID, pinned)
+      : undefined,
+    creatingChildSessionIDs,
+    onCreateChild: serverReachable
+      ? (sessionID: string) => void handleCreateChildSession(sessionID)
+      : undefined,
+    archivingSessionID,
+    onArchive: serverReachable
+      ? (sessionID: string) => requestArchiveSession(sessionID)
       : undefined,
     overviewSelected,
     onOverview: () => selectOverview('push'),
