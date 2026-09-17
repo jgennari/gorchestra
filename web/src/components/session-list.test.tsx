@@ -312,9 +312,14 @@ test('session list renders expandable lineage with descendant activity', async (
   expect(Array.from(container.querySelectorAll('.session-row'), (row) => row.getAttribute('data-session-id'))).toEqual([
     'sess_parent', 'sess_child', 'sess_grandchild',
   ])
-  expect(container.querySelector('[data-session-id="sess_child"]')).toHaveAttribute('data-lineage-depth', '1')
-  expect(screen.getByText('1 active')).toBeInTheDocument()
+  const parentRow = container.querySelector('[data-session-id="sess_parent"]')
+  const childRow = container.querySelector('[data-session-id="sess_child"]')
+  expect(childRow).toHaveAttribute('data-lineage-depth', '1')
+  expect(childRow?.querySelector('.lucide-git-branch')).not.toBeInTheDocument()
+  expect(screen.queryByText(/active$/)).not.toBeInTheDocument()
   expect(screen.getAllByText('1 waiting')).toHaveLength(2)
+  expect(parentRow?.querySelector('[aria-label="Collapse Parent"]')).toHaveClass('size-5')
+  expect(screen.getByRole('button', { name: 'Parent' })).toHaveClass('pl-1')
 
   await user.click(screen.getByRole('button', { name: 'Collapse Parent' }))
   expect(screen.queryByRole('button', { name: 'Child' })).not.toBeInTheDocument()

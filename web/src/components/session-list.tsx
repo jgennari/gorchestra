@@ -1,4 +1,4 @@
-import { Archive, BookOpen, ChevronDown, ChevronRight, GitBranch, LayoutDashboard, Pin, Plus, Search } from 'lucide-react'
+import { Archive, BookOpen, ChevronDown, ChevronRight, LayoutDashboard, Pin, Plus, Search } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -136,7 +136,7 @@ export function SessionList({
           <div className="p-4 text-sm text-muted-foreground">No sessions yet.</div>
         ) : (
           <div className="session-list-rows space-y-1.5 p-2.5">
-            {treeRows.map(({ session, depth, hasChildren, activeDescendants, attentionDescendants }, index) => (
+            {treeRows.map(({ session, depth, hasChildren, attentionDescendants }, index) => (
               <SessionRow
                 key={session.id}
                 session={session}
@@ -150,7 +150,6 @@ export function SessionList({
                 depth={depth}
                 hasChildren={hasChildren}
                 expanded={!collapsedSessionIDs.has(session.id)}
-                activeDescendants={activeDescendants}
                 attentionDescendants={attentionDescendants}
                 onToggle={() => setCollapsedSessionIDs((current) => toggleSetValue(current, session.id))}
               />
@@ -174,7 +173,6 @@ function SessionRow({
   depth,
   hasChildren,
   expanded,
-  activeDescendants,
   attentionDescendants,
   onToggle,
 }: {
@@ -189,7 +187,6 @@ function SessionRow({
   depth: number
   hasChildren: boolean
   expanded: boolean
-  activeDescendants: number
   attentionDescendants: number
   onToggle: () => void
 }) {
@@ -220,21 +217,20 @@ function SessionRow({
           aria-label={`${expanded ? 'Collapse' : 'Expand'} ${title}`}
           aria-expanded={expanded}
           onClick={onToggle}
-          className="ml-1 flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background/70 hover:text-foreground"
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background/70 hover:text-foreground"
         >
           {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
         </button>
-      ) : depth > 0 ? (
-        <span className="ml-1 flex size-7 shrink-0 items-center justify-center text-muted-foreground/60" aria-hidden="true">
-          <GitBranch className="size-3.5" />
-        </span>
       ) : null}
       <button
         type="button"
         onClick={onSelect}
         aria-current={selected ? 'true' : undefined}
         aria-label={archived ? `${title} archived` : title}
-        className="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-2.5 py-2 text-left focus-visible:outline-none"
+        className={cn(
+          'grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 py-2 pr-2.5 text-left focus-visible:outline-none',
+          hasChildren ? 'pl-1' : 'pl-2.5',
+        )}
       >
         <StatusBadge status={session.status} attention={attention} hasError={hasError} />
         <span
@@ -255,9 +251,8 @@ function SessionRow({
               Archived
             </Badge>
           </span>
-        ) : activeDescendants > 0 || attentionDescendants > 0 ? (
+        ) : attentionDescendants > 0 ? (
           <span className="session-row-meta flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
-            {activeDescendants > 0 ? <Badge variant="default" className="min-h-5 px-1.5 py-0">{activeDescendants} active</Badge> : null}
             {attentionDescendants > 0 ? <Badge variant="warning" className="min-h-5 px-1.5 py-0">{attentionDescendants} waiting</Badge> : null}
           </span>
         ) : null}
@@ -293,7 +288,6 @@ type SessionTreeRow = {
   session: Session
   depth: number
   hasChildren: boolean
-  activeDescendants: number
   attentionDescendants: number
 }
 
@@ -316,27 +310,23 @@ function buildSessionTreeRows(
   }
   const rows: SessionTreeRow[] = []
   const visited = new Set<string>()
-  const summarize = (session: Session, stack = new Set<string>()): [number, number] => {
-    if (stack.has(session.id)) return [0, 0]
+  const summarizeAttention = (session: Session, stack = new Set<string>()): number => {
+    if (stack.has(session.id)) return 0
     const nextStack = new Set(stack).add(session.id)
-    let active = 0
     let attention = 0
     for (const child of children.get(session.id) ?? []) {
-      if (child.status === 'running') active += 1
       const childAttention = sessionAttention(child, lastSeenSeqBySession)
       if (childAttention !== null) attention += 1
-      const [nestedActive, nestedAttention] = summarize(child, nextStack)
-      active += nestedActive
-      attention += nestedAttention
+      attention += summarizeAttention(child, nextStack)
     }
-    return [active, attention]
+    return attention
   }
   const visit = (session: Session, depth: number) => {
     if (visited.has(session.id)) return
     visited.add(session.id)
     const descendants = children.get(session.id) ?? []
-    const [activeDescendants, attentionDescendants] = summarize(session)
-    rows.push({ session, depth, hasChildren: descendants.length > 0, activeDescendants, attentionDescendants })
+    const attentionDescendants = summarizeAttention(session)
+    rows.push({ session, depth, hasChildren: descendants.length > 0, attentionDescendants })
     if (!collapsed.has(session.id)) descendants.forEach((child) => visit(child, depth + 1))
   }
   roots.forEach((session) => visit(session, 0))
