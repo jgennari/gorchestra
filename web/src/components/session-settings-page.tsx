@@ -1,4 +1,4 @@
-import { Activity, BookOpen, CalendarClock, Loader2, Server, Settings, SlidersHorizontal } from 'lucide-react'
+import { Activity, BookOpen, CalendarClock, Loader2, Server, SlidersHorizontal } from 'lucide-react'
 import { lazy, Suspense, type ComponentProps, type ReactNode } from 'react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { isSessionSettingsView, type SessionSettingsSection } from '@/lib/routes'
@@ -34,33 +34,28 @@ export function SessionSettingsPage({ section, onSelectSection, scheduleRefreshK
         if (isSessionSettingsView(value)) onSelectSection(value)
       }}
       activationMode="manual"
-      className="session-settings-page flex h-full min-h-0 flex-col gap-3"
+      className="session-settings-page flex h-full min-h-0 flex-col"
     >
-      <section className="mx-3 shrink-0 rounded-lg border border-border/80 bg-background/72 p-3 shadow-sm sm:p-4" aria-labelledby="session-settings-page-heading">
-        <div className="flex items-center gap-2">
-          <Settings className="size-5 text-primary" aria-hidden="true" />
-          <h1 id="session-settings-page-heading" className="text-base font-semibold">Session settings</h1>
-        </div>
-        <p className="mt-1 text-xs text-muted-foreground">Review activity and configure this session, its scheduled tasks, repository skills, and hosting.</p>
-        <TabsList aria-label="Session settings sections" className="mt-3 grid h-auto w-full grid-cols-5 lg:grid-cols-4">
+      <section className="mx-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/80 bg-background/72 shadow-sm" aria-label="Session settings">
+        <TabsList aria-label="Session settings sections" className="grid h-auto w-full shrink-0 grid-cols-5 rounded-none border-0 border-b border-border/80 bg-surface-muted/50 p-1 lg:grid-cols-4">
           {sections.map(({ value, label, icon: Icon, mobileOnly }) => (
             <TabsTrigger key={value} value={value} className={`${mobileOnly ? 'lg:hidden ' : ''}h-auto min-h-10 gap-1.5 whitespace-normal px-1 text-center text-[11px] sm:px-2.5 sm:text-xs`}>
               <Icon className="hidden size-3.5 shrink-0 sm:block" aria-hidden="true" />{label}
             </TabsTrigger>
           ))}
         </TabsList>
+        {sections.map(({ value }) => (
+          <TabsContent key={value} value={value} className="min-h-0 flex-1 overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+            <Suspense fallback={<div role="status" className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" aria-hidden="true" />Loading settings…</div>}>
+              {value === 'activity' ? mobileSessionOverview
+                : value === 'settings' ? <GeneralSettings key={session?.id} {...generalProps} embedded />
+                : value === 'schedules' ? <SessionSchedules key={session?.id} {...panelProps} refreshKey={scheduleRefreshKey} />
+                  : value === 'skills' ? <RepositorySkills key={session?.id} {...panelProps} onOpenFile={onOpenFile} />
+                    : <HostPreview key={session?.id} {...panelProps} />}
+            </Suspense>
+          </TabsContent>
+        ))}
       </section>
-      {sections.map(({ value }) => (
-        <TabsContent key={value} value={value} className="min-h-0 flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          <Suspense fallback={<div role="status" className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" aria-hidden="true" />Loading settings…</div>}>
-            {value === 'activity' ? mobileSessionOverview
-              : value === 'settings' ? <GeneralSettings key={session?.id} {...generalProps} embedded />
-              : value === 'schedules' ? <SessionSchedules key={session?.id} {...panelProps} refreshKey={scheduleRefreshKey} />
-                : value === 'skills' ? <RepositorySkills key={session?.id} {...panelProps} onOpenFile={onOpenFile} />
-                  : <HostPreview key={session?.id} {...panelProps} />}
-          </Suspense>
-        </TabsContent>
-      ))}
     </Tabs>
   )
 }

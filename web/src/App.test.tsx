@@ -818,6 +818,24 @@ test('switching app views updates the session route and browser history', async 
   ).toBe(true)
 })
 
+test.each(['console', 'files', 'settings'])('changing sessions from %s returns to messages', async (view) => {
+  const user = userEvent.setup()
+  window.history.replaceState({}, '', `/sessions/sess_1/${view}`)
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Write docs').length).toBeGreaterThan(0))
+  await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
+
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
+  expect(
+    screen
+      .getAllByRole('button', { name: 'Show chat' })
+      .some((button) => button.getAttribute('aria-pressed') === 'true'),
+  ).toBe(true)
+  expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveFocus()
+})
+
 test('the desktop rail picker persists its selected utility', async () => {
   const user = userEvent.setup()
   render(<App />)
@@ -1075,7 +1093,7 @@ test('Hosting inside Settings updates the route and shows host status', async ()
   ).toBe(true)
 })
 
-test('schedules view uses the shared floating session header', async () => {
+test('schedules view uses the shared floating session header and settings card', async () => {
   const user = userEvent.setup()
 
   render(<App />)
@@ -1089,11 +1107,12 @@ test('schedules view uses the shared floating session header', async () => {
   expect(within(schedulesHeader).getByRole('button', { name: 'Show session settings' })).toBeInTheDocument()
   expect(schedulesHeader.querySelector('.command-chat-header')).toBeInTheDocument()
   const scheduleInfo = (await screen.findByRole('heading', { name: 'Scheduled tasks' })).closest('section')
-  expect(scheduleInfo).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
-  expect(scheduleInfo?.closest('.session-settings-page')).toBeTruthy()
+  const settingsCard = screen.getByRole('region', { name: 'Session settings' })
+  expect(settingsCard).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
+  expect(settingsCard).toContainElement(scheduleInfo)
 })
 
-test('session settings is a routed card page reached from the mobile view switcher', async () => {
+test('session settings uses its tabs as the single card header', async () => {
   const user = userEvent.setup()
 
   render(<App />)
@@ -1103,9 +1122,12 @@ test('session settings is a routed card page reached from the mobile view switch
   await user.click(within(mobileHeader).getByRole('button', { name: 'Show session settings' }))
 
   await waitFor(() => expect(window.location.pathname).toBe('/sessions/inspect-repo/settings'))
-  const card = screen.getByRole('heading', { name: 'Session settings' }).closest('section')
+  const card = screen.getByRole('region', { name: 'Session settings' })
   expect(card).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
-  expect(card?.closest('.session-settings-page')).toBeTruthy()
+  expect(within(card).getByRole('tablist', { name: 'Session settings sections' })).toBeInTheDocument()
+  expect(within(card).getByRole('region', { name: 'Session configuration' })).toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Session settings' })).not.toBeInTheDocument()
+  expect(screen.queryByText(/Review activity and configure this session/)).not.toBeInTheDocument()
   expect(screen.getByTestId('floating-settings-header')).toBeInTheDocument()
 })
 
@@ -1123,11 +1145,11 @@ test('session settings header omits the parent-session link', async () => {
 
   render(<App />)
 
-  await screen.findByRole('heading', { name: 'Session settings' })
+  await screen.findByRole('region', { name: 'Session settings' })
   expect(within(screen.getByTestId('floating-settings-header')).queryByText('Parent session')).not.toBeInTheDocument()
 })
 
-test('repository skills view uses the shared floating session header and information card', async () => {
+test('repository skills view uses the shared floating session header and settings card', async () => {
   const user = userEvent.setup()
   render(<App />)
   await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
@@ -1138,7 +1160,7 @@ test('repository skills view uses the shared floating session header and informa
   expect(within(skillsHeader).getByRole('button', { name: 'Show session settings' })).toBeInTheDocument()
   expect(skillsHeader.querySelector('.command-chat-header')).toBeInTheDocument()
   const info = (await screen.findByRole('heading', { name: 'Repository skills' })).closest('section')
-  expect(info).toHaveClass('rounded-lg', 'border', 'bg-background/72', 'shadow-sm')
+  expect(screen.getByRole('region', { name: 'Session settings' })).toContainElement(info)
 })
 
 test('primary navigation has four views and only the active Settings section loads data', async () => {
@@ -1226,7 +1248,8 @@ test.each([
   window.history.replaceState({}, '', `/sessions/sess_1/${path}`)
   render(<App />)
   expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument()
-  expect(screen.getByRole('heading', { name: 'Session settings' })).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Session settings' })).toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Session settings' })).not.toBeInTheDocument()
   expect(screen.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true')
   expect(within(screen.getByTestId('floating-settings-header')).getByRole('button', { name: 'Show session settings' })).toHaveAttribute('aria-pressed', 'true')
 })
@@ -1605,7 +1628,7 @@ test('session route paints cached transcript before the snapshot, then fetches m
   expect(fetch.mock.calls.filter(([url]) => String(url).includes('/events?tail='))).toHaveLength(1)
 })
 
-test('switching sessions discards an unsaved settings rename', async () => {
+test('switching sessions from settings returns to messages and discards an unsaved rename', async () => {
   const user = userEvent.setup()
 
   render(<App />)
@@ -1621,13 +1644,17 @@ test('switching sessions discards an unsaved settings rename', async () => {
 
   await user.click(screen.getAllByRole('button', { name: /Write docs/ })[0])
 
-  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs/settings'))
-  expect(screen.getByRole('textbox', { name: 'Session name' })).toHaveValue('Write docs')
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/write-docs'))
+  expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveFocus()
   expect(
     screen
       .getAllByRole('button', { name: /Write docs/ })
       .some((button) => button.getAttribute('aria-current') === 'true'),
   ).toBe(true)
+
+  await user.click(screen.getAllByRole('button', { name: /Inspect repo/ })[0])
+  await user.click(screen.getAllByRole('button', { name: 'Show session settings' })[0])
+  expect(screen.getByRole('textbox', { name: 'Session name' })).toHaveValue('Inspect repo')
 })
 
 test('search button opens global spotlight search', async () => {

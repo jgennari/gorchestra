@@ -496,6 +496,11 @@ function App() {
 
   const completeSessionSelection = useCallback(
     (sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
+      if (sessionID && historyMode !== 'none') {
+        appViewRef.current = 'session'
+        setAppView('session')
+        setComposerFocusRequest((current) => current + 1)
+      }
       clearNotificationAttentionForSession(sessionID)
       selectSession(sessionID, historyMode)
       setMobileListOpen(false)
@@ -505,9 +510,6 @@ function App() {
 
   const requestSessionSelection = useCallback(
     (sessionID: string | null, historyMode: SessionRouteHistoryMode = 'push') => {
-      if (sessionID && appViewRef.current === 'session') {
-        setComposerFocusRequest((current) => current + 1)
-      }
       if (sessionID === selectedSessionIDRef.current) {
         clearNotificationAttentionForSession(sessionID)
         return
@@ -1312,10 +1314,7 @@ function App() {
   }) {
     const session = await createSession(params)
     applySession(session)
-    if (appViewRef.current === 'session') {
-      setComposerFocusRequest((current) => current + 1)
-    }
-    selectSession(session.id, 'push')
+    completeSessionSelection(session.id, 'push')
     return session
   }
 

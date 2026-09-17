@@ -119,9 +119,9 @@ export function SessionSchedules({
 
   const archived = Boolean(session.archived_at)
   return (
-    <div className={`${embedded ? '' : 'session-schedules-body '}flex h-full min-h-0 flex-col overflow-y-auto px-3 pb-3`}>
-      <div className="flex min-h-0 w-full flex-1 flex-col gap-3 pb-16">
-        <section className="shrink-0 rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm" aria-labelledby="scheduled-tasks-heading">
+    <div className={`${embedded ? '' : 'session-schedules-body px-3 pb-3 '}flex h-full min-h-0 flex-col overflow-y-auto`}>
+      <div className={`flex min-h-0 w-full flex-1 flex-col gap-3 pb-16${embedded ? ' p-4' : ''}`}>
+        <section className={embedded ? 'shrink-0' : 'shrink-0 rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm'} aria-labelledby="scheduled-tasks-heading">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import { Check, Copy, FolderCog, Loader2, Settings } from 'lucide-react'
+import { Check, Copy, FolderCog, Loader2 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { ChangeWorkspaceDialog } from '@/components/change-workspace-dialog'
 import { PermissionPolicyControl } from '@/components/permission-policy-control'
@@ -73,17 +73,9 @@ export function SessionSettings({
   }
 
   return (
-    <div className={cn(!embedded && 'session-settings-body', 'flex h-full min-h-0 flex-col overflow-y-auto px-3 pb-3')}>
-      <div className="flex min-h-0 w-full flex-1 flex-col gap-3 pb-16">
-        {!embedded ? <section className="shrink-0 rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm" aria-labelledby="session-settings-heading">
-          <div className="flex items-center gap-2">
-            <Settings className="size-5 text-primary" aria-hidden="true" />
-            <h1 id="session-settings-heading" className="text-base font-semibold">Session settings</h1>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">Manage this session’s identity, workspace, permissions, and event visibility.</p>
-        </section> : null}
-
-        <section className="rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm" aria-label="Session configuration">
+    <div className={cn(!embedded && 'session-settings-body px-3 pb-3', 'flex h-full min-h-0 flex-col overflow-y-auto')}>
+      <div className={cn('flex min-h-0 w-full flex-1 flex-col pb-16', embedded ? 'p-4' : 'gap-3')}>
+        <section className={cn(!embedded && 'rounded-lg border border-border/80 bg-background/72 p-4 shadow-sm')} aria-label="Session configuration">
           <div className="grid gap-5 md:grid-cols-2">
             <div className="md:col-span-2">
               <SessionRenameForm key={`${session.id}:${session.title}`} title={session.title} onSave={onUpdateTitle} />

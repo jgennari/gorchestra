@@ -18,13 +18,11 @@ const baseSession: Session = {
   archived_at: null,
 }
 
-test('renders a full-width header with the settings in a separate card', () => {
+test('renders the settings in one full-width card without a title block', () => {
   renderSettings()
 
-  const headerCard = screen.getByRole('heading', { name: 'Session settings' }).closest('section')
   const settingsCard = screen.getByRole('region', { name: 'Session configuration' })
-  expect(headerCard).toHaveClass('border', 'border-border/80', 'bg-background/72', 'shadow-sm')
-  expect(within(headerCard as HTMLElement).queryByRole('textbox', { name: 'Session name' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Session settings' })).not.toBeInTheDocument()
   expect(settingsCard).toHaveClass('border', 'border-border/80', 'bg-background/72', 'shadow-sm')
   expect(within(settingsCard).getByRole('textbox', { name: 'Session name' })).toHaveValue('Inspect repo')
   expect(within(settingsCard).getByText('sess_1')).toBeInTheDocument()
@@ -65,7 +63,6 @@ test('shows loading state while a routed session resolves', () => {
   renderSettings({ session: null, resolvingSessionID: 'sess_1' })
 
   expect(screen.getByText('Loading settings…')).toBeInTheDocument()
-  expect(screen.queryByRole('heading', { name: 'Session settings' })).not.toBeInTheDocument()
 })
 
 type Props = Parameters<typeof SessionSettings>[0]
