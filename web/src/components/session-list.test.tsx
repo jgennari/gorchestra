@@ -290,6 +290,7 @@ test('session context menu targets archive and disables invalid child actions', 
   const { container: archivedContainer } = render(
     <SessionListHarness sessions={[sessions[2]]} onArchive={onArchive} onCreateChild={() => undefined} />,
   )
+  expect(screen.queryByText(/^Archived$/)).not.toBeInTheDocument()
   fireEvent.contextMenu(archivedContainer.querySelector('[data-session-id="sess_archived"]')!, { clientX: 48, clientY: 48 })
 
   expect(await screen.findByRole('menuitem', { name: 'New child session' })).toHaveAttribute('aria-disabled', 'true')

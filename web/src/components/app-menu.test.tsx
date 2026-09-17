@@ -12,11 +12,14 @@ beforeAll(() => {
 test('groups theme and version controls in the app menu', async () => {
   const user = userEvent.setup()
   const onThemeChange = vi.fn()
+  const onShowArchivedChange = vi.fn()
 
   render(
     <AppMenu
       themePreference="system"
       onThemeChange={onThemeChange}
+      showArchived={false}
+      onShowArchivedChange={onShowArchivedChange}
       release={{
         currentVersion: '0.2.8',
         latestVersion: '0.3.0',
@@ -38,6 +41,11 @@ test('groups theme and version controls in the app menu', async () => {
   )
   expect(screen.queryByText('Notifications')).not.toBeInTheDocument()
 
+  await user.click(screen.getByRole('menuitemcheckbox', { name: 'Show archived' }))
+  expect(onShowArchivedChange).toHaveBeenCalledWith(true)
+
+  await user.click(screen.getByRole('button', { name: 'App menu, update available' }))
+
   await user.click(screen.getByRole('menuitemradio', { name: 'Dark' }))
   expect(onThemeChange).toHaveBeenCalledWith('dark')
 })
@@ -49,6 +57,8 @@ test('labels unstamped builds clearly', async () => {
     <AppMenu
       themePreference="dark"
       onThemeChange={() => undefined}
+      showArchived={false}
+      onShowArchivedChange={() => undefined}
       release={{
         currentVersion: 'dev',
         latestVersion: null,

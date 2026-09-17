@@ -270,17 +270,6 @@ function SessionRow({
             {agentLabel(session.agent_type)}
           </Badge>
         </span>
-        {archived ? (
-          <span className="session-row-meta flex shrink-0 items-center text-[11px] text-muted-foreground">
-            <Badge
-              variant="warning"
-              className="min-h-5 gap-1 px-1.5 py-0 text-[10px] uppercase tracking-[0.08em]"
-            >
-              <Archive className="size-3" aria-hidden="true" />
-              Archived
-            </Badge>
-          </span>
-        ) : null}
       </button>
       <div className="flex h-8 shrink-0 items-center">
         {shortcut ? (

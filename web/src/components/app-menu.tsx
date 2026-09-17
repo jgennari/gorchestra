@@ -1,5 +1,6 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import {
+  Archive,
   Check,
   ExternalLink,
   Info,
@@ -17,6 +18,8 @@ import { cn } from '@/lib/utils'
 type Props = {
   themePreference: ThemePreference
   onThemeChange: (preference: ThemePreference) => void
+  showArchived: boolean
+  onShowArchivedChange: (showArchived: boolean) => void
   release: ReleaseUpdate & { checking: boolean }
 }
 
@@ -36,6 +39,8 @@ const themes: Array<{
 export function AppMenu({
   themePreference,
   onThemeChange,
+  showArchived,
+  onShowArchivedChange,
   release,
 }: Props) {
   const versionLabel = release.currentVersion === 'dev' ? 'Development build' : `Version ${release.currentVersion}`
@@ -104,6 +109,17 @@ export function AppMenu({
               </DropdownMenu.RadioItem>
             ))}
           </DropdownMenu.RadioGroup>
+          <DropdownMenu.CheckboxItem
+            checked={showArchived}
+            onCheckedChange={(checked) => onShowArchivedChange(checked === true)}
+            className={menuItemClass}
+          >
+            <Archive className="size-4 text-muted-foreground" aria-hidden="true" />
+            <span className="flex-1">Show archived</span>
+            <DropdownMenu.ItemIndicator>
+              <Check className="size-4" aria-hidden="true" />
+            </DropdownMenu.ItemIndicator>
+          </DropdownMenu.CheckboxItem>
 
           <DropdownMenu.Separator className="my-1.5 h-px bg-border/70" />
 

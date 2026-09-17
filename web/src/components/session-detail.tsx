@@ -564,12 +564,14 @@ export function ChatSessionHeader({
   headerActions,
   leadingAction,
   onSelectParent,
+  showParentSession = true,
 }: {
   session: Session
   errorMessage?: string
   headerActions?: ReactNode
   leadingAction?: ReactNode
   onSelectParent?: (sessionID: string) => void
+  showParentSession?: boolean
 }) {
   return (
     <div className="pointer-events-auto">
@@ -582,7 +584,7 @@ export function ChatSessionHeader({
         {leadingAction ? <div className="shrink-0">{leadingAction}</div> : null}
         <div className="min-w-0 flex-1">
           <SessionTitle title={session.title} />
-          {session.parent_session_id ? (
+          {showParentSession && session.parent_session_id ? (
             <button
               type="button"
               onClick={() => onSelectParent?.(session.parent_session_id!)}

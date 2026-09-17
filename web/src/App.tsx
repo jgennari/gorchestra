@@ -168,6 +168,7 @@ const debugStorageKeyPrefix = 'gorchestra.session-debug.'
 const paneWidthsStorageKey = 'gorchestra.pane-widths.v1'
 const sessionSeenSeqStorageKey = 'gorchestra.session-seen-seq.v1'
 const lastSelectedSessionStorageKey = 'gorchestra.last-selected-session.v1'
+const showArchivedSessionsStorageKey = 'gorchestra.show-archived-sessions.v1'
 const dashboardActivityRefreshDelayMs = 750
 const maximumActivityReconnectDelayMs = 15_000
 const offlineReconnectDelayMs = 5_000
@@ -193,9 +194,14 @@ function App() {
     window.addEventListener('popstate', update)
     return () => window.removeEventListener('popstate', update)
   }, [])
-  const initialSessionState = useMemo(() => loadInitialSessionStateFromLocation(), [])
+  const [initialPreferences] = useState(() => ({ showArchivedSessions: loadShowArchivedSessionsPreference() }))
+  const initialSessionState = useMemo(
+    () => loadInitialSessionStateFromLocation(initialPreferences.showArchivedSessions),
+    [initialPreferences],
+  )
   const [sessions, setSessions] = useState<Session[]>(initialSessionState.sessions)
   const [selectedSessionID, setSelectedSessionID] = useState<string | null>(initialSessionState.selectedSessionID)
+  const [showArchivedSessions, setShowArchivedSessions] = useState(initialPreferences.showArchivedSessions)
   const [createOpen, setCreateOpen] = useState(false)
   const [mobileListOpen, setMobileListOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(!initialSessionState.seededCachedSession)
@@ -241,6 +247,7 @@ function App() {
   const appViewRef = useRef<AppView>(appView)
   const openWorkspaceFileRef = useRef<WorkspaceFileContent | null>(openWorkspaceFile)
   const sessionsRef = useRef<Session[]>(initialSessionState.sessions)
+  const showArchivedSessionsRef = useRef(showArchivedSessions)
   const sessionListLoadedRef = useRef(initialSessionState.seededCachedSession)
   const selectedEventsRef = useRef<AgentEvent[]>([])
   const paneWidthsRef = useRef(paneWidths)
@@ -415,7 +422,11 @@ function App() {
     void writePersistentCachedSession(session)
     setSessions((current) => {
       let next: Session[]
-      if (session.archived_at && session.id !== selectedSessionIDRef.current) {
+      if (
+        session.archived_at &&
+        !showArchivedSessionsRef.current &&
+        session.id !== selectedSessionIDRef.current
+      ) {
         next = current.filter((item) => item.id !== session.id)
       } else {
         next = sortSessions([session, ...current.filter((item) => item.id !== session.id)])
@@ -606,6 +617,11 @@ function App() {
   }, [sessions])
 
   useEffect(() => {
+    showArchivedSessionsRef.current = showArchivedSessions
+    saveShowArchivedSessionsPreference(showArchivedSessions)
+  }, [showArchivedSessions])
+
+  useEffect(() => {
     paneWidthsRef.current = paneWidths
     savePaneWidths(paneWidths)
   }, [paneWidths])
@@ -772,7 +788,7 @@ function App() {
         }),
       )
       const next = updated.filter(
-        (session) => !session.archived_at || session.id === selectedSessionIDRef.current,
+        (session) => showArchivedSessionsRef.current || !session.archived_at,
       )
       if (next.length !== updated.length) changed = true
       if (changed) sessionsRef.current = next
@@ -808,8 +824,13 @@ function App() {
   const applyIngestedSessionEvent = useCallback(
     (event: AgentEvent) => {
       const knownSession = sessionsRef.current.find((session) => session.id === event.session_id)
-      applySessionActivityEvent(event)
       const selected = event.session_id === selectedSessionIDRef.current
+      const archivedSelectedSession =
+        selected && event.type === 'session.archived' && !showArchivedSessionsRef.current
+      const nextSelectedSessionID = archivedSelectedSession
+        ? nextSessionIDAfterArchive(sessionsRef.current, event.session_id, selectedSessionIDRef.current)
+        : selectedSessionIDRef.current
+      applySessionActivityEvent(event)
       if (selected) selectedEventsRef.current = appendEvent(selectedEventsRef.current, event)
       if (selected && document.visibilityState === 'visible') {
         void acknowledgeSessionNotification(event)
@@ -828,6 +849,9 @@ function App() {
           void refreshSession(event.session_id)
         }, 250)
       }
+      if (archivedSelectedSession) {
+        selectSession(nextSelectedSessionID, 'replace')
+      }
       scheduleDashboardRefresh(isTerminalEvent(event.type))
     },
     [
@@ -836,6 +860,7 @@ function App() {
       playSessionStopSound,
       refreshSession,
       scheduleDashboardRefresh,
+      selectSession,
       acknowledgeSessionNotification,
     ],
   )
@@ -973,7 +998,7 @@ function App() {
         setRefreshingSessions(true)
       }
       try {
-        const snapshot = await getSessionSnapshot()
+        const snapshot = await getSessionSnapshot({ include_archived: showArchivedSessions })
         setServerReachable(true)
         const recoveredError = sessionSyncErrorRef.current
         sessionSyncErrorRef.current = ''
@@ -988,7 +1013,9 @@ function App() {
           setHistorySyncKey((current) => current + 1)
         }
         const selectedID = selectedSessionIDRef.current
-        const mergedSessions = await includeSelectedSession(nextSessions, selectedID)
+        const mergedSessions = (await includeSelectedSession(nextSessions, selectedID)).filter(
+          (session) => showArchivedSessions || !session.archived_at,
+        )
         void writePersistentCachedSessions(mergedSessions)
         const route = selectedSessionRouteFromLocation()
         const routeSelectedID = resolveSessionRouteSessionID(route, mergedSessions)
@@ -1049,7 +1076,7 @@ function App() {
         }
       }
     },
-    [selectSession],
+    [selectSession, showArchivedSessions],
   )
 
   const handleDismissAllNotifications = useCallback(async () => {
@@ -1721,10 +1748,37 @@ function App() {
     )
   }
 
+  const handleShowArchivedSessionsChange = useCallback(
+    (showArchived: boolean) => {
+      showArchivedSessionsRef.current = showArchived
+      setShowArchivedSessions(showArchived)
+      if (showArchived) return
+
+      const currentSessions = sessionsRef.current
+      const nextSessions = currentSessions.filter((session) => !session.archived_at)
+      sessionsRef.current = nextSessions
+      setSessions(nextSessions)
+
+      const selected = currentSessions.find((session) => session.id === selectedSessionIDRef.current)
+      if (selected?.archived_at) {
+        const selectionCandidates = currentSessions.filter(
+          (session) => !session.archived_at || session.id === selected.id,
+        )
+        selectSession(
+          nextSessionIDAfterArchive(selectionCandidates, selected.id, selected.id),
+          'replace',
+        )
+      }
+    },
+    [selectSession],
+  )
+
   const renderAppMenu = () => (
     <AppMenu
       themePreference={theme.preference}
       onThemeChange={theme.setPreference}
+      showArchived={showArchivedSessions}
+      onShowArchivedChange={handleShowArchivedSessionsChange}
       release={release}
     />
   )
@@ -1885,6 +1939,7 @@ function App() {
                   errorMessage={chatErrorMessage}
                   leadingAction={openSessionsButton}
                   headerActions={viewToggle}
+                  showParentSession={false}
                   onUpdateTitle={handleUpdateTitle}
                   onUpdateWorkspace={handleUpdateWorkspace}
                   hasUnsavedWorkspaceFile={workspaceFileDirty}
@@ -1903,6 +1958,7 @@ function App() {
                   fallbackTitle="Settings"
                   errorMessage={chatErrorMessage}
                   headerActions={viewToggle}
+                  showParentSession={false}
                   onUpdateTitle={handleUpdateTitle}
                   onUpdateWorkspace={handleUpdateWorkspace}
                   hasUnsavedWorkspaceFile={workspaceFileDirty}
@@ -2372,6 +2428,7 @@ function FilesWorkspaceHeader({
   errorMessage,
   leadingAction,
   headerActions,
+  showParentSession = true,
 }: {
   session: Session | null
   resolvingSessionID: string | null
@@ -2379,6 +2436,7 @@ function FilesWorkspaceHeader({
   errorMessage: string
   leadingAction?: ReactNode
   headerActions?: ReactNode
+  showParentSession?: boolean
   onUpdateTitle: (title: string) => Promise<void>
   onUpdateWorkspace: (workspacePath: string) => Promise<void>
   hasUnsavedWorkspaceFile: boolean
@@ -2399,6 +2457,7 @@ function FilesWorkspaceHeader({
         errorMessage={errorMessage}
         headerActions={headerActions}
         leadingAction={leadingAction}
+        showParentSession={showParentSession}
       />
     )
   }
@@ -2860,12 +2919,14 @@ function debugStorageKey(sessionID: string) {
   return `${debugStorageKeyPrefix}${sessionID}`
 }
 
-function loadInitialSessionStateFromLocation(): InitialSessionState {
+function loadInitialSessionStateFromLocation(includeArchived = false): InitialSessionState {
   const route = selectedSessionRouteFromLocation()
   const cachedSession = cachedSessionForRoute(route)
   const cachedSessions = sortSessions(
-    [...readCachedSessionSnapshots(), ...(cachedSession ? [cachedSession] : [])].filter(
-      (session, index, items) => items.findIndex((item) => item.id === session.id) === index,
+    [...readCachedSessionSnapshots(includeArchived), ...(cachedSession ? [cachedSession] : [])].filter(
+      (session, index, items) =>
+        (includeArchived || !session.archived_at) &&
+        items.findIndex((item) => item.id === session.id) === index,
     ),
   )
   const rootOffline = !route.sessionID && !route.sessionSlug && !isUserSkillsLocation() && !browserIsOnline()
@@ -2897,6 +2958,24 @@ function saveLastSelectedSessionID(sessionID: string) {
     window.localStorage.setItem(lastSelectedSessionStorageKey, sessionID)
   } catch {
     // Session navigation should still work when storage is unavailable.
+  }
+}
+
+function loadShowArchivedSessionsPreference() {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(showArchivedSessionsStorageKey) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function saveShowArchivedSessionsPreference(showArchived: boolean) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(showArchivedSessionsStorageKey, String(showArchived))
+  } catch {
+    // Keep the in-memory preference when storage is unavailable.
   }
 }
 

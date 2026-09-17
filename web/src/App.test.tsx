@@ -1109,6 +1109,24 @@ test('session settings is a routed card page reached from the mobile view switch
   expect(screen.getByTestId('floating-settings-header')).toBeInTheDocument()
 })
 
+test('session settings header omits the parent-session link', async () => {
+  const parent: Session = { ...firstSession, id: 'sess_parent', title: 'Parent' }
+  const child: Session = {
+    ...secondSession,
+    id: 'sess_child',
+    title: 'Child',
+    parent_session_id: parent.id,
+    lineage_depth: 1,
+  }
+  window.history.replaceState({}, '', '/sessions/sess_child/settings')
+  vi.stubGlobal('fetch', fetchMock({ sessions: [parent, child] }))
+
+  render(<App />)
+
+  await screen.findByRole('heading', { name: 'Session settings' })
+  expect(within(screen.getByTestId('floating-settings-header')).queryByText('Parent session')).not.toBeInTheDocument()
+})
+
 test('repository skills view uses the shared floating session header and information card', async () => {
   const user = userEvent.setup()
   render(<App />)
@@ -1869,7 +1887,7 @@ test('reviewing history buffers live events until jumping without reconnecting t
   render(<App />)
 
   const source = await findEventSource('/api/sessions/activity/stream')
-  const log = screen.getByRole('log', { name: 'Chat messages' })
+  const log = await screen.findByRole('log', { name: 'Chat messages' })
   Object.defineProperties(log, {
     scrollTop: { configurable: true, writable: true, value: 120 },
     scrollHeight: { configurable: true, value: 1000 },
@@ -2007,6 +2025,48 @@ test('global archive activity removes an unselected child and its parent expande
 
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Child' })).not.toBeInTheDocument())
   expect(screen.queryByRole('button', { name: 'Collapse Parent' })).not.toBeInTheDocument()
+})
+
+test('global archive activity removes the selected session and advances the selection', async () => {
+  render(<App />)
+
+  const activitySource = await findEventSource('/api/sessions/activity/stream')
+  act(() => {
+    activitySource.emit({
+      ...event(1, 'session.archived', {
+        archived_at: '2026-06-12T16:20:00Z',
+        updated_at: '2026-06-12T16:20:00Z',
+      }),
+      global_seq: 45,
+    })
+  })
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Inspect repo archived' })).not.toBeInTheDocument())
+  expect(screen.getByRole('button', { name: 'Write docs' })).toHaveAttribute('aria-current', 'true')
+})
+
+test('app menu toggles archived sessions and remembers the preference', async () => {
+  const user = userEvent.setup()
+  const archivedSession: Session = {
+    ...session('sess_archived', 'Archived chat', '2026-06-12T16:00:30Z'),
+    archived_at: '2026-06-12T16:05:00Z',
+  }
+  vi.stubGlobal('fetch', fetchMock({ sessions: [firstSession, secondSession, archivedSession] }))
+  render(<App />)
+
+  expect(screen.queryByRole('button', { name: 'Archived chat archived' })).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'App menu' }))
+  await user.click(screen.getByRole('menuitemcheckbox', { name: 'Show archived' }))
+
+  expect(await screen.findByRole('button', { name: 'Archived chat archived' })).toBeInTheDocument()
+  expect(screen.queryByText(/^Archived$/)).not.toBeInTheDocument()
+  expect(window.localStorage.getItem('gorchestra.show-archived-sessions.v1')).toBe('true')
+
+  await user.click(screen.getByRole('button', { name: 'App menu' }))
+  await user.click(screen.getByRole('menuitemcheckbox', { name: 'Show archived' }))
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Archived chat archived' })).not.toBeInTheDocument())
+  expect(window.localStorage.getItem('gorchestra.show-archived-sessions.v1')).toBe('false')
 })
 
 test('global pin activity moves a background session above newer recent activity', async () => {

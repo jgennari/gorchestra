@@ -53,6 +53,7 @@ test('session cache restores the complete active session snapshot list', () => {
   })
 
   expect(readCachedSessionSnapshots().map((item) => item.id)).toEqual(['sess_2', 'sess_1'])
+  expect(readCachedSessionSnapshots(true).map((item) => item.id)).toEqual(['sess_archived', 'sess_2', 'sess_1'])
 })
 
 test('writing a server session snapshot replaces entries no longer in the active list', () => {

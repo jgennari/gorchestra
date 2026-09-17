@@ -106,9 +106,9 @@ export function readCachedSessionSnapshotBySlug(slug: string): Session | null {
   return cache.sessions.find((record) => record.id === sessionID)?.session ?? null
 }
 
-export function readCachedSessionSnapshots(): Session[] {
+export function readCachedSessionSnapshots(includeArchived = false): Session[] {
   return readSyncSessionCache().sessions
-    .filter((record) => !record.session.archived_at)
+    .filter((record) => includeArchived || !record.session.archived_at)
     .sort((left, right) => right.usedAt - left.usedAt)
     .map((record) => record.session)
 }
