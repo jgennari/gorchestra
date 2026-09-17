@@ -262,10 +262,10 @@ Compose receives `PORT` from the supervised process environment. Avoid a detache
 
 ```sh
 # Local wildcard localhost URL; this is the default shape.
-gorchestra --preview-url-template 'http://{slug}.localhost:8080'
+gorchestra serve --preview-url-template 'http://{slug}.localhost:8080'
 
 # Tailnet wildcard DNS URL.
-GORCHESTRA_PREVIEW_URL_TEMPLATE='http://{slug}.dev.gennari.industries' gorchestra
+GORCHESTRA_PREVIEW_URL_TEMPLATE='http://{slug}.dev.gennari.industries' gorchestra serve
 ```
 
 The generated session slug is a DNS label ending in `-gorchestra`, which lets a single outer reverse-proxy rule forward every preview host to Gorchestra. Gorchestra then selects the session by Host and applies the recipe's path routes.

@@ -19,14 +19,20 @@ func TestCommandsCatalogWorksOffline(t *testing.T) {
 		t.Fatal(err)
 	}
 	var catalog struct {
-		SchemaVersion int           `json:"schema_version"`
-		Commands      []commandSpec `json:"commands"`
+		SchemaVersion int              `json:"schema_version"`
+		ServiceStart  string           `json:"service_start"`
+		Commands      []commandSpec    `json:"commands"`
+		Environment   []map[string]any `json:"environment"`
+		Workflows     []map[string]any `json:"workflows"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if catalog.SchemaVersion != 1 || len(catalog.Commands) < 6 {
+	if catalog.SchemaVersion != 1 || catalog.ServiceStart != "gorchestra serve [flags]" || len(catalog.Commands) < 6 {
 		t.Fatalf("unexpected catalog: %#v", catalog)
+	}
+	if len(catalog.Environment) != 4 || len(catalog.Workflows) < 3 {
+		t.Fatalf("catalog lacks runtime discovery: %#v", catalog)
 	}
 	commands := make(map[string]commandSpec, len(catalog.Commands))
 	for _, command := range catalog.Commands {
@@ -41,12 +47,36 @@ func TestCommandsCatalogWorksOffline(t *testing.T) {
 	if !ok {
 		t.Fatal("catalog missing run command")
 	}
+	foundTitle := false
 	for _, flag := range run.Flags {
 		if flag.Name == "title" && flag.Type == "string" {
-			return
+			foundTitle = true
 		}
 	}
-	t.Fatal("run command catalog missing string --title flag")
+	if !foundTitle {
+		t.Fatal("run command catalog missing string --title flag")
+	}
+	serve, ok := commands["serve"]
+	if !ok || len(serve.Flags) == 0 {
+		t.Fatal("catalog missing serve flags")
+	}
+	answer, ok := commands["requests answer <run-id> <request-id>"]
+	if !ok || len(answer.Flags) != 1 || answer.Flags[0].Name != "answers-json" || !answer.Flags[0].Required {
+		t.Fatal("catalog missing required request answer input")
+	}
+}
+
+func TestNoArgumentsPrintsOfflineQuickStart(t *testing.T) {
+	var stdout bytes.Buffer
+	cli := CLI{Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"gorchestra serve --open", "Agent delegation quick start:", "gorchestra commands --json", `Bare "gorchestra" prints this help`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("help missing %q:\n%s", want, stdout.String())
+		}
+	}
 }
 
 func TestRunSendsProviderOptionsAndPrintsReceipt(t *testing.T) {

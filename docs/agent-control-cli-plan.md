@@ -12,9 +12,12 @@ an idle parent are deferred, as agreed with Joey.
 ## Recommended architecture
 
 Extend the existing `gorchestra` Go binary. Add a client command dispatcher before
-server initialization and an explicit `serve` command, preserving existing
-no-subcommand server invocation and flags for installed services. Keep `host`
-commands working. Help and command discovery must work without a running server.
+server initialization and an explicit `serve` command. Running `gorchestra`
+without arguments prints offline command discovery; installed services invoke
+`gorchestra serve` explicitly. Keep `host` commands working. Help and command
+discovery must work without a running server. Continue accepting legacy
+top-level server flags during the transition so an upgraded binary does not
+break an already-loaded development supervisor or Homebrew service plist.
 
 The CLI calls the running HTTP service. Only the service owns the database,
 adapter processes, session lifecycle, and persisted events. Client commands never
@@ -68,7 +71,7 @@ discovery, agent discovery/options, detached `run`, `runs show`, and
 
 | Command | Purpose |
 | --- | --- |
-| `gorchestra commands --json` | List every implemented command, flags, defaults, inputs, output schemas, and exit codes. |
+| `gorchestra commands --json` | List every implemented command, flags, constraints, workflows, output behavior, runtime environment, and exit codes. |
 | `gorchestra help [command...]` | Human-readable discovery, including existing hosting commands. |
 | `gorchestra agents list --json` | Discover registered providers and availability. |
 | `gorchestra agents options <provider> --json` | Discover models, supported thinking levels, fast mode, and plan mode. |
@@ -127,6 +130,39 @@ Examples for an agent running inside Gorchestra:
 
 An explicit `--model` overrides the inherited/default model. The example model is
 left unspecified because the agent should discover actual installed capabilities.
+
+### Managed-run bootstrap
+
+The HTTP orchestration layer adds run-scoped environment variables to every real
+provider process:
+
+- `GORCHESTRA_BIN`: the absolute path to the running Gorchestra executable.
+- `GORCHESTRA_API_URL`: the API URL that executable should target.
+- `GORCHESTRA_SESSION_ID`: the current session, used as the default child parent.
+- `GORCHESTRA_RUN_ID`: the exact current run, recorded as the child's spawning run.
+
+For normal message runs, it also prefixes the provider prompt with this text:
+
+```xml
+<gorchestra_context>
+Gorchestra agent control is available in this run.
+Use "$GORCHESTRA_BIN" commands --json to discover the current CLI contract.
+Use "$GORCHESTRA_BIN" run --prompt-file <path> to delegate work to a child session. Inside a run, children inherit this session's provider, resolved options, and workspace unless you explicitly override supported provider settings. Use --detach to receive IDs immediately, runs wait or runs watch to observe exact runs, and runs report to retrieve durable results. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.
+</gorchestra_context>
+```
+
+The original user message follows after a blank line and remains separately
+persisted for the UI. Codex, Claude, OpenCode, and Pi all use the same
+`AgentInput.ProviderMessage()` wrapper. The deterministic fake test adapter does
+not invoke an external harness and intentionally reads the original message.
+
+When `.gorchestra/host.yaml` exists in the session workspace, the context also
+includes:
+
+```text
+This workspace has a Gorchestra hosted-preview recipe at .gorchestra/host.yaml.
+Use "$GORCHESTRA_BIN" host validate|status|start|stop|restart|check|logs|url to manage this session's preview. The CLI targets this session automatically through GORCHESTRA_SESSION_ID and GORCHESTRA_API_URL.
+```
 
 ### Foreground, detached, and background behavior
 

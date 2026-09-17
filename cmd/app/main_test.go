@@ -14,6 +14,27 @@ import (
 	"github.com/jgennari/gorchestra/internal/store"
 )
 
+func TestUseControlCLIPrefersExplicitServeAndPreservesLegacyFlags(t *testing.T) {
+	tests := []struct {
+		args []string
+		want bool
+	}{
+		{args: nil, want: true},
+		{args: []string{"--help"}, want: true},
+		{args: []string{"run"}, want: true},
+		{args: []string{"--config", "gorchestra.env"}, want: false},
+		{args: []string{"--db=/tmp/gorchestra.db"}, want: false},
+		{args: []string{"serve", "--config", "gorchestra.env"}, want: false},
+		{args: []string{"host", "status"}, want: false},
+		{args: []string{"--version"}, want: false},
+	}
+	for _, test := range tests {
+		if got := useControlCLI(test.args); got != test.want {
+			t.Fatalf("useControlCLI(%q) = %t, want %t", test.args, got, test.want)
+		}
+	}
+}
+
 func TestParseConfigUsesDataDirForDefaultDatabase(t *testing.T) {
 	workspace := t.TempDir()
 	dataDir := filepath.Join(t.TempDir(), "data")

@@ -30,25 +30,35 @@ type CLI struct {
 }
 
 type commandSpec struct {
-	Command     string     `json:"command"`
-	Description string     `json:"description"`
-	Flags       []flagSpec `json:"flags,omitempty"`
+	Command         string     `json:"command"`
+	Description     string     `json:"description"`
+	RequiresService bool       `json:"requires_service,omitempty"`
+	Output          string     `json:"output,omitempty"`
+	Examples        []string   `json:"examples,omitempty"`
+	Flags           []flagSpec `json:"flags,omitempty"`
 }
 
 type flagSpec struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Default     any    `json:"default,omitempty"`
-	Description string `json:"description"`
+	Name          string   `json:"name"`
+	Type          string   `json:"type"`
+	Default       any      `json:"default,omitempty"`
+	Required      bool     `json:"required,omitempty"`
+	Enum          []string `json:"enum,omitempty"`
+	ConflictsWith []string `json:"conflicts_with,omitempty"`
+	Requires      []string `json:"requires,omitempty"`
+	Description   string   `json:"description"`
 }
 
 var commandSpecs = []commandSpec{
-	{Command: "commands --json", Description: "Print the machine-readable command catalog."},
-	{Command: "help [command]", Description: "Show CLI help without contacting the service."},
-	{Command: "agents list", Description: "List registered agent providers."},
-	{Command: "agents options <provider>", Description: "Show models and modes reported by a provider."},
-	{Command: "run", Description: "Create a session and start its first run; stream until terminal unless detached.", Flags: []flagSpec{
-		{Name: "agent", Type: "string", Description: "agent provider (required)"},
+	{Command: "commands --json", Description: "Print this machine-readable command catalog without contacting the service.", Output: "command catalog JSON"},
+	{Command: "help [command]", Description: "Show human-readable CLI help without contacting the service.", Output: "text"},
+	{Command: "agents list", Description: "List registered agent providers.", RequiresService: true, Output: "provider catalog JSON"},
+	{Command: "agents options <provider>", Description: "Show models and modes reported by a provider.", RequiresService: true, Output: "provider option catalog JSON"},
+	{Command: "run", Description: "Create a session and start its first run; stream until terminal unless detached.", RequiresService: true, Output: "text activity, one JSON result, or an NDJSON accepted/event/result stream", Examples: []string{
+		`gorchestra run --agent codex --prompt-file task.md --format ndjson`,
+		`gorchestra run --title "Read-only audit" --prompt-file task.md --detach --json`,
+	}, Flags: []flagSpec{
+		{Name: "agent", Type: "string", Description: "agent provider; required for a root run and inherited by child runs"},
 		{Name: "model", Type: "string", Description: "provider model override"},
 		{Name: "thinking", Type: "string", Description: "reasoning effort or thinking level"},
 		{Name: "fast", Type: "boolean", Description: "Codex fast mode"},
@@ -56,61 +66,112 @@ var commandSpecs = []commandSpec{
 		{Name: "cwd", Type: "path", Description: "server-side workspace path"},
 		{Name: "parent", Type: "session-id|current|none", Description: "child parent; defaults to current inside a run"},
 		{Name: "title", Type: "string", Description: "session title"},
-		{Name: "prompt", Type: "string", Description: "task prompt"},
-		{Name: "prompt-file", Type: "path|-", Description: "read task prompt from a file or stdin"},
+		{Name: "prompt", Type: "string", ConflictsWith: []string{"prompt-file"}, Description: "task prompt; one prompt source is required"},
+		{Name: "prompt-file", Type: "path|-", ConflictsWith: []string{"prompt"}, Description: "read the required task prompt from a file or stdin"},
 		{Name: "request-id", Type: "string", Description: "idempotency key"},
+		{Name: "permission-policy", Type: "string", Enum: []string{"ask", "deny", "bypass"}, Description: "provider permission policy where supported"},
 		{Name: "detach", Type: "boolean", Default: false, Description: "return after durable acceptance"},
-		{Name: "format", Type: "string", Default: "text", Description: "text, json, or ndjson"},
+		{Name: "format", Type: "string", Default: "text", Enum: []string{"text", "json", "ndjson"}, Description: "output format"},
+		{Name: "json", Type: "boolean", Default: false, Description: "shorthand for --format json"},
 		{Name: "timeout", Type: "duration", Description: "maximum foreground observation time"},
 		{Name: "until-attention", Type: "boolean", Description: "return with code 6 when input is required"},
 	}},
-	{Command: "runs show <run-id>", Description: "Inspect an exact run."},
-	{Command: "runs watch <run-id>", Description: "Replay and follow an exact run until terminal.", Flags: []flagSpec{
+	{Command: "runs show <run-id>", Description: "Inspect an exact run.", RequiresService: true, Output: "run JSON by default"},
+	{Command: "runs watch <run-id>", Description: "Replay and follow an exact run until terminal.", RequiresService: true, Output: "text activity, one JSON result, or NDJSON events and result", Examples: []string{`gorchestra runs watch RUN_ID --format ndjson`}, Flags: []flagSpec{
 		{Name: "after-seq", Type: "integer", Default: 0, Description: "resume after a durable event sequence"},
-		{Name: "format", Type: "string", Default: "json", Description: "text, json, or ndjson"},
+		{Name: "format", Type: "string", Default: "json", Enum: []string{"text", "json", "ndjson"}, Description: "output format"},
 		{Name: "timeout", Type: "duration", Description: "maximum observation time"},
 		{Name: "until-attention", Type: "boolean", Description: "return with code 6 when input is required"},
 	}},
-	{Command: "runs wait <run-id>...", Description: "Wait quietly for one or more exact runs.", Flags: []flagSpec{
-		{Name: "any", Type: "boolean", Description: "return when the first run becomes terminal"},
-		{Name: "all", Type: "boolean", Default: true, Description: "return after every run is terminal"},
+	{Command: "runs wait <run-id>...", Description: "Wait quietly for one or more exact runs.", RequiresService: true, Output: "terminal run array", Flags: []flagSpec{
+		{Name: "any", Type: "boolean", ConflictsWith: []string{"all"}, Description: "return when the first run becomes terminal"},
+		{Name: "all", Type: "boolean", Default: true, ConflictsWith: []string{"any"}, Description: "return after every run is terminal"},
 		{Name: "timeout", Type: "duration", Description: "maximum wait time"},
 	}},
-	{Command: "runs report <run-id>", Description: "Retrieve a terminal run report."},
-	{Command: "runs cancel <run-id>", Description: "Cancel only the specified active run.", Flags: []flagSpec{
+	{Command: "runs report <run-id>", Description: "Retrieve a terminal run report.", RequiresService: true, Output: "durable terminal report JSON"},
+	{Command: "runs cancel <run-id>", Description: "Cancel only the specified active run.", RequiresService: true, Output: "cancel response", Flags: []flagSpec{
 		{Name: "reason", Type: "string", Description: "human-readable cancellation reason"},
 	}},
-	{Command: "sessions send <session-id>", Description: "Send, queue, or steer a follow-up message.", Flags: []flagSpec{
-		{Name: "prompt", Type: "string", Description: "follow-up prompt"},
-		{Name: "prompt-file", Type: "path|-", Description: "read the prompt from a file or stdin"},
-		{Name: "queue", Type: "boolean", Description: "queue behind the active run"},
-		{Name: "steer", Type: "boolean", Description: "steer the exact active run"},
+	{Command: "sessions send <session-id>", Description: "Send, queue, or steer a follow-up message.", RequiresService: true, Output: "accepted run or queued-message receipt", Flags: []flagSpec{
+		{Name: "prompt", Type: "string", ConflictsWith: []string{"prompt-file"}, Description: "follow-up prompt; one prompt source is required"},
+		{Name: "prompt-file", Type: "path|-", ConflictsWith: []string{"prompt"}, Description: "read the required prompt from a file or stdin"},
+		{Name: "queue", Type: "boolean", ConflictsWith: []string{"steer"}, Description: "queue behind the active run"},
+		{Name: "steer", Type: "boolean", ConflictsWith: []string{"queue"}, Requires: []string{"expected-run-id"}, Description: "steer the exact active run"},
 		{Name: "expected-run-id", Type: "string", Description: "required exact run ID for steering"},
+		{Name: "request-id", Type: "string", Description: "idempotency key"},
 		{Name: "model", Type: "string", Description: "model override for the follow-up run"},
 		{Name: "thinking", Type: "string", Description: "reasoning effort or thinking level"},
 		{Name: "fast", Type: "boolean", Description: "Codex fast mode"},
 		{Name: "plan", Type: "boolean", Description: "planning mode"},
 		{Name: "detach", Type: "boolean", Description: "return after acceptance"},
 	}},
-	{Command: "sessions list", Description: "List sessions with lineage metadata."},
-	{Command: "sessions show <session-id>", Description: "Inspect a session and its parent linkage."},
-	{Command: "sessions children <session-id>", Description: "List direct children or all descendants.", Flags: []flagSpec{
+	{Command: "sessions list", Description: "List sessions with lineage metadata.", RequiresService: true, Output: "session list JSON"},
+	{Command: "sessions show <session-id>", Description: "Inspect a session and its parent linkage.", RequiresService: true, Output: "session JSON"},
+	{Command: "sessions children <session-id>", Description: "List direct children or all descendants.", RequiresService: true, Output: "session lineage JSON", Flags: []flagSpec{
 		{Name: "recursive", Type: "boolean", Description: "include all descendants"},
 	}},
-	{Command: "sessions archive <session-id>", Description: "Archive an idle session without deleting its lineage."},
-	{Command: "sessions restore <session-id>", Description: "Restore an archived session to the active session list."},
-	{Command: "requests list <run-id>", Description: "List unresolved questions and permissions for a run."},
-	{Command: "requests answer <run-id> <request-id>", Description: "Answer an input request using JSON."},
-	{Command: "requests resolve <run-id> <request-id>", Description: "Resolve a permission request with an offered option."},
-	{Command: "serve", Description: "Run the Gorchestra service."},
-	{Command: "host status", Description: "Show hosted-preview status."},
-	{Command: "host validate", Description: "Validate a hosted-preview recipe."},
-	{Command: "host check", Description: "Run hosted-preview health checks."},
-	{Command: "host start", Description: "Start a hosted preview."},
-	{Command: "host stop", Description: "Stop a hosted preview."},
-	{Command: "host restart", Description: "Restart a hosted preview."},
-	{Command: "host url", Description: "Print a hosted-preview URL."},
-	{Command: "host logs", Description: "Read or follow hosted-preview logs."},
+	{Command: "sessions archive <session-id>", Description: "Archive an idle session without deleting its lineage.", RequiresService: true, Output: "updated session JSON"},
+	{Command: "sessions restore <session-id>", Description: "Restore an archived session to the active session list.", RequiresService: true, Output: "updated session JSON"},
+	{Command: "requests list <run-id>", Description: "List unresolved questions and permissions for a run.", RequiresService: true, Output: "request list JSON"},
+	{Command: "requests answer <run-id> <request-id>", Description: "Answer an input request using a JSON object.", RequiresService: true, Output: "answer acknowledgement", Flags: []flagSpec{
+		{Name: "answers-json", Type: "path|-", Required: true, Description: "read the answer object from a file or stdin"},
+	}},
+	{Command: "requests resolve <run-id> <request-id>", Description: "Resolve a permission request with an offered option.", RequiresService: true, Output: "permission acknowledgement", Flags: []flagSpec{
+		{Name: "option", Type: "string", Required: true, Description: "offered option ID"},
+	}},
+	{Command: "serve", Description: "Run the Gorchestra service. Bare gorchestra prints help; use this explicit command for maintained launch configurations.", Examples: []string{`gorchestra serve --open`, `gorchestra serve --config ~/.config/gorchestra/gorchestra.env`}, Flags: serveFlagSpecs},
+	{Command: "host status", Description: "Show hosted-preview status.", RequiresService: true, Output: "preview status JSON", Flags: hostCommonFlagSpecs},
+	{Command: "host validate", Description: "Validate a hosted-preview recipe.", RequiresService: true, Output: "preview status JSON", Flags: hostCommonFlagSpecs},
+	{Command: "host check", Description: "Run hosted-preview health checks.", RequiresService: true, Output: "preview status JSON", Flags: hostCommonFlagSpecs},
+	{Command: "host start", Description: "Start a hosted preview.", RequiresService: true, Output: "preview status JSON", Flags: hostCommonFlagSpecs},
+	{Command: "host stop", Description: "Stop a hosted preview.", RequiresService: true, Output: "preview status JSON", Flags: hostCommonFlagSpecs},
+	{Command: "host restart", Description: "Restart a hosted preview.", RequiresService: true, Output: "preview status JSON", Flags: hostCommonFlagSpecs},
+	{Command: "host url", Description: "Print a hosted-preview URL.", RequiresService: true, Output: "URL text", Flags: hostCommonFlagSpecs},
+	{Command: "host logs", Description: "Read or follow hosted-preview logs.", RequiresService: true, Output: "prefixed log text", Flags: append(append([]flagSpec(nil), hostCommonFlagSpecs...),
+		flagSpec{Name: "service", Type: "string", Description: "filter by service"},
+		flagSpec{Name: "follow", Type: "boolean", Default: false, Description: "follow new log output"},
+		flagSpec{Name: "after-seq", Type: "integer", Default: 0, Description: "return logs after this sequence"},
+		flagSpec{Name: "limit", Type: "integer", Default: 1000, Description: "maximum retained chunks"},
+	)},
+}
+
+var clientCommonFlagSpecs = []flagSpec{
+	{Name: "server", Type: "url", Default: defaultServer, Description: "API base URL; GORCHESTRA_API_URL supplies the default"},
+	{Name: "format", Type: "string", Default: "json", Enum: []string{"text", "json", "ndjson"}, Description: "output format where supported"},
+	{Name: "json", Type: "boolean", Description: "shorthand for --format json where supported"},
+}
+
+var hostCommonFlagSpecs = []flagSpec{
+	{Name: "server", Type: "url", Default: defaultServer, Description: "API base URL; GORCHESTRA_API_URL supplies the default"},
+	{Name: "session", Type: "session-id", Description: "session ID; GORCHESTRA_SESSION_ID supplies the default"},
+	{Name: "timeout", Type: "duration", Default: "1m", Description: "command timeout"},
+	{Name: "wait", Type: "boolean", Default: true, Description: "wait for the requested state"},
+}
+
+var serveFlagSpecs = []flagSpec{
+	{Name: "config", Type: "path", Description: "env-style configuration file"},
+	{Name: "host", Type: "string", Default: "127.0.0.1", Description: "HTTP listen interface"},
+	{Name: "port", Type: "string", Default: "8080", Description: "HTTP listen port"},
+	{Name: "data-dir", Type: "path", Description: "runtime data directory"},
+	{Name: "db", Type: "path", Description: "exact SQLite path; overrides --data-dir"},
+	{Name: "workspace", Type: "path", Description: "default workspace for agent runs"},
+	{Name: "workspace-root", Type: "path", Description: "allowed workspace root; repeatable"},
+	{Name: "codex-bin", Type: "path", Default: "codex", Description: "Codex CLI binary"},
+	{Name: "codex-model", Type: "string", Description: "default Codex model"},
+	{Name: "codex-sandbox", Type: "string", Default: "workspace-write", Description: "Codex sandbox mode"},
+	{Name: "codex-network-access", Type: "boolean", Default: true, Description: "allow network access for Codex shell commands"},
+	{Name: "codex-web-search", Type: "string", Default: "live", Enum: []string{"disabled", "cached", "live"}, Description: "Codex web search mode"},
+	{Name: "claude-bin", Type: "path", Default: "claude", Description: "Claude CLI binary"},
+	{Name: "claude-model", Type: "string", Description: "default Claude model"},
+	{Name: "opencode-bin", Type: "path", Default: "opencode", Description: "OpenCode CLI binary"},
+	{Name: "pi-bin", Type: "path", Default: "pi", Description: "Pi CLI binary"},
+	{Name: "push-subject", Type: "string", Description: "VAPID subject for Web Push"},
+	{Name: "preview-url-template", Type: "string", Description: "hosted-preview URL containing {slug}"},
+	{Name: "debug-retention", Type: "duration", Default: "168h", Description: "raw debug-event retention; 0 disables expiry"},
+	{Name: "open", Type: "boolean", Default: false, Description: "open the app after startup"},
+	{Name: "max-lineage-depth", Type: "integer", Default: 6, Description: "maximum delegated-session nesting depth"},
+	{Name: "max-active-children", Type: "integer", Default: 8, Description: "maximum active child runs per session"},
+	{Name: "version", Type: "boolean", Default: false, Description: "print the version and exit"},
 }
 
 func (c CLI) Run(ctx context.Context, args []string) error {
@@ -163,9 +224,45 @@ func (c CLI) commands(args []string) error {
 		return usageError("usage: gorchestra commands --json")
 	}
 	return writeJSON(c.Stdout, map[string]any{
-		"schema_version": 1,
-		"commands":       commandSpecs,
-		"output_formats": []string{"text", "json", "ndjson"},
+		"schema_version":      1,
+		"usage":               "gorchestra <command> [flags]",
+		"service_start":       "gorchestra serve [flags]",
+		"offline_discovery":   true,
+		"commands":            commandSpecs,
+		"client_common_flags": clientCommonFlagSpecs,
+		"output_formats":      []string{"text", "json", "ndjson"},
+		"environment": []map[string]string{
+			{"name": "GORCHESTRA_API_URL", "purpose": "default API base URL for client commands"},
+			{"name": "GORCHESTRA_BIN", "purpose": "absolute Gorchestra executable injected into managed agent runs"},
+			{"name": "GORCHESTRA_SESSION_ID", "purpose": "current session; makes run default to a child and supplies host --session"},
+			{"name": "GORCHESTRA_RUN_ID", "purpose": "current run; records which parent run spawned a child"},
+		},
+		"workflows": []map[string]any{
+			{
+				"name":        "delegate_and_fetch",
+				"description": "Start a named child, retain exact IDs, wait for that run, then retrieve its durable report.",
+				"steps": []string{
+					`"$GORCHESTRA_BIN" run --title "TASK NAME" --prompt-file task.md --detach --json`,
+					`"$GORCHESTRA_BIN" runs wait RUN_ID --timeout 10m --json`,
+					`"$GORCHESTRA_BIN" runs report RUN_ID --json`,
+				},
+			},
+			{
+				"name":        "stream_child",
+				"description": "Start a child and stream its accepted receipt, events, tool activity, and terminal result.",
+				"steps":       []string{`"$GORCHESTRA_BIN" run --title "TASK NAME" --prompt-file task.md --format ndjson`},
+			},
+			{
+				"name":        "handle_attention",
+				"description": "Stop observation when the run needs input, inspect requests, answer the exact request, and resume watching.",
+				"steps": []string{
+					`"$GORCHESTRA_BIN" runs watch RUN_ID --until-attention --json`,
+					`"$GORCHESTRA_BIN" requests list RUN_ID --json`,
+					`"$GORCHESTRA_BIN" requests answer RUN_ID REQUEST_ID --answers-json answers.json --json`,
+					`"$GORCHESTRA_BIN" runs watch RUN_ID --json`,
+				},
+			},
+		},
 		"exit_codes": map[string]int{
 			"success": 0, "run_failed": ExitRunFailed, "usage": ExitUsage,
 			"transport": ExitTransport, "timeout": ExitTimeout, "cancelled": ExitCancelled,
@@ -179,7 +276,22 @@ func (c CLI) help(args []string) error {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		_, err := fmt.Fprintln(c.Stdout, `Usage: gorchestra <command>
+		_, err := fmt.Fprintln(c.Stdout, `Gorchestra conducts durable agent sessions through a local service.
+
+Usage: gorchestra <command>
+
+Start the service explicitly:
+  gorchestra serve --open
+
+Agent delegation quick start:
+  gorchestra agents list --json
+  gorchestra run --agent codex --title "Dependency audit" \
+    --prompt-file task.md --detach --json
+  gorchestra runs wait RUN_ID --timeout 10m --json
+  gorchestra runs report RUN_ID --json
+
+Inside a Gorchestra-managed run, omit --agent, --parent, and --cwd to inherit
+the current provider, attach the new session as a child, and share its workspace.
 
 Agent control commands:
   commands --json                machine-readable command catalog
@@ -203,12 +315,13 @@ Server and preview commands:
   serve [flags]                  run the Gorchestra service
   host <command>                 manage a hosted preview
 
+Bare "gorchestra" prints this help. This help and "commands --json" work offline.
 Run "gorchestra help run" or "gorchestra commands --json" for details.`)
 		return err
 	}
 	for _, spec := range commandSpecs {
 		if strings.HasPrefix(spec.Command, strings.Join(args, " ")) {
-			if _, err := fmt.Fprintf(c.Stdout, "%s\n\n%s\n", spec.Command, spec.Description); err != nil {
+			if _, err := fmt.Fprintf(c.Stdout, "Usage: gorchestra %s\n\n%s\n", spec.Command, spec.Description); err != nil {
 				return err
 			}
 			if len(spec.Flags) > 0 {
@@ -221,6 +334,16 @@ Run "gorchestra help run" or "gorchestra commands --json" for details.`)
 						defaultText = fmt.Sprintf(" (default %v)", option.Default)
 					}
 					if _, err := fmt.Fprintf(c.Stdout, "  --%-18s %s%s\n", option.Name, option.Description, defaultText); err != nil {
+						return err
+					}
+				}
+			}
+			if len(spec.Examples) > 0 {
+				if _, err := fmt.Fprintln(c.Stdout, "\nExamples:"); err != nil {
+					return err
+				}
+				for _, example := range spec.Examples {
+					if _, err := fmt.Fprintf(c.Stdout, "  %s\n", example); err != nil {
 						return err
 					}
 				}

@@ -117,7 +117,7 @@ async function startBackend() {
     return
   }
 
-  const backendArgs = [backendBinary, '--db', backendDB]
+  const backendArgs = [backendBinary, 'serve', '--db', backendDB]
   if (backendWorkspace) {
     backendArgs.push('--workspace', backendWorkspace)
   }

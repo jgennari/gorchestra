@@ -515,7 +515,7 @@ Target install/run shape:
 
 ```sh
 brew install jgennari/tap/gorchestra
-gorchestra
+gorchestra serve
 ```
 
 Optional background service shape:
@@ -569,7 +569,7 @@ Fallback: ~/.local/share/gorchestra/gorchestra.db
 Expected CLI surface:
 
 ```txt
-gorchestra --host 127.0.0.1 --port 8080 --data-dir <path> --open
+gorchestra serve --host 127.0.0.1 --port 8080 --data-dir <path> --open
 gorchestra --version
 ```
 
@@ -582,7 +582,7 @@ dist/gorchestra
 Local run shape:
 
 ```bash
-./dist/gorchestra --data-dir ./data --port 8080
+./dist/gorchestra serve --data-dir ./data --port 8080
 ```
 
 Homebrew release requirements:

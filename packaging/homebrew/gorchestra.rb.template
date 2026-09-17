@@ -45,7 +45,7 @@ class Gorchestra < Formula
   end
 
   service do
-    run [opt_bin/"gorchestra", "--config", etc/"gorchestra/gorchestra.env"]
+    run [opt_bin/"gorchestra", "serve", "--config", etc/"gorchestra/gorchestra.env"]
     keep_alive true
     environment_variables PATH: std_service_path_env
     log_path var/"log/gorchestra.log"

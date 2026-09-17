@@ -75,7 +75,7 @@ Gorchestra is meant to run as one local binary with the React UI embedded inside
 
 ```sh
 brew install jgennari/tap/gorchestra
-gorchestra --open
+gorchestra serve --open
 ```
 
 The published tap is `jgennari/homebrew-tap`; the formula builds Gorchestra from the tagged source archive with Go and installs the `gorchestra` binary.
@@ -98,14 +98,14 @@ macOS and Linux:
 
 ```sh
 tar -xzf gorchestra_<version>_<os>_<arch>.tar.gz
-./gorchestra --open
+./gorchestra serve --open
 ```
 
 Windows:
 
 ```powershell
 Expand-Archive .\gorchestra_<version>_windows_<arch>.zip -DestinationPath .\gorchestra
-.\gorchestra\gorchestra.exe --open
+.\gorchestra\gorchestra.exe serve --open
 ```
 
 Release targets:
@@ -127,31 +127,34 @@ Real Pi sessions require the Pi CLI to be available on `PATH`, or configured wit
 Start Gorchestra and open the browser:
 
 ```sh
-gorchestra --open
+gorchestra serve --open
 ```
+
+Running `gorchestra` without arguments prints offline command help. Service
+launches should use the explicit `serve` command.
 
 By default, Gorchestra binds to `127.0.0.1:8080` and stores SQLite data in the OS app data location.
 
 Common options:
 
 ```sh
-gorchestra --host 127.0.0.1 --port 8081
-gorchestra --config ~/.config/gorchestra/gorchestra.env
-gorchestra --data-dir ~/.gorchestra-dev
-gorchestra --workspace /path/to/repo
-gorchestra --workspace-root /path/to/allowed/root
-gorchestra --max-lineage-depth 6
-gorchestra --max-active-children 8
-gorchestra --codex-bin /path/to/codex
-gorchestra --codex-model gpt-5
-gorchestra --codex-sandbox workspace-write
-gorchestra --codex-network-access=false
-gorchestra --codex-web-search=cached
-gorchestra --claude-bin /path/to/claude
-gorchestra --claude-model claude-sonnet-4-5
-gorchestra --opencode-bin /path/to/opencode
-gorchestra --pi-bin /path/to/pi
-gorchestra --preview-url-template 'http://{slug}.localhost:8080'
+gorchestra serve --host 127.0.0.1 --port 8081
+gorchestra serve --config ~/.config/gorchestra/gorchestra.env
+gorchestra serve --data-dir ~/.gorchestra-dev
+gorchestra serve --workspace /path/to/repo
+gorchestra serve --workspace-root /path/to/allowed/root
+gorchestra serve --max-lineage-depth 6
+gorchestra serve --max-active-children 8
+gorchestra serve --codex-bin /path/to/codex
+gorchestra serve --codex-model gpt-5
+gorchestra serve --codex-sandbox workspace-write
+gorchestra serve --codex-network-access=false
+gorchestra serve --codex-web-search=cached
+gorchestra serve --claude-bin /path/to/claude
+gorchestra serve --claude-model claude-sonnet-4-5
+gorchestra serve --opencode-bin /path/to/opencode
+gorchestra serve --pi-bin /path/to/pi
+gorchestra serve --preview-url-template 'http://{slug}.localhost:8080'
 gorchestra --version
 ```
 
@@ -288,7 +291,7 @@ This installs frontend dependencies with Bun, builds the Vite app, stages `web/d
 Run the source-built binary:
 
 ```sh
-./dist/gorchestra --open
+./dist/gorchestra serve --open
 ```
 
 Staged assets under `internal/webassets/dist` are committed so `go test ./...` and `go build ./cmd/app` work from a checkout. `bun run build` refreshes that directory from the latest Vite output before compiling the release binary.

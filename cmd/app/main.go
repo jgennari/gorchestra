@@ -79,7 +79,7 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) > 1 && (isControlCommand(os.Args[1]) || (os.Args[1] != "serve" && !strings.HasPrefix(os.Args[1], "-"))) {
+	if useControlCLI(os.Args[1:]) {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := (controlcli.CLI{}).Run(ctx, os.Args[1:]); err != nil {
@@ -90,7 +90,7 @@ func main() {
 	}
 
 	serverArgs := os.Args[1:]
-	if len(serverArgs) > 0 && serverArgs[0] == "serve" {
+	if serverArgs[0] == "serve" {
 		serverArgs = serverArgs[1:]
 	}
 	cfg, err := parseConfigArgs(serverArgs, os.Getenv)
@@ -263,13 +263,11 @@ func main() {
 	}
 }
 
-func isControlCommand(command string) bool {
-	switch command {
-	case "commands", "help", "-h", "--help", "agents", "run", "runs", "sessions", "requests":
+func useControlCLI(args []string) bool {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		return true
-	default:
-		return false
 	}
+	return args[0] != "host" && args[0] != "serve" && !strings.HasPrefix(args[0], "-")
 }
 
 func parseConfig() (config, error) {
