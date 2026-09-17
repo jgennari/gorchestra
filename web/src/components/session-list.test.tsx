@@ -322,6 +322,14 @@ test('session list renders expandable lineage with descendant activity', async (
   expect(screen.getByRole('button', { name: 'Child' })).toBeInTheDocument()
 })
 
+test('session list hides stale child controls when no visible children remain', () => {
+  const parent = { ...sessions[1], id: 'sess_parent', title: 'Parent', child_count: 1 }
+  render(<SessionListHarness sessions={[parent]} />)
+
+  expect(screen.queryByRole('button', { name: 'Collapse Parent' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Expand Parent' })).not.toBeInTheDocument()
+})
+
 function baseProps() {
   return {
     sessions: sessions.filter((session) => !session.archived_at),

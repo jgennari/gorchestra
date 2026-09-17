@@ -105,6 +105,26 @@ func TestChildSessionLineageBoundsAndArchivedAncestorVisibility(t *testing.T) {
 	if len(tree) != 2 || tree[0].ID != child.ID && tree[1].ID != child.ID {
 		t.Fatalf("archived ancestor or live child missing from tree: %#v", tree)
 	}
+	if _, err := dbStore.RestoreSession(ctx, RestoreSessionParams{ID: parent.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbStore.ArchiveSession(ctx, ArchiveSessionParams{ID: child.ID}); err != nil {
+		t.Fatal(err)
+	}
+	parent, err = dbStore.GetSession(ctx, parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.ChildCount != 0 {
+		t.Fatalf("archived child counted as visible: %#v", parent)
+	}
+	tree, err = dbStore.ListSessionTree(ctx, 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree) != 1 || tree[0].ID != parent.ID {
+		t.Fatalf("archived child remained in visible tree: %#v", tree)
+	}
 }
 
 func TestMigrationsAreIdempotent(t *testing.T) {

@@ -133,7 +133,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
 		        created_at, updated_at, completed_at, archived_at, pinned_at,
 		        parent_session_id, spawned_by_run_id, lineage_depth,
-		        (SELECT COUNT(*) FROM sessions children WHERE children.parent_session_id = sessions.id) AS child_count
+		        (SELECT COUNT(*) FROM sessions children WHERE children.parent_session_id = sessions.id AND children.archived_at IS NULL) AS child_count
 		 FROM sessions
 		 WHERE id = ?`,
 		id,
@@ -159,7 +159,7 @@ func (s *Store) ListSessions(ctx context.Context, params ListSessionsParams) ([]
 		        COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0) AS notification_attention_seq,
 		        created_at, updated_at, completed_at, archived_at, pinned_at,
 		        parent_session_id, spawned_by_run_id, lineage_depth,
-		        (SELECT COUNT(*) FROM sessions children WHERE children.parent_session_id = sessions.id) AS child_count
+		        (SELECT COUNT(*) FROM sessions children WHERE children.parent_session_id = sessions.id AND children.archived_at IS NULL) AS child_count
 		 FROM sessions`
 	args := []any{}
 	filters := make([]string, 0, 2)

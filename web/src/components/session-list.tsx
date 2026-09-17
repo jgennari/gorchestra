@@ -336,7 +336,7 @@ function buildSessionTreeRows(
     visited.add(session.id)
     const descendants = children.get(session.id) ?? []
     const [activeDescendants, attentionDescendants] = summarize(session)
-    rows.push({ session, depth, hasChildren: descendants.length > 0 || (session.child_count ?? 0) > 0, activeDescendants, attentionDescendants })
+    rows.push({ session, depth, hasChildren: descendants.length > 0, activeDescendants, attentionDescendants })
     if (!collapsed.has(session.id)) descendants.forEach((child) => visit(child, depth + 1))
   }
   roots.forEach((session) => visit(session, 0))

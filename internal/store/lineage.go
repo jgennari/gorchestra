@@ -87,7 +87,7 @@ func (s *Store) ListSessionChildren(ctx context.Context, parentSessionID string,
 	       COALESCE((SELECT seq FROM notification_attention WHERE notification_attention.session_id = sessions.id), 0),
 	       sessions.created_at, sessions.updated_at, sessions.completed_at, sessions.archived_at, sessions.pinned_at,
 	       sessions.parent_session_id, sessions.spawned_by_run_id, sessions.lineage_depth,
-	       (SELECT COUNT(*) FROM sessions children WHERE children.parent_session_id = sessions.id)
+	       (SELECT COUNT(*) FROM sessions children WHERE children.parent_session_id = sessions.id AND children.archived_at IS NULL)
 	FROM sessions JOIN descendants ON descendants.id = sessions.id`
 	if !recursive {
 		query += ` WHERE sessions.parent_session_id = ?`
