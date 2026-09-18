@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import type { AgentType, PermissionPolicy, Session, SessionAgentOptions } from '@/lib/api'
 import { isAgentType } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -11,21 +11,34 @@ import { PermissionPolicyControl } from '@/components/permission-policy-control'
 type Props = {
   open: boolean
   onOpenChange: (open: boolean) => void
+  parentSession?: Session | null
   onCreate: (params: {
     agent_type: AgentType
     title?: string
     workspace_path?: string
     agent_options?: SessionAgentOptions
+    parent_session_id?: string
   }) => Promise<Session>
 }
 
-export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
+export function CreateSessionDialog({ open, onOpenChange, parentSession = null, onCreate }: Props) {
   const [agentType, setAgentType] = useState<AgentType>('codex')
   const [title, setTitle] = useState('')
   const [workspacePath, setWorkspacePath] = useState('')
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>('ask')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const initialAgentType = parentSession?.agent_type ?? 'codex'
+  const initialPermissionPolicy = parentSession ? permissionPolicyForSession(parentSession) : 'ask'
+
+  useEffect(() => {
+    if (!open) return
+    setAgentType(initialAgentType)
+    setTitle('')
+    setWorkspacePath('')
+    setPermissionPolicy(initialPermissionPolicy)
+    setError('')
+  }, [initialAgentType, initialPermissionPolicy, open, parentSession?.id])
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
@@ -37,12 +50,17 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
     setSubmitting(true)
     setError('')
     try {
-      await onCreate({
+      const params: Parameters<typeof onCreate>[0] = {
         agent_type: agentType,
         title: title.trim() || undefined,
-        workspace_path: workspacePath || undefined,
         agent_options: agentOptionsForCreate(agentType, permissionPolicy),
-      })
+      }
+      if (parentSession) {
+        params.parent_session_id = parentSession.id
+      } else {
+        params.workspace_path = workspacePath || undefined
+      }
+      await onCreate(params)
       setTitle('')
       setAgentType('codex')
       setPermissionPolicy('ask')
@@ -58,8 +76,10 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Create session</DialogTitle>
-          <DialogDescription>Select an agent and optional title.</DialogDescription>
+          <DialogTitle>{parentSession ? 'Create child session' : 'Create session'}</DialogTitle>
+          <DialogDescription>
+            {parentSession ? 'Choose the child session settings. Its workspace is inherited from the parent.' : 'Select an agent and optional title.'}
+          </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={(event) => void handleSubmit(event)}>
           <div className="space-y-2">
@@ -93,7 +113,16 @@ export function CreateSessionDialog({ open, onOpenChange, onCreate }: Props) {
           {agentType === 'codex' || agentType === 'claude' || agentType === 'opencode' ? (
             <div className="space-y-2"><label className="text-sm font-medium">Permissions</label><PermissionPolicyControl value={permissionPolicy} onChange={setPermissionPolicy} /></div>
           ) : null}
-          <WorkspacePicker onPathChange={setWorkspacePath} disabled={submitting} />
+          {parentSession ? (
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="session-workspace">
+                Workspace
+              </label>
+              <Input id="session-workspace" value={parentSession.workspace_path} readOnly aria-readonly="true" />
+            </div>
+          ) : (
+            <WorkspacePicker onPathChange={setWorkspacePath} disabled={submitting} />
+          )}
           {error ? (
             <p role="alert" className="text-sm text-destructive">
               {error}
@@ -122,4 +151,17 @@ function agentOptionsForCreate(agentType: AgentType, permissionPolicy: Permissio
   }
   if (agentType === 'opencode') return { opencode: { permission_policy: permissionPolicy } }
   return undefined
+}
+
+function permissionPolicyForSession(session: Session): PermissionPolicy {
+  const options = session.agent_type === 'codex'
+    ? session.agent_options?.codex
+    : session.agent_type === 'claude'
+      ? session.agent_options?.claude
+      : session.agent_type === 'opencode'
+        ? session.agent_options?.opencode
+        : undefined
+  if (options?.permission_policy) return options.permission_policy
+  if ('run_dangerously' in (options ?? {}) && (options as { run_dangerously?: boolean }).run_dangerously) return 'bypass'
+  return 'deny'
 }

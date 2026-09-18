@@ -124,6 +124,60 @@ test('create session form can bypass claude permissions', async () => {
   })
 })
 
+test('child session form inherits parent settings and lets the user change supported options', async () => {
+  const user = userEvent.setup()
+  const parentSession = {
+    id: 'sess_parent',
+    title: 'Parent work',
+    agent_type: 'codex' as const,
+    status: 'idle' as const,
+    workspace_path: '/repo/parent-workspace',
+    agent_options: { codex: { permission_policy: 'bypass' as const, model: 'gpt-6' } },
+    event_count: 3,
+    tool_count: 1,
+    created_at: '2026-06-12T16:00:00Z',
+    updated_at: '2026-06-12T16:10:00Z',
+    completed_at: null,
+    archived_at: null,
+  }
+  const onCreate = vi.fn(async () => ({
+    ...parentSession,
+    id: 'sess_child',
+    parent_session_id: parentSession.id,
+    title: 'Child work',
+    agent_type: 'claude' as const,
+  }))
+
+  render(
+    <CreateSessionDialog
+      open
+      parentSession={parentSession}
+      onOpenChange={() => undefined}
+      onCreate={onCreate}
+    />,
+  )
+
+  expect(screen.getByRole('dialog', { name: 'Create child session' })).toBeInTheDocument()
+  expect(screen.getByLabelText('Workspace')).toHaveValue('/repo/parent-workspace')
+  expect(screen.getByLabelText('Workspace')).toHaveAttribute('readonly')
+  expect(screen.getByRole('radio', { name: 'Bypass' })).toHaveAttribute('aria-checked', 'true')
+  const nativeSelect = document.querySelector('select')
+  if (!nativeSelect) throw new Error('expected native select')
+  expect(nativeSelect).toHaveValue('codex')
+
+  fireEvent.change(nativeSelect, { target: { value: 'claude' } })
+  await user.click(screen.getByRole('radio', { name: 'Deny' }))
+  await user.type(screen.getByLabelText('Title'), 'Child work')
+  await user.click(screen.getByRole('button', { name: /^create$/i }))
+
+  expect(onCreate).toHaveBeenCalledWith({
+    agent_type: 'claude',
+    title: 'Child work',
+    agent_options: { claude: { permission_policy: 'deny' } },
+    parent_session_id: 'sess_parent',
+  })
+})
+
 test('workspace picker dot folders hide at root and navigate from subfolders', async () => {
   const user = userEvent.setup()
   const fetchMock = vi.fn(async (url: RequestInfo | URL) => {

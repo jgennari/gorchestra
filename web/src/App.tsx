@@ -202,6 +202,7 @@ function App() {
   const [selectedSessionID, setSelectedSessionID] = useState<string | null>(initialSessionState.selectedSessionID)
   const [showArchivedSessions, setShowArchivedSessions] = useState(initialPreferences.showArchivedSessions)
   const [createOpen, setCreateOpen] = useState(false)
+  const [createParentSession, setCreateParentSession] = useState<Session | null>(null)
   const [mobileListOpen, setMobileListOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(!initialSessionState.seededCachedSession)
   const [refreshingSessions, setRefreshingSessions] = useState(false)
@@ -1016,12 +1017,14 @@ function App() {
         void writePersistentCachedSessions(mergedSessions)
         const route = selectedSessionRouteFromLocation()
         const routeSelectedID = resolveSessionRouteSessionID(route, mergedSessions)
+        const preferredRouteSelectedID = preferredSessionIDForRouteSlug(route, mergedSessions, selectedID)
+        const resolvedRouteSelectedID = routeSelectedID ?? preferredRouteSelectedID
         const preserveSlugRoute = Boolean(route.sessionSlug && routeSelectedID)
         const nextSelectedID =
           overviewSelectedRef.current && !isSessionLocation()
             ? null
-            : routeSelectedID && mergedSessions.some((session) => session.id === routeSelectedID)
-              ? routeSelectedID
+            : resolvedRouteSelectedID && mergedSessions.some((session) => session.id === resolvedRouteSelectedID)
+              ? resolvedRouteSelectedID
               : !route.sessionSlug && selectedID && mergedSessions.some((session) => session.id === selectedID)
                 ? selectedID
                 : route.sessionSlug || route.sessionID
@@ -1311,30 +1314,44 @@ function App() {
     title?: string
     workspace_path?: string
     agent_options?: SessionAgentOptions
+    parent_session_id?: string
   }) {
-    const session = await createSession(params)
-    applySession(session)
-    completeSessionSelection(session.id, 'push')
-    return session
-  }
-
-  async function handleCreateChildSession(parentSessionID: string) {
-    setCreatingChildSessionIDs((current) => addSetValue(current, parentSessionID))
+    const parentSessionID = params.parent_session_id
+    if (parentSessionID) {
+      setCreatingChildSessionIDs((current) => addSetValue(current, parentSessionID))
+    }
     setError('')
     try {
-      const session = await createSession({ parent_session_id: parentSessionID })
+      const session = await createSession(params)
       applySession(session)
-      setMobileListOpen(false)
-      appViewRef.current = 'session'
-      setAppView('session')
-      setComposerFocusRequest((current) => current + 1)
-      selectSession(session.id, 'push')
+      if (parentSessionID) {
+        setMobileListOpen(false)
+        appViewRef.current = 'session'
+        setAppView('session')
+        setComposerFocusRequest((current) => current + 1)
+        selectSession(session.id, 'push')
+      } else {
+        completeSessionSelection(session.id, 'push')
+      }
       return session
-    } catch (createError) {
-      setError(messageFromError(createError))
     } finally {
-      setCreatingChildSessionIDs((current) => removeSetValue(current, parentSessionID))
+      if (parentSessionID) {
+        setCreatingChildSessionIDs((current) => removeSetValue(current, parentSessionID))
+      }
     }
+  }
+
+  function openCreateChildSession(parentSessionID: string) {
+    const parentSession = sessions.find((session) => session.id === parentSessionID)
+    if (!parentSession) return
+    setCreateParentSession(parentSession)
+    setMobileListOpen(false)
+    setCreateOpen(true)
+  }
+
+  function handleCreateOpenChange(open: boolean) {
+    setCreateOpen(open)
+    if (!open) setCreateParentSession(null)
   }
 
   async function handleSubmitPrompt(
@@ -1811,7 +1828,7 @@ function App() {
       : undefined,
     creatingChildSessionIDs,
     onCreateChild: serverReachable
-      ? (sessionID: string) => void handleCreateChildSession(sessionID)
+      ? openCreateChildSession
       : undefined,
     archivingSessionID,
     onArchive: serverReachable
@@ -1827,7 +1844,10 @@ function App() {
           setSpotlightOpen(true)
         }
       : undefined,
-    onCreate: () => setCreateOpen(true),
+    onCreate: () => {
+      setCreateParentSession(null)
+      setCreateOpen(true)
+    },
     createDisabled: !serverReachable,
     notificationAction: renderNotificationsPopover(),
     appMenuAction: renderAppMenu(),
@@ -2299,7 +2319,12 @@ function App() {
           <div className="min-h-0 overflow-hidden">{mobileList}</div>
         </DialogContent>
       </Dialog>
-      <CreateSessionDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
+      <CreateSessionDialog
+        open={createOpen}
+        onOpenChange={handleCreateOpenChange}
+        parentSession={createParentSession}
+        onCreate={handleCreate}
+      />
       {clientDebug ? <ClientDebugPanel readSnapshot={readDebugSnapshot} onClose={toggleClientDebug} /> : null}
     </main>
     </ClientDebugContext.Provider>
@@ -2936,15 +2961,18 @@ function loadInitialSessionStateFromLocation(includeArchived = false): InitialSe
 }
 
 function preferredCachedSessionID(sessions: Session[]) {
-  if (typeof window !== 'undefined') {
-    try {
-      const stored = window.localStorage.getItem(lastSelectedSessionStorageKey)
-      if (stored && sessions.some((session) => session.id === stored)) return stored
-    } catch {
-      // Fall back to the first cached session when storage is unavailable.
-    }
-  }
+  const stored = loadLastSelectedSessionID()
+  if (stored && sessions.some((session) => session.id === stored)) return stored
   return sessions[0]?.id ?? null
+}
+
+function loadLastSelectedSessionID() {
+  if (typeof window === 'undefined') return null
+  try {
+    return window.localStorage.getItem(lastSelectedSessionStorageKey)
+  } catch {
+    return null
+  }
 }
 
 function saveLastSelectedSessionID(sessionID: string) {
@@ -3034,6 +3062,23 @@ function resolveSessionRouteSessionID(route: SessionRoute, sessions: Session[]) 
   return matches.length === 1 ? matches[0].id : null
 }
 
+function preferredSessionIDForRouteSlug(
+  route: SessionRoute,
+  sessions: Session[],
+  selectedSessionID: string | null,
+) {
+  if (!route.sessionSlug) return null
+  const preferredIDs = [selectedSessionID, loadLastSelectedSessionID()]
+  return preferredIDs.find((sessionID) =>
+    Boolean(
+      sessionID &&
+      sessions.some(
+        (session) => session.id === sessionID && sessionTitleSlug(session.title) === route.sessionSlug,
+      ),
+    ),
+  ) ?? null
+}
+
 function writeSelectedSessionRoute(
   sessionID: string | null,
   historyMode: Exclude<SessionRouteHistoryMode, 'none'>,
@@ -3048,7 +3093,11 @@ function writeSelectedSessionRoute(
   const currentRoute = selectedSessionRouteFromLocation()
   const routeSession = sessionID ? sessions.find((session) => session.id === sessionID) : null
   const currentRouteSessionID = resolveSessionRouteSessionID(currentRoute, sessions)
-  const path = routeSession
+  const routeSessionSlug = routeSession ? sessionTitleSlug(routeSession.title) : null
+  const routeSessionHasUniqueSlug = Boolean(
+    routeSessionSlug && sessions.filter((session) => sessionTitleSlug(session.title) === routeSessionSlug).length === 1,
+  )
+  const path = routeSession && routeSessionHasUniqueSlug
     ? sessionSlugPath(sessionTitleSlug(routeSession.title), view, filePath)
     : currentRoute.sessionSlug && currentRouteSessionID === sessionID
       ? sessionSlugPath(currentRoute.sessionSlug, view, filePath)

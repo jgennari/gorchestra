@@ -661,7 +661,6 @@ export function ChatTranscript({
     )
   }
 
-  const latestMessageIndex = timeline.reduce((latest, item, index) => (item.kind === 'message' ? index : latest), -1)
   function updateChatGlow(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return
 
@@ -771,7 +770,7 @@ export function ChatTranscript({
               <ChatTimelineRow
                 item={item}
                 focusSeq={focusSeq}
-                collapseExtraTools={item.kind === 'message' && timelineIndex < latestMessageIndex}
+                collapseExtraTools={item.kind === 'message'}
                 sessionID={sessionID}
                 onOpenFilePath={onOpenFilePath}
                 onFollowUp={onFollowUp}
@@ -1024,7 +1023,7 @@ function ChatMessageRow({
   const [messageCopied, setMessageCopied] = useState(false)
   const [messageCopyFailed, setMessageCopyFailed] = useState(false)
   const shouldCollapseTools = collapseExtraTools && message.tools.length > 3
-  const visibleTools = !shouldCollapseTools || showAllTools ? message.tools : message.tools.slice(0, 3)
+  const visibleTools = !shouldCollapseTools || showAllTools ? message.tools : message.tools.slice(-3)
   const hasHiddenTools = message.tools.length > visibleTools.length
   const timestampValue = messageTimestamp(message)
   const timestamp = formatMessageTimestamp(timestampValue)
@@ -1133,14 +1132,6 @@ function ChatMessageRow({
               plan ? 'border-amber-300/70 dark:border-amber-400/35' : 'border-border/80',
             )}
           >
-            {visibleTools.map((tool) => (
-              <ToolCallRow
-                key={tool.id}
-                tool={tool}
-                onOpenFilePath={onOpenFilePath}
-                focused={tool.id === focusedTool?.id}
-              />
-            ))}
             {shouldCollapseTools ? (
               <button
                 type="button"
@@ -1153,9 +1144,17 @@ function ChatMessageRow({
                 ) : (
                   <ChevronDown className="size-2.5" aria-hidden="true" />
                 )}
-                {hasHiddenTools ? `Show ${message.tools.length - visibleTools.length} More` : 'Show Less'}
+                {hasHiddenTools ? `Show ${message.tools.length - visibleTools.length} Earlier` : 'Show Less'}
               </button>
             ) : null}
+            {visibleTools.map((tool) => (
+              <ToolCallRow
+                key={tool.id}
+                tool={tool}
+                onOpenFilePath={onOpenFilePath}
+                focused={tool.id === focusedTool?.id}
+              />
+            ))}
           </div>
         ) : null}
       </div>

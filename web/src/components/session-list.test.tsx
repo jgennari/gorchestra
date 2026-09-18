@@ -258,7 +258,7 @@ test('right-side pin action pins and unpins without selecting the session', asyn
   expect(onPinChange).toHaveBeenCalledWith('sess_failed', false)
 })
 
-test('session context menu creates a blank child for the clicked row', async () => {
+test('session context menu requests child creation for the clicked row', async () => {
   const user = userEvent.setup()
   const onCreateChild = vi.fn()
   const onSelect = vi.fn()

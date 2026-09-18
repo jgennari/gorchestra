@@ -1282,6 +1282,69 @@ test('loading with a session route selects that session', async () => {
   ).toBe(true)
 })
 
+test('duplicate child title keeps an unambiguous route across foreground resync', async () => {
+  const user = userEvent.setup()
+  const parent: Session = { ...firstSession, id: 'sess_parent', title: 'Shared title', child_count: 1 }
+  const child: Session = {
+    ...secondSession,
+    id: 'sess_child',
+    title: 'Shared title',
+    parent_session_id: parent.id,
+    lineage_depth: 1,
+  }
+  window.history.replaceState({}, '', '/sessions/sess_parent')
+  const fetch = fetchMock({ sessions: [parent, child] })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  const childRow = await waitFor(() => {
+    const row = document.querySelector('[data-session-id="sess_child"]')
+    expect(row).not.toBeNull()
+    return row as HTMLElement
+  })
+  await user.click(within(childRow).getByRole('button', { name: 'Shared title' }))
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_child'))
+
+  // Older clients could leave an already-selected duplicate on its title slug.
+  window.history.replaceState({}, '', '/sessions/shared-title')
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  act(() => document.dispatchEvent(new Event('visibilitychange')))
+
+  await waitFor(() => {
+    expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/sessions?limit=50')).toHaveLength(2)
+    expect(window.location.pathname).toBe('/sessions/sess_child')
+  })
+  expect(within(childRow).getByRole('button', { name: 'Shared title' })).toHaveAttribute('aria-current', 'true')
+  expect(screen.queryByRole('heading', { name: 'Session unavailable' })).not.toBeInTheDocument()
+  visibility.mockRestore()
+})
+
+test('reload repairs an ambiguous duplicate-title route from the last selected child', async () => {
+  const parent: Session = { ...firstSession, id: 'sess_parent', title: 'Minecraft', child_count: 1 }
+  const child: Session = {
+    ...secondSession,
+    id: 'sess_child',
+    title: 'Minecraft',
+    parent_session_id: parent.id,
+    lineage_depth: 1,
+  }
+  window.history.replaceState({}, '', '/sessions/minecraft')
+  window.localStorage.setItem('gorchestra.last-selected-session.v1', child.id)
+  vi.stubGlobal('fetch', fetchMock({ sessions: [parent, child] }))
+
+  render(<App />)
+
+  await waitFor(() => expect(window.location.pathname).toBe('/sessions/sess_child'))
+  const childRow = document.querySelector('[data-session-id="sess_child"]')
+  expect(childRow).not.toBeNull()
+  expect(within(childRow as HTMLElement).getByRole('button', { name: 'Minecraft' })).toHaveAttribute(
+    'aria-current',
+    'true',
+  )
+  expect(screen.queryByRole('heading', { name: 'Session unavailable' })).not.toBeInTheDocument()
+})
+
 test('loading with a session slug route selects that session without replacing the slug', async () => {
   window.history.replaceState({}, '', '/sessions/write-docs')
   let resolveSessions: (() => void) | undefined
@@ -2556,6 +2619,43 @@ test('archiving a newly created session releases the dialog and keeps session na
   await user.click(screen.getByRole('button', { name: 'Write docs' }))
 
   expect(window.location.pathname).toBe('/sessions/write-docs')
+})
+
+test('new child session action opens a prefilled dialog before creating', async () => {
+  const user = userEvent.setup()
+  const parentSession: Session = {
+    ...firstSession,
+    agent_type: 'codex',
+    workspace_path: '/repo/parent',
+    agent_options: { codex: { permission_policy: 'bypass', model: 'gpt-6' } },
+  }
+  const fetch = fetchMock({ sessions: [parentSession, secondSession] })
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getAllByText('Inspect repo').length).toBeGreaterThan(0))
+  const parentRow = document.querySelector('[data-session-id="sess_1"]')
+  expect(parentRow).not.toBeNull()
+  fireEvent.contextMenu(parentRow!, { clientX: 24, clientY: 32 })
+  await user.click(await screen.findByRole('menuitem', { name: 'New child session' }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'Create child session' })
+  expect(within(dialog).getByLabelText('Workspace')).toHaveValue('/repo/parent')
+  expect(within(dialog).getByRole('radio', { name: 'Bypass' })).toHaveAttribute('aria-checked', 'true')
+  expect(fetch.mock.calls.filter(([url, init]) => String(url) === '/api/sessions' && init?.method === 'POST')).toHaveLength(0)
+
+  await user.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+  await waitFor(() => {
+    const createCall = fetch.mock.calls.find(([url, init]) => String(url) === '/api/sessions' && init?.method === 'POST')
+    expect(createCall).toBeDefined()
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      agent_type: 'codex',
+      agent_options: { codex: { permission_policy: 'bypass' } },
+      parent_session_id: 'sess_1',
+    })
+  })
 })
 
 test('archived session uses restore confirmation', async () => {

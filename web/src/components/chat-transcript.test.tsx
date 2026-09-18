@@ -1835,7 +1835,7 @@ test('renders active tool indicators with the animated activity dot', () => {
   expect(toolButton.querySelector('.animate-pulse')).not.toBeInTheDocument()
 })
 
-test('shows all tool calls for the latest message bubble', () => {
+test('immediately collapses the latest message to its three most recent tool calls', () => {
   const events = [
     event(1, 'agent.message.completed', 'assistant', 'completed', { item_id: 'msg_1', text: 'Working through tools.' }),
   ]
@@ -1854,14 +1854,47 @@ test('shows all tool calls for the latest message bubble', () => {
 
   render(<ChatTranscript events={events} />)
 
-  expect(screen.getByText('tool-1')).toBeInTheDocument()
+  expect(screen.queryByText('tool-1')).not.toBeInTheDocument()
+  expect(screen.queryByText('tool-2')).not.toBeInTheDocument()
   expect(screen.getByText('tool-3')).toBeInTheDocument()
   expect(screen.getByText('tool-4')).toBeInTheDocument()
   expect(screen.getByText('tool-5')).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /show \d+ more/i })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Show 2 Earlier' })).toBeInTheDocument()
 })
 
-test('collapses extra tool calls after the next message bubble appears', async () => {
+test('rolls the visible tool window forward as new calls arrive', () => {
+  function eventsThrough(toolCount: number) {
+    const events = [
+      event(1, 'agent.message.delta', 'assistant', 'delta', { item_id: 'msg_1', text: 'Working through tools.' }),
+    ]
+    for (let index = 1; index <= toolCount; index += 1) {
+      events.push(
+        event(index * 2, 'tool.call.started', 'assistant', 'started', {
+          item_id: `tool_${index}`,
+          command: `tool-${index}`,
+        }),
+        event(index * 2 + 1, 'tool.call.completed', 'assistant', 'completed', {
+          item_id: `tool_${index}`,
+          output: `output-${index}`,
+        }),
+      )
+    }
+    return events
+  }
+
+  const { rerender } = render(<ChatTranscript events={eventsThrough(4)} />)
+
+  expect(screen.queryByText('tool-1')).not.toBeInTheDocument()
+  expect(screen.getAllByText(/^tool-[2-4]$/).map((element) => element.textContent)).toEqual(['tool-2', 'tool-3', 'tool-4'])
+
+  rerender(<ChatTranscript events={eventsThrough(5)} />)
+
+  expect(screen.queryByText('tool-2')).not.toBeInTheDocument()
+  expect(screen.getAllByText(/^tool-[3-5]$/).map((element) => element.textContent)).toEqual(['tool-3', 'tool-4', 'tool-5'])
+  expect(screen.getByRole('button', { name: 'Show 2 Earlier' })).toBeInTheDocument()
+})
+
+test('keeps completed tool lists collapsed after the next message bubble appears', async () => {
   const user = userEvent.setup()
   const events = [
     event(1, 'agent.message.completed', 'assistant', 'completed', { item_id: 'msg_1', text: 'Working through tools.' }),
@@ -1888,16 +1921,20 @@ test('collapses extra tool calls after the next message bubble appears', async (
   render(<ChatTranscript events={events} />)
 
   expect(screen.queryByText('Tool Calls (5)')).not.toBeInTheDocument()
-  expect(screen.getByText('tool-1')).toBeInTheDocument()
+  expect(screen.queryByText('tool-1')).not.toBeInTheDocument()
+  expect(screen.queryByText('tool-2')).not.toBeInTheDocument()
   expect(screen.getByText('tool-3')).toBeInTheDocument()
-  expect(screen.queryByText('tool-4')).not.toBeInTheDocument()
+  expect(screen.getByText('tool-4')).toBeInTheDocument()
+  expect(screen.getByText('tool-5')).toBeInTheDocument()
   expect(screen.getByText('Done with the tools.')).toBeInTheDocument()
-  const showMoreButton = screen.getByRole('button', { name: /show 2 more/i })
+  const showMoreButton = screen.getByRole('button', { name: 'Show 2 Earlier' })
   expect(showMoreButton).toHaveClass('flex', 'min-h-6', 'w-fit', 'py-1', 'leading-4')
   expect(showMoreButton).not.toHaveClass('inline-flex', 'py-0', 'leading-none')
 
   await user.click(showMoreButton)
 
+  expect(screen.getByText('tool-1')).toBeInTheDocument()
+  expect(screen.getByText('tool-2')).toBeInTheDocument()
   expect(screen.getByText('tool-4')).toBeInTheDocument()
   expect(screen.getByText('tool-5')).toBeInTheDocument()
 })
