@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jgennari/gorchestra/internal/store"
 )
 
 func TestAgentRuntimeEnvironmentIncludesHostCLIContext(t *testing.T) {
@@ -22,13 +24,44 @@ func TestAgentRuntimeEnvironmentIncludesHostCLIContext(t *testing.T) {
 }
 
 func TestAgentRuntimeContextIntroducesOrchestrationAndDelegation(t *testing.T) {
-	context := (API{}).agentRuntimeContext(t.TempDir())
+	context := (API{}).agentRuntimeContext(store.Session{
+		ID:            "sess_root",
+		WorkspacePath: t.TempDir(),
+	}, "run_root")
 	for _, expected := range []string{
 		"This session is running inside Gorchestra",
 		"agent orchestration service",
 		"multiple concurrent agents",
+		"This is a root session.",
+		"Current session ID: sess_root",
+		"Current run ID: run_root",
+		"Parent session ID: none",
+		"$GORCHESTRA_SESSION_ID",
+		"$GORCHESTRA_RUN_ID",
 		"delegate independent work to child agents",
+		"New runs automatically become children of this session",
+		`run --title "TASK NAME" --prompt-file task.md --detach --json`,
+		"runs wait RUN_ID --timeout 10m --json",
+		"runs report RUN_ID --json",
 		`"$GORCHESTRA_BIN" commands --json`,
+	} {
+		if !strings.Contains(context, expected) {
+			t.Fatalf("runtime context missing %q: %s", expected, context)
+		}
+	}
+}
+
+func TestAgentRuntimeContextIdentifiesDelegatedChild(t *testing.T) {
+	context := (API{}).agentRuntimeContext(store.Session{
+		ID:              "sess_child",
+		ParentSessionID: "sess_parent",
+		WorkspacePath:   t.TempDir(),
+	}, "run_child")
+	for _, expected := range []string{
+		"This is a delegated child session.",
+		"Current session ID: sess_child",
+		"Current run ID: run_child",
+		"Parent session ID: sess_parent",
 	} {
 		if !strings.Contains(context, expected) {
 			t.Fatalf("runtime context missing %q: %s", expected, context)

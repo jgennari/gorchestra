@@ -2535,7 +2535,7 @@ func (api API) runAgent(
 		Message:           message,
 		Workdir:           sessionWorkspacePath(session, api.workdir),
 		Environment:       api.agentRuntimeEnvironment(session.ID, runID),
-		Context:           api.agentRuntimeContext(sessionWorkspacePath(session, api.workdir)),
+		Context:           api.agentRuntimeContext(session, runID),
 		Metadata:          metadata,
 		Attachments:       attachments,
 		Skills:            skills,
@@ -2630,12 +2630,35 @@ func (api API) agentHostingContext(workspacePath string) string {
 Use "$GORCHESTRA_BIN" host validate|status|start|stop|restart|check|logs|url to manage this session's preview. The CLI targets this session automatically through GORCHESTRA_SESSION_ID and GORCHESTRA_API_URL.`
 }
 
-func (api API) agentRuntimeContext(workspacePath string) string {
-	parts := []string{`This session is running inside Gorchestra, an agent orchestration service that coordinates multiple concurrent agents across supported providers.
-You can use Gorchestra's CLI to delegate independent work to child agents and monitor their exact runs.
-Use "$GORCHESTRA_BIN" commands --json to discover the current CLI contract.
-Use "$GORCHESTRA_BIN" run --prompt-file <path> to delegate work to a child session. Inside a run, children inherit this session's provider, resolved options, and workspace unless you explicitly override supported provider settings. Use --detach to receive IDs immediately, runs wait or runs watch to observe exact runs, and runs report to retrieve durable results. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.`}
-	if hosting := api.agentHostingContext(workspacePath); hosting != "" {
+func (api API) agentRuntimeContext(session store.Session, runID string) string {
+	parentSessionID := strings.TrimSpace(session.ParentSessionID)
+	role := "This is a root session."
+	if parentSessionID == "" {
+		parentSessionID = "none"
+	} else {
+		role = "This is a delegated child session."
+	}
+
+	parts := []string{fmt.Sprintf(`This session is running inside Gorchestra, an agent orchestration service that coordinates multiple concurrent agents across supported providers.
+%s
+
+Current session ID: %s
+Current run ID: %s
+Parent session ID: %s
+
+The current session and run IDs are also available as $GORCHESTRA_SESSION_ID and $GORCHESTRA_RUN_ID.
+
+You can use Gorchestra's CLI to delegate independent work to child agents and monitor their exact runs. New runs automatically become children of this session and inherit its provider, resolved options, and workspace unless you override supported settings.
+
+To delegate a named task:
+  "$GORCHESTRA_BIN" run --title "TASK NAME" --prompt-file task.md --detach --json
+
+The result contains the child session ID and exact run ID. Then use:
+  "$GORCHESTRA_BIN" runs wait RUN_ID --timeout 10m --json
+  "$GORCHESTRA_BIN" runs report RUN_ID --json
+
+Use "$GORCHESTRA_BIN" commands --json to discover the complete CLI contract. Use runs watch to stream activity. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.`, role, session.ID, runID, parentSessionID)}
+	if hosting := api.agentHostingContext(sessionWorkspacePath(session, api.workdir)); hosting != "" {
 		parts = append(parts, hosting)
 	}
 	return strings.Join(parts, "\n\n")

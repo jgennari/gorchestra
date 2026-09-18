@@ -146,11 +146,31 @@ For normal message runs, it also prefixes the provider prompt with this text:
 ```xml
 <gorchestra_context>
 This session is running inside Gorchestra, an agent orchestration service that coordinates multiple concurrent agents across supported providers.
-You can use Gorchestra's CLI to delegate independent work to child agents and monitor their exact runs.
-Use "$GORCHESTRA_BIN" commands --json to discover the current CLI contract.
-Use "$GORCHESTRA_BIN" run --prompt-file <path> to delegate work to a child session. Inside a run, children inherit this session's provider, resolved options, and workspace unless you explicitly override supported provider settings. Use --detach to receive IDs immediately, runs wait or runs watch to observe exact runs, and runs report to retrieve durable results. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.
+This is a root session.
+
+Current session ID: sess_current
+Current run ID: run_current
+Parent session ID: none
+
+The current session and run IDs are also available as $GORCHESTRA_SESSION_ID and $GORCHESTRA_RUN_ID.
+
+You can use Gorchestra's CLI to delegate independent work to child agents and monitor their exact runs. New runs automatically become children of this session and inherit its provider, resolved options, and workspace unless you override supported settings.
+
+To delegate a named task:
+  "$GORCHESTRA_BIN" run --title "TASK NAME" --prompt-file task.md --detach --json
+
+The result contains the child session ID and exact run ID. Then use:
+  "$GORCHESTRA_BIN" runs wait RUN_ID --timeout 10m --json
+  "$GORCHESTRA_BIN" runs report RUN_ID --json
+
+Use "$GORCHESTRA_BIN" commands --json to discover the complete CLI contract. Use runs watch to stream activity. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.
 </gorchestra_context>
 ```
+
+Delegated sessions receive the same bootstrap with `This is a delegated child
+session.` and their concrete parent session ID. They retain the delegation
+instructions because they may create deeper child sessions within the service's
+configured lineage limit.
 
 The original user message follows after a blank line and remains separately
 persisted for the UI. Codex, Claude, OpenCode, and Pi all use the same
