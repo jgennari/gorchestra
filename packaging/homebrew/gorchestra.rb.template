@@ -17,31 +17,26 @@ class Gorchestra < Formula
       "./cmd/app"
   end
 
-  def post_install
-    (var/"gorchestra").mkpath
-    (var/"log").mkpath
+  post_install_steps do
+    mkdir_p "gorchestra", base: :var
+    unless_path_exists "gorchestra/gorchestra.env", base: :etc do
+      write_file "gorchestra/gorchestra.env", <<~EOS, base: :etc
+        # Gorchestra Homebrew service configuration.
+        GORCHESTRA_HOST=127.0.0.1
+        GORCHESTRA_PORT=15173
+        GORCHESTRA_DATA_DIR={{var}}/gorchestra
+        GORCHESTRA_WORKSPACE=~
+        GORCHESTRA_WORKSPACE_ROOTS=~
+        GORCHESTRA_OPEN=false
 
-    config_dir = etc/"gorchestra"
-    config_dir.mkpath
-    config_file = config_dir/"gorchestra.env"
-    return if config_file.exist?
-
-    config_file.write <<~EOS
-      # Gorchestra Homebrew service configuration.
-      GORCHESTRA_HOST=127.0.0.1
-      GORCHESTRA_PORT=15173
-      GORCHESTRA_DATA_DIR=#{var}/gorchestra
-      GORCHESTRA_WORKSPACE=~
-      GORCHESTRA_WORKSPACE_ROOTS=~
-      GORCHESTRA_OPEN=false
-
-      # Uncomment and edit these if your Codex CLI or defaults differ.
-      # GORCHESTRA_CODEX_BIN=codex
-      # GORCHESTRA_CODEX_MODEL=gpt-5
-      # GORCHESTRA_CODEX_SANDBOX=workspace-write
-      # GORCHESTRA_CODEX_NETWORK_ACCESS=true
-      # GORCHESTRA_CODEX_WEB_SEARCH=live
-    EOS
+        # Uncomment and edit these if your Codex CLI or defaults differ.
+        # GORCHESTRA_CODEX_BIN=codex
+        # GORCHESTRA_CODEX_MODEL=gpt-5
+        # GORCHESTRA_CODEX_SANDBOX=workspace-write
+        # GORCHESTRA_CODEX_NETWORK_ACCESS=true
+        # GORCHESTRA_CODEX_WEB_SEARCH=live
+      EOS
+    end
   end
 
   service do
