@@ -327,6 +327,12 @@ type UpdateSessionTitleParams struct {
 	Title string
 }
 
+type UpdateSessionParentParams struct {
+	ID              string
+	ParentSessionID string
+	MaxLineageDepth int
+}
+
 type UpdateSessionWorkspaceParams struct {
 	ID            string
 	WorkspacePath string

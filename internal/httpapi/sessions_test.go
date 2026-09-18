@@ -1347,6 +1347,38 @@ func TestUpdateSessionTitleTrimsAndReturnsSession(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionParentAttachesAndDetachesExistingSession(t *testing.T) {
+	ctx := context.Background()
+	dbStore, _, _, handler := newIntegrationAPI(t, ctx, fake.New())
+	parent := createIntegrationSession(t, ctx, dbStore)
+	moved, err := dbStore.CreateSession(ctx, store.CreateSessionParams{
+		Title: "Existing", AgentType: "fake", WorkspacePath: "/existing",
+	})
+	if err != nil {
+		t.Fatalf("create moved session: %v", err)
+	}
+
+	attach := patchJSON(handler, "/api/sessions/"+moved.ID, `{"parent_session_id":`+quoteJSON(parent.ID)+`}`)
+	if attach.Code != http.StatusOK {
+		t.Fatalf("expected attach status %d, got %d with body %s", http.StatusOK, attach.Code, attach.Body.String())
+	}
+	var response sessionResponse
+	decodeJSON(t, attach, &response)
+	if response.ParentSessionID != parent.ID || response.LineageDepth != 1 || response.WorkspacePath != "/existing" {
+		t.Fatalf("unexpected attached session %#v", response)
+	}
+
+	detach := patchJSON(handler, "/api/sessions/"+moved.ID, `{"parent_session_id":""}`)
+	if detach.Code != http.StatusOK {
+		t.Fatalf("expected detach status %d, got %d with body %s", http.StatusOK, detach.Code, detach.Body.String())
+	}
+	var detachedResponse sessionResponse
+	decodeJSON(t, detach, &detachedResponse)
+	if detachedResponse.ParentSessionID != "" || detachedResponse.LineageDepth != 0 {
+		t.Fatalf("unexpected detached session %#v", detachedResponse)
+	}
+}
+
 func TestUpdateSessionWorkspacePreservesProviderContextAndAppendsMarker(t *testing.T) {
 	ctx := context.Background()
 	root := canonicalPath(t, t.TempDir())

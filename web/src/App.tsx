@@ -45,6 +45,7 @@ import {
   sessionActivityStreamURL,
   submitMessage,
   updateSessionAgentOptions,
+  updateSessionParent,
   updateSessionPin,
   updateSessionRuntimeAgentOptions,
   updateSessionTitle,
@@ -80,6 +81,7 @@ import {
 } from '@/components/ui/dialog'
 import { AppMenu } from '@/components/app-menu'
 import { CreateSessionDialog } from '@/components/create-session-dialog'
+import { MoveSessionDialog } from '@/components/move-session-dialog'
 import { DashboardOverview } from '@/components/dashboard-overview'
 import { HostConsole, type ConsoleActions } from '@/components/host-console'
 import { NotificationsPopover } from '@/components/notifications-popover'
@@ -203,6 +205,7 @@ function App() {
   const [showArchivedSessions, setShowArchivedSessions] = useState(initialPreferences.showArchivedSessions)
   const [createOpen, setCreateOpen] = useState(false)
   const [createParentSession, setCreateParentSession] = useState<Session | null>(null)
+  const [moveSessionID, setMoveSessionID] = useState<string | null>(null)
   const [mobileListOpen, setMobileListOpen] = useState(false)
   const [loadingSessions, setLoadingSessions] = useState(!initialSessionState.seededCachedSession)
   const [refreshingSessions, setRefreshingSessions] = useState(false)
@@ -1354,6 +1357,13 @@ function App() {
     if (!open) setCreateParentSession(null)
   }
 
+  async function handleMoveSession(parentSessionID: string | null) {
+    if (!moveSessionID) return
+    const updated = await updateSessionParent(moveSessionID, parentSessionID)
+    applySession(updated)
+    await loadSessions({ showLoading: false })
+  }
+
   async function handleSubmitPrompt(
     content: string,
     agentOptions?: SubmitAgentOptions,
@@ -1829,6 +1839,12 @@ function App() {
     creatingChildSessionIDs,
     onCreateChild: serverReachable
       ? openCreateChildSession
+      : undefined,
+    onMove: serverReachable
+      ? (sessionID: string) => {
+          setMobileListOpen(false)
+          setMoveSessionID(sessionID)
+        }
       : undefined,
     archivingSessionID,
     onArchive: serverReachable
@@ -2324,6 +2340,15 @@ function App() {
         onOpenChange={handleCreateOpenChange}
         parentSession={createParentSession}
         onCreate={handleCreate}
+      />
+      <MoveSessionDialog
+        open={Boolean(moveSessionID)}
+        session={moveSessionID ? sessions.find((session) => session.id === moveSessionID) ?? null : null}
+        sessions={sessions}
+        onOpenChange={(open) => {
+          if (!open) setMoveSessionID(null)
+        }}
+        onMove={handleMoveSession}
       />
       {clientDebug ? <ClientDebugPanel readSnapshot={readDebugSnapshot} onClose={toggleClientDebug} /> : null}
     </main>

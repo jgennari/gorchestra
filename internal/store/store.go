@@ -264,6 +264,110 @@ func (s *Store) UpdateSessionTitle(ctx context.Context, params UpdateSessionTitl
 	return s.GetSession(ctx, params.ID)
 }
 
+func (s *Store) UpdateSessionParent(ctx context.Context, params UpdateSessionParentParams) (Session, error) {
+	sessionID := strings.TrimSpace(params.ID)
+	parentSessionID := strings.TrimSpace(params.ParentSessionID)
+	if sessionID == "" {
+		return Session{}, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	if sessionID == parentSessionID {
+		return Session{}, fmt.Errorf("%w: a session cannot be its own parent", ErrInvalidArgument)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, fmt.Errorf("begin update session parent: %w", err)
+	}
+	defer rollback(tx)
+
+	var currentParentID sql.NullString
+	var currentDepth int
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT parent_session_id, lineage_depth FROM sessions WHERE id = ?`,
+		sessionID,
+	).Scan(&currentParentID, &currentDepth); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, fmt.Errorf("%w: session %s", ErrNotFound, sessionID)
+		}
+		return Session{}, fmt.Errorf("load session lineage: %w", err)
+	}
+	if currentParentID.String == parentSessionID {
+		if err := tx.Commit(); err != nil {
+			return Session{}, fmt.Errorf("commit unchanged session parent: %w", err)
+		}
+		return s.GetSession(ctx, sessionID)
+	}
+
+	newDepth := 0
+	if parentSessionID != "" {
+		var parentDepth int
+		if err := tx.QueryRowContext(ctx, `SELECT lineage_depth FROM sessions WHERE id = ?`, parentSessionID).Scan(&parentDepth); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return Session{}, fmt.Errorf("%w: parent session", ErrNotFound)
+			}
+			return Session{}, fmt.Errorf("load parent session: %w", err)
+		}
+
+		var parentIsDescendant bool
+		if err := tx.QueryRowContext(ctx, `
+			WITH RECURSIVE subtree(id) AS (
+				SELECT id FROM sessions WHERE id = ?
+				UNION ALL
+				SELECT child.id FROM sessions child JOIN subtree parent ON child.parent_session_id = parent.id
+			)
+			SELECT EXISTS(SELECT 1 FROM subtree WHERE id = ?)`, sessionID, parentSessionID).Scan(&parentIsDescendant); err != nil {
+			return Session{}, fmt.Errorf("check session parent cycle: %w", err)
+		}
+		if parentIsDescendant {
+			return Session{}, fmt.Errorf("%w: parent session cannot be a descendant", ErrInvalidArgument)
+		}
+		newDepth = parentDepth + 1
+	}
+
+	var subtreeHeight int
+	if err := tx.QueryRowContext(ctx, `
+		WITH RECURSIVE subtree(id, relative_depth) AS (
+			SELECT id, 0 FROM sessions WHERE id = ?
+			UNION ALL
+			SELECT child.id, parent.relative_depth + 1
+			FROM sessions child JOIN subtree parent ON child.parent_session_id = parent.id
+		)
+		SELECT COALESCE(MAX(relative_depth), 0) FROM subtree`, sessionID).Scan(&subtreeHeight); err != nil {
+		return Session{}, fmt.Errorf("measure session subtree: %w", err)
+	}
+	if params.MaxLineageDepth > 0 && newDepth+subtreeHeight > params.MaxLineageDepth {
+		return Session{}, fmt.Errorf("%w: maximum child depth %d exceeded", ErrInvalidArgument, params.MaxLineageDepth)
+	}
+
+	depthDelta := newDepth - currentDepth
+	if _, err := tx.ExecContext(ctx, `
+		WITH RECURSIVE subtree(id) AS (
+			SELECT id FROM sessions WHERE id = ?
+			UNION ALL
+			SELECT child.id FROM sessions child JOIN subtree parent ON child.parent_session_id = parent.id
+		)
+		UPDATE sessions
+		SET parent_session_id = CASE WHEN id = ? THEN ? ELSE parent_session_id END,
+		    lineage_depth = lineage_depth + ?,
+		    updated_at = CASE WHEN id = ? THEN ? ELSE updated_at END
+		WHERE id IN (SELECT id FROM subtree)`,
+		sessionID,
+		sessionID,
+		nullIfEmpty(parentSessionID),
+		depthDelta,
+		sessionID,
+		formatTime(s.now()),
+	); err != nil {
+		return Session{}, fmt.Errorf("update session parent: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Session{}, fmt.Errorf("commit update session parent: %w", err)
+	}
+
+	return s.GetSession(ctx, sessionID)
+}
+
 func (s *Store) UpdateSessionWorkspace(ctx context.Context, params UpdateSessionWorkspaceParams) (Session, error) {
 	sessionID := strings.TrimSpace(params.ID)
 	if sessionID == "" {

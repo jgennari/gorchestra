@@ -1,5 +1,5 @@
 import * as ContextMenu from '@radix-ui/react-context-menu'
-import { Archive, BookOpen, ChevronDown, ChevronRight, GitBranch, LayoutDashboard, MessageSquare, Pin, Plus, RotateCcw, Search } from 'lucide-react'
+import { Archive, BookOpen, ChevronDown, ChevronRight, FolderInput, GitBranch, LayoutDashboard, MessageSquare, Pin, Plus, RotateCcw, Search } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import type { Session } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -20,6 +20,7 @@ type Props = {
   onPinChange?: (sessionID: string, pinned: boolean) => void
   creatingChildSessionIDs?: ReadonlySet<string>
   onCreateChild?: (sessionID: string) => void
+  onMove?: (sessionID: string) => void
   archivingSessionID?: string | null
   onArchive?: (sessionID: string) => void
   overviewSelected?: boolean
@@ -45,6 +46,7 @@ export function SessionList({
   onPinChange,
   creatingChildSessionIDs = new Set(),
   onCreateChild,
+  onMove,
   archivingSessionID = null,
   onArchive,
   overviewSelected = false,
@@ -159,6 +161,7 @@ export function SessionList({
                 onSelect={() => onSelect(session.id)}
                 onPinChange={onPinChange ? (pinned) => onPinChange(session.id, pinned) : undefined}
                 onCreateChild={onCreateChild ? () => onCreateChild(session.id) : undefined}
+                onMove={onMove ? () => onMove(session.id) : undefined}
                 onArchive={onArchive ? () => onArchive(session.id) : undefined}
                 depth={depth}
                 hasChildren={hasChildren}
@@ -185,6 +188,7 @@ function SessionRow({
   onSelect,
   onPinChange,
   onCreateChild,
+  onMove,
   onArchive,
   depth,
   hasChildren,
@@ -202,6 +206,7 @@ function SessionRow({
   onSelect: () => void
   onPinChange?: (pinned: boolean) => void
   onCreateChild?: () => void
+  onMove?: () => void
   onArchive?: () => void
   depth: number
   hasChildren: boolean
@@ -297,7 +302,7 @@ function SessionRow({
     </div>
   )
 
-  if (!onCreateChild && !onArchive && !onPinChange) return row
+  if (!onCreateChild && !onMove && !onArchive && !onPinChange) return row
 
   return (
     <ContextMenu.Root>
@@ -318,6 +323,10 @@ function SessionRow({
           >
             <GitBranch className="size-4 text-muted-foreground" aria-hidden="true" />
             {childCreatePending ? 'Creating child…' : 'New child session'}
+          </ContextMenu.Item>
+          <ContextMenu.Item onSelect={onMove} disabled={!onMove} className={contextMenuItemClass}>
+            <FolderInput className="size-4 text-muted-foreground" aria-hidden="true" />
+            Move under parent…
           </ContextMenu.Item>
           {onPinChange && !archived ? (
             <ContextMenu.Item

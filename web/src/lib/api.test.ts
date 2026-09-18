@@ -27,6 +27,7 @@ import {
   listWorkspaceRoots,
   restoreSession,
 	updateSessionPin,
+  updateSessionParent,
   searchSessionFiles,
   sessionActivityStreamURL,
   sessionFileRawURL,
@@ -220,6 +221,42 @@ test('pin update helper patches the server-owned pin state', async () => {
   const session = await updateSessionPin('sess_1', true)
 
   expect(session.pinned_at).toBe('2026-06-12T16:20:00Z')
+})
+
+test('parent update helper attaches and detaches a session', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe('/api/sessions/sess_1')
+    expect(init?.method).toBe('PATCH')
+    const body = JSON.parse(String(init?.body)) as { parent_session_id: string }
+    return jsonResponse({
+      id: 'sess_1',
+      parent_session_id: body.parent_session_id || undefined,
+      lineage_depth: body.parent_session_id ? 1 : 0,
+      title: 'Moved session',
+      agent_type: 'fake',
+      status: 'idle',
+      workspace_path: '/repo',
+      event_count: 0,
+      tool_count: 0,
+      created_at: '2026-06-12T16:00:00Z',
+      updated_at: '2026-06-12T16:01:00Z',
+      completed_at: null,
+      archived_at: null,
+    })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(updateSessionParent('sess_1', 'sess_parent')).resolves.toMatchObject({
+    parent_session_id: 'sess_parent',
+    lineage_depth: 1,
+  })
+  await expect(updateSessionParent('sess_1', null)).resolves.toMatchObject({ lineage_depth: 0 })
+  expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/sessions/sess_1', expect.objectContaining({
+    body: JSON.stringify({ parent_session_id: 'sess_parent' }),
+  }))
+  expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/sessions/sess_1', expect.objectContaining({
+    body: JSON.stringify({ parent_session_id: '' }),
+  }))
 })
 
 test('workspace update helper patches the session workspace', async () => {

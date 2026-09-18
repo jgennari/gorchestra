@@ -2658,6 +2658,43 @@ test('new child session action opens a prefilled dialog before creating', async 
   })
 })
 
+test('move under parent reorganizes an existing session without changing its configuration', async () => {
+  const user = userEvent.setup()
+  const parent: Session = { ...firstSession, id: 'sess_parent', title: 'Parent project' }
+  const existing: Session = {
+    ...secondSession,
+    id: 'sess_existing',
+    title: 'Existing project',
+    workspace_path: '/repo/existing',
+    agent_type: 'claude',
+    agent_options: { claude: { permission_policy: 'deny' } },
+  }
+  const fetch = fetchMock({ sessions: [parent, existing] })
+  vi.stubGlobal('fetch', fetch)
+  window.history.replaceState({}, '', '/sessions/sess_parent')
+
+  render(<App />)
+
+  const existingRow = await waitFor(() => {
+    const row = document.querySelector('[data-session-id="sess_existing"]')
+    expect(row).not.toBeNull()
+    return row as HTMLElement
+  })
+  fireEvent.contextMenu(existingRow, { clientX: 24, clientY: 32 })
+  await user.click(await screen.findByRole('menuitem', { name: 'Move under parent…' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Move under parent' })
+  await user.click(within(dialog).getByRole('radio', { name: /Parent project/ }))
+  await user.click(within(dialog).getByRole('button', { name: 'Move' }))
+
+  await waitFor(() => expect(existingRow).toHaveAttribute('data-parent-session-id', 'sess_parent'))
+  const updateCall = fetch.mock.calls.find(([url, init]) =>
+    String(url) === '/api/sessions/sess_existing' && init?.method === 'PATCH',
+  )
+  expect(JSON.parse(String(updateCall?.[1]?.body))).toEqual({ parent_session_id: 'sess_parent' })
+  expect(existing.workspace_path).toBe('/repo/existing')
+  expect(existing.agent_options).toEqual({ claude: { permission_policy: 'deny' } })
+})
+
 test('archived session uses restore confirmation', async () => {
   const user = userEvent.setup()
   const archivedSession: Session = {
@@ -2752,15 +2789,26 @@ function fetchMock({
     }
     const sessionMatch = path.match(/^\/api\/sessions\/([^/?]+)$/)
     if (sessionMatch) {
-      const matchedSession = sessions.find((session) => session.id === decodeURIComponent(sessionMatch[1]))
+      const matchedSessionIndex = sessions.findIndex((session) => session.id === decodeURIComponent(sessionMatch[1]))
+      const matchedSession = sessions[matchedSessionIndex]
       if (matchedSession) {
 				if (init?.method === 'PATCH') {
-					const body = JSON.parse(String(init.body)) as { pinned?: boolean }
+					const body = JSON.parse(String(init.body)) as { pinned?: boolean; parent_session_id?: string }
 					if (typeof body.pinned === 'boolean') {
 						return jsonResponse({
 							...matchedSession,
 							pinned_at: body.pinned ? '2026-06-12T16:20:00Z' : null,
 						})
+					}
+					if (typeof body.parent_session_id === 'string') {
+						const parent = sessions.find((session) => session.id === body.parent_session_id)
+						const updated = {
+							...matchedSession,
+							parent_session_id: body.parent_session_id || undefined,
+							lineage_depth: parent ? (parent.lineage_depth ?? 0) + 1 : 0,
+						}
+						sessions[matchedSessionIndex] = updated
+						return jsonResponse(updated)
 					}
 				}
         return jsonResponse(matchedSession)

@@ -2637,6 +2637,28 @@ func (s *fakeHTTPStore) UpdateSessionTitle(_ context.Context, params store.Updat
 	return session, nil
 }
 
+func (s *fakeHTTPStore) UpdateSessionParent(_ context.Context, params store.UpdateSessionParentParams) (store.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[params.ID]
+	if !ok {
+		return store.Session{}, store.ErrNotFound
+	}
+	session.ParentSessionID = strings.TrimSpace(params.ParentSessionID)
+	if session.ParentSessionID == "" {
+		session.LineageDepth = 0
+	} else if parent, exists := s.sessions[session.ParentSessionID]; exists {
+		session.LineageDepth = parent.LineageDepth + 1
+	} else {
+		return store.Session{}, store.ErrNotFound
+	}
+	session.UpdatedAt = testCreatedAt
+	s.sessions[params.ID] = session
+
+	return session, nil
+}
+
 func (s *fakeHTTPStore) UpdateSessionWorkspace(_ context.Context, params store.UpdateSessionWorkspaceParams) (store.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

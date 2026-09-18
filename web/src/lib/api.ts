@@ -851,6 +851,13 @@ export async function updateSessionTitle(sessionID: string, title: string) {
   })
 }
 
+export async function updateSessionParent(sessionID: string, parentSessionID: string | null) {
+  return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ parent_session_id: parentSessionID ?? '' }),
+  })
+}
+
 export async function updateSessionWorkspace(sessionID: string, workspacePath: string) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`, {
     method: 'PATCH',

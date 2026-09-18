@@ -31,10 +31,11 @@ type createSessionRequest struct {
 }
 
 type updateSessionRequest struct {
-	Title         *string             `json:"title,omitempty"`
-	WorkspacePath *string             `json:"workspace_path,omitempty"`
-	AgentOptions  *createAgentOptions `json:"agent_options,omitempty"`
-	Pinned        *bool               `json:"pinned,omitempty"`
+	Title           *string             `json:"title,omitempty"`
+	ParentSessionID *string             `json:"parent_session_id,omitempty"`
+	WorkspacePath   *string             `json:"workspace_path,omitempty"`
+	AgentOptions    *createAgentOptions `json:"agent_options,omitempty"`
+	Pinned          *bool               `json:"pinned,omitempty"`
 }
 
 type createAgentOptions struct {
@@ -503,8 +504,8 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if request.Title == nil && request.WorkspacePath == nil && request.AgentOptions == nil && request.Pinned == nil {
-		writeError(w, http.StatusBadRequest, "session update requires title, workspace_path, agent_options, or pinned")
+	if request.Title == nil && request.ParentSessionID == nil && request.WorkspacePath == nil && request.AgentOptions == nil && request.Pinned == nil {
+		writeError(w, http.StatusBadRequest, "session update requires title, parent_session_id, workspace_path, agent_options, or pinned")
 		return
 	}
 	if request.AgentOptions != nil && api.agentOptionsMu != nil {
@@ -584,6 +585,26 @@ func (api API) updateSessionHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "failed to update session")
+			return
+		}
+	}
+
+	if request.ParentSessionID != nil {
+		session, err = api.store.UpdateSessionParent(r.Context(), store.UpdateSessionParentParams{
+			ID:              sessionID,
+			ParentSessionID: *request.ParentSessionID,
+			MaxLineageDepth: defaultMaxLineageDepth,
+		})
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, err.Error())
+				return
+			}
+			if errors.Is(err, store.ErrInvalidArgument) {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to update session parent")
 			return
 		}
 	}

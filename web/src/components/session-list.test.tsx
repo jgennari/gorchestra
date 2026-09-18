@@ -276,6 +276,21 @@ test('session context menu requests child creation for the clicked row', async (
   expect(onSelect).not.toHaveBeenCalled()
 })
 
+test('session context menu requests moving the clicked row', async () => {
+  const user = userEvent.setup()
+  const onMove = vi.fn()
+  const onSelect = vi.fn()
+  const { container } = render(<SessionListHarness onMove={onMove} onSelect={onSelect} />)
+  const row = container.querySelector('[data-session-id="sess_failed"]')
+  expect(row).not.toBeNull()
+  fireEvent.contextMenu(row!, { clientX: 24, clientY: 32 })
+
+  await user.click(await screen.findByRole('menuitem', { name: 'Move under parent…' }))
+
+  expect(onMove).toHaveBeenCalledWith('sess_failed')
+  expect(onSelect).not.toHaveBeenCalled()
+})
+
 test('session context menu targets archive and disables invalid child actions', async () => {
   const onArchive = vi.fn()
   const { container, unmount } = render(

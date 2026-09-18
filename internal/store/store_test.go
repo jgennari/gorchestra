@@ -1359,6 +1359,93 @@ func TestUpdateSessionTitleAllowsEmptyTitle(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionParentMovesSubtreeAndPreservesSessionConfiguration(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	parent := createTestSessionWithTitle(t, ctx, store, "Parent")
+	moved, err := store.CreateSession(ctx, CreateSessionParams{
+		Title: "Moved", AgentType: "codex", WorkspacePath: "/original", AgentOptions: json.RawMessage(`{"codex":{"permission_policy":"deny"}}`),
+	})
+	if err != nil {
+		t.Fatalf("create moved session: %v", err)
+	}
+	child, err := store.CreateSession(ctx, CreateSessionParams{
+		Title: "Child", AgentType: "fake", ParentSessionID: moved.ID, MaxLineageDepth: 6,
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	updated, err := store.UpdateSessionParent(ctx, UpdateSessionParentParams{
+		ID: moved.ID, ParentSessionID: parent.ID, MaxLineageDepth: 6,
+	})
+	if err != nil {
+		t.Fatalf("attach session: %v", err)
+	}
+	if updated.ParentSessionID != parent.ID || updated.LineageDepth != 1 {
+		t.Fatalf("unexpected moved lineage %#v", updated)
+	}
+	if updated.WorkspacePath != "/original" || updated.AgentType != "codex" || string(updated.AgentOptions) != `{"codex":{"permission_policy":"deny"}}` {
+		t.Fatalf("session configuration changed during move: %#v", updated)
+	}
+	updatedChild, err := store.GetSession(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("get moved child: %v", err)
+	}
+	if updatedChild.ParentSessionID != moved.ID || updatedChild.LineageDepth != 2 {
+		t.Fatalf("unexpected child lineage %#v", updatedChild)
+	}
+
+	detached, err := store.UpdateSessionParent(ctx, UpdateSessionParentParams{ID: moved.ID, MaxLineageDepth: 6})
+	if err != nil {
+		t.Fatalf("detach session: %v", err)
+	}
+	if detached.ParentSessionID != "" || detached.LineageDepth != 0 {
+		t.Fatalf("unexpected detached lineage %#v", detached)
+	}
+	updatedChild, err = store.GetSession(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("get detached child: %v", err)
+	}
+	if updatedChild.LineageDepth != 1 {
+		t.Fatalf("expected child depth 1 after detach, got %d", updatedChild.LineageDepth)
+	}
+}
+
+func TestUpdateSessionParentRejectsCyclesMissingParentsAndExcessDepth(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t, ctx)
+	root := createTestSessionWithTitle(t, ctx, store, "Root")
+	child, err := store.CreateSession(ctx, CreateSessionParams{
+		Title: "Child", AgentType: "fake", ParentSessionID: root.ID, MaxLineageDepth: 6,
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	grandchild, err := store.CreateSession(ctx, CreateSessionParams{
+		Title: "Grandchild", AgentType: "fake", ParentSessionID: child.ID, MaxLineageDepth: 6,
+	})
+	if err != nil {
+		t.Fatalf("create grandchild: %v", err)
+	}
+	other := createTestSessionWithTitle(t, ctx, store, "Other")
+
+	for name, params := range map[string]UpdateSessionParentParams{
+		"self":         {ID: root.ID, ParentSessionID: root.ID, MaxLineageDepth: 6},
+		"descendant":   {ID: root.ID, ParentSessionID: grandchild.ID, MaxLineageDepth: 6},
+		"excess depth": {ID: root.ID, ParentSessionID: other.ID, MaxLineageDepth: 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := store.UpdateSessionParent(ctx, params); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("expected invalid argument, got %v", err)
+			}
+		})
+	}
+	if _, err := store.UpdateSessionParent(ctx, UpdateSessionParentParams{ID: root.ID, ParentSessionID: "sess_missing", MaxLineageDepth: 6}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected missing parent error, got %v", err)
+	}
+}
+
 func TestUpdateSessionWorkspaceTrimsPathAndUpdatesTimestamp(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t, ctx)
