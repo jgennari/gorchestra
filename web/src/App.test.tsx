@@ -2534,6 +2534,30 @@ test('archive requires dialog confirmation', async () => {
   expect(window.location.pathname).toBe('/')
 })
 
+test('archiving a newly created session releases the dialog and keeps session navigation interactive', async () => {
+  const user = userEvent.setup()
+  const fetch = fetchMock()
+  vi.stubGlobal('fetch', fetch)
+
+  render(<App />)
+
+  await user.click(await screen.findByRole('button', { name: 'Create session' }))
+  const createDialog = await screen.findByRole('dialog', { name: 'Create session' })
+  await user.type(within(createDialog).getByLabelText('Title'), 'Temporary archive test')
+  await user.click(within(createDialog).getByRole('button', { name: 'Create' }))
+
+  expect(await screen.findByRole('button', { name: 'Temporary archive test' })).toBeInTheDocument()
+  await user.click(await screen.findByRole('button', { name: 'Archive selected session' }))
+  const archiveDialog = await screen.findByRole('dialog', { name: 'Archive session?' })
+  await user.click(within(archiveDialog).getByRole('button', { name: 'Archive' }))
+
+  expect(await screen.findByRole('heading', { name: 'Your work at a glance' })).toBeInTheDocument()
+  await waitFor(() => expect(document.body).not.toHaveStyle({ pointerEvents: 'none' }))
+  await user.click(screen.getByRole('button', { name: 'Write docs' }))
+
+  expect(window.location.pathname).toBe('/sessions/write-docs')
+})
+
 test('archived session uses restore confirmation', async () => {
   const user = userEvent.setup()
   const archivedSession: Session = {
@@ -2590,6 +2614,12 @@ function fetchMock({
     const path = String(url)
     if (path === '/api/health') {
       return jsonResponse({ status: 'ok' })
+    }
+    if (path === '/api/sessions' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as { title?: string }
+      const createdSession = session('sess_created', body.title || 'Untitled session', '2026-06-12T16:03:00Z')
+      sessions.unshift(createdSession)
+      return jsonResponse({ session_id: createdSession.id })
     }
     if (path === '/api/sessions?limit=50') {
       return jsonResponse({ sessions: sessions.filter((session) => !session.archived_at) })
