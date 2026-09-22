@@ -1,10 +1,10 @@
-import { readFile, utimes } from 'node:fs/promises'
+import { readFile, readdir, utimes } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const webDir = join(repoRoot, 'web')
-const embeddedIndex = join(repoRoot, 'internal', 'webassets', 'dist', 'index.html')
+const embeddedDist = join(repoRoot, 'internal', 'webassets', 'dist')
 const watcherNudge = join(repoRoot, 'internal', 'webassets', 'assets.go')
 const backendURL = process.env.THREAVE_HUMAN_BACKEND_URL ?? process.env.GORCHESTRA_HUMAN_BACKEND_URL ?? 'http://127.0.0.1:18080'
 const productionURL = process.env.THREAVE_PRODUCTION_URL ?? process.env.GORCHESTRA_PRODUCTION_URL ?? 'https://gorchestra.coin-triceratops.ts.net'
@@ -27,10 +27,10 @@ async function main() {
   })
   await run(['bun', 'run', 'build:stage'], repoRoot)
 
-  const expectedIndex = await readFile(embeddedIndex, 'utf8')
-  if (await backendServes(expectedIndex)) {
+  const expectedAssets = await readEmbeddedAssets()
+  if (await backendServes(expectedAssets)) {
     console.log('[prod-refresh] production already serves this frontend build')
-    await verifyProductionOrigin(expectedIndex)
+    await verifyProductionOrigin(expectedAssets)
     return
   }
 
@@ -46,13 +46,23 @@ async function main() {
     return
   }
 
-  const result = await waitForPromotion(expectedIndex)
+  const result = await waitForPromotion(expectedAssets)
   if (result === 'deferred') {
     console.log('[prod-refresh] a session started; production will update automatically when active sessions finish')
     return
   }
 
-  await verifyProductionOrigin(expectedIndex)
+  await verifyProductionOrigin(expectedAssets)
+}
+
+type EmbeddedAsset = { path: string; contents: string }
+
+async function readEmbeddedAssets(): Promise<EmbeddedAsset[]> {
+  const entries = await readdir(embeddedDist, { withFileTypes: true })
+  return Promise.all(entries.filter((entry) => entry.isFile()).map(async (entry) => ({
+    path: entry.name === 'index.html' ? '/' : `/${entry.name}`,
+    contents: await readFile(join(embeddedDist, entry.name), 'utf8'),
+  })))
 }
 
 async function requireHumanStack() {
@@ -88,18 +98,23 @@ async function hasRunningSessions() {
   }
 }
 
-async function backendServes(expectedIndex: string) {
+async function backendServes(expectedAssets: EmbeddedAsset[]) {
   try {
-    return (await requestText(`${backendURL}/`)) === expectedIndex
+    for (const asset of expectedAssets) {
+      if ((await requestText(`${backendURL}${asset.path}`)) !== asset.contents) {
+        return false
+      }
+    }
+    return true
   } catch {
     return false
   }
 }
 
-async function waitForPromotion(expectedIndex: string): Promise<'updated' | 'deferred'> {
+async function waitForPromotion(expectedAssets: EmbeddedAsset[]): Promise<'updated' | 'deferred'> {
   const deadline = Date.now() + promotionTimeoutMs
   while (Date.now() < deadline) {
-    if (await backendServes(expectedIndex)) {
+    if (await backendServes(expectedAssets)) {
       console.log('[prod-refresh] backend now serves the promoted frontend')
       return 'updated'
     }
@@ -111,10 +126,11 @@ async function waitForPromotion(expectedIndex: string): Promise<'updated' | 'def
   fail(`backend did not serve the promoted frontend within ${promotionTimeoutMs}ms; inspect \`bun run dev:human:logs\``)
 }
 
-async function verifyProductionOrigin(expectedIndex: string) {
-  const servedIndex = await requestText(`${productionURL}/`)
-  if (servedIndex !== expectedIndex) {
-    fail(`${productionURL} is healthy but does not serve the promoted frontend`)
+async function verifyProductionOrigin(expectedAssets: EmbeddedAsset[]) {
+  for (const asset of expectedAssets) {
+    if ((await requestText(`${productionURL}${asset.path}`)) !== asset.contents) {
+      fail(`${productionURL}${asset.path} does not serve the promoted frontend`)
+    }
   }
   console.log(`[prod-refresh] verified ${productionURL}`)
 }
