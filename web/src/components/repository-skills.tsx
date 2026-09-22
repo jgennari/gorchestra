@@ -280,7 +280,7 @@ export function RepositorySkills({
                       variant="outline"
                       disabled={Boolean(busy)}
                       onClick={() => {
-                        if (!window.confirm(`Replace the existing Claude entry for “${skill.directory_name}” with a bridge? Gorchestra will move it to a timestamped backup first.`)) return
+                        if (!window.confirm(`Replace the existing Claude entry for “${skill.directory_name}” with a bridge? Threave will move it to a timestamped backup first.`)) return
                         void perform(`replace-${skill.directory_name}`, async () => {
                           const result = userScope
                             ? await repairUserSkillClaudeBridge(skill.directory_name, true)

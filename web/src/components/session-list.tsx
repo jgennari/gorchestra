@@ -80,7 +80,7 @@ export function SessionList({
             onClick={onOverview}
             className="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <img src="/icon.svg" alt="Gorchestra" className="sidebar-logo-mark h-9 w-9 shrink-0" />
+            <img src="/icon.svg" alt="Threave" className="sidebar-logo-mark h-9 w-9 shrink-0" />
           </button>
           <div className="flex shrink-0 items-center gap-2">
             {notificationAction}

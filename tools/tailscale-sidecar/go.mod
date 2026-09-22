@@ -1,4 +1,4 @@
-module github.com/jgennari/gorchestra/tools/tailscale-sidecar
+module github.com/threave-io/threave/tools/tailscale-sidecar
 
 go 1.26.6
 

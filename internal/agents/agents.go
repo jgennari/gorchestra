@@ -137,7 +137,7 @@ type SteeringBroker interface {
 // ProviderMessage returns the message sent to an agent provider. Context is
 // deliberately kept separate from Message so orchestration can persist and
 // display the original user-authored message while giving the provider trusted
-// Gorchestra runtime instructions.
+// Threave runtime instructions.
 func (input AgentInput) ProviderMessage() string {
 	context := strings.TrimSpace(input.Context)
 	if context == "" {

@@ -9,7 +9,7 @@ const webDir = join(repoRoot, 'web')
 const webDist = join(webDir, 'dist')
 const embedDist = join(repoRoot, 'internal', 'webassets', 'dist')
 const releaseDir = join(repoRoot, 'dist')
-const binaryName = process.platform === 'win32' ? 'gorchestra.exe' : 'gorchestra'
+const binaryName = process.platform === 'win32' ? 'threave.exe' : 'threave'
 const binaryPath = join(releaseDir, binaryName)
 const command = Bun.argv[2] ?? 'build'
 const version = process.env.VERSION ?? 'dev'
@@ -36,7 +36,7 @@ async function main() {
 
 async function build() {
   await run(['bun', 'install', '--frozen-lockfile'], webDir)
-  await run(['bun', 'run', 'build'], webDir, { VITE_GORCHESTRA_VERSION: version })
+  await run(['bun', 'run', 'build'], webDir, { VITE_THREAVE_VERSION: version })
   await stageAssets()
   await run(['go', 'test', './...'], repoRoot)
   await mkdir(releaseDir, { recursive: true })

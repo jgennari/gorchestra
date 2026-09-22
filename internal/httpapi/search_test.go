@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/store"
 )
 
 func TestSearchStreamReturnsSessionsBeforeHistory(t *testing.T) {

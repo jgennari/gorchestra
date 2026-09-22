@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 const questionFixture = `{"questions":[{"question":"Which sections?","header":"Sections","options":[{"label":"Summary","description":"Overview"},{"label":"Tests","description":"Validation"}],"multiSelect":true},{"question":" Output format? ","header":"Format","options":[{"label":"Text"},{"label":"JSON"}],"multiSelect":false}],"metadata":{"source":"fixture"}}`

@@ -140,7 +140,7 @@ export function SessionSchedules({
         {creating ? <ScheduleEditor form={form} setForm={setForm} saving={busy === 'save'} onSave={() => void save()} onCancel={() => setCreating(false)} /> : null}
 
         {schedules.length === 0 && !creating ? (
-          <div className="rounded-lg border border-border/80 bg-background/72 p-10 text-center shadow-sm"><Clock3 className="mx-auto mb-3 size-7 text-muted-foreground" /><p className="font-medium">No scheduled tasks</p><p className="mt-1 text-sm text-muted-foreground">Create one to run a recurring prompt while Gorchestra is online.</p></div>
+          <div className="rounded-lg border border-border/80 bg-background/72 p-10 text-center shadow-sm"><Clock3 className="mx-auto mb-3 size-7 text-muted-foreground" /><p className="font-medium">No scheduled tasks</p><p className="mt-1 text-sm text-muted-foreground">Create one to run a recurring prompt while Threave is online.</p></div>
         ) : null}
 
         {schedules.map((schedule) => {

@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 const (
@@ -375,8 +375,8 @@ func (r *acpRun) initialize(ctx context.Context) error {
 	id, err := r.rpc.sendRequest("initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientInfo": map[string]any{
-			"name":    "gorchestra",
-			"title":   "Gorchestra",
+			"name":    "threave",
+			"title":   "Threave",
 			"version": "0.0.0",
 		},
 		"capabilities": map[string]any{},

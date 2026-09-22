@@ -17,11 +17,11 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/store"
 )
 
 const (
-	DefaultSubscriber                  = "https://github.com/jgennari/gorchestra"
+	DefaultSubscriber                  = "https://github.com/threave-io/threave"
 	declarativeNotificationContentType = "application/notification+json"
 	sendTimeout                        = 15 * time.Second
 )
@@ -173,7 +173,7 @@ func (s *Service) DeleteSubscription(ctx context.Context, endpoint string) error
 func (s *Service) SendTest(ctx context.Context) error {
 	return s.sendToActiveSubscriptions(ctx, notificationInput{
 		Kind:    "test",
-		Title:   "Gorchestra notifications enabled",
+		Title:   "Threave notifications enabled",
 		Body:    "You will be notified when a session stops.",
 		Path:    "/",
 		Tag:     "gorchestra-test",

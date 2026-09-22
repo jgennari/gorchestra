@@ -1,4 +1,4 @@
-module github.com/jgennari/gorchestra
+module github.com/threave-io/threave
 
 go 1.23.5
 

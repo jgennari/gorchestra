@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 // Claude accepts images as content blocks on the streaming user message.

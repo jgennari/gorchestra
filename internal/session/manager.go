@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 var (

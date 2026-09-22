@@ -111,7 +111,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 }
 
 // Restore reinstates a durable route and stopped snapshot without starting any
-// child process. A preview must always be explicitly started after Gorchestra
+// child process. A preview must always be explicitly started after Threave
 // itself restarts.
 func (m *Manager) Restore(state PersistedState) error {
 	if strings.TrimSpace(state.Snapshot.SessionID) == "" {
@@ -454,6 +454,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	if request.URL.Path == IngressHealthPath {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Gorchestra-Preview-Ingress", "ok")
+		w.Header().Set("X-Threave-Preview-Ingress", "ok")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, `{"status":"ok","service":"gorchestra-hosting"}`)
 		return

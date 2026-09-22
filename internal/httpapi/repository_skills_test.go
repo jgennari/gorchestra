@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/agents/fake"
-	"github.com/jgennari/gorchestra/internal/reposkills"
+	"github.com/threave-io/threave/internal/agents/fake"
+	"github.com/threave-io/threave/internal/reposkills"
 )
 
 func TestRepositorySkillCRUDAPI(t *testing.T) {

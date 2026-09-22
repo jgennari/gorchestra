@@ -16,10 +16,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jgennari/gorchestra/internal/agents"
-	eventservice "github.com/jgennari/gorchestra/internal/events"
-	runcontrol "github.com/jgennari/gorchestra/internal/session"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/agents"
+	eventservice "github.com/threave-io/threave/internal/events"
+	"github.com/threave-io/threave/internal/hosting"
+	runcontrol "github.com/threave-io/threave/internal/session"
+	"github.com/threave-io/threave/internal/store"
 )
 
 type createSessionRequest struct {
@@ -2629,26 +2630,30 @@ func (api API) runAgent(
 func (api API) agentRuntimeEnvironment(sessionID string, runIDs ...string) map[string]string {
 	environment := map[string]string{
 		"GORCHESTRA_SESSION_ID": sessionID,
+		"THREAVE_SESSION_ID":    sessionID,
 	}
 	if len(runIDs) > 0 && strings.TrimSpace(runIDs[0]) != "" {
 		environment["GORCHESTRA_RUN_ID"] = strings.TrimSpace(runIDs[0])
+		environment["THREAVE_RUN_ID"] = strings.TrimSpace(runIDs[0])
 	}
 	if strings.TrimSpace(api.agentAPIURL) != "" {
 		environment["GORCHESTRA_API_URL"] = strings.TrimRight(api.agentAPIURL, "/")
+		environment["THREAVE_API_URL"] = strings.TrimRight(api.agentAPIURL, "/")
 	}
 	if strings.TrimSpace(api.executable) != "" {
 		environment["GORCHESTRA_BIN"] = api.executable
+		environment["THREAVE_BIN"] = api.executable
 	}
 	return environment
 }
 
 func (api API) agentHostingContext(workspacePath string) string {
-	recipePath := filepath.Join(workspacePath, ".gorchestra", "host.yaml")
+	recipePath := hosting.RecipePath(workspacePath)
 	if info, err := os.Stat(recipePath); err != nil || info.IsDir() {
 		return ""
 	}
-	return `This workspace has a Gorchestra hosted-preview recipe at .gorchestra/host.yaml.
-Use "$GORCHESTRA_BIN" host validate|status|start|stop|restart|check|logs|url to manage this session's preview. The CLI targets this session automatically through GORCHESTRA_SESSION_ID and GORCHESTRA_API_URL.`
+	return fmt.Sprintf(`This workspace has a Threave hosted-preview recipe at %s.
+Use "$THREAVE_BIN" host validate|status|start|stop|restart|check|logs|url to manage this session's preview. The CLI targets this session automatically through THREAVE_SESSION_ID and THREAVE_API_URL.`, filepath.ToSlash(strings.TrimPrefix(recipePath, workspacePath+string(filepath.Separator))))
 }
 
 func (api API) agentRuntimeContext(session store.Session, runID string) string {
@@ -2660,27 +2665,29 @@ func (api API) agentRuntimeContext(session store.Session, runID string) string {
 		role = "This is a delegated child session."
 	}
 
-	parts := []string{fmt.Sprintf(`This session is running inside Gorchestra, an agent orchestration service that coordinates multiple concurrent agents across supported providers.
+	parts := []string{fmt.Sprintf(`This session is running inside Threave, an agent orchestration service that coordinates multiple concurrent agents across supported providers.
 %s
 
 Current session ID: %s
 Current run ID: %s
 Parent session ID: %s
 
-The current session and run IDs are also available as $GORCHESTRA_SESSION_ID and $GORCHESTRA_RUN_ID.
+The current session and run IDs are also available as $THREAVE_SESSION_ID and $THREAVE_RUN_ID.
 
-You can use Gorchestra's CLI to delegate independent work to child agents and monitor their exact runs. New runs automatically become children of this session and inherit its provider, resolved options, and workspace unless you override supported settings.
+You can use Threave's CLI to delegate independent work to child agents and monitor their exact runs. New runs automatically become children of this session and inherit its provider, resolved options, and workspace unless you override supported settings.
 
 To delegate a named task:
-  "$GORCHESTRA_BIN" run --title "TASK NAME" --prompt-file task.md --detach --json
+  "$THREAVE_BIN" run --title "TASK NAME" --prompt-file task.md --detach --json
 
 The result contains the child session ID and exact run ID. Then use:
-  "$GORCHESTRA_BIN" runs wait RUN_ID --timeout 10m --json
-  "$GORCHESTRA_BIN" runs report RUN_ID --json
+  "$THREAVE_BIN" runs wait RUN_ID --timeout 10m --json
+  "$THREAVE_BIN" runs report RUN_ID --json
 
-Use "$GORCHESTRA_BIN" search "QUERY" --session current --format ndjson to search session titles, durable history, and this session's workspace files. Use --session none for global-only search.
+Use "$THREAVE_BIN" search "QUERY" --session current --format ndjson to search session titles, durable history, and this session's workspace files. Use --session none for global-only search.
 
-Use "$GORCHESTRA_BIN" commands --json to discover the complete CLI contract. Use runs watch to stream activity. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.`, role, session.ID, runID, parentSessionID)}
+Use "$THREAVE_BIN" commands --json to discover the complete CLI contract. Use runs watch to stream activity. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.
+
+The previous GORCHESTRA_BIN, GORCHESTRA_SESSION_ID, GORCHESTRA_RUN_ID, and GORCHESTRA_API_URL variables remain available for older tooling.`, role, session.ID, runID, parentSessionID)}
 	if hosting := api.agentHostingContext(sessionWorkspacePath(session, api.workdir)); hosting != "" {
 		parts = append(parts, hosting)
 	}

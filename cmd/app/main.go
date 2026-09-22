@@ -21,25 +21,26 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/agents"
-	"github.com/jgennari/gorchestra/internal/agents/claude"
-	"github.com/jgennari/gorchestra/internal/agents/codex"
-	"github.com/jgennari/gorchestra/internal/agents/fake"
-	"github.com/jgennari/gorchestra/internal/agents/opencode"
-	"github.com/jgennari/gorchestra/internal/agents/pi"
-	"github.com/jgennari/gorchestra/internal/controlcli"
-	"github.com/jgennari/gorchestra/internal/events"
-	"github.com/jgennari/gorchestra/internal/hosting"
-	"github.com/jgennari/gorchestra/internal/httpapi"
-	"github.com/jgennari/gorchestra/internal/maintenance"
-	"github.com/jgennari/gorchestra/internal/notifications"
-	"github.com/jgennari/gorchestra/internal/scheduler"
-	runcontrol "github.com/jgennari/gorchestra/internal/session"
-	"github.com/jgennari/gorchestra/internal/store"
-	"github.com/jgennari/gorchestra/internal/webassets"
+	"github.com/threave-io/threave/internal/agents"
+	"github.com/threave-io/threave/internal/agents/claude"
+	"github.com/threave-io/threave/internal/agents/codex"
+	"github.com/threave-io/threave/internal/agents/fake"
+	"github.com/threave-io/threave/internal/agents/opencode"
+	"github.com/threave-io/threave/internal/agents/pi"
+	"github.com/threave-io/threave/internal/controlcli"
+	"github.com/threave-io/threave/internal/events"
+	"github.com/threave-io/threave/internal/hosting"
+	"github.com/threave-io/threave/internal/httpapi"
+	"github.com/threave-io/threave/internal/maintenance"
+	"github.com/threave-io/threave/internal/notifications"
+	"github.com/threave-io/threave/internal/scheduler"
+	runcontrol "github.com/threave-io/threave/internal/session"
+	"github.com/threave-io/threave/internal/store"
+	"github.com/threave-io/threave/internal/webassets"
 )
 
-const databaseFileName = "gorchestra.db"
+const databaseFileName = "threave.db"
+const legacyDatabaseFileName = "gorchestra.db"
 
 var version = "dev"
 
@@ -74,7 +75,7 @@ func main() {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := runHostCLI(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "gorchestra host: %v\n", err)
+			fmt.Fprintf(os.Stderr, "threave host: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -83,7 +84,7 @@ func main() {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := (controlcli.CLI{}).Run(ctx, os.Args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "gorchestra: %v\n", err)
+			fmt.Fprintf(os.Stderr, "threave: %v\n", err)
 			os.Exit(controlcli.ExitCode(err))
 		}
 		return
@@ -98,7 +99,7 @@ func main() {
 		log.Fatalf("configuration failed: %v", err)
 	}
 	if cfg.showVersion {
-		fmt.Printf("gorchestra %s\n", version)
+		fmt.Printf("threave %s\n", version)
 		return
 	}
 
@@ -210,7 +211,7 @@ func main() {
 
 	executable, err := os.Executable()
 	if err != nil {
-		log.Printf("resolve gorchestra executable failed: %v", err)
+		log.Printf("resolve threave executable failed: %v", err)
 	}
 	handler := httpapi.NewRouter(httpapi.Dependencies{Store: dbStore, Events: eventService, Agents: agentRegistry, Runs: runManager, Notifications: notificationService, Workdir: cfg.workspace, WorkspaceRoots: cfg.workspaceRoots, StaticAssets: frontendAssets, AgentAPIURL: listeningURL("127.0.0.1", cfg.port), Executable: executable, Hosting: hostingManager, HostStore: dbStore, Schedules: scheduleService, Maintenance: maintenanceService, MaxLineageDepth: cfg.maxLineageDepth, MaxActiveChildren: cfg.maxActiveChildren})
 	if err := scheduleService.Start(ctx); err != nil {
@@ -225,7 +226,7 @@ func main() {
 	listenURL := listeningURL(cfg.host, cfg.port)
 	errc := make(chan error, 1)
 	go func() {
-		log.Printf("gorchestra listening on %s", listenURL)
+		log.Printf("threave listening on %s", listenURL)
 		if cfg.open {
 			go func() {
 				time.Sleep(150 * time.Millisecond)
@@ -277,12 +278,12 @@ func parseConfig() (config, error) {
 func parseConfigArgs(args []string, getenv func(string) string) (config, error) {
 	var cfg config
 	var workspaceRoots repeatedStringFlag
-	flags := flag.NewFlagSet("gorchestra", flag.ContinueOnError)
+	flags := flag.NewFlagSet("threave", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&cfg.configPath, "config", "", "path to an env-style configuration file")
 	flags.StringVar(&cfg.host, "host", "", "host interface for the HTTP server")
 	flags.StringVar(&cfg.port, "port", "", "port for the HTTP server")
-	flags.StringVar(&cfg.dataDir, "data-dir", "", "directory for Gorchestra runtime data")
+	flags.StringVar(&cfg.dataDir, "data-dir", "", "directory for Threave runtime data")
 	flags.StringVar(&cfg.db, "db", "", "path to the SQLite database; overrides --data-dir")
 	flags.StringVar(&cfg.workspace, "workspace", "", "workspace directory for agent runs")
 	flags.Var(&workspaceRoots, "workspace-root", "additional allowed workspace root; may be provided more than once")
@@ -332,7 +333,7 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 	}
 
 	if !configFlag {
-		cfg.configPath = envOr(getenv, "GORCHESTRA_CONFIG", "")
+		cfg.configPath = envOrAny(getenv, []string{"THREAVE_CONFIG", "GORCHESTRA_CONFIG"}, "")
 	}
 	configEnv, err := loadConfigEnvFile(cfg.configPath)
 	if err != nil {
@@ -438,6 +439,9 @@ func parseConfigArgs(args []string, getenv func(string) string) (config, error) 
 		}
 		cfg.dataDir = resolvedDataDir
 		cfg.db = filepath.Join(resolvedDataDir, databaseFileName)
+		if fileExists(filepath.Join(resolvedDataDir, legacyDatabaseFileName)) && !fileExists(cfg.db) {
+			cfg.db = filepath.Join(resolvedDataDir, legacyDatabaseFileName)
+		}
 	}
 
 	if cfg.workspace == "" {
@@ -570,6 +574,15 @@ func trimConfigValue(value string) string {
 
 func mergedGetenv(getenv func(string) string, configEnv map[string]string) func(string) string {
 	return func(key string) string {
+		if strings.HasPrefix(key, "GORCHESTRA_") {
+			modern := "THREAVE_" + strings.TrimPrefix(key, "GORCHESTRA_")
+			if value := getenv(modern); value != "" {
+				return value
+			}
+			if value := configEnv[modern]; value != "" {
+				return value
+			}
+		}
 		if value := getenv(key); value != "" {
 			return value
 		}
@@ -638,7 +651,7 @@ func envPositiveInt(getenv func(string) string, key string, fallback int) (int, 
 func defaultOpenCodeBin(getenv func(string) string) string {
 	home, _ := os.UserHomeDir()
 	return defaultOpenCodeBinFor(
-		getenv("GORCHESTRA_OPENCODE_BIN"),
+		envOrAny(getenv, []string{"THREAVE_OPENCODE_BIN", "GORCHESTRA_OPENCODE_BIN"}, ""),
 		home,
 		exec.LookPath,
 		fileExists,
@@ -680,20 +693,36 @@ func defaultDataDirFor(goos string, getenv func(string) string, home string) (st
 	}
 	switch goos {
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "Gorchestra"), nil
+		return preferExistingDataDir(filepath.Join(home, "Library", "Application Support", "Threave"), filepath.Join(home, "Library", "Application Support", "Gorchestra")), nil
 	case "linux":
 		if xdgDataHome := getenv("XDG_DATA_HOME"); xdgDataHome != "" {
-			return filepath.Join(xdgDataHome, "gorchestra"), nil
+			return preferExistingDataDir(filepath.Join(xdgDataHome, "threave"), filepath.Join(xdgDataHome, "gorchestra")), nil
 		}
-		return filepath.Join(home, ".local", "share", "gorchestra"), nil
+		return preferExistingDataDir(filepath.Join(home, ".local", "share", "threave"), filepath.Join(home, ".local", "share", "gorchestra")), nil
 	case "windows":
 		if appData := getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, "Gorchestra"), nil
+			return preferExistingDataDir(filepath.Join(appData, "Threave"), filepath.Join(appData, "Gorchestra")), nil
 		}
-		return filepath.Join(home, "AppData", "Roaming", "Gorchestra"), nil
+		return preferExistingDataDir(filepath.Join(home, "AppData", "Roaming", "Threave"), filepath.Join(home, "AppData", "Roaming", "Gorchestra")), nil
 	default:
-		return filepath.Join(home, ".gorchestra"), nil
+		return preferExistingDataDir(filepath.Join(home, ".threave"), filepath.Join(home, ".gorchestra")), nil
 	}
+}
+
+func preferExistingDataDir(current, legacy string) string {
+	if fileExists(filepath.Join(current, databaseFileName)) {
+		return current
+	}
+	if fileExists(filepath.Join(legacy, legacyDatabaseFileName)) {
+		return legacy
+	}
+	if info, err := os.Stat(current); err == nil && info.IsDir() {
+		return current
+	}
+	if info, err := os.Stat(legacy); err == nil && info.IsDir() {
+		return legacy
+	}
+	return current
 }
 
 func prepareDataDir(value string) (string, error) {

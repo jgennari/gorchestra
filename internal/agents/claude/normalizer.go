@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 type terminalKind int

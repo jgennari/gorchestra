@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/store"
 )
 
 type messageSubmissionStore interface {

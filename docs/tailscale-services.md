@@ -1,4 +1,4 @@
-# Gorchestra Tailscale Services
+# Threave Tailscale Services
 
 Joey's persistent human-test stack has two private HTTPS entry points. They share one Go backend and SQLite database, but intentionally serve different frontend modes:
 

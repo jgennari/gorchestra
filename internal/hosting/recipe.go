@@ -94,7 +94,7 @@ type rawRoute struct {
 	StripPrefix bool   `yaml:"strip_prefix"`
 }
 
-// LoadRecipe loads and validates <workspace>/.gorchestra/host.yaml.
+// LoadRecipe loads and validates a Threave recipe, including the legacy path.
 func LoadRecipe(workspace string) (LoadedRecipe, error) {
 	canonicalWorkspace, err := canonicalWorkspacePath(workspace)
 	if err != nil {

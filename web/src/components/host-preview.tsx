@@ -371,7 +371,7 @@ function ConfigNotice({ status }: { status: HostStatus }) {
           <div>
             <p className="text-sm font-medium">No host recipe found</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Add <code className="rounded bg-muted px-1 py-0.5">{config.path || '.gorchestra/host.yaml'}</code> to this workspace, then validate it here.
+              Add <code className="rounded bg-muted px-1 py-0.5">{config.path || '.threave/host.yaml'}</code> to this workspace, then validate it here.
             </p>
           </div>
         </div>

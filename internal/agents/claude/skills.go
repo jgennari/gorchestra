@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 	"gopkg.in/yaml.v3"
 )
 

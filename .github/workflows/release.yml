@@ -45,7 +45,7 @@ jobs:
       - name: Build frontend
         working-directory: web
         env:
-          VITE_GORCHESTRA_VERSION: ${{ steps.version.outputs.version }}
+          VITE_THREAVE_VERSION: ${{ steps.version.outputs.version }}
         run: bun run build
 
       - name: Stage embedded frontend assets
@@ -93,7 +93,7 @@ jobs:
               dist/*.zip \
               dist/SHA256SUMS \
               --verify-tag \
-              --title "Gorchestra ${{ steps.version.outputs.tag }}" \
+              --title "Threave ${{ steps.version.outputs.tag }}" \
               --generate-notes
           fi
 
@@ -115,7 +115,7 @@ jobs:
             echo "Release tags must look like v0.1.0; got $tag" >&2
             exit 1
           fi
-          source_url="https://github.com/jgennari/gorchestra/archive/refs/tags/${tag}.tar.gz"
+          source_url="https://github.com/threave-io/threave/archive/refs/tags/${tag}.tar.gz"
           source_sha="$(curl -L -sSf "$source_url" | shasum -a 256 | awk '{print $1}')"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
@@ -125,7 +125,7 @@ jobs:
       - name: Check out Homebrew tap
         uses: actions/checkout@v6
         with:
-          repository: jgennari/homebrew-tap
+          repository: threave-io/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
@@ -136,8 +136,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p homebrew-tap/Formula
-          cp packaging/homebrew/gorchestra.rb.template homebrew-tap/Formula/gorchestra.rb
-          perl -0pi -e 's/\{\{VERSION\}\}/$ENV{VERSION}/g; s/\{\{SOURCE_SHA256\}\}/$ENV{SOURCE_SHA256}/g' homebrew-tap/Formula/gorchestra.rb
+          cp packaging/homebrew/threave.rb.template homebrew-tap/Formula/threave.rb
+          perl -0pi -e 's/\{\{VERSION\}\}/$ENV{VERSION}/g; s/\{\{SOURCE_SHA256\}\}/$ENV{SOURCE_SHA256}/g' homebrew-tap/Formula/threave.rb
+          printf '{"gorchestra":"threave"}\n' > homebrew-tap/formula_renames.json
+          rm -f homebrew-tap/Formula/gorchestra.rb
 
       - name: Commit tap update
         working-directory: homebrew-tap
@@ -145,10 +147,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/gorchestra.rb
+          git add Formula/threave.rb Formula/gorchestra.rb formula_renames.json
           if git diff --cached --quiet; then
             echo "Formula already up to date"
             exit 0
           fi
-          git commit -m "Update gorchestra to ${{ steps.version.outputs.version }}"
+          git commit -m "Update threave to ${{ steps.version.outputs.version }}"
           git push

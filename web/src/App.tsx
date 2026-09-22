@@ -2360,7 +2360,7 @@ function OfflineGlobalView({ onOpenSessions }: { onOpenSessions: () => void }) {
   return (
     <section className="command-workspace flex h-full w-full min-h-0 flex-col items-center justify-center overflow-hidden p-8 text-center">
       <WifiOff className="mb-3 size-6 text-muted-foreground" aria-hidden="true" />
-      <h2 className="text-lg font-semibold">Gorchestra is offline</h2>
+      <h2 className="text-lg font-semibold">Threave is offline</h2>
       <p className="mt-2 max-w-sm text-sm text-muted-foreground">
         Saved sessions and chat history are still available on this device. New server activity will resume when the connection returns.
       </p>
@@ -2613,7 +2613,7 @@ function sessionActionDialogCopy(action: SessionContextAction, agentType?: strin
     return {
       title: 'Clear context?',
       description:
-        `Start a fresh ${providerName} for this Gorchestra session. Existing Gorchestra activity stays visible in the transcript.`,
+        `Start a fresh ${providerName} for this Threave session. Existing Threave activity stays visible in the transcript.`,
       confirmLabel: 'Clear',
       pendingLabel: 'Clearing',
     }

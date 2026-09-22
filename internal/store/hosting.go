@@ -163,7 +163,7 @@ func (s *Store) listHostRuntimes(ctx context.Context, where string) ([]HostRunti
 }
 
 // RecoverActiveHostRuntimes atomically turns snapshots left active by a prior
-// Gorchestra process into stopped snapshots. It never starts a process.
+// Threave process into stopped snapshots. It never starts a process.
 func (s *Store) RecoverActiveHostRuntimes(ctx context.Context, reason string) ([]HostRuntime, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

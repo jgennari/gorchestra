@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	eventservice "github.com/jgennari/gorchestra/internal/events"
-	"github.com/jgennari/gorchestra/internal/store"
+	eventservice "github.com/threave-io/threave/internal/events"
+	"github.com/threave-io/threave/internal/store"
 )
 
 type EventAppender interface {

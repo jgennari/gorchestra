@@ -1,7 +1,7 @@
-# Gorchestra Agent Instructions
+# Threave Agent Instructions
 
-Gorchestra is a self-contained AI coding agent orchestration platform built in Go.
-Its guiding principle is: agents perform work; Gorchestra conducts the performance.
+Threave is a self-contained AI coding agent orchestration platform built in Go.
+Its guiding principle is: agents perform work; Threave keeps their work connected.
 
 ## Project Direction
 
@@ -58,7 +58,7 @@ Its guiding principle is: agents perform work; Gorchestra conducts the performan
 
 ## Repository Notes
 
-- This repository is in initial setup. Do not assume implementation directories exist until they are created.
+- Keep the existing human-test service names, paths, and tailnet routes working during the product rename.
 - When a Go module exists, run `go test ./...` before finishing backend changes.
 - When a frontend package exists, run the relevant package manager's test and build commands before finishing frontend changes.
 - For release packaging, tagging, and Homebrew tap details, use `docs/distribution.md` as the source of truth.

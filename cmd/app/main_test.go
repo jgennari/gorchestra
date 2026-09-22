@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	eventservice "github.com/jgennari/gorchestra/internal/events"
-	"github.com/jgennari/gorchestra/internal/store"
+	eventservice "github.com/threave-io/threave/internal/events"
+	"github.com/threave-io/threave/internal/store"
 )
 
 func TestUseControlCLIPrefersExplicitServeAndPreservesLegacyFlags(t *testing.T) {
@@ -70,6 +70,44 @@ func TestParseConfigUsesDataDirForDefaultDatabase(t *testing.T) {
 	}
 	if cfg.workspace != wantWorkspace {
 		t.Fatalf("expected workspace %q, got %q", wantWorkspace, cfg.workspace)
+	}
+}
+
+func TestParseConfigPrefersThreaveEnvironmentAndKeepsLegacyDatabase(t *testing.T) {
+	workspace := t.TempDir()
+	dataDir := t.TempDir()
+	legacyDB := filepath.Join(dataDir, legacyDatabaseFileName)
+	if err := os.WriteFile(legacyDB, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseConfigArgs([]string{"--data-dir", dataDir, "--workspace", workspace}, envMap(map[string]string{
+		"GORCHESTRA_PORT": "15000",
+		"THREAVE_PORT":    "15173",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.port != "15173" || cfg.db != legacyDB {
+		t.Fatalf("unexpected migrated config: port=%s db=%s", cfg.port, cfg.db)
+	}
+}
+
+func TestDefaultDataDirPrefersLegacyDatabaseOverEmptyNewDirectory(t *testing.T) {
+	home := t.TempDir()
+	base := filepath.Join(home, "Library", "Application Support")
+	current := filepath.Join(base, "Threave")
+	legacy := filepath.Join(base, "Gorchestra")
+	for _, path := range []string{current, legacy} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(legacy, legacyDatabaseFileName), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := defaultDataDirFor("darwin", emptyEnv, home)
+	if err != nil || got != legacy {
+		t.Fatalf("expected legacy data directory %q, got %q (%v)", legacy, got, err)
 	}
 }
 
@@ -407,25 +445,29 @@ func TestDefaultDataDirForOS(t *testing.T) {
 			name: "macos",
 			goos: "darwin",
 			home: "/Users/joey",
-			want: filepath.Join("/Users/joey", "Library", "Application Support", "Gorchestra"),
+			want: filepath.Join("/Users/joey", "Library", "Application Support", "Threave"),
 		},
 		{
 			name: "linux xdg",
 			goos: "linux",
 			env:  map[string]string{"XDG_DATA_HOME": "/xdg"},
 			home: "/home/joey",
-			want: filepath.Join("/xdg", "gorchestra"),
+			want: filepath.Join("/xdg", "threave"),
 		},
 		{
 			name: "linux fallback",
 			goos: "linux",
 			home: "/home/joey",
-			want: filepath.Join("/home/joey", ".local", "share", "gorchestra"),
+			want: filepath.Join("/home/joey", ".local", "share", "threave"),
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			if test.name == "macos" {
+				test.home = t.TempDir()
+				test.want = filepath.Join(test.home, "Library", "Application Support", "Threave")
+			}
 			got, err := defaultDataDirFor(test.goos, envMap(test.env), test.home)
 			if err != nil {
 				t.Fatalf("default data dir: %v", err)

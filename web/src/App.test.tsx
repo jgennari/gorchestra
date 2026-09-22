@@ -1728,7 +1728,7 @@ test('search button opens global spotlight search', async () => {
   render(<App />)
 
   await user.click(await screen.findByRole('button', { name: 'Search' }))
-  await user.type(screen.getByRole('textbox', { name: 'Search Gorchestra' }), 'Inspect')
+  await user.type(screen.getByRole('textbox', { name: 'Search Threave' }), 'Inspect')
   expect(await screen.findByRole('option', { name: /Inspect repo/ })).toBeInTheDocument()
   expect(fetch).toHaveBeenCalledWith(
     '/api/search/stream?q=Inspect&session_id=sess_1',
@@ -2710,7 +2710,7 @@ test('archived session uses restore confirmation', async () => {
   render(<App />)
 
   await user.click(await screen.findByRole('button', { name: 'Search' }))
-  await user.type(screen.getByRole('textbox', { name: 'Search Gorchestra' }), 'Archived')
+  await user.type(screen.getByRole('textbox', { name: 'Search Threave' }), 'Archived')
   await user.click(await screen.findByRole('option', { name: /Archived chat/ }))
   await user.click(await screen.findByRole('button', { name: 'Restore selected session' }))
 

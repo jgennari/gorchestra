@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -11,17 +12,23 @@ import (
 )
 
 const (
-	RecipeDirectory     = ".gorchestra"
-	RecipeFilename      = "host.yaml"
-	RecipeVersion       = 1
-	DefaultReadyTimeout = 30 * time.Second
-	MaxRecipeSize       = 1 << 20
+	RecipeDirectory       = ".threave"
+	LegacyRecipeDirectory = ".gorchestra"
+	RecipeFilename        = "host.yaml"
+	RecipeVersion         = 1
+	DefaultReadyTimeout   = 30 * time.Second
+	MaxRecipeSize         = 1 << 20
 )
 
-// RuntimeEnvironmentNames are populated by Gorchestra for every hosted
+// RuntimeEnvironmentNames are populated by Threave for every hosted
 // service. Recipes may reference them using ${NAME}, but may not override or
 // inherit them.
 var RuntimeEnvironmentNames = []string{
+	"THREAVE_HOST",
+	"THREAVE_PORT",
+	"THREAVE_SERVICE_NAME",
+	"THREAVE_SESSION_ID",
+	"THREAVE_WORKSPACE",
 	"GORCHESTRA_HOST",
 	"GORCHESTRA_PORT",
 	"GORCHESTRA_SERVICE_NAME",
@@ -135,7 +142,15 @@ type Route struct {
 }
 
 func RecipePath(workspace string) string {
-	return filepath.Join(workspace, RecipeDirectory, RecipeFilename)
+	current := filepath.Join(workspace, RecipeDirectory, RecipeFilename)
+	if _, err := os.Lstat(current); err == nil {
+		return current
+	}
+	legacy := filepath.Join(workspace, LegacyRecipeDirectory, RecipeFilename)
+	if _, err := os.Lstat(legacy); err == nil {
+		return legacy
+	}
+	return current
 }
 
 func (r *Recipe) Service(name string) (*Service, bool) {

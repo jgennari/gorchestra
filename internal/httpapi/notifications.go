@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/notifications"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/notifications"
+	"github.com/threave-io/threave/internal/store"
 )
 
 type notificationPublicKeyResponse struct {

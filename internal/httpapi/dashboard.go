@@ -8,7 +8,7 @@ import (
 	"time"
 	_ "time/tzdata"
 
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/store"
 )
 
 func (api API) dashboardHandler(w http.ResponseWriter, r *http.Request) {

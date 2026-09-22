@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 const (

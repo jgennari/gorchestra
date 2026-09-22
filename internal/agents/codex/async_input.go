@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 // Only handleIncoming reads provider responses. HTTP answer handlers can send a
@@ -70,7 +70,7 @@ func (r *appServerRun) openAsyncInput(ctx context.Context, event agents.AgentEve
 	}
 	broker, ok := r.userInput.(agents.AsyncUserInputBroker)
 	if !ok {
-		return errors.New("Gorchestra cannot answer asynchronous Codex questions")
+		return errors.New("Threave cannot answer asynchronous Codex questions")
 	}
 	waiter, err := broker.OpenAsyncUserInput(ctx, request, func(answerCtx context.Context, response agents.UserInputResponse) error {
 		if err := ctx.Err(); err != nil {

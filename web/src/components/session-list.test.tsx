@@ -212,8 +212,8 @@ test('session list exposes the app menu action', async () => {
 test('full session list uses the app icon instead of the text header', () => {
   render(<SessionListHarness />)
 
-  expect(screen.getByRole('img', { name: 'Gorchestra' })).toHaveAttribute('src', '/icon.svg')
-  expect(screen.queryByText('Gorchestra')).not.toBeInTheDocument()
+  expect(screen.getByRole('img', { name: 'Threave' })).toHaveAttribute('src', '/icon.svg')
+  expect(screen.queryByText('Threave')).not.toBeInTheDocument()
   expect(screen.queryByRole('heading', { name: 'Sessions' })).not.toBeInTheDocument()
 })
 

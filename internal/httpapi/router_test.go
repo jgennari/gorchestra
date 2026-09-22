@@ -20,11 +20,11 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/agents"
-	"github.com/jgennari/gorchestra/internal/agents/fake"
-	eventservice "github.com/jgennari/gorchestra/internal/events"
-	runcontrol "github.com/jgennari/gorchestra/internal/session"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/agents"
+	"github.com/threave-io/threave/internal/agents/fake"
+	eventservice "github.com/threave-io/threave/internal/events"
+	runcontrol "github.com/threave-io/threave/internal/session"
+	"github.com/threave-io/threave/internal/store"
 )
 
 const testSessionID = "sess_test"

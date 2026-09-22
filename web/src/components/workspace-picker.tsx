@@ -215,7 +215,7 @@ function WorkspaceHelpTooltip() {
           </button>
         </TooltipTrigger>
         <TooltipContent className="max-w-72 p-2 leading-relaxed">
-          Start Gorchestra with <code className="font-mono">--workspace /path/to/repo</code> to change the base
+          Start Threave with <code className="font-mono">--workspace /path/to/repo</code> to change the base
           workspace. Add more selectable roots with <code className="font-mono">--workspace-root /path</code>.
         </TooltipContent>
       </Tooltip>

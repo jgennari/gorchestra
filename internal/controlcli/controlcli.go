@@ -55,16 +55,16 @@ var commandSpecs = []commandSpec{
 	{Command: "agents list", Description: "List registered agent providers.", RequiresService: true, Output: "provider catalog JSON"},
 	{Command: "agents options <provider>", Description: "Show models and modes reported by a provider.", RequiresService: true, Output: "provider option catalog JSON"},
 	{Command: "search <query>", Description: "Search sessions, durable history, and optionally the current session workspace.", RequiresService: true, Output: "merged search response, readable result rows, or an NDJSON source stream", Examples: []string{
-		`gorchestra search "dependency audit" --json`,
-		`gorchestra search "insurance" --session current --format ndjson`,
-		`gorchestra search "release" --session none --json`,
+		`threave search "dependency audit" --json`,
+		`threave search "insurance" --session current --format ndjson`,
+		`threave search "release" --session none --json`,
 	}, Flags: []flagSpec{
-		{Name: "session", Type: "session-id|current|none", Description: "workspace to search; defaults to GORCHESTRA_SESSION_ID inside a managed run"},
+		{Name: "session", Type: "session-id|current|none", Description: "workspace to search; defaults to THREAVE_SESSION_ID inside a managed run"},
 		{Name: "timeout", Type: "duration", Description: "maximum search time"},
 	}},
 	{Command: "run", Description: "Create a session and start its first run; stream until terminal unless detached.", RequiresService: true, Output: "text activity, one JSON result, or an NDJSON accepted/event/result stream", Examples: []string{
-		`gorchestra run --agent codex --prompt-file task.md --format ndjson`,
-		`gorchestra run --title "Read-only audit" --prompt-file task.md --detach --json`,
+		`threave run --agent codex --prompt-file task.md --format ndjson`,
+		`threave run --title "Read-only audit" --prompt-file task.md --detach --json`,
 	}, Flags: []flagSpec{
 		{Name: "agent", Type: "string", Description: "agent provider; required for a root run and inherited by child runs"},
 		{Name: "model", Type: "string", Description: "provider model override"},
@@ -85,7 +85,7 @@ var commandSpecs = []commandSpec{
 		{Name: "until-attention", Type: "boolean", Description: "return with code 6 when input is required"},
 	}},
 	{Command: "runs show <run-id>", Description: "Inspect an exact run.", RequiresService: true, Output: "run JSON by default"},
-	{Command: "runs watch <run-id>", Description: "Replay and follow an exact run until terminal.", RequiresService: true, Output: "text activity, one JSON result, or NDJSON events and result", Examples: []string{`gorchestra runs watch RUN_ID --format ndjson`}, Flags: []flagSpec{
+	{Command: "runs watch <run-id>", Description: "Replay and follow an exact run until terminal.", RequiresService: true, Output: "text activity, one JSON result, or NDJSON events and result", Examples: []string{`threave runs watch RUN_ID --format ndjson`}, Flags: []flagSpec{
 		{Name: "after-seq", Type: "integer", Default: 0, Description: "resume after a durable event sequence"},
 		{Name: "format", Type: "string", Default: "json", Enum: []string{"text", "json", "ndjson"}, Description: "output format"},
 		{Name: "timeout", Type: "duration", Description: "maximum observation time"},
@@ -127,7 +127,7 @@ var commandSpecs = []commandSpec{
 	{Command: "requests resolve <run-id> <request-id>", Description: "Resolve a permission request with an offered option.", RequiresService: true, Output: "permission acknowledgement", Flags: []flagSpec{
 		{Name: "option", Type: "string", Required: true, Description: "offered option ID"},
 	}},
-	{Command: "serve", Description: "Run the Gorchestra service. Bare gorchestra prints help; use this explicit command for maintained launch configurations.", Examples: []string{`gorchestra serve --open`, `gorchestra serve --config ~/.config/gorchestra/gorchestra.env`}, Flags: serveFlagSpecs},
+	{Command: "serve", Description: "Run the Threave service. Bare threave prints help; use this explicit command for maintained launch configurations.", Examples: []string{`threave serve --open`, `threave serve --config ~/.config/threave/threave.env`}, Flags: serveFlagSpecs},
 	{Command: "host status", Description: "Show hosted-preview status.", RequiresService: true, Output: "preview status JSON", Flags: hostCommonFlagSpecs},
 	{Command: "host validate", Description: "Validate a hosted-preview recipe.", RequiresService: true, Output: "preview status JSON", Flags: hostCommonFlagSpecs},
 	{Command: "host check", Description: "Run hosted-preview health checks.", RequiresService: true, Output: "preview status JSON", Flags: hostCommonFlagSpecs},
@@ -144,14 +144,14 @@ var commandSpecs = []commandSpec{
 }
 
 var clientCommonFlagSpecs = []flagSpec{
-	{Name: "server", Type: "url", Default: defaultServer, Description: "API base URL; GORCHESTRA_API_URL supplies the default"},
+	{Name: "server", Type: "url", Default: defaultServer, Description: "API base URL; THREAVE_API_URL supplies the default"},
 	{Name: "format", Type: "string", Default: "json", Enum: []string{"text", "json", "ndjson"}, Description: "output format where supported"},
 	{Name: "json", Type: "boolean", Description: "shorthand for --format json where supported"},
 }
 
 var hostCommonFlagSpecs = []flagSpec{
-	{Name: "server", Type: "url", Default: defaultServer, Description: "API base URL; GORCHESTRA_API_URL supplies the default"},
-	{Name: "session", Type: "session-id", Description: "session ID; GORCHESTRA_SESSION_ID supplies the default"},
+	{Name: "server", Type: "url", Default: defaultServer, Description: "API base URL; THREAVE_API_URL supplies the default"},
+	{Name: "session", Type: "session-id", Description: "session ID; THREAVE_SESSION_ID supplies the default"},
 	{Name: "timeout", Type: "duration", Default: "1m", Description: "command timeout"},
 	{Name: "wait", Type: "boolean", Default: true, Description: "wait for the requested state"},
 }
@@ -203,7 +203,7 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 	case "requests":
 		return c.requests(ctx, args[1:])
 	default:
-		return usageError("unknown command %q; run 'gorchestra commands --json' to discover commands", args[0])
+		return usageError("unknown command %q; run 'threave commands --json' to discover commands", args[0])
 	}
 }
 
@@ -223,6 +223,16 @@ func (c CLI) defaults() CLI {
 	if c.Getenv == nil {
 		c.Getenv = os.Getenv
 	}
+	getenv := c.Getenv
+	c.Getenv = func(key string) string {
+		if value := getenv(key); value != "" {
+			return value
+		}
+		if strings.HasPrefix(key, "THREAVE_") {
+			return getenv("GORCHESTRA_" + strings.TrimPrefix(key, "THREAVE_"))
+		}
+		return ""
+	}
 	if c.Getwd == nil {
 		c.Getwd = os.Getwd
 	}
@@ -231,45 +241,49 @@ func (c CLI) defaults() CLI {
 
 func (c CLI) commands(args []string) error {
 	if len(args) != 1 || args[0] != "--json" {
-		return usageError("usage: gorchestra commands --json")
+		return usageError("usage: threave commands --json")
 	}
 	return writeJSON(c.Stdout, map[string]any{
 		"schema_version":      1,
-		"usage":               "gorchestra <command> [flags]",
-		"service_start":       "gorchestra serve [flags]",
+		"usage":               "threave <command> [flags]",
+		"service_start":       "threave serve [flags]",
 		"offline_discovery":   true,
 		"commands":            commandSpecs,
 		"client_common_flags": clientCommonFlagSpecs,
 		"output_formats":      []string{"text", "json", "ndjson"},
 		"environment": []map[string]string{
-			{"name": "GORCHESTRA_API_URL", "purpose": "default API base URL for client commands"},
-			{"name": "GORCHESTRA_BIN", "purpose": "absolute Gorchestra executable injected into managed agent runs"},
-			{"name": "GORCHESTRA_SESSION_ID", "purpose": "current session; makes run default to a child and supplies host --session"},
-			{"name": "GORCHESTRA_RUN_ID", "purpose": "current run; records which parent run spawned a child"},
+			{"name": "THREAVE_API_URL", "purpose": "default API base URL for client commands"},
+			{"name": "THREAVE_BIN", "purpose": "absolute Threave executable injected into managed agent runs"},
+			{"name": "THREAVE_SESSION_ID", "purpose": "current session; makes run default to a child and supplies host --session"},
+			{"name": "THREAVE_RUN_ID", "purpose": "current run; records which parent run spawned a child"},
+			{"name": "GORCHESTRA_API_URL", "purpose": "legacy alias for THREAVE_API_URL"},
+			{"name": "GORCHESTRA_BIN", "purpose": "legacy alias for THREAVE_BIN"},
+			{"name": "GORCHESTRA_SESSION_ID", "purpose": "legacy alias for THREAVE_SESSION_ID"},
+			{"name": "GORCHESTRA_RUN_ID", "purpose": "legacy alias for THREAVE_RUN_ID"},
 		},
 		"workflows": []map[string]any{
 			{
 				"name":        "delegate_and_fetch",
 				"description": "Start a named child, retain exact IDs, wait for that run, then retrieve its durable report.",
 				"steps": []string{
-					`"$GORCHESTRA_BIN" run --title "TASK NAME" --prompt-file task.md --detach --json`,
-					`"$GORCHESTRA_BIN" runs wait RUN_ID --timeout 10m --json`,
-					`"$GORCHESTRA_BIN" runs report RUN_ID --json`,
+					`"$THREAVE_BIN" run --title "TASK NAME" --prompt-file task.md --detach --json`,
+					`"$THREAVE_BIN" runs wait RUN_ID --timeout 10m --json`,
+					`"$THREAVE_BIN" runs report RUN_ID --json`,
 				},
 			},
 			{
 				"name":        "stream_child",
 				"description": "Start a child and stream its accepted receipt, events, tool activity, and terminal result.",
-				"steps":       []string{`"$GORCHESTRA_BIN" run --title "TASK NAME" --prompt-file task.md --format ndjson`},
+				"steps":       []string{`"$THREAVE_BIN" run --title "TASK NAME" --prompt-file task.md --format ndjson`},
 			},
 			{
 				"name":        "handle_attention",
 				"description": "Stop observation when the run needs input, inspect requests, answer the exact request, and resume watching.",
 				"steps": []string{
-					`"$GORCHESTRA_BIN" runs watch RUN_ID --until-attention --json`,
-					`"$GORCHESTRA_BIN" requests list RUN_ID --json`,
-					`"$GORCHESTRA_BIN" requests answer RUN_ID REQUEST_ID --answers-json answers.json --json`,
-					`"$GORCHESTRA_BIN" runs watch RUN_ID --json`,
+					`"$THREAVE_BIN" runs watch RUN_ID --until-attention --json`,
+					`"$THREAVE_BIN" requests list RUN_ID --json`,
+					`"$THREAVE_BIN" requests answer RUN_ID REQUEST_ID --answers-json answers.json --json`,
+					`"$THREAVE_BIN" runs watch RUN_ID --json`,
 				},
 			},
 		},
@@ -286,21 +300,21 @@ func (c CLI) help(args []string) error {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		_, err := fmt.Fprintln(c.Stdout, `Gorchestra conducts durable agent sessions through a local service.
+		_, err := fmt.Fprintln(c.Stdout, `Threave conducts durable agent sessions through a local service.
 
-Usage: gorchestra <command>
+Usage: threave <command>
 
 Start the service explicitly:
-  gorchestra serve --open
+  threave serve --open
 
 Agent delegation quick start:
-  gorchestra agents list --json
-  gorchestra run --agent codex --title "Dependency audit" \
+  threave agents list --json
+  threave run --agent codex --title "Dependency audit" \
     --prompt-file task.md --detach --json
-  gorchestra runs wait RUN_ID --timeout 10m --json
-  gorchestra runs report RUN_ID --json
+  threave runs wait RUN_ID --timeout 10m --json
+  threave runs report RUN_ID --json
 
-Inside a Gorchestra-managed run, omit --agent, --parent, and --cwd to inherit
+Inside a Threave-managed run, omit --agent, --parent, and --cwd to inherit
 the current provider, attach the new session as a child, and share its workspace.
 
 Agent control commands:
@@ -323,16 +337,16 @@ Agent control commands:
   requests <command>             inspect or answer agent requests
 
 Server and preview commands:
-  serve [flags]                  run the Gorchestra service
+  serve [flags]                  run the Threave service
   host <command>                 manage a hosted preview
 
-Bare "gorchestra" prints this help. This help and "commands --json" work offline.
-Run "gorchestra help run" or "gorchestra commands --json" for details.`)
+Bare "threave" prints this help. This help and "commands --json" work offline.
+Run "threave help run" or "threave commands --json" for details.`)
 		return err
 	}
 	for _, spec := range commandSpecs {
 		if strings.HasPrefix(spec.Command, strings.Join(args, " ")) {
-			if _, err := fmt.Fprintf(c.Stdout, "Usage: gorchestra %s\n\n%s\n", spec.Command, spec.Description); err != nil {
+			if _, err := fmt.Fprintf(c.Stdout, "Usage: threave %s\n\n%s\n", spec.Command, spec.Description); err != nil {
 				return err
 			}
 			if len(spec.Flags) > 0 {
@@ -377,7 +391,7 @@ func (c CLI) agents(ctx context.Context, args []string) error {
 	if len(args) == 2 && args[0] == "options" {
 		return c.getJSON(ctx, server+"/api/agents/"+url.PathEscape(args[1])+"/options")
 	}
-	return usageError("usage: gorchestra agents list | gorchestra agents options <provider>")
+	return usageError("usage: threave agents list | threave agents options <provider>")
 }
 
 type optionalBool struct{ set, value bool }
@@ -408,7 +422,7 @@ func (c CLI) run(ctx context.Context, args []string) (resultErr error) {
 			resultErr = usageError("%v", resultErr)
 		}
 	}()
-	flags := flag.NewFlagSet("gorchestra run", flag.ContinueOnError)
+	flags := flag.NewFlagSet("threave run", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
 	var server, agent, model, thinking, cwd, prompt, promptFile, title, requestID, permissionPolicy, format, parent string
 	var detach bool
@@ -416,7 +430,7 @@ func (c CLI) run(ctx context.Context, args []string) (resultErr error) {
 	var timeout time.Duration
 	var untilAttention bool
 	var fast, plan optionalBool
-	flags.StringVar(&server, "server", c.server(), "Gorchestra API base URL")
+	flags.StringVar(&server, "server", c.server(), "Threave API base URL")
 	flags.StringVar(&agent, "agent", "", "agent provider")
 	flags.StringVar(&model, "model", "", "model override")
 	flags.StringVar(&thinking, "thinking", "", "reasoning effort or thinking level")
@@ -455,15 +469,15 @@ func (c CLI) run(ctx context.Context, args []string) (resultErr error) {
 		return usageError("--format must be text, json, or ndjson")
 	}
 	agent = strings.TrimSpace(agent)
-	currentSessionID := strings.TrimSpace(c.Getenv("GORCHESTRA_SESSION_ID"))
-	currentRunID := strings.TrimSpace(c.Getenv("GORCHESTRA_RUN_ID"))
+	currentSessionID := strings.TrimSpace(c.Getenv("THREAVE_SESSION_ID"))
+	currentRunID := strings.TrimSpace(c.Getenv("THREAVE_RUN_ID"))
 	parent = strings.TrimSpace(parent)
 	if parent == "" && currentSessionID != "" {
 		parent = currentSessionID
 	}
 	if parent == "current" {
 		if currentSessionID == "" {
-			return errors.New("--parent current requires GORCHESTRA_SESSION_ID")
+			return errors.New("--parent current requires THREAVE_SESSION_ID")
 		}
 		parent = currentSessionID
 	}
@@ -639,7 +653,7 @@ func removeJSONFlag(args []string) []string {
 }
 
 func (c CLI) server() string {
-	if value := strings.TrimRight(strings.TrimSpace(c.Getenv("GORCHESTRA_API_URL")), "/"); value != "" {
+	if value := strings.TrimRight(strings.TrimSpace(c.Getenv("THREAVE_API_URL")), "/"); value != "" {
 		return value
 	}
 	return defaultServer
@@ -678,12 +692,12 @@ func (c CLI) doJSON(ctx context.Context, method, target string, body any, output
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return transportError("Gorchestra service %s: %v", target, err)
+		return transportError("Threave service %s: %v", target, err)
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(response.Body)
 	if err != nil {
-		return transportError("read Gorchestra response: %v", err)
+		return transportError("read Threave response: %v", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var value struct {
@@ -693,10 +707,10 @@ func (c CLI) doJSON(ctx context.Context, method, target string, body any, output
 		if value.Error == "" {
 			value.Error = strings.TrimSpace(string(raw))
 		}
-		return transportError("Gorchestra service returned %s: %s", response.Status, value.Error)
+		return transportError("Threave service returned %s: %s", response.Status, value.Error)
 	}
 	if err := json.Unmarshal(raw, output); err != nil {
-		return transportError("decode Gorchestra response: %v", err)
+		return transportError("decode Threave response: %v", err)
 	}
 	return nil
 }

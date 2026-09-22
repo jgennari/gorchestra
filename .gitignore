@@ -13,6 +13,8 @@ coverage.out
 *.test
 *.out
 gorchestra
+threave
+.wrangler/
 
 # Frontend
 node_modules/

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/agents"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/agents"
+	"github.com/threave-io/threave/internal/store"
 )
 
 type asyncInputAgent struct {

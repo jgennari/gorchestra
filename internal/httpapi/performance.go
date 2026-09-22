@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	eventservice "github.com/jgennari/gorchestra/internal/events"
+	eventservice "github.com/threave-io/threave/internal/events"
 )
 
 const (

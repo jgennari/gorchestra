@@ -22,15 +22,15 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jgennari/gorchestra/internal/agents"
-	"github.com/jgennari/gorchestra/internal/console"
-	eventservice "github.com/jgennari/gorchestra/internal/events"
-	"github.com/jgennari/gorchestra/internal/hosting"
-	"github.com/jgennari/gorchestra/internal/notifications"
-	"github.com/jgennari/gorchestra/internal/reposkills"
-	"github.com/jgennari/gorchestra/internal/scheduler"
-	runcontrol "github.com/jgennari/gorchestra/internal/session"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/agents"
+	"github.com/threave-io/threave/internal/console"
+	eventservice "github.com/threave-io/threave/internal/events"
+	"github.com/threave-io/threave/internal/hosting"
+	"github.com/threave-io/threave/internal/notifications"
+	"github.com/threave-io/threave/internal/reposkills"
+	"github.com/threave-io/threave/internal/scheduler"
+	runcontrol "github.com/threave-io/threave/internal/session"
+	"github.com/threave-io/threave/internal/store"
 )
 
 const (

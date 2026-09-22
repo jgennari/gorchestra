@@ -6,11 +6,11 @@ const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const webDir = join(repoRoot, 'web')
 const embeddedIndex = join(repoRoot, 'internal', 'webassets', 'dist', 'index.html')
 const watcherNudge = join(repoRoot, 'internal', 'webassets', 'assets.go')
-const backendURL = process.env.GORCHESTRA_HUMAN_BACKEND_URL ?? 'http://127.0.0.1:18080'
-const productionURL = process.env.GORCHESTRA_PRODUCTION_URL ?? 'https://gorchestra.coin-triceratops.ts.net'
-const launchAgentLabel = process.env.GORCHESTRA_HUMAN_LAUNCH_AGENT ?? 'com.joey.gorchestra-human'
+const backendURL = process.env.THREAVE_HUMAN_BACKEND_URL ?? process.env.GORCHESTRA_HUMAN_BACKEND_URL ?? 'http://127.0.0.1:18080'
+const productionURL = process.env.THREAVE_PRODUCTION_URL ?? process.env.GORCHESTRA_PRODUCTION_URL ?? 'https://gorchestra.coin-triceratops.ts.net'
+const launchAgentLabel = process.env.THREAVE_HUMAN_LAUNCH_AGENT ?? process.env.GORCHESTRA_HUMAN_LAUNCH_AGENT ?? 'com.joey.gorchestra-human'
 const launchDomain = `gui/${typeof process.getuid === 'function' ? process.getuid() : 501}`
-const promotionTimeoutMs = parseTimeout(process.env.GORCHESTRA_PROD_REFRESH_TIMEOUT_MS)
+const promotionTimeoutMs = parseTimeout(process.env.THREAVE_PROD_REFRESH_TIMEOUT_MS ?? process.env.GORCHESTRA_PROD_REFRESH_TIMEOUT_MS)
 
 async function main() {
   if (Bun.argv.includes('--help') || Bun.argv.includes('-h')) {
@@ -23,7 +23,7 @@ async function main() {
   console.log('[prod-refresh] building the Vite production frontend')
   await run(['bun', 'install', '--frozen-lockfile'], webDir)
   await run(['bun', 'run', 'build'], webDir, {
-    VITE_GORCHESTRA_VERSION: process.env.VERSION ?? 'dev',
+    VITE_THREAVE_VERSION: process.env.VERSION ?? 'dev',
   })
   await run(['bun', 'run', 'build:stage'], repoRoot)
 
@@ -195,7 +195,7 @@ function parseTimeout(value: string | undefined) {
   }
   const timeout = Number.parseInt(value, 10)
   if (!Number.isFinite(timeout) || timeout < 1000) {
-    fail('GORCHESTRA_PROD_REFRESH_TIMEOUT_MS must be an integer of at least 1000')
+    fail('THREAVE_PROD_REFRESH_TIMEOUT_MS must be an integer of at least 1000')
   }
   return timeout
 }

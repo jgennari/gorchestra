@@ -41,7 +41,7 @@ async function main() {
 
 async function buildTarget(target: Target) {
   const { goos, goarch } = target
-  const packageName = `gorchestra_${version}_${goos}_${goarch}`
+  const packageName = `threave_${version}_${goos}_${goarch}`
   const packageDir = join(workDir, packageName)
   const binaryPath = join(packageDir, binaryName(goos))
 
@@ -63,6 +63,9 @@ async function buildTarget(target: Target) {
       CGO_ENABLED: '0',
     },
   )
+
+  // Keep older scripts and service installations functional after upgrading.
+  await cp(binaryPath, join(packageDir, goos === 'windows' ? 'gorchestra.exe' : 'gorchestra'))
 
   await cp(join(repoRoot, 'README.md'), join(packageDir, 'README.md'))
   await cp(join(repoRoot, 'LICENSE'), join(packageDir, 'LICENSE'))
@@ -117,7 +120,7 @@ function normalizeVersion(value: string) {
 }
 
 function binaryName(goos: string) {
-  return goos === 'windows' ? 'gorchestra.exe' : 'gorchestra'
+  return goos === 'windows' ? 'threave.exe' : 'threave'
 }
 
 main().catch((error) => {

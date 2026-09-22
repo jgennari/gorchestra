@@ -128,7 +128,7 @@ test('explicit local notification testing remains available', async () => {
   const { result } = renderHook(() => usePushNotifications())
   await waitFor(() => expect(result.current.status).toBe('enabled'))
   await act(() => result.current.sendLocalTest())
-  expect(showNotification).toHaveBeenCalledExactlyOnceWith('Gorchestra notifications enabled', expect.objectContaining({ tag: 'gorchestra-local-test' }))
+  expect(showNotification).toHaveBeenCalledExactlyOnceWith('Threave notifications enabled', expect.objectContaining({ tag: 'gorchestra-local-test' }))
   expect(acknowledgeNotification).not.toHaveBeenCalled()
 })
 

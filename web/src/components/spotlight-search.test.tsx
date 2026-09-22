@@ -49,7 +49,7 @@ test('searches globally and locally, labels result kinds, and selects with the k
     <SpotlightSearch open sessionID="sess-1" onOpenChange={() => undefined} onSelect={onSelect} />,
   )
 
-  const input = screen.getByRole('textbox', { name: 'Search Gorchestra' })
+  const input = screen.getByRole('textbox', { name: 'Search Threave' })
   await user.type(input, 'deploy')
   expect(await screen.findByText('Tool call')).toBeInTheDocument()
   expect(screen.getByText('Agent instruction')).toBeInTheDocument()
@@ -93,7 +93,7 @@ test('shows matching session names as spotlight results', async () => {
 
   render(<SpotlightSearch open sessionID="current" onOpenChange={() => undefined} onSelect={onSelect} />)
 
-  const input = screen.getByRole('textbox', { name: 'Search Gorchestra' })
+  const input = screen.getByRole('textbox', { name: 'Search Threave' })
   expect(input).toHaveAttribute('placeholder', 'Search sessions, history, tools, and current files…')
   await user.type(input, 'release')
 
@@ -133,7 +133,7 @@ test('renders a streamed session batch before search completion', async () => {
   )
 
   render(<SpotlightSearch open sessionID="current" onOpenChange={() => undefined} onSelect={() => undefined} />)
-  await user.type(screen.getByRole('textbox', { name: 'Search Gorchestra' }), 'release')
+  await user.type(screen.getByRole('textbox', { name: 'Search Threave' }), 'release')
 
   expect(await screen.findByRole('option', { name: /Release work/ })).toBeInTheDocument()
   expect(screen.getByLabelText('Searching')).toBeInTheDocument()
@@ -158,7 +158,7 @@ test('stays compact before a query and reports empty results after search', asyn
   render(<SpotlightSearch open sessionID={null} onOpenChange={() => undefined} onSelect={() => undefined} />)
 
   expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
-  await user.type(screen.getByRole('textbox', { name: 'Search Gorchestra' }), 'missing')
+  await user.type(screen.getByRole('textbox', { name: 'Search Threave' }), 'missing')
   expect(await screen.findByText('No results for “missing”')).toBeInTheDocument()
   expect(screen.getByRole('listbox')).toBeInTheDocument()
 })

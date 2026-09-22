@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 func TestMain(m *testing.M) {

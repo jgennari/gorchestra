@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/agents/fake"
+	"github.com/threave-io/threave/internal/agents/fake"
 )
 
 func TestScheduleCRUDRunNowAndCancel(t *testing.T) {

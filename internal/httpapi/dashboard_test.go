@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/store"
 )
 
 type dashboardRouteStore struct {

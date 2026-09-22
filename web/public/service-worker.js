@@ -45,7 +45,7 @@ self.addEventListener('push', (event) => {
 
   const notification = payload.notification || {}
   const notificationData = notification.data || {}
-  const title = notification.title || payload.title || 'Gorchestra'
+  const title = notification.title || payload.title || 'Threave'
   const targetURL = notification.navigate || notificationData.url || payload.url || '/'
   const sessionID = notificationData.session_id || payload.session_id || ''
   const eventType = notificationData.event_type || payload.event_type || ''

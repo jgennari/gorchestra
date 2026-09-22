@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/agents"
-	runcontrol "github.com/jgennari/gorchestra/internal/session"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/agents"
+	runcontrol "github.com/threave-io/threave/internal/session"
+	"github.com/threave-io/threave/internal/store"
 )
 
 type steeringTestAgent struct {

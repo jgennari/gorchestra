@@ -162,13 +162,13 @@ export function SpotlightSearch({
           expanded ? 'max-h-[70vh]' : 'max-h-16',
         )}
       >
-        <DialogTitle className="sr-only">Search Gorchestra</DialogTitle>
+        <DialogTitle className="sr-only">Search Threave</DialogTitle>
         <div className="flex h-16 items-center gap-3 px-4">
           <Search className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
           <input
             ref={searchInputRef}
             autoFocus
-            aria-label="Search Gorchestra"
+            aria-label="Search Threave"
             aria-controls="spotlight-search-results"
             aria-activedescendant={visibleResults[activeIndex] ? `spotlight-result-${activeIndex}` : undefined}
             value={query}

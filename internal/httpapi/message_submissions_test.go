@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/agents/fake"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/agents/fake"
+	"github.com/threave-io/threave/internal/store"
 )
 
 func TestConcurrentSubmissionIdentityStartsOnlyOneRun(t *testing.T) {

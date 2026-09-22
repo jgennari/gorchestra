@@ -1,329 +1,103 @@
-# Gorchestra
+# Threave
 
-<p align="center">
-  <strong>The private, permanent control room for AI coding work.</strong>
-</p>
+**Bring your coding agents together.** Give each task the right agent, model, and thinking depth. Follow their work live, collect the results, and carry the same sessions from your desk to your phone.
 
-<p align="center">
-  Run multiple Codex, Claude, OpenCode, and Pi sessions, stream every event, inspect files and git state, and keep the whole story.
-</p>
+[Website](https://threave.io) · [Install](https://threave.io/get/) · [Mobile access](https://threave.io/mobile/) · [Releases](https://github.com/threave-io/threave/releases)
 
-<p align="center">
-  <img alt="Go runtime" src="https://img.shields.io/badge/runtime-Go-00ADD8?style=for-the-badge&logo=go&logoColor=white" />
-  <img alt="React UI" src="https://img.shields.io/badge/ui-React-149ECA?style=for-the-badge&logo=react&logoColor=white" />
-  <img alt="SQLite persistence" src="https://img.shields.io/badge/storage-SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white" />
-  <img alt="SSE streaming" src="https://img.shields.io/badge/streaming-SSE-111827?style=for-the-badge" />
-  <img alt="Codex adapter" src="https://img.shields.io/badge/agent-Codex-111827?style=for-the-badge" />
-  <img alt="Claude adapter" src="https://img.shields.io/badge/agent-Claude-111827?style=for-the-badge" />
-  <img alt="OpenCode adapter" src="https://img.shields.io/badge/agent-OpenCode-111827?style=for-the-badge" />
-  <img alt="Pi adapter" src="https://img.shields.io/badge/agent-Pi-111827?style=for-the-badge" />
-</p>
+Threave is a self-hosted orchestration service for Codex, Claude, OpenCode, and Pi. A parent session can delegate work to child sessions, including across providers. Each child has its own durable run and report, while the work remains linked in the UI. You can tune models, reasoning levels, fast mode, and planning mode per run. The event stream records messages, tool calls, output, errors, and completion in SQLite, so reconnecting does not erase the story.
 
-> Agents perform work. Gorchestra conducts the performance.
+## What you can do
 
-Take your development wherever you are. Gorchestra gives you a private, permanent control room for AI coding work: open it on desktop or mobile, run multiple sessions across agents, queue follow-up messages, upload screenshots, switch into planning mode, inspect files and git state, and come back to the same durable history after refreshes, reconnects, and restarts.
+- Split a project into concurrent, focused agent sessions and monitor each run.
+- Mix supported providers, models, and thinking levels according to the task.
+- Watch tool calls and output as they happen; fetch durable reports when work completes.
+- Queue follow-ups, answer requests, inspect file changes, and browse the workspace.
+- Reconnect on desktop or install the PWA on your phone through a private Tailscale connection.
 
-<p align="center">
-  <img alt="Gorchestra live session demo" src="docs/gorchestra-demo.gif" width="1100" />
-</p>
-
-## The Runtime At A Glance
-
-| Run | Coordinate | Inspect | Remember |
-| --- | --- | --- | --- |
-| Launch Codex, Claude, OpenCode, or Pi sessions from one local server. | Queue work, attach images, and switch between fast and planning flows. | Browse files, inspect git-aware changes, and edit text in-session. | Store ordered session history in SQLite. |
-| Tune model, reasoning, service tier, and execution mode. | Keep multiple sessions moving at once from desktop or mobile. | Jump from file-change diffs straight into Monaco. | Reconnect with replay instead of losing context. |
-
-## Why It Exists
-
-Coding agents are useful, but serious work falls apart when everything is trapped in a single chat window. Gorchestra turns each run into an operating surface: start a session, watch what the agent is doing, inspect file and git changes, queue the next step, and keep the full history after refreshes or restarts.
-
-It is built for getting work done locally:
-
-- Pick a workspace and start Codex, Claude, OpenCode, or Pi.
-- Watch messages, thinking, tool calls, logs, errors, and file edits as they happen.
-- Queue follow-up prompts while the current run is still working.
-- Open changed files, review diffs, inspect git state, and edit Markdown or text without leaving the app.
-- Come back later and see the same ordered session history.
-
-<p align="center">
-  <img alt="Gorchestra main session view with live transcript, activity rail, file explorer, and prompt composer" src="docs/control-room.png" width="1100" />
-</p>
-
-## Quick Tour
-
-Start a session, choose a workspace, and let the agent run. Gorchestra keeps the live transcript, workspace tools, and session controls together so you do not have to bounce between terminal tabs, editor windows, and logs.
-
-- Tune agent options like model, reasoning effort, service tier, planning mode, and dangerous mode.
-- Follow messages, thinking, tool calls, command output, file edits, errors, and debug events in one transcript.
-- Keep typing while a run is active, queue messages, attach images, and answer agent-requested prompts when a run needs input.
-- Configure the side rail with workspace files, a conversation minimap, a block-stacking game, or blank space.
-- Browse, search, preview, and edit workspace files from the side rail or full files view.
-- Review file-change diffs and jump straight into the editor for the changed file.
-- Start a workspace-defined development stack and open its stable, session-scoped preview URL.
-- Refresh or reconnect without losing the session history.
-
-<p align="center">
-  <img alt="Gorchestra showing multiple sessions with queued follow-up work" src="docs/queued-work.png" width="1100" />
-</p>
+Threave runs on your machine. It does not host your agents or sync your sessions to a third-party cloud. Mobile access connects back to your running service; see [the private access guide](https://threave.io/mobile/).
 
 ## Install
 
-Gorchestra is meant to run as one local binary with the React UI embedded inside it.
-
-### Homebrew
+On macOS with Homebrew:
 
 ```sh
-brew install jgennari/tap/gorchestra
-gorchestra serve --open
+brew install threave-io/tap/threave
+threave serve --open
 ```
 
-The published tap is `jgennari/homebrew-tap`; the formula builds Gorchestra from the tagged source archive with Go and installs the `gorchestra` binary.
-
-Run Gorchestra as a background service:
+For a background service:
 
 ```sh
-brew services start jgennari/tap/gorchestra
+brew services start threave-io/tap/threave
 open http://127.0.0.1:15173
-brew services stop jgennari/tap/gorchestra
 ```
 
-The Homebrew service reads `$(brew --prefix)/etc/gorchestra/gorchestra.env`. Edit that file and restart the service to change the port, data directory, workspace roots, or agent binary paths.
+The service reads `$(brew --prefix)/etc/threave/threave.env`. Edit it and restart the service to change the port, data directory, workspace roots, or provider binaries.
 
-### Direct Download
-
-Download the archive for your platform from GitHub Releases, unpack it, and run the binary.
-
-macOS and Linux:
+On macOS, Linux, or Windows, download the matching archive from [GitHub Releases](https://github.com/threave-io/threave/releases/latest). Archives contain the `threave` executable with the frontend embedded. For example:
 
 ```sh
-tar -xzf gorchestra_<version>_<os>_<arch>.tar.gz
-./gorchestra serve --open
+tar -xzf threave_<version>_<os>_<arch>.tar.gz
+./threave serve --open
 ```
 
-Windows:
+Install and configure at least one supported provider CLI: Codex, Claude, OpenCode, or Pi. Threave detects providers available on `PATH`, and each provider can also be set with a `--*-bin` flag.
 
-```powershell
-Expand-Archive .\gorchestra_<version>_windows_<arch>.zip -DestinationPath .\gorchestra
-.\gorchestra\gorchestra.exe serve --open
-```
+Running `threave` with no arguments prints offline help. Use `threave commands --json` for a machine-readable command catalog.
 
-Release targets:
+## Delegate a task
 
-- `darwin/arm64`
-- `darwin/amd64`
-- `linux/amd64`
-- `linux/arm64`
-- `windows/amd64`
-- `windows/arm64`
-
-Real Codex sessions require the Codex CLI to be available on `PATH`, or configured with `--codex-bin`.
-Real Claude sessions require the Claude CLI to be available on `PATH`, or configured with `--claude-bin`.
-Real OpenCode sessions require the OpenCode CLI to be available on `PATH`, or configured with `--opencode-bin`.
-Real Pi sessions require the Pi CLI to be available on `PATH`, or configured with `--pi-bin`.
-
-## Use
-
-Start Gorchestra and open the browser:
+The browser presents parent and child sessions together. Agents running inside Threave also receive a short bootstrap with their session ID and a path to the control binary. A typical delegated run looks like this:
 
 ```sh
-gorchestra serve --open
-```
-
-Running `gorchestra` without arguments prints offline command help. Service
-launches should use the explicit `serve` command.
-
-By default, Gorchestra binds to `127.0.0.1:8080` and stores SQLite data in the OS app data location.
-
-Common options:
-
-```sh
-gorchestra serve --host 127.0.0.1 --port 8081
-gorchestra serve --config ~/.config/gorchestra/gorchestra.env
-gorchestra serve --data-dir ~/.gorchestra-dev
-gorchestra serve --workspace /path/to/repo
-gorchestra serve --workspace-root /path/to/allowed/root
-gorchestra serve --max-lineage-depth 6
-gorchestra serve --max-active-children 8
-gorchestra serve --codex-bin /path/to/codex
-gorchestra serve --codex-model gpt-5
-gorchestra serve --codex-sandbox workspace-write
-gorchestra serve --codex-network-access=false
-gorchestra serve --codex-web-search=cached
-gorchestra serve --claude-bin /path/to/claude
-gorchestra serve --claude-model claude-sonnet-4-5
-gorchestra serve --opencode-bin /path/to/opencode
-gorchestra serve --pi-bin /path/to/pi
-gorchestra serve --preview-url-template 'http://{slug}.localhost:8080'
-gorchestra --version
-```
-
-`--data-dir` creates the directory if needed and stores SQLite at `<data-dir>/gorchestra.db`. `--db` is still available as an exact SQLite path override and takes precedence over `--data-dir`.
-
-Default data paths:
-
-```txt
-macOS: ~/Library/Application Support/Gorchestra/gorchestra.db
-Linux: $XDG_DATA_HOME/gorchestra/gorchestra.db
-Linux fallback: ~/.local/share/gorchestra/gorchestra.db
-```
-
-Environment equivalents include `GORCHESTRA_HOST`, `GORCHESTRA_PORT`, `GORCHESTRA_DATA_DIR`, `GORCHESTRA_DB`, `GORCHESTRA_WORKSPACE`, `GORCHESTRA_OPEN`, `GORCHESTRA_PREVIEW_URL_TEMPLATE`, `GORCHESTRA_MAX_LINEAGE_DEPTH`, `GORCHESTRA_MAX_ACTIVE_CHILDREN`, `GORCHESTRA_CLAUDE_BIN`, `GORCHESTRA_CLAUDE_MODEL`, `GORCHESTRA_OPENCODE_BIN`, `GORCHESTRA_PI_BIN`, and the `GORCHESTRA_CODEX_*` variables matching the Codex flags.
-
-Config files use the same env-style names:
-
-```txt
-GORCHESTRA_HOST=127.0.0.1
-GORCHESTRA_PORT=15173
-GORCHESTRA_DATA_DIR=/opt/homebrew/var/gorchestra
-GORCHESTRA_WORKSPACE=~
-GORCHESTRA_WORKSPACE_ROOTS=~
-GORCHESTRA_OPEN=false
-GORCHESTRA_PREVIEW_URL_TEMPLATE=http://{slug}.localhost:15173
-GORCHESTRA_MAX_LINEAGE_DEPTH=6
-GORCHESTRA_MAX_ACTIVE_CHILDREN=8
-GORCHESTRA_CODEX_BIN=codex
-GORCHESTRA_CLAUDE_BIN=claude
-GORCHESTRA_OPENCODE_BIN=opencode
-GORCHESTRA_PI_BIN=pi
-```
-
-`GORCHESTRA_CONFIG` is the environment equivalent of `--config`. `GORCHESTRA_WORKSPACE_ROOTS` accepts multiple paths separated by the OS path-list separator (`:` on macOS/Linux).
-
-Remove local app data:
-
-```sh
-rm -rf "$HOME/Library/Application Support/Gorchestra"
-rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/gorchestra"
-```
-
-Codex shell commands run with network access enabled by default. Codex native web search runs in live mode by default; use `--codex-web-search=cached` or `--codex-web-search=disabled` to change it.
-
-### Agent control CLI
-
-The same binary can create and control durable runs through an already-running
-Gorchestra service. Runs stream by default; `--detach` returns immediately with
-exact session and run IDs. JSON output waits quietly for a terminal report,
-while NDJSON emits an accepted record, normalized events, and a final result.
-
-```sh
-gorchestra commands --json
-gorchestra agents list --json
-gorchestra agents options codex --json
-gorchestra search "dependency audit" --json
-gorchestra search "insurance" --session current --format ndjson
-
-gorchestra run --agent codex --model MODEL_ID \
-  --thinking high --fast=true --plan=true \
-  --prompt-file task.md --format ndjson
-
-gorchestra run --agent codex --title "Dependency audit" \
+threave run --agent codex --title "Dependency audit" \
   --prompt-file task.md --detach --json
-
-# Inside a Gorchestra run, provider settings and workspace are inherited.
-gorchestra run --prompt-file delegated-task.md --detach --json
-
-gorchestra runs show RUN_ID --json
-gorchestra runs watch RUN_ID --format ndjson
-gorchestra runs watch RUN_ID --until-attention --json
-gorchestra runs wait RUN_ID --timeout 10m --json
-gorchestra runs report RUN_ID --json
-gorchestra runs cancel RUN_ID --json
-
-gorchestra sessions send SESSION_ID --prompt-file follow-up.md --format ndjson
-gorchestra sessions send SESSION_ID --prompt "do this next" --queue --detach --json
-gorchestra sessions send SESSION_ID --prompt "change direction" \
-  --steer --expected-run-id RUN_ID --json
-gorchestra sessions list --json
-gorchestra sessions show SESSION_ID --json
-gorchestra sessions children SESSION_ID --recursive --json
-gorchestra sessions archive SESSION_ID --json
-gorchestra sessions restore SESSION_ID --json
-
-gorchestra requests list RUN_ID --json
-gorchestra requests answer RUN_ID REQUEST_ID --answers-json answers.json --json
-gorchestra requests resolve RUN_ID REQUEST_ID --option OPTION_ID --json
+threave runs wait RUN_ID --timeout 10m --json
+threave runs report RUN_ID --json
 ```
 
-`search` always includes session titles and durable run history. Inside a managed
-run it also searches the current session's workspace by default. Pass
-`--session none` for global-only search, or use `--format ndjson` to receive
-session, history, and workspace batches as each source finishes.
-
-Set `GORCHESTRA_API_URL` or pass `--server` to target a service other than
-`http://127.0.0.1:8080`. Use `--request-id` when a caller may retry after losing
-the response; identical retries return the original IDs and different content is
-rejected. `runs report` returns the full final assistant response and recorded run
-metadata after the run reaches a terminal state. A foreground observer may be
-stopped without cancelling server work; use `runs watch` with the run ID to
-reattach, and use `runs cancel` only when the work itself should stop. Busy
-session follow-ups require an explicit `--queue` or exact-run `--steer`.
-
-Child sessions remain ordinary durable sessions. They share their parent's
-resolved workspace, inherit same-provider settings unless overridden, and appear
-indented beneath the parent in the session sidebar. Use `--parent SESSION_ID`
-outside an agent run, `--parent current` for the explicit in-run form, or
-`--parent none` to create a root. Depth and per-parent active-child limits are
-reported by `/api/capabilities` and reject excess delegation visibly.
-
-## Hosted Development Previews
-
-A session can supervise a development stack declared in `<workspace>/.gorchestra/host.yaml`. Gorchestra runs the declared foreground processes outside the agent turn, waits for readiness, combines named services behind one stable host with path routes, and keeps bounded stdout/stderr logs in the session UI. The same lifecycle is available through `gorchestra host` for agents and terminal use.
+Inside a managed run, omit `--agent`, `--parent`, and `--cwd` to inherit the provider and workspace and attach the new session as a child. Override the model or thinking level where supported:
 
 ```sh
-gorchestra host validate --session "$SESSION_ID"
-gorchestra host start --session "$SESSION_ID"
-gorchestra host logs --session "$SESSION_ID" --follow
-gorchestra host url --session "$SESSION_ID"
-gorchestra host stop --session "$SESSION_ID"
+"$THREAVE_BIN" run --title "Review the API" --model MODEL_ID \
+  --thinking high --prompt-file review.md --detach --json
 ```
 
-Previews are available on macOS and Linux. They stop when Gorchestra shuts down and do not start automatically on its next boot. See [Hosted development previews](docs/hosted-previews.md) for the recipe schema, multi-service example, CLI, lifecycle, security model, Docker Compose guidance, and tailnet ingress setup.
+Use `runs watch` to stream events, `sessions send` to queue or steer a follow-up, and `search` to find sessions, durable history, and workspace files. `threave help` and `threave commands --json` enumerate the complete contract.
 
-## Build From Source
+## Configuration and existing Gorchestra installs
 
-Prerequisites:
+The rename preserves existing installations. The new binary accepts both `THREAVE_*` and `GORCHESTRA_*` environment variables; new names take precedence. It looks for existing Gorchestra data directories and `gorchestra.db` before creating new Threave data, and it accepts both `.threave/host.yaml` and `.gorchestra/host.yaml` preview recipes. The release archives include a `gorchestra` executable alias, and the Homebrew formula keeps the old command available. Browser storage keys remain compatible with previously installed PWAs.
 
-- Go 1.23 or newer
-- Bun 1.3 or newer
+The default local address is `http://127.0.0.1:8080`. A typical service configuration is:
 
-Build the release binary with embedded frontend assets:
+```text
+THREAVE_HOST=127.0.0.1
+THREAVE_PORT=15173
+THREAVE_DATA_DIR=/path/to/data
+THREAVE_WORKSPACE=~
+THREAVE_WORKSPACE_ROOTS=~
+THREAVE_OPEN=false
+```
+
+`--data-dir` stores SQLite at `<data-dir>/threave.db` for a new install. `--db` selects an exact SQLite path. Keep your old database and config in place while upgrading; the new service reads them without a destructive migration.
+
+**Private mobile access:** expose the local service only to your Tailscale tailnet with Tailscale Serve, then add the HTTPS page to your phone's home screen. Do not expose the unauthenticated Threave API to the public internet. Follow the [mobile guide](https://threave.io/mobile/) for setup and verification.
+
+## Build from source
+
+Prerequisites: Go 1.23+ and Bun 1.3+.
 
 ```sh
 bun run build
+./dist/threave serve --open
 ```
 
-This installs frontend dependencies with Bun, builds the Vite app, stages `web/dist` into `internal/webassets/dist`, runs `go test ./...`, builds `dist/gorchestra`, and writes `dist/SHA256SUMS`.
-
-Run the source-built binary:
-
-```sh
-./dist/gorchestra serve --open
-```
-
-Staged assets under `internal/webassets/dist` are committed so `go test ./...` and `go build ./cmd/app` work from a checkout. `bun run build` refreshes that directory from the latest Vite output before compiling the release binary.
-
-## Tests
-
-Backend:
+The build compiles the React frontend, stages it in `internal/webassets/dist`, runs backend tests, and produces a single binary. To run checks separately:
 
 ```sh
 go test ./...
+cd web && bun run test && bun run build
 ```
 
-Frontend:
-
-```sh
-cd web
-bun run test
-bun run build
-```
-
-Production:
-
-```sh
-bun run build
-./dist/gorchestra --version
-```
-
-`dist/SHA256SUMS` contains SHA-256 checksums for local release artifacts.
+The architecture keeps orchestration provider-agnostic: provider adapters implement a shared interface, server-owned events are persisted before broadcast, and reconnecting clients replay ordered events from SQLite. See [distribution](docs/distribution.md) for release packaging and [hosted previews](docs/hosted-previews.md) for workspace development stacks.

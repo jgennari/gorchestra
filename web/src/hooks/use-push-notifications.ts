@@ -389,7 +389,7 @@ async function showLocalTestNotification(supported: boolean) {
     return
   }
   const registration = await navigator.serviceWorker.ready
-  await registration.showNotification('Gorchestra notifications enabled', {
+  await registration.showNotification('Threave notifications enabled', {
     body: 'Test notification from this device.',
     badge: '/favicon-notify.svg',
     icon: '/icon.svg',

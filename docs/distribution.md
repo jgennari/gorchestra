@@ -1,91 +1,33 @@
 # Distribution
 
-Gorchestra has two distribution paths: GitHub release downloads and the
-`jgennari/homebrew-tap` Homebrew tap.
+Threave ships as a single executable with embedded frontend assets through [GitHub Releases](https://github.com/threave-io/threave/releases) and the [`threave-io/homebrew-tap`](https://github.com/threave-io/homebrew-tap) tap.
 
-## GitHub Releases
+## GitHub releases
 
-Use the `Prepare Release` workflow in GitHub Actions for normal releases. Enter
-a version like `0.1.4`; the workflow checks out `main`, builds the frontend,
-stages `web/dist` into `internal/webassets/dist`, commits the generated assets
-if needed, creates the annotated release tag, and dispatches the release
-publisher on that tag.
+Use the **Prepare Release** workflow with a version such as `0.12.0`. It checks out `main`, builds and commits the embedded frontend assets, creates the annotated tag, and starts the release workflow. The release workflow verifies the staged assets, runs Go tests, builds archives for macOS, Linux, and Windows (arm64 and amd64), publishes checksums, and updates Homebrew. Manual version-tag pushes run the same guarded workflow.
 
-The `.github/workflows/release.yml` workflow builds the frontend, verifies the
-embedded assets are already current for the tag, runs backend tests,
-cross-compiles release binaries, packages them as tarballs, writes `SHA256SUMS`,
-and publishes everything to a GitHub release. Manual tag pushes that look like
-`v0.1.4` still run the same workflow as a fallback.
-
-Because the Homebrew source formula builds without Bun, release tags must point
-to commits where `internal/webassets/dist` is current. The `Prepare Release`
-workflow handles that automatically. Manual tag pushes are still guarded by the
-release workflow and fail with the stale asset file list if embedded assets are
-out of date.
-
-Release archives are named:
-
-```txt
-gorchestra_<version>_<os>_<arch>.tar.gz
-gorchestra_<version>_windows_<arch>.zip
-```
-
-Initial targets:
-
-- `darwin/arm64`
-- `darwin/amd64`
-- `linux/arm64`
-- `linux/amd64`
-- `windows/arm64`
-- `windows/amd64`
-
-Build the same release archives locally:
+Archives are named `threave_<version>_<os>_<arch>.tar.gz` or `.zip` on Windows. Each archive contains `threave` and a `gorchestra` compatibility binary, plus README and LICENSE. Build locally with:
 
 ```sh
 cd web
 bun install --frozen-lockfile
-VITE_GORCHESTRA_VERSION=0.1.0 bun run build
-
+VITE_THREAVE_VERSION=0.12.0 bun run build
 cd ..
 bun run build:stage
 go test ./...
-VERSION=0.1.0 bun run release:archives
+VERSION=0.12.0 bun run release:archives
 ```
 
-The generated tarballs and `SHA256SUMS` are written to `dist/`.
+Release tags must include current `internal/webassets/dist` because the Homebrew source formula builds without Bun. The prepare workflow handles this; the release workflow rejects stale assets.
 
 ## Homebrew
 
-The published formula lives in `jgennari/homebrew-tap`:
+The formula template is `packaging/homebrew/threave.rb.template`. After a successful release, the workflow writes `Formula/threave.rb` in `threave-io/homebrew-tap` using `HOMEBREW_TAP_TOKEN`. The tap's `formula_renames.json` maps `gorchestra` to `threave` for upgrades. The new formula installs a `gorchestra` binary alias and copies an existing `etc/gorchestra/gorchestra.env` into the new service config when present, preserving its data directory. New installations use `etc/threave/threave.env` and `var/threave`.
 
 ```sh
-brew install jgennari/tap/gorchestra
-brew test jgennari/tap/gorchestra
-brew audit --strict --online jgennari/tap/gorchestra
+brew install threave-io/tap/threave
+brew test threave-io/tap/threave
+brew audit --strict --online threave-io/tap/threave
 ```
 
-The starter formula template lives at `packaging/homebrew/gorchestra.rb.template`.
-The release workflow updates the tap automatically after a successful tagged
-release using the `HOMEBREW_TAP_TOKEN` Actions secret.
-
-For a manual tap update:
-
-1. Copy or update the template in `Formula/gorchestra.rb`.
-2. Replace `{{VERSION}}` with the release version without the leading `v`.
-3. Replace `{{SOURCE_SHA256}}` with the SHA-256 of the GitHub source archive:
-
-   ```sh
-   VERSION=0.1.2
-   curl -L "https://github.com/jgennari/gorchestra/archive/refs/tags/v${VERSION}.tar.gz" | shasum -a 256
-   ```
-
-4. Commit and push the tap.
-5. Run `brew update`, `brew test jgennari/tap/gorchestra`, and
-   `brew audit --strict --online jgennari/tap/gorchestra`.
-
-The formula builds from source with Go and uses the embedded frontend assets
-committed in this repository. The embedded assets carry the release version
-shown in the app menu, so GitHub archives and Homebrew builds report the same
-version. The formula does not require Bun during installation.
-
-Later, macOS artifacts can be signed and notarized.
+For a manual update, replace `{{VERSION}}` and `{{SOURCE_SHA256}}` in the template using the tagged source archive SHA-256, commit `Formula/threave.rb` and `formula_renames.json` to the tap, then run the commands above.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 func writeTestSkill(t *testing.T, root, name, content string) string {

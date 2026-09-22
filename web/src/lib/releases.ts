@@ -17,12 +17,12 @@ type CachedRelease = {
   checkedAt: string
 }
 
-const releaseEndpoint = 'https://api.github.com/repos/jgennari/gorchestra/releases/latest'
-const releasePage = 'https://github.com/jgennari/gorchestra/releases'
+const releaseEndpoint = 'https://api.github.com/repos/threave-io/threave/releases/latest'
+const releasePage = 'https://github.com/threave-io/threave/releases'
 const cacheKey = 'gorchestra.release-check.v1'
 const cacheLifetime = 6 * 60 * 60 * 1000
 
-export const gorchestraVersion = normalizeVersion(import.meta.env.VITE_GORCHESTRA_VERSION ?? 'dev')
+export const gorchestraVersion = normalizeVersion(import.meta.env.VITE_THREAVE_VERSION ?? import.meta.env.VITE_GORCHESTRA_VERSION ?? 'dev')
 
 export function isReleaseBuild(version = gorchestraVersion) {
   return parseVersion(version) !== null

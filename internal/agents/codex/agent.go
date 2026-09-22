@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 const (
@@ -583,8 +583,8 @@ type codexSkillError struct {
 func (p *appServerProbe) initialize(ctx context.Context) error {
 	id, err := p.rpc.sendRequest("initialize", map[string]any{
 		"clientInfo": map[string]any{
-			"name":    "gorchestra",
-			"title":   "Gorchestra",
+			"name":    "threave",
+			"title":   "Threave",
 			"version": "0.0.0",
 		},
 		"capabilities": map[string]any{
@@ -914,8 +914,8 @@ func (r *appServerRun) executeCompact(ctx context.Context, workdir string) error
 func (r *appServerRun) initialize(ctx context.Context) error {
 	id, err := r.rpc.sendRequest("initialize", map[string]any{
 		"clientInfo": map[string]any{
-			"name":    "gorchestra",
-			"title":   "Gorchestra",
+			"name":    "threave",
+			"title":   "Threave",
 			"version": "0.0.0",
 		},
 		"capabilities": map[string]any{
@@ -1409,7 +1409,7 @@ func (r *appServerRun) handleServerRequest(ctx context.Context, message *rpcMess
 	if err := r.emitEvent(ctx, normalizedEvent{Event: event}); err != nil {
 		return err
 	}
-	return r.rpc.sendErrorResponse(message.ID, -32601, "Gorchestra does not handle Codex server requests yet")
+	return r.rpc.sendErrorResponse(message.ID, -32601, "Threave does not handle Codex server requests yet")
 }
 
 func isCodexPermissionMethod(method string) bool {
@@ -1432,7 +1432,7 @@ func (r *appServerRun) handlePermissionRequest(ctx context.Context, message *rpc
 	}
 	waiter, err := r.permissions.OpenPermission(ctx, request)
 	if err != nil {
-		return r.rpc.sendErrorResponse(message.ID, -32000, "Gorchestra could not open a permission request")
+		return r.rpc.sendErrorResponse(message.ID, -32000, "Threave could not open a permission request")
 	}
 	defer waiter.Close()
 	if err := r.emitEvent(ctx, normalizedEvent{Event: agents.AgentEvent{
@@ -1629,7 +1629,7 @@ func (r *appServerRun) handleUserInputRequest(ctx context.Context, message *rpcM
 		if err := r.emitUserInputRequested(ctx, request, message.Raw); err != nil {
 			return err
 		}
-		return r.rpc.sendErrorResponse(message.ID, -32601, "Gorchestra cannot answer Codex user input requests")
+		return r.rpc.sendErrorResponse(message.ID, -32601, "Threave cannot answer Codex user input requests")
 	}
 
 	waiter, err := r.userInput.OpenUserInput(ctx, request)
@@ -1637,7 +1637,7 @@ func (r *appServerRun) handleUserInputRequest(ctx context.Context, message *rpcM
 		if emitErr := r.emitUserInputRequested(ctx, request, message.Raw); emitErr != nil {
 			return emitErr
 		}
-		return r.rpc.sendErrorResponse(message.ID, -32000, "Gorchestra could not open a user input request")
+		return r.rpc.sendErrorResponse(message.ID, -32000, "Threave could not open a user input request")
 	}
 	defer waiter.Close()
 
@@ -1647,7 +1647,7 @@ func (r *appServerRun) handleUserInputRequest(ctx context.Context, message *rpcM
 
 	response, err := waiter.Wait(ctx)
 	if err != nil {
-		_ = r.rpc.sendErrorResponse(message.ID, -32800, "Gorchestra user input request was cancelled")
+		_ = r.rpc.sendErrorResponse(message.ID, -32800, "Threave user input request was cancelled")
 		return err
 	}
 	return r.rpc.sendResponse(message.ID, response)

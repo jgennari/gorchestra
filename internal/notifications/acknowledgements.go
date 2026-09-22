@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/store"
 )
 
 const foregroundAckTTL = 2 * time.Minute

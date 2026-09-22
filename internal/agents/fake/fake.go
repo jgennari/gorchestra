@@ -3,7 +3,7 @@ package fake
 import (
 	"context"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 const Type = "fake"

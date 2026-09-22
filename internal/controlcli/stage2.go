@@ -263,12 +263,12 @@ func (c CLI) consumeRunStream(ctx context.Context, server, runID, format string,
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
-		return false, transportError("Gorchestra run stream %s: %v", target, err)
+		return false, transportError("Threave run stream %s: %v", target, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		raw, _ := io.ReadAll(response.Body)
-		return false, transportError("Gorchestra run stream returned %s: %s", response.Status, strings.TrimSpace(string(raw)))
+		return false, transportError("Threave run stream returned %s: %s", response.Status, strings.TrimSpace(string(raw)))
 	}
 	scanner := bufio.NewScanner(response.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -452,7 +452,7 @@ func (c CLI) runCommands(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) < 2 {
-		return usageError("usage: gorchestra runs show|report|watch|wait|cancel <run-id>...")
+		return usageError("usage: threave runs show|report|watch|wait|cancel <run-id>...")
 	}
 	command, ids := rest[0], rest[1:]
 	if after != 0 && command != "watch" {
@@ -593,7 +593,7 @@ func (c CLI) sessions(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) == 0 {
-		return usageError("usage: gorchestra sessions list|show|children|archive|restore|send")
+		return usageError("usage: threave sessions list|show|children|archive|restore|send")
 	}
 	switch rest[0] {
 	case "list":
@@ -643,7 +643,7 @@ func (c CLI) sessions(ctx context.Context, args []string) error {
 		return usageError("unknown sessions command %q", rest[0])
 	}
 	if len(rest) < 2 {
-		return usageError("usage: gorchestra sessions send <session-id> --prompt <text> [--queue|--steer]")
+		return usageError("usage: threave sessions send <session-id> --prompt <text> [--queue|--steer]")
 	}
 	sessionID := rest[1]
 	var prompt, promptFile, expected, requestID, model, thinking string
@@ -808,7 +808,7 @@ func (c CLI) requests(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(rest) < 2 {
-		return usageError("usage: gorchestra requests list|answer|resolve <run-id> ...")
+		return usageError("usage: threave requests list|answer|resolve <run-id> ...")
 	}
 	command, runID := rest[0], rest[1]
 	switch command {

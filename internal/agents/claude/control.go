@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 type controlEnvelope struct {
@@ -104,7 +104,7 @@ func (r *streamRun) openQuestion(ctx context.Context, envelope controlEnvelope) 
 		return r.sendControlResponse(envelope.RequestID, deniedControl(err.Error(), false))
 	}
 	if r.userInput == nil {
-		return r.sendControlResponse(envelope.RequestID, deniedControl("Gorchestra cannot collect answers for this run", false))
+		return r.sendControlResponse(envelope.RequestID, deniedControl("Threave cannot collect answers for this run", false))
 	}
 	request := agents.UserInputRequest{
 		SessionID: r.sessionID, RequestID: envelope.RequestID, Provider: Type,

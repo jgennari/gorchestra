@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jgennari/gorchestra/internal/agents"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/agents"
+	"github.com/threave-io/threave/internal/store"
 )
 
 const maxSubmitSkills = 16

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/agents"
-	"github.com/jgennari/gorchestra/internal/agents/claude"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/agents"
+	"github.com/threave-io/threave/internal/agents/claude"
+	"github.com/threave-io/threave/internal/store"
 )
 
 // Exercise real Claude discovery and HTTP validation, with only model execution

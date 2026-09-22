@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/store"
 )
 
 func TestAgentRuntimeEnvironmentIncludesHostCLIContext(t *testing.T) {
@@ -21,6 +21,9 @@ func TestAgentRuntimeEnvironmentIncludesHostCLIContext(t *testing.T) {
 	if environment["GORCHESTRA_BIN"] != "/tmp/gorchestra" {
 		t.Fatalf("unexpected binary environment %#v", environment)
 	}
+	if environment["THREAVE_SESSION_ID"] != "sess_1" || environment["THREAVE_API_URL"] != "http://127.0.0.1:18080" || environment["THREAVE_BIN"] != "/tmp/gorchestra" {
+		t.Fatalf("missing Threave environment aliases %#v", environment)
+	}
 }
 
 func TestAgentRuntimeContextIntroducesOrchestrationAndDelegation(t *testing.T) {
@@ -29,15 +32,15 @@ func TestAgentRuntimeContextIntroducesOrchestrationAndDelegation(t *testing.T) {
 		WorkspacePath: t.TempDir(),
 	}, "run_root")
 	for _, expected := range []string{
-		"This session is running inside Gorchestra",
+		"This session is running inside Threave",
 		"agent orchestration service",
 		"multiple concurrent agents",
 		"This is a root session.",
 		"Current session ID: sess_root",
 		"Current run ID: run_root",
 		"Parent session ID: none",
-		"$GORCHESTRA_SESSION_ID",
-		"$GORCHESTRA_RUN_ID",
+		"$THREAVE_SESSION_ID",
+		"$THREAVE_RUN_ID",
 		"delegate independent work to child agents",
 		"New runs automatically become children of this session",
 		`run --title "TASK NAME" --prompt-file task.md --detach --json`,
@@ -45,7 +48,7 @@ func TestAgentRuntimeContextIntroducesOrchestrationAndDelegation(t *testing.T) {
 		"runs report RUN_ID --json",
 		`search "QUERY" --session current --format ndjson`,
 		"Use --session none for global-only search",
-		`"$GORCHESTRA_BIN" commands --json`,
+		`"$THREAVE_BIN" commands --json`,
 	} {
 		if !strings.Contains(context, expected) {
 			t.Fatalf("runtime context missing %q: %s", expected, context)
@@ -85,7 +88,7 @@ func TestAgentHostingContextRequiresRecipe(t *testing.T) {
 		t.Fatalf("write recipe: %v", err)
 	}
 	context := api.agentHostingContext(workspace)
-	if !strings.Contains(context, `"$GORCHESTRA_BIN" host`) || !strings.Contains(context, ".gorchestra/host.yaml") {
+	if !strings.Contains(context, `"$THREAVE_BIN" host`) || !strings.Contains(context, ".gorchestra/host.yaml") {
 		t.Fatalf("unexpected hosting context %q", context)
 	}
 }

@@ -11,12 +11,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/agents"
-	"github.com/jgennari/gorchestra/internal/agents/fake"
-	eventservice "github.com/jgennari/gorchestra/internal/events"
-	"github.com/jgennari/gorchestra/internal/hosting"
-	runcontrol "github.com/jgennari/gorchestra/internal/session"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/agents"
+	"github.com/threave-io/threave/internal/agents/fake"
+	eventservice "github.com/threave-io/threave/internal/events"
+	"github.com/threave-io/threave/internal/hosting"
+	runcontrol "github.com/threave-io/threave/internal/session"
+	"github.com/threave-io/threave/internal/store"
 )
 
 func TestHostedPreviewAPIValidatesStartsAndReturnsStatus(t *testing.T) {

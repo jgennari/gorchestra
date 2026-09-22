@@ -9,8 +9,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
-	"github.com/jgennari/gorchestra/internal/console"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/console"
+	"github.com/threave-io/threave/internal/store"
 )
 
 type consoleMessage struct {

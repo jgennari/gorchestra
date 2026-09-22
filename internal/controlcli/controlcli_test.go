@@ -28,10 +28,10 @@ func TestCommandsCatalogWorksOffline(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if catalog.SchemaVersion != 1 || catalog.ServiceStart != "gorchestra serve [flags]" || len(catalog.Commands) < 6 {
+	if catalog.SchemaVersion != 1 || catalog.ServiceStart != "threave serve [flags]" || len(catalog.Commands) < 6 {
 		t.Fatalf("unexpected catalog: %#v", catalog)
 	}
-	if len(catalog.Environment) != 4 || len(catalog.Workflows) < 3 {
+	if len(catalog.Environment) != 8 || len(catalog.Workflows) < 3 {
 		t.Fatalf("catalog lacks runtime discovery: %#v", catalog)
 	}
 	commands := make(map[string]commandSpec, len(catalog.Commands))
@@ -72,7 +72,7 @@ func TestNoArgumentsPrintsOfflineQuickStart(t *testing.T) {
 	if err := cli.Run(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"gorchestra serve --open", "Agent delegation quick start:", "gorchestra commands --json", "search <query>", `Bare "gorchestra" prints this help`} {
+	for _, want := range []string{"threave serve --open", "Agent delegation quick start:", "threave commands --json", "search <query>", `Bare "threave" prints this help`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("help missing %q:\n%s", want, stdout.String())
 		}
@@ -85,7 +85,7 @@ func TestSearchHelpAdvertisesWorkspaceAndStreamingUsage(t *testing.T) {
 	if err := cli.Run(context.Background(), []string{"help", "search"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Usage: gorchestra search <query>", "--session", "GORCHESTRA_SESSION_ID", "--format ndjson"} {
+	for _, want := range []string{"Usage: threave search <query>", "--session", "THREAVE_SESSION_ID", "--format ndjson"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("search help missing %q:\n%s", want, stdout.String())
 		}

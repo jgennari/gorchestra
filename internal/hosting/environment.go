@@ -17,6 +17,11 @@ type serviceLaunch struct {
 
 func buildServiceLaunch(loaded LoadedRecipe, service Service, sessionID string, port int, lookup func(string) (string, bool)) (serviceLaunch, error) {
 	runtimeEnv := map[string]string{
+		"THREAVE_HOST":            "127.0.0.1",
+		"THREAVE_PORT":            portString(port),
+		"THREAVE_SERVICE_NAME":    service.Name,
+		"THREAVE_SESSION_ID":      sessionID,
+		"THREAVE_WORKSPACE":       loaded.Workspace,
 		"GORCHESTRA_HOST":         "127.0.0.1",
 		"GORCHESTRA_PORT":         portString(port),
 		"GORCHESTRA_SERVICE_NAME": service.Name,

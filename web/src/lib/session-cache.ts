@@ -944,7 +944,7 @@ async function openCacheDB(): Promise<IDBDatabase | null> {
     }
     request.onblocked = () => {
       unavailable = true
-      console.warn('Session cache upgrade is blocked by another open Gorchestra tab.')
+      console.warn('Session cache upgrade is blocked by another open Threave tab.')
       resolve(null)
     }
     request.onupgradeneeded = () => {

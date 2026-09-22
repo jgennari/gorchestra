@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/agents"
+	"github.com/threave-io/threave/internal/agents"
 )
 
 func TestAgentEmitsDeterministicSuccessfulEventOrder(t *testing.T) {

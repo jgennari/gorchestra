@@ -43,7 +43,7 @@ type searchStreamRecord struct {
 }
 
 func (c CLI) search(ctx context.Context, args []string) error {
-	sessionID := strings.TrimSpace(c.Getenv("GORCHESTRA_SESSION_ID"))
+	sessionID := strings.TrimSpace(c.Getenv("THREAVE_SESSION_ID"))
 	cleaned := make([]string, 0, len(args))
 	for index := 0; index < len(args); index++ {
 		arg := args[index]
@@ -73,16 +73,16 @@ func (c CLI) search(ctx context.Context, args []string) error {
 	}
 	query := strings.TrimSpace(strings.Join(rest, " "))
 	if query == "" {
-		return usageError("usage: gorchestra search <query> [--session <session-id|current|none>] [--format text|json|ndjson]")
+		return usageError("usage: threave search <query> [--session <session-id|current|none>] [--format text|json|ndjson]")
 	}
 
 	switch strings.ToLower(strings.TrimSpace(sessionID)) {
 	case "none":
 		sessionID = ""
 	case "current":
-		sessionID = strings.TrimSpace(c.Getenv("GORCHESTRA_SESSION_ID"))
+		sessionID = strings.TrimSpace(c.Getenv("THREAVE_SESSION_ID"))
 		if sessionID == "" {
-			return usageError("--session current requires GORCHESTRA_SESSION_ID")
+			return usageError("--session current requires THREAVE_SESSION_ID")
 		}
 	default:
 		sessionID = strings.TrimSpace(sessionID)
@@ -122,12 +122,12 @@ func (c CLI) streamSearch(ctx context.Context, target string) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return transportError("Gorchestra search stream %s: %v", target, err)
+		return transportError("Threave search stream %s: %v", target, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		raw, _ := io.ReadAll(response.Body)
-		return transportError("Gorchestra search stream returned %s: %s", response.Status, strings.TrimSpace(string(raw)))
+		return transportError("Threave search stream returned %s: %s", response.Status, strings.TrimSpace(string(raw)))
 	}
 
 	encoder := json.NewEncoder(c.Stdout)
@@ -139,7 +139,7 @@ func (c CLI) streamSearch(ctx context.Context, target string) error {
 		}
 		var record searchStreamRecord
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
-			return transportError("decode Gorchestra search stream: %v", err)
+			return transportError("decode Threave search stream: %v", err)
 		}
 		if err := encoder.Encode(record); err != nil {
 			return err
@@ -149,7 +149,7 @@ func (c CLI) streamSearch(ctx context.Context, target string) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return transportError("read Gorchestra search stream: %v", err)
+		return transportError("read Threave search stream: %v", err)
 	}
 	return nil
 }

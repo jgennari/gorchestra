@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jgennari/gorchestra/internal/reposkills"
+	"github.com/threave-io/threave/internal/reposkills"
 )
 
 type userSkillCatalogResponse struct {

@@ -143,6 +143,34 @@ func TestLoadRecipeUsesCanonicalWorkspaceAndPreservesSnapshot(t *testing.T) {
 	}
 }
 
+func TestLoadRecipeAcceptsLegacyPathAndPrefersCurrentPath(t *testing.T) {
+	workspace := newRecipeWorkspace(t, "recipe-upgrade")
+	snapshot := []byte("version: 1\nservices:\n  - name: worker\n    command: [sleep, '1']\n")
+	legacyPath := filepath.Join(workspace, LegacyRecipeDirectory, RecipeFilename)
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, snapshot, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadRecipe(workspace)
+	if err != nil || loaded.Path != legacyPath {
+		t.Fatalf("load legacy recipe: path=%q err=%v", loaded.Path, err)
+	}
+
+	currentPath := filepath.Join(workspace, RecipeDirectory, RecipeFilename)
+	if err := os.MkdirAll(filepath.Dir(currentPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(currentPath, snapshot, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = LoadRecipe(workspace)
+	if err != nil || loaded.Path != currentPath {
+		t.Fatalf("prefer current recipe: path=%q err=%v", loaded.Path, err)
+	}
+}
+
 func TestParseRecipeRejectsInvalidRecipes(t *testing.T) {
 	workspace := newRecipeWorkspace(t, "workspace", "web")
 	tests := []struct {

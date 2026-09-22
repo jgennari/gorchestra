@@ -77,7 +77,7 @@ export function AppMenu({
               <img src="/icon.svg" alt="" className="sidebar-logo-mark mt-0.5 size-9 shrink-0" />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-semibold leading-5">Gorchestra</p>
+                  <p className="font-semibold leading-5">Threave</p>
                   {release.updateAvailable && release.latestVersion ? (
                     <Badge variant="warning" className="min-h-5 px-1.5 py-0 text-[0.68rem]">
                       v{release.latestVersion} available
@@ -136,7 +136,7 @@ export function AppMenu({
               className={cn(menuItemClass, 'text-muted-foreground')}
               asChild
             >
-              <a href="https://github.com/jgennari/gorchestra/releases" target="_blank" rel="noreferrer">
+              <a href="https://github.com/threave-io/threave/releases" target="_blank" rel="noreferrer">
                 <Info className="size-4" aria-hidden="true" />
                 <span className="flex-1">Release notes</span>
                 <ExternalLink className="size-3.5" aria-hidden="true" />

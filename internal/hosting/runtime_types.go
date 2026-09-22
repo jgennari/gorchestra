@@ -93,7 +93,7 @@ type Snapshot struct {
 }
 
 // PersistedState includes the public runtime snapshot and the trusted recipe
-// snapshot required to restore stable preview URLs after a Gorchestra restart.
+// snapshot required to restore stable preview URLs after a Threave restart.
 // It never contains values inherited from the supervisor's environment.
 type PersistedState struct {
 	Snapshot       Snapshot

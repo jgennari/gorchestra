@@ -172,7 +172,7 @@ export function DashboardOverview({ refreshKey = 0, onOpenSession, onOpenSession
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Overview</p>
               <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">Your work at a glance</h1>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                Runs, activity, outcomes, and resource usage reconstructed from Gorchestra's event history.
+                Runs, activity, outcomes, and resource usage reconstructed from Threave's event history.
               </p>
             </div>
           </div>

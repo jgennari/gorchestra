@@ -63,7 +63,7 @@ jobs:
       - name: Build frontend
         working-directory: web
         env:
-          VITE_GORCHESTRA_VERSION: ${{ steps.version.outputs.version }}
+          VITE_THREAVE_VERSION: ${{ steps.version.outputs.version }}
         run: bun run build
 
       - name: Stage embedded frontend assets
@@ -87,7 +87,7 @@ jobs:
       - name: Create and push release tag
         shell: bash
         run: |
-          git tag -a "${{ steps.version.outputs.tag }}" -m "Gorchestra ${{ steps.version.outputs.tag }}"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Threave ${{ steps.version.outputs.tag }}"
           git push origin "${{ steps.version.outputs.tag }}"
 
       - name: Start release workflow

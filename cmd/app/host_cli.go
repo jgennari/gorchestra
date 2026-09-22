@@ -110,7 +110,7 @@ func (cli hostCLI) run(ctx context.Context, args []string) error {
 		return err
 	}
 	if options.session == "" {
-		return errors.New("host command requires --session or GORCHESTRA_SESSION_ID")
+		return errors.New("host command requires --session or THREAVE_SESSION_ID")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, options.timeout)
@@ -167,8 +167,8 @@ func (cli hostCLI) run(ctx context.Context, args []string) error {
 
 func (cli hostCLI) parseOptions(command string, args []string) (hostCommandOptions, error) {
 	options := hostCommandOptions{
-		server:  strings.TrimRight(cli.getenv("GORCHESTRA_API_URL"), "/"),
-		session: strings.TrimSpace(cli.getenv("GORCHESTRA_SESSION_ID")),
+		server:  strings.TrimRight(envOrAny(cli.getenv, []string{"THREAVE_API_URL", "GORCHESTRA_API_URL"}, ""), "/"),
+		session: strings.TrimSpace(envOrAny(cli.getenv, []string{"THREAVE_SESSION_ID", "GORCHESTRA_SESSION_ID"}, "")),
 		timeout: defaultHostCommandTimeout,
 		wait:    true,
 		limit:   1000,
@@ -176,10 +176,10 @@ func (cli hostCLI) parseOptions(command string, args []string) (hostCommandOptio
 	if options.server == "" {
 		options.server = "http://127.0.0.1:8080"
 	}
-	flags := flag.NewFlagSet("gorchestra host "+command, flag.ContinueOnError)
+	flags := flag.NewFlagSet("threave host "+command, flag.ContinueOnError)
 	flags.SetOutput(cli.stderr)
-	flags.StringVar(&options.server, "server", options.server, "Gorchestra API base URL")
-	flags.StringVar(&options.session, "session", options.session, "Gorchestra session ID")
+	flags.StringVar(&options.server, "server", options.server, "Threave API base URL")
+	flags.StringVar(&options.session, "session", options.session, "Threave session ID")
 	flags.DurationVar(&options.timeout, "timeout", options.timeout, "command timeout")
 	flags.BoolVar(&options.wait, "wait", options.wait, "wait for the requested state")
 	if command == "logs" {
@@ -341,7 +341,7 @@ func (cli hostCLI) requestJSON(ctx context.Context, method string, rawURL string
 		return nil
 	}
 	if err := json.Unmarshal(data, output); err != nil {
-		return fmt.Errorf("decode Gorchestra response: %w", err)
+		return fmt.Errorf("decode Threave response: %w", err)
 	}
 	return nil
 }
@@ -351,13 +351,13 @@ func apiResponseError(status int, body []byte) error {
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(body, &payload) == nil && payload.Error != "" {
-		return fmt.Errorf("Gorchestra API returned %d: %s", status, payload.Error)
+		return fmt.Errorf("Threave API returned %d: %s", status, payload.Error)
 	}
 	message := strings.TrimSpace(string(body))
 	if message == "" {
 		message = http.StatusText(status)
 	}
-	return fmt.Errorf("Gorchestra API returned %d: %s", status, message)
+	return fmt.Errorf("Threave API returned %d: %s", status, message)
 }
 
 func writePrettyJSON(writer io.Writer, value any) error {
@@ -389,10 +389,10 @@ func writeHostLogChunk(writer io.Writer, chunk hostLogChunk) error {
 }
 
 func (cli hostCLI) usage() {
-	fmt.Fprintln(cli.stdout, `Usage: gorchestra host <command> [options]
+	fmt.Fprintln(cli.stdout, `Usage: threave host <command> [options]
 
 Commands:
-  validate   Validate .gorchestra/host.yaml
+  validate   Validate .threave/host.yaml (or legacy .gorchestra/host.yaml)
   status     Show recipe and runtime status
   start      Start this session's preview stack
   stop       Stop this session's preview stack
@@ -402,8 +402,8 @@ Commands:
   url        Print the stable preview URL
 
 Common options:
-  --server URL       Gorchestra API URL (default GORCHESTRA_API_URL)
-  --session ID       Session ID (default GORCHESTRA_SESSION_ID)
+  --server URL       Threave API URL (default THREAVE_API_URL)
+  --session ID       Session ID (default THREAVE_SESSION_ID)
   --timeout DURATION Command timeout
   --wait=false       Do not wait for start/stop/restart completion`)
 }

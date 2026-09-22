@@ -233,7 +233,7 @@ function notificationStatusLabel(status: NotificationStatus) {
 
 function notificationMessage(status: NotificationStatus, supported: boolean) {
   if (!supported || status === 'unsupported') {
-    return 'This browser cannot receive Gorchestra push notifications.'
+    return 'This browser cannot receive Threave push notifications.'
   }
   if (status === 'denied') {
     return 'Browser permission is blocked. Update site permissions to enable alerts.'

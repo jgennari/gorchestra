@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jgennari/gorchestra/internal/agents"
-	runcontrol "github.com/jgennari/gorchestra/internal/session"
+	"github.com/threave-io/threave/internal/agents"
+	runcontrol "github.com/threave-io/threave/internal/session"
 )
 
 // Observe registration without racing an early thinking notification from the

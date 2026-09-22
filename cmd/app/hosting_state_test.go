@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	eventservice "github.com/jgennari/gorchestra/internal/events"
-	"github.com/jgennari/gorchestra/internal/hosting"
-	"github.com/jgennari/gorchestra/internal/store"
+	eventservice "github.com/threave-io/threave/internal/events"
+	"github.com/threave-io/threave/internal/hosting"
+	"github.com/threave-io/threave/internal/store"
 )
 
 func TestRestoredHostStateIsStoppedAndKeepsStableRoute(t *testing.T) {

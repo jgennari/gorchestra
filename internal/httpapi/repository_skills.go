@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jgennari/gorchestra/internal/reposkills"
+	"github.com/threave-io/threave/internal/reposkills"
 )
 
 func (api API) listRepositorySkillsHandler(w http.ResponseWriter, r *http.Request) {

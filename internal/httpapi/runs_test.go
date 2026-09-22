@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jgennari/gorchestra/internal/agents"
-	"github.com/jgennari/gorchestra/internal/agents/fake"
-	"github.com/jgennari/gorchestra/internal/store"
+	"github.com/threave-io/threave/internal/agents"
+	"github.com/threave-io/threave/internal/agents/fake"
+	"github.com/threave-io/threave/internal/store"
 )
 
 func TestCreateRunIsIdempotentAndProducesDurableReport(t *testing.T) {
