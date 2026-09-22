@@ -93,7 +93,7 @@ test('shows matching session names as spotlight results', async () => {
   await user.type(input, 'release')
 
   expect(await screen.findByRole('option', { name: /Release work/ })).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /Session names|Sessions 1/ })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Sessions 1' })).toBeInTheDocument()
   await waitFor(() =>
     expect(apiMocks.searchSpotlight).toHaveBeenCalledWith('release', 'current', expect.any(AbortSignal)),
   )

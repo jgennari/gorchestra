@@ -134,7 +134,7 @@ export function SpotlightSearch({
     current[result.kind] = (current[result.kind] ?? 0) + 1
     return current
   }, {})
-  const availableKinds = resultKindOrder.filter((kind) => kind !== 'session' && counts[kind])
+  const availableKinds = resultKindOrder.filter((kind) => counts[kind])
   const visibleResults = resultFilter === 'all' ? results : results.filter((result) => result.kind === resultFilter)
 
   function applyResultFilter(filter: ResultFilter) {
