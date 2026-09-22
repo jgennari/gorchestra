@@ -1322,6 +1322,42 @@ test('a pinned transcript follows when the live tail is replaced without increas
   expect(screen.getByText('Starting')).toBeInTheDocument()
 })
 
+test('a pinned transcript keeps a hydrated tool-only assistant row with the same event count and tail sequence', async () => {
+  const prompt = event(1, 'user.message.completed', 'user', 'completed', { text: 'Inspect the files' })
+  const cachedEvents = [
+    prompt,
+    event(2, 'provider.opencode.event', 'system', 'completed', { provider: 'opencode' }),
+    event(3, 'tool.call.started', 'assistant', 'started', {
+      provider: 'opencode',
+      item_id: 'tool_1',
+      command: 'cached command',
+    }),
+  ]
+  const hydratedEvents = [
+    prompt,
+    event(2, 'tool.call.started', 'assistant', 'started', {
+      provider: 'opencode',
+      item_id: 'tool_1',
+      command: 'durable command',
+    }),
+    event(3, 'provider.opencode.event', 'system', 'completed', { provider: 'opencode' }),
+  ]
+  const { rerender } = render(<ChatTranscript events={cachedEvents} />)
+  const log = screen.getByRole('log', { name: 'Chat messages' })
+
+  await act(async () => {
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+  })
+  setScrollMetrics(log, { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 })
+  setScrollMetrics(log, { scrollTop: 600, scrollHeight: 1300, clientHeight: 400 })
+
+  rerender(<ChatTranscript events={hydratedEvents} />)
+
+  expect(log.scrollTop).toBe(1300)
+  expect(screen.getByText('Working...')).toBeInTheDocument()
+  expect(screen.getByText('durable command')).toBeInTheDocument()
+})
+
 test('growing composer clearance keeps a pinned transcript at the tail', () => {
   const { rerender } = render(
     <ChatTranscript

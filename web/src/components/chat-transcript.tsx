@@ -266,6 +266,8 @@ export function ChatTranscript({
     ? `working:${activityStatus.since}`
     : (activityStatus?.kind ?? '')
   const liveTailRevision = `${events.length}:${latestEventSeq}:${activityRevision}:${error}:${showDebugEvents}`
+  const timelineStructureRevision = timeline.map((item) => `${item.kind}:${item.id}`).join('|')
+  const previousTimelineStructureRevisionRef = useRef(timelineStructureRevision)
   const scheduleTailScroll = useCallback((instance: TranscriptVirtualizer) => {
     instance.scrollToEnd({ behavior: 'auto' })
     if (tailScrollFrameRef.current !== null) window.cancelAnimationFrame(tailScrollFrameRef.current)
@@ -624,6 +626,22 @@ export function ChatTranscript({
   }, [focusRequest, focusSeq, focusedVirtualIndex, loading, virtualizer])
 
   useEffect(() => () => onVisibleSequenceRangeChange?.(null), [onVisibleSequenceRangeChange])
+
+  useLayoutEffect(() => {
+    if (previousTimelineStructureRevisionRef.current === timelineStructureRevision) return
+    previousTimelineStructureRevisionRef.current = timelineStructureRevision
+    // Refresh hydration can replace a cached tool-only assistant row with the
+    // durable version while preserving the row count and latest sequence. Pin
+    // the replacement back to the live tail without clearing measurements for
+    // the historical rows above it.
+    if (
+      initialTailPinPendingRef.current ||
+      !followingTailRef.current ||
+      hasNewerEvents ||
+      virtualItems.length === 0
+    ) return
+    scheduleTailScroll(virtualizer)
+  }, [hasNewerEvents, scheduleTailScroll, timelineStructureRevision, virtualItems.length, virtualizer])
 
   useLayoutEffect(() => {
     if (
