@@ -68,6 +68,29 @@ func TestSearchFTSQueryRejectsPunctuationOnlyInput(t *testing.T) {
 	}
 }
 
+func TestSearchHandlesLegacySessionWithoutWorkspacePath(t *testing.T) {
+	ctx := context.Background()
+	database := newTestStore(t, ctx)
+	session, err := database.CreateSession(ctx, CreateSessionParams{
+		Title:     "Legacy workspace",
+		AgentType: "codex",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := database.db.ExecContext(ctx, `UPDATE sessions SET workspace_path = NULL WHERE id = ?`, session.ID); err != nil {
+		t.Fatalf("clear legacy workspace path: %v", err)
+	}
+
+	results, err := database.Search(ctx, "legacy", 10)
+	if err != nil {
+		t.Fatalf("search legacy session: %v", err)
+	}
+	if len(results) != 1 || results[0].SessionID != session.ID || results[0].WorkspacePath != "" {
+		t.Fatalf("unexpected legacy session result: %#v", results)
+	}
+}
+
 func TestSearchableToolPayloadSkipsEncodedBlobs(t *testing.T) {
 	payload := searchableToolPayload(map[string]any{
 		"input":  map[string]any{"query": "needle", "image_base64": strings.Repeat("a", 1000)},

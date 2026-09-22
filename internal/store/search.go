@@ -260,7 +260,7 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]SearchRe
 		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT d.kind, d.session_id, s.title, s.workspace_path, COALESCE(d.event_seq, 0),
+		SELECT d.kind, d.session_id, s.title, COALESCE(s.workspace_path, ''), COALESCE(d.event_seq, 0),
 		       d.title, snippet(search_documents_fts, 1, '', '', ' … ', 24), d.created_at,
 		       s.archived_at, bm25(search_documents_fts, 7.0, 1.0)
 		FROM search_documents_fts
