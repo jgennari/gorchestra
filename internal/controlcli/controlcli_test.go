@@ -38,7 +38,7 @@ func TestCommandsCatalogWorksOffline(t *testing.T) {
 	for _, command := range catalog.Commands {
 		commands[command.Command] = command
 	}
-	for _, command := range []string{"sessions archive <session-id>", "sessions restore <session-id>"} {
+	for _, command := range []string{"search <query>", "sessions archive <session-id>", "sessions restore <session-id>"} {
 		if _, ok := commands[command]; !ok {
 			t.Fatalf("catalog missing %q", command)
 		}
@@ -72,10 +72,99 @@ func TestNoArgumentsPrintsOfflineQuickStart(t *testing.T) {
 	if err := cli.Run(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"gorchestra serve --open", "Agent delegation quick start:", "gorchestra commands --json", `Bare "gorchestra" prints this help`} {
+	for _, want := range []string{"gorchestra serve --open", "Agent delegation quick start:", "gorchestra commands --json", "search <query>", `Bare "gorchestra" prints this help`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("help missing %q:\n%s", want, stdout.String())
 		}
+	}
+}
+
+func TestSearchHelpAdvertisesWorkspaceAndStreamingUsage(t *testing.T) {
+	var stdout bytes.Buffer
+	cli := CLI{Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"help", "search"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Usage: gorchestra search <query>", "--session", "GORCHESTRA_SESSION_ID", "--format ndjson"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("search help missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestSearchJSONDefaultsToCurrentSession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/search" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.URL.Query().Get("q") != "dependency audit" || r.URL.Query().Get("session_id") != "sess_current" {
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"query":"dependency audit","results":[{"id":"session:sess_match:0","kind":"session","scope":"global","title":"Dependency audit","session_id":"sess_match","session_title":"Dependency audit"}]}`))
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	cli := CLI{
+		Stdout: &stdout,
+		Stderr: &bytes.Buffer{},
+		Getenv: func(name string) string {
+			if name == "GORCHESTRA_SESSION_ID" {
+				return "sess_current"
+			}
+			return ""
+		},
+	}
+	if err := cli.Run(context.Background(), []string{"search", "dependency", "audit", "--server", server.URL, "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"session_id": "sess_match"`) {
+		t.Fatalf("missing search result: %s", stdout.String())
+	}
+}
+
+func TestSearchNDJSONCanDisableWorkspaceSearch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/search/stream" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.URL.Query().Get("q") != "insurance" || r.URL.Query().Has("session_id") {
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("Accept") != "application/x-ndjson" {
+			t.Fatalf("unexpected Accept header %q", r.Header.Get("Accept"))
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte("{\"type\":\"results\",\"source\":\"sessions\",\"query\":\"insurance\",\"results\":[{\"id\":\"session:sess_insurance:0\",\"kind\":\"session\",\"scope\":\"global\",\"title\":\"Insurance\",\"session_id\":\"sess_insurance\",\"session_title\":\"Insurance\"}]}\n{\"type\":\"done\",\"query\":\"insurance\"}\n"))
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	cli := CLI{Stdout: &stdout, Stderr: &bytes.Buffer{}, Getenv: func(string) string { return "sess_current" }}
+	if err := cli.Run(context.Background(), []string{"search", "insurance", "--session", "none", "--server", server.URL, "--format", "ndjson"}); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], `"source":"sessions"`) || !strings.Contains(lines[1], `"type":"done"`) {
+		t.Fatalf("unexpected search stream: %s", stdout.String())
+	}
+}
+
+func TestSearchTextKeepsEachResultOnOneLine(t *testing.T) {
+	var stdout bytes.Buffer
+	cli := CLI{Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	if err := cli.renderSearchText(searchResponse{Results: []searchResult{{
+		Kind:      "agent_message",
+		Title:     "Release\ncompleted",
+		Snippet:   "Built\nall artifacts",
+		SessionID: "sess_release",
+		EventSeq:  42,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "agent_message\tRelease completed\tsess_release event:42\tBuilt all artifacts\n"; got != want {
+		t.Fatalf("unexpected text result:\n got: %q\nwant: %q", got, want)
 	}
 }
 

@@ -43,6 +43,8 @@ func TestAgentRuntimeContextIntroducesOrchestrationAndDelegation(t *testing.T) {
 		`run --title "TASK NAME" --prompt-file task.md --detach --json`,
 		"runs wait RUN_ID --timeout 10m --json",
 		"runs report RUN_ID --json",
+		`search "QUERY" --session current --format ndjson`,
+		"Use --session none for global-only search",
 		`"$GORCHESTRA_BIN" commands --json`,
 	} {
 		if !strings.Contains(context, expected) {

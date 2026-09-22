@@ -75,6 +75,7 @@ discovery, agent discovery/options, detached `run`, `runs show`, and
 | `gorchestra help [command...]` | Human-readable discovery, including existing hosting commands. |
 | `gorchestra agents list --json` | Discover registered providers and availability. |
 | `gorchestra agents options <provider> --json` | Discover models, supported thinking levels, fast mode, and plan mode. |
+| `gorchestra search <query> --json` | Search session titles and durable history, plus workspace files when a session is selected. Use NDJSON to receive each source as it completes. |
 | `gorchestra run ...` | Create a session and start its first run; optionally attach it to a parent. |
 | `gorchestra sessions list --json` | List/filter sessions, including parent relationships and pagination. |
 | `gorchestra sessions show <session-id> --json` | Inspect settings, workspace, active run, and attention state. |
@@ -162,6 +163,8 @@ To delegate a named task:
 The result contains the child session ID and exact run ID. Then use:
   "$GORCHESTRA_BIN" runs wait RUN_ID --timeout 10m --json
   "$GORCHESTRA_BIN" runs report RUN_ID --json
+
+Use "$GORCHESTRA_BIN" search "QUERY" --session current --format ndjson to search session titles, durable history, and this session's workspace files. Use --session none for global-only search.
 
 Use "$GORCHESTRA_BIN" commands --json to discover the complete CLI contract. Use runs watch to stream activity. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.
 </gorchestra_context>

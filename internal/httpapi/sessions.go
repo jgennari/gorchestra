@@ -2678,6 +2678,8 @@ The result contains the child session ID and exact run ID. Then use:
   "$GORCHESTRA_BIN" runs wait RUN_ID --timeout 10m --json
   "$GORCHESTRA_BIN" runs report RUN_ID --json
 
+Use "$GORCHESTRA_BIN" search "QUERY" --session current --format ndjson to search session titles, durable history, and this session's workspace files. Use --session none for global-only search.
+
 Use "$GORCHESTRA_BIN" commands --json to discover the complete CLI contract. Use runs watch to stream activity. Child sessions share this workspace, so assign disjoint edits when delegating parallel work.`, role, session.ID, runID, parentSessionID)}
 	if hosting := api.agentHostingContext(sessionWorkspacePath(session, api.workdir)); hosting != "" {
 		parts = append(parts, hosting)

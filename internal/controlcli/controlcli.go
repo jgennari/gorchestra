@@ -54,6 +54,14 @@ var commandSpecs = []commandSpec{
 	{Command: "help [command]", Description: "Show human-readable CLI help without contacting the service.", Output: "text"},
 	{Command: "agents list", Description: "List registered agent providers.", RequiresService: true, Output: "provider catalog JSON"},
 	{Command: "agents options <provider>", Description: "Show models and modes reported by a provider.", RequiresService: true, Output: "provider option catalog JSON"},
+	{Command: "search <query>", Description: "Search sessions, durable history, and optionally the current session workspace.", RequiresService: true, Output: "merged search response, readable result rows, or an NDJSON source stream", Examples: []string{
+		`gorchestra search "dependency audit" --json`,
+		`gorchestra search "insurance" --session current --format ndjson`,
+		`gorchestra search "release" --session none --json`,
+	}, Flags: []flagSpec{
+		{Name: "session", Type: "session-id|current|none", Description: "workspace to search; defaults to GORCHESTRA_SESSION_ID inside a managed run"},
+		{Name: "timeout", Type: "duration", Description: "maximum search time"},
+	}},
 	{Command: "run", Description: "Create a session and start its first run; stream until terminal unless detached.", RequiresService: true, Output: "text activity, one JSON result, or an NDJSON accepted/event/result stream", Examples: []string{
 		`gorchestra run --agent codex --prompt-file task.md --format ndjson`,
 		`gorchestra run --title "Read-only audit" --prompt-file task.md --detach --json`,
@@ -184,6 +192,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.commands(args[1:])
 	case "agents":
 		return c.agents(ctx, args[1:])
+	case "search":
+		return c.search(ctx, args[1:])
 	case "run":
 		return c.run(ctx, args[1:])
 	case "runs":
@@ -297,6 +307,7 @@ Agent control commands:
   commands --json                machine-readable command catalog
   agents list                    list registered providers
   agents options <provider>      list models and modes
+  search <query>                 search sessions, history, and workspace files
   run [flags]                    start and stream a run
   runs show <run-id>             inspect a run
   runs watch <run-id>            replay and follow a run

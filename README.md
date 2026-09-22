@@ -210,6 +210,8 @@ while NDJSON emits an accepted record, normalized events, and a final result.
 gorchestra commands --json
 gorchestra agents list --json
 gorchestra agents options codex --json
+gorchestra search "dependency audit" --json
+gorchestra search "insurance" --session current --format ndjson
 
 gorchestra run --agent codex --model MODEL_ID \
   --thinking high --fast=true --plan=true \
@@ -242,6 +244,11 @@ gorchestra requests list RUN_ID --json
 gorchestra requests answer RUN_ID REQUEST_ID --answers-json answers.json --json
 gorchestra requests resolve RUN_ID REQUEST_ID --option OPTION_ID --json
 ```
+
+`search` always includes session titles and durable run history. Inside a managed
+run it also searches the current session's workspace by default. Pass
+`--session none` for global-only search, or use `--format ndjson` to receive
+session, history, and workspace batches as each source finishes.
 
 Set `GORCHESTRA_API_URL` or pass `--server` to target a service other than
 `http://127.0.0.1:8080`. Use `--request-id` when a caller may retry after losing
