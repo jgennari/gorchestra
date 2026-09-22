@@ -171,14 +171,39 @@ test('session list helper includes archived toggle', async () => {
   await listSessions({ limit: 25, include_archived: true })
 })
 
-test('spotlight search includes the current session workspace', async () => {
+test('spotlight search merges streamed result batches with sessions first', async () => {
   const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
-    expect(String(url)).toBe('/api/search?q=Release&session_id=sess_1')
-    return jsonResponse({ query: 'Release', results: [] })
+    expect(String(url)).toBe('/api/search/stream?q=Release&session_id=sess_1')
+    return new Response([
+      JSON.stringify({
+        type: 'results',
+        source: 'sessions',
+        query: 'Release',
+        results: [{ id: 'session:sess_1:0', kind: 'session', scope: 'global', title: 'Release work', session_id: 'sess_1', session_title: 'Release work' }],
+      }),
+      JSON.stringify({
+        type: 'results',
+        source: 'history',
+        query: 'Release',
+        results: [{ id: 'tool:sess_1:4', kind: 'tool_call', scope: 'global', title: 'Release command', session_id: 'sess_1', session_title: 'Release work' }],
+      }),
+      JSON.stringify({ type: 'done', query: 'Release' }),
+      '',
+    ].join('\n'), { headers: { 'Content-Type': 'application/x-ndjson' } })
   })
   vi.stubGlobal('fetch', fetchMock)
 
-  await searchSpotlight('Release', 'sess_1')
+  const updates: string[][] = []
+  const response = await searchSpotlight('Release', 'sess_1', undefined, (update) => {
+    updates.push(update.results.map((result) => result.id))
+  })
+
+  expect(response.results.map((result) => result.id)).toEqual(['session:sess_1:0', 'tool:sess_1:4'])
+  expect(updates).toEqual([
+    ['session:sess_1:0'],
+    ['session:sess_1:0', 'tool:sess_1:4'],
+    ['session:sess_1:0', 'tool:sess_1:4'],
+  ])
 })
 
 test('title update helper patches the session title', async () => {

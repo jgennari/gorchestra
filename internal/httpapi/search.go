@@ -1,12 +1,16 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jgennari/gorchestra/internal/store"
 )
 
 const maxSpotlightSearchResults = 50
@@ -17,21 +21,29 @@ type spotlightSearchResponse struct {
 	LocalError string                          `json:"local_error,omitempty"`
 }
 
+type spotlightSearchStreamRecord struct {
+	Type    string                          `json:"type"`
+	Source  string                          `json:"source,omitempty"`
+	Query   string                          `json:"query,omitempty"`
+	Results []spotlightSearchResultResponse `json:"results,omitempty"`
+	Error   string                          `json:"error,omitempty"`
+}
+
 type spotlightSearchResultResponse struct {
-	ID            string `json:"id"`
-	Kind          string `json:"kind"`
-	Scope         string `json:"scope"`
-	Title         string `json:"title"`
-	Snippet       string `json:"snippet,omitempty"`
-	SessionID     string `json:"session_id"`
-	SessionTitle  string `json:"session_title"`
-	WorkspacePath string `json:"workspace_path,omitempty"`
-	EventSeq      int64  `json:"event_seq,omitempty"`
-	Path          string `json:"path,omitempty"`
-	LineNumber    int    `json:"line_number,omitempty"`
-	CreatedAt     string `json:"created_at,omitempty"`
-	Archived      bool   `json:"archived,omitempty"`
-	rank          float64
+	ID            string  `json:"id"`
+	Kind          string  `json:"kind"`
+	Scope         string  `json:"scope"`
+	Title         string  `json:"title"`
+	Snippet       string  `json:"snippet,omitempty"`
+	SessionID     string  `json:"session_id"`
+	SessionTitle  string  `json:"session_title"`
+	WorkspacePath string  `json:"workspace_path,omitempty"`
+	EventSeq      int64   `json:"event_seq,omitempty"`
+	Path          string  `json:"path,omitempty"`
+	LineNumber    int     `json:"line_number,omitempty"`
+	CreatedAt     string  `json:"created_at,omitempty"`
+	Archived      bool    `json:"archived,omitempty"`
+	Rank          float64 `json:"rank,omitempty"`
 }
 
 func (api API) searchHandler(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +57,111 @@ func (api API) searchHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to search session history")
 		return
 	}
-	results := make([]spotlightSearchResultResponse, 0, len(history)+maxSearchResults)
+	results := spotlightStoreSearchResults(query, history)
+
+	localError := ""
+	if sessionID := strings.TrimSpace(r.URL.Query().Get("session_id")); sessionID != "" {
+		localResults, localSearchError := api.searchSessionWorkspace(r.Context(), sessionID, query)
+		if localSearchError != nil {
+			localError = localSearchError.Error()
+		} else {
+			results = append(results, localResults...)
+		}
+	}
+
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Rank == results[j].Rank {
+			if results[i].CreatedAt == results[j].CreatedAt {
+				return strings.ToLower(results[i].Title) < strings.ToLower(results[j].Title)
+			}
+			return results[i].CreatedAt > results[j].CreatedAt
+		}
+		return results[i].Rank < results[j].Rank
+	})
+	if len(results) > maxSpotlightSearchResults {
+		results = results[:maxSpotlightSearchResults]
+	}
+	writeJSON(w, http.StatusOK, spotlightSearchResponse{Query: query, Results: results, LocalError: localError})
+}
+
+func (api API) searchStreamHandler(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "q is required")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming is not supported")
+		return
+	}
+
+	headers := w.Header()
+	headers.Set("Content-Type", "application/x-ndjson")
+	headers.Set("Cache-Control", "no-cache")
+	headers.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	encoder := json.NewEncoder(w)
+	writeRecord := func(record spotlightSearchStreamRecord) bool {
+		if err := encoder.Encode(record); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	type workspaceBatch struct {
+		results []spotlightSearchResultResponse
+		err     error
+	}
+	workspace := make(chan workspaceBatch, 1)
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID != "" {
+		go func() {
+			results, err := api.searchSessionWorkspace(r.Context(), sessionID, query)
+			workspace <- workspaceBatch{results: results, err: err}
+		}()
+	}
+
+	sessions, err := api.search.SearchSessions(r.Context(), query, maxSpotlightSearchResults)
+	if err != nil {
+		if !writeRecord(spotlightSearchStreamRecord{Type: "error", Source: "sessions", Query: query, Error: "failed to search sessions"}) {
+			return
+		}
+	} else if !writeRecord(spotlightSearchStreamRecord{
+		Type: "results", Source: "sessions", Query: query, Results: spotlightStoreSearchResults(query, sessions),
+	}) {
+		return
+	}
+
+	history, err := api.search.SearchHistory(r.Context(), query, maxSpotlightSearchResults)
+	if err != nil {
+		if !writeRecord(spotlightSearchStreamRecord{Type: "error", Source: "history", Query: query, Error: "failed to search session history"}) {
+			return
+		}
+	} else if !writeRecord(spotlightSearchStreamRecord{
+		Type: "results", Source: "history", Query: query, Results: spotlightStoreSearchResults(query, history),
+	}) {
+		return
+	}
+
+	if sessionID != "" {
+		batch := <-workspace
+		if batch.err != nil {
+			if !writeRecord(spotlightSearchStreamRecord{Type: "error", Source: "workspace", Query: query, Error: batch.err.Error()}) {
+				return
+			}
+		} else if !writeRecord(spotlightSearchStreamRecord{
+			Type: "results", Source: "workspace", Query: query, Results: batch.results,
+		}) {
+			return
+		}
+	}
+	_ = writeRecord(spotlightSearchStreamRecord{Type: "done", Query: query})
+}
+
+func spotlightStoreSearchResults(query string, history []store.SearchResult) []spotlightSearchResultResponse {
+	results := make([]spotlightSearchResultResponse, 0, len(history))
 	for index, result := range history {
 		results = append(results, spotlightSearchResultResponse{
 			ID:            fmt.Sprintf("%s:%s:%d", result.Kind, result.SessionID, result.EventSeq),
@@ -59,37 +175,14 @@ func (api API) searchHandler(w http.ResponseWriter, r *http.Request) {
 			EventSeq:      result.EventSeq,
 			CreatedAt:     result.CreatedAt.UTC().Format(time.RFC3339Nano),
 			Archived:      result.ArchivedAt != nil,
-			rank:          spotlightTextRank(query, result.Title, result.Snippet) + float64(index)/1000,
+			Rank:          spotlightTextRank(query, result.Title, result.Snippet) + float64(index)/1000,
 		})
 	}
-
-	localError := ""
-	if sessionID := strings.TrimSpace(r.URL.Query().Get("session_id")); sessionID != "" {
-		localResults, localSearchError := api.searchSessionWorkspace(r, sessionID, query)
-		if localSearchError != nil {
-			localError = localSearchError.Error()
-		} else {
-			results = append(results, localResults...)
-		}
-	}
-
-	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].rank == results[j].rank {
-			if results[i].CreatedAt == results[j].CreatedAt {
-				return strings.ToLower(results[i].Title) < strings.ToLower(results[j].Title)
-			}
-			return results[i].CreatedAt > results[j].CreatedAt
-		}
-		return results[i].rank < results[j].rank
-	})
-	if len(results) > maxSpotlightSearchResults {
-		results = results[:maxSpotlightSearchResults]
-	}
-	writeJSON(w, http.StatusOK, spotlightSearchResponse{Query: query, Results: results, LocalError: localError})
+	return results
 }
 
-func (api API) searchSessionWorkspace(r *http.Request, sessionID string, query string) ([]spotlightSearchResultResponse, error) {
-	session, err := api.store.GetSession(r.Context(), sessionID)
+func (api API) searchSessionWorkspace(ctx context.Context, sessionID string, query string) ([]spotlightSearchResultResponse, error) {
+	session, err := api.store.GetSession(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("current session is unavailable")
 	}
@@ -126,8 +219,11 @@ func (api API) searchSessionWorkspace(r *http.Request, sessionID string, query s
 			Path:          entry.Path,
 			LineNumber:    entry.LineNumber,
 			CreatedAt:     entry.ModifiedAt,
-			rank:          spotlightTextRank(query, filepath.Base(entry.Path), snippet) + float64(index)/1000,
+			Rank:          spotlightTextRank(query, filepath.Base(entry.Path), snippet) + float64(index)/1000,
 		})
+	}
+	if len(results) > maxSpotlightSearchResults {
+		results = results[:maxSpotlightSearchResults]
 	}
 	return results, nil
 }

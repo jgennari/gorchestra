@@ -77,16 +77,24 @@ export function SpotlightSearch({
     const timer = window.setTimeout(() => {
       setLoading(true)
       setError('')
-      void searchSpotlight(trimmed, sessionID, controller.signal)
+      let receivedUpdate = false
+      const applyResponse = (response: Awaited<ReturnType<typeof searchSpotlight>>) => {
+        if (controller.signal.aborted) return
+        setResults(response.results)
+        setLocalError(response.local_error ?? '')
+        setSettled(true)
+        setActiveIndex(0)
+        setResultFilter((current) =>
+          current === 'all' || response.results.some((result) => result.kind === current) ? current : 'all',
+        )
+      }
+      void searchSpotlight(trimmed, sessionID, controller.signal, (response) => {
+        receivedUpdate = true
+        applyResponse(response)
+      })
         .then((response) => {
           if (controller.signal.aborted) return
-          setResults(response.results)
-          setLocalError(response.local_error ?? '')
-          setSettled(true)
-          setActiveIndex(0)
-          setResultFilter((current) =>
-            current === 'all' || response.results.some((result) => result.kind === current) ? current : 'all',
-          )
+          if (!receivedUpdate) applyResponse(response)
         })
         .catch((searchError: unknown) => {
           if (controller.signal.aborted) return

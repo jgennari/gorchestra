@@ -95,6 +95,8 @@ type DashboardStore interface {
 
 type SearchStore interface {
 	Search(context.Context, string, int) ([]store.SearchResult, error)
+	SearchSessions(context.Context, string, int) ([]store.SearchResult, error)
+	SearchHistory(context.Context, string, int) ([]store.SearchResult, error)
 }
 
 type EventBlobStore interface {
@@ -411,6 +413,7 @@ func NewRouter(deps ...Dependencies) http.Handler {
 	}
 	if api.search != nil {
 		r.Get("/api/search", api.searchHandler)
+		r.Get("/api/search/stream", api.searchStreamHandler)
 	}
 	if api.dashboard != nil {
 		r.Get("/api/dashboard", api.dashboardHandler)

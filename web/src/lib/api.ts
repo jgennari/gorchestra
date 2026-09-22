@@ -127,12 +127,21 @@ export type SpotlightSearchResult = {
   line_number?: number
   created_at?: string
   archived?: boolean
+  rank?: number
 }
 
 export type SpotlightSearchResponse = {
   query: string
   results: SpotlightSearchResult[]
   local_error?: string
+}
+
+type SpotlightSearchStreamRecord = {
+  type: 'results' | 'error' | 'done'
+  source?: 'sessions' | 'history' | 'workspace'
+  query?: string
+  results?: SpotlightSearchResult[]
+  error?: string
 }
 
 export type DashboardRange = '7d' | '30d' | '90d' | 'all'
@@ -808,10 +817,139 @@ export async function getSession(sessionID: string) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`)
 }
 
-export async function searchSpotlight(query: string, sessionID?: string | null, signal?: AbortSignal) {
+export async function searchSpotlight(
+  query: string,
+  sessionID?: string | null,
+  signal?: AbortSignal,
+  onUpdate?: (response: SpotlightSearchResponse) => void,
+) {
   const params = new URLSearchParams({ q: query })
   if (sessionID) params.set('session_id', sessionID)
-  return requestJSON<SpotlightSearchResponse>(withQuery('/api/search', params), { signal })
+  try {
+    return await withServerRequestDeadline(
+      (deadlineSignal) => searchSpotlightStream(withQuery('/api/search/stream', params), query, deadlineSignal, onUpdate),
+      signal,
+    )
+  } catch (error) {
+    if (!(error instanceof APIError) || error.status !== 404) throw error
+    const response = await requestJSON<SpotlightSearchResponse>(withQuery('/api/search', params), { signal })
+    onUpdate?.(response)
+    return response
+  }
+}
+
+async function searchSpotlightStream(
+  url: string,
+  query: string,
+  signal: AbortSignal,
+  onUpdate?: (response: SpotlightSearchResponse) => void,
+) {
+  const response = await fetchWithServerConnectivity(url, {
+    signal,
+    headers: { Accept: 'application/x-ndjson, application/json' },
+  })
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`
+    try {
+      const payload = (await response.json()) as ErrorResponse
+      if (payload.error) message = payload.error
+    } catch {
+      // Keep the HTTP status fallback when the body is not JSON.
+    }
+    throw new APIError(response.status, message)
+  }
+
+  if (response.headers.get('Content-Type')?.includes('application/json')) {
+    const complete = (await response.json()) as SpotlightSearchResponse
+    onUpdate?.(complete)
+    return complete
+  }
+  if (!response.body) {
+    reportServerConnectivity(false)
+    throw new TypeError('Server returned an invalid search stream. Reconnecting…')
+  }
+
+  let results: SpotlightSearchResult[] = []
+  let localError = ''
+  let fatalError = ''
+  let buffer = ''
+  const decoder = new TextDecoder()
+  const reader = response.body.getReader()
+
+  const publish = () => {
+    const update: SpotlightSearchResponse = {
+      query,
+      results,
+      ...(localError ? { local_error: localError } : {}),
+    }
+    onUpdate?.(update)
+    return update
+  }
+  const consumeLine = (line: string) => {
+    if (!line.trim()) return
+    let record: SpotlightSearchStreamRecord
+    try {
+      record = JSON.parse(line) as SpotlightSearchStreamRecord
+    } catch (error) {
+      reportServerConnectivity(false)
+      throw new TypeError('Server returned an invalid search stream. Reconnecting…', { cause: error })
+    }
+    if (record.type === 'results') {
+      if (record.results?.length) {
+        results = mergeSpotlightSearchResults(results, record.results)
+        publish()
+      }
+      return
+    }
+    if (record.type === 'error') {
+      if (record.source === 'workspace') {
+        localError = record.error || 'Workspace search failed'
+        publish()
+      } else {
+        fatalError = record.error || 'Search failed'
+      }
+      return
+    }
+    if (record.type === 'done') publish()
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    let newline = buffer.indexOf('\n')
+    while (newline >= 0) {
+      consumeLine(buffer.slice(0, newline))
+      buffer = buffer.slice(newline + 1)
+      newline = buffer.indexOf('\n')
+    }
+    if (done) break
+  }
+  consumeLine(buffer)
+  if (fatalError) throw new Error(fatalError)
+  return {
+    query,
+    results,
+    ...(localError ? { local_error: localError } : {}),
+  }
+}
+
+function mergeSpotlightSearchResults(
+  current: SpotlightSearchResult[],
+  incoming: SpotlightSearchResult[],
+) {
+  const merged = new Map(current.map((result) => [result.id, result]))
+  for (const result of incoming) merged.set(result.id, result)
+  return [...merged.values()]
+    .sort((left, right) => {
+      const sessionOrder = Number(right.kind === 'session') - Number(left.kind === 'session')
+      if (sessionOrder !== 0) return sessionOrder
+      const rankOrder = (left.rank ?? 0) - (right.rank ?? 0)
+      if (rankOrder !== 0) return rankOrder
+      const dateOrder = (right.created_at ?? '').localeCompare(left.created_at ?? '')
+      if (dateOrder !== 0) return dateOrder
+      return left.title.localeCompare(right.title)
+    })
+    .slice(0, 50)
 }
 
 function dashboardTimeZone() {

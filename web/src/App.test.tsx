@@ -1730,7 +1730,10 @@ test('search button opens global spotlight search', async () => {
   await user.click(await screen.findByRole('button', { name: 'Search' }))
   await user.type(screen.getByRole('textbox', { name: 'Search Gorchestra' }), 'Inspect')
   expect(await screen.findByRole('option', { name: /Inspect repo/ })).toBeInTheDocument()
-  expect(fetch).toHaveBeenCalledWith('/api/search?q=Inspect&session_id=sess_1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+  expect(fetch).toHaveBeenCalledWith(
+    '/api/search/stream?q=Inspect&session_id=sess_1',
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  )
 })
 
 test('global navigation shortcuts open overview, user skills, and recent sessions', async () => {
@@ -2768,7 +2771,7 @@ function fetchMock({
       const body = JSON.parse(String(init.body)) as { session_id?: string }
       return jsonResponse({ connected: true, session_id: body.session_id ?? '' })
     }
-    if (path.startsWith('/api/search?')) {
+    if (path.startsWith('/api/search/stream?')) {
       const requestURL = new URL(path, 'http://localhost')
       const query = requestURL.searchParams.get('q')?.toLowerCase() ?? ''
       return jsonResponse({

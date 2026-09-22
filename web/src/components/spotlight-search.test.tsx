@@ -54,7 +54,12 @@ test('searches globally and locally, labels result kinds, and selects with the k
   expect(await screen.findByText('Tool call')).toBeInTheDocument()
   expect(screen.getByText('Agent instruction')).toBeInTheDocument()
   await waitFor(() =>
-    expect(apiMocks.searchSpotlight).toHaveBeenCalledWith('deploy', 'sess-1', expect.any(AbortSignal)),
+    expect(apiMocks.searchSpotlight).toHaveBeenCalledWith(
+      'deploy',
+      'sess-1',
+      expect.any(AbortSignal),
+      expect.any(Function),
+    ),
   )
 
   expect(screen.getByRole('button', { name: 'All 2' })).toHaveAttribute('aria-pressed', 'true')
@@ -95,10 +100,56 @@ test('shows matching session names as spotlight results', async () => {
   expect(await screen.findByRole('option', { name: /Release work/ })).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Sessions 1' })).toBeInTheDocument()
   await waitFor(() =>
-    expect(apiMocks.searchSpotlight).toHaveBeenCalledWith('release', 'current', expect.any(AbortSignal)),
+    expect(apiMocks.searchSpotlight).toHaveBeenCalledWith(
+      'release',
+      'current',
+      expect.any(AbortSignal),
+      expect.any(Function),
+    ),
   )
   await user.keyboard('{Enter}')
   expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ kind: 'session', session_id: 'sess-1' }))
+})
+
+test('renders a streamed session batch before search completion', async () => {
+  const user = userEvent.setup()
+  let finishSearch: ((value: unknown) => void) | undefined
+  apiMocks.searchSpotlight.mockImplementation(
+    (_query, _sessionID, _signal, onUpdate: (response: unknown) => void) =>
+      new Promise((resolve) => {
+        finishSearch = resolve
+        onUpdate({
+          query: 'release',
+          results: [{
+            id: 'session:sess-1:0',
+            kind: 'session',
+            scope: 'global',
+            title: 'Release work',
+            session_id: 'sess-1',
+            session_title: 'Release work',
+          }],
+        })
+      }),
+  )
+
+  render(<SpotlightSearch open sessionID="current" onOpenChange={() => undefined} onSelect={() => undefined} />)
+  await user.type(screen.getByRole('textbox', { name: 'Search Gorchestra' }), 'release')
+
+  expect(await screen.findByRole('option', { name: /Release work/ })).toBeInTheDocument()
+  expect(screen.getByLabelText('Searching')).toBeInTheDocument()
+
+  finishSearch?.({
+    query: 'release',
+    results: [{
+      id: 'session:sess-1:0',
+      kind: 'session',
+      scope: 'global',
+      title: 'Release work',
+      session_id: 'sess-1',
+      session_title: 'Release work',
+    }],
+  })
+  await waitFor(() => expect(screen.queryByLabelText('Searching')).not.toBeInTheDocument())
 })
 
 test('stays compact before a query and reports empty results after search', async () => {

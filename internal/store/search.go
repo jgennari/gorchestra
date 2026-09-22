@@ -252,12 +252,31 @@ func firstSearchPayloadString(payload map[string]any, keys ...string) string {
 }
 
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	return s.search(ctx, query, limit, "")
+}
+
+func (s *Store) SearchSessions(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	return s.search(ctx, query, limit, "session")
+}
+
+func (s *Store) SearchHistory(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	return s.search(ctx, query, limit, "history")
+}
+
+func (s *Store) search(ctx context.Context, query string, limit int, scope string) ([]SearchResult, error) {
 	match := searchFTSQuery(query)
 	if match == "" {
 		return []SearchResult{}, nil
 	}
 	if limit <= 0 || limit > 100 {
 		limit = 50
+	}
+	kindFilter := ""
+	switch scope {
+	case "session":
+		kindFilter = " AND d.kind = 'session'"
+	case "history":
+		kindFilter = " AND d.kind != 'session'"
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT d.kind, d.session_id, s.title, COALESCE(s.workspace_path, ''), COALESCE(d.event_seq, 0),
@@ -266,7 +285,7 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]SearchRe
 		FROM search_documents_fts
 		JOIN search_documents d ON d.rowid = search_documents_fts.rowid
 		JOIN sessions s ON s.id = d.session_id
-		WHERE search_documents_fts MATCH ?
+		WHERE search_documents_fts MATCH ?`+kindFilter+`
 		ORDER BY CASE WHEN d.kind = 'session' THEN 0 ELSE 1 END,
 		         bm25(search_documents_fts, 7.0, 1.0), d.created_at DESC
 		LIMIT ?`, match, limit)

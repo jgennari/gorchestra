@@ -38,6 +38,20 @@ func TestSearchIndexesSessionHistoryAndToolInputOutput(t *testing.T) {
 	if len(results) != 1 || results[0].Kind != "session" || results[0].SessionID != session.ID {
 		t.Fatalf("expected matching session title to survive the result limit, got %#v", results)
 	}
+	results, err = database.SearchSessions(ctx, "deploy", 10)
+	if err != nil {
+		t.Fatalf("search session titles: %v", err)
+	}
+	if len(results) != 1 || results[0].Kind != "session" {
+		t.Fatalf("expected one session result, got %#v", results)
+	}
+	results, err = database.SearchHistory(ctx, "deploy", 10)
+	if err != nil {
+		t.Fatalf("search history: %v", err)
+	}
+	if len(results) != 1 || results[0].Kind != "tool_call" {
+		t.Fatalf("expected session documents to be excluded from history, got %#v", results)
+	}
 
 	results, err = database.Search(ctx, "deploy healthy", 10)
 	if err != nil {
