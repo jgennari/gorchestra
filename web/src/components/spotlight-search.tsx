@@ -46,6 +46,7 @@ export function SpotlightSearch({
   const [resultFilter, setResultFilter] = useState<ResultFilter>('all')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const resultRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const sessionNameSearch = resultFilter === 'session'
 
   useEffect(() => {
     if (!open) {
@@ -69,7 +70,6 @@ export function SpotlightSearch({
       setError('')
       setLocalError('')
       setActiveIndex(0)
-      setResultFilter('all')
       return
     }
 
@@ -77,7 +77,7 @@ export function SpotlightSearch({
     const timer = window.setTimeout(() => {
       setLoading(true)
       setError('')
-      void searchSpotlight(trimmed, sessionID, controller.signal)
+      void searchSpotlight(trimmed, sessionID, controller.signal, sessionNameSearch ? 'session' : undefined)
         .then((response) => {
           if (controller.signal.aborted) return
           setResults(response.results)
@@ -85,7 +85,9 @@ export function SpotlightSearch({
           setSettled(true)
           setActiveIndex(0)
           setResultFilter((current) =>
-            current === 'all' || response.results.some((result) => result.kind === current) ? current : 'all',
+            current === 'all' || current === 'session' || response.results.some((result) => result.kind === current)
+              ? current
+              : 'all',
           )
         })
         .catch((searchError: unknown) => {
@@ -104,7 +106,7 @@ export function SpotlightSearch({
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [open, query, sessionID])
+  }, [open, query, sessionID, sessionNameSearch])
 
   useEffect(() => {
     const result = resultRefs.current[activeIndex]
@@ -134,7 +136,7 @@ export function SpotlightSearch({
     current[result.kind] = (current[result.kind] ?? 0) + 1
     return current
   }, {})
-  const availableKinds = resultKindOrder.filter((kind) => counts[kind])
+  const availableKinds = resultKindOrder.filter((kind) => kind !== 'session' && counts[kind])
   const visibleResults = resultFilter === 'all' ? results : results.filter((result) => result.kind === resultFilter)
 
   function applyResultFilter(filter: ResultFilter) {
@@ -151,7 +153,7 @@ export function SpotlightSearch({
         aria-describedby={undefined}
         className={cn(
           'command-chat-header top-[18vh] block max-w-2xl -translate-y-0 gap-0 overflow-hidden border-border/60 p-0 shadow-[0_24px_80px_hsl(220_40%_2%/0.38)] transition-[max-height] duration-200',
-          expanded ? 'max-h-[70vh]' : 'max-h-16',
+          expanded ? 'max-h-[70vh]' : 'max-h-[6.75rem]',
         )}
       >
         <DialogTitle className="sr-only">Search Gorchestra</DialogTitle>
@@ -166,7 +168,7 @@ export function SpotlightSearch({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search sessions, history, tools, and current files…"
+            placeholder={sessionNameSearch ? 'Search session names…' : 'Search sessions, history, tools, and current files…'}
             className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground"
           />
           {loading ? <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Searching" /> : null}
@@ -175,35 +177,40 @@ export function SpotlightSearch({
           </kbd>
         </div>
 
-        {expanded ? (
-          <div className="max-h-[calc(70vh-4rem)] border-t border-border/70">
-            {!error && availableKinds.length > 0 ? (
-              <div
-                role="group"
-                aria-label="Filter search results"
-                className="subtle-scrollbar flex gap-1.5 overflow-x-auto border-b border-border/60 px-3 py-2.5"
-              >
+        <div
+          role="group"
+          aria-label="Search scope"
+          className="subtle-scrollbar flex gap-1.5 overflow-x-auto border-t border-border/60 px-3 py-2"
+        >
+          <ResultFilterPill
+            label="All"
+            selected={resultFilter === 'all'}
+            onClick={() => applyResultFilter('all')}
+          />
+          <ResultFilterPill
+            label="Session names"
+            selected={resultFilter === 'session'}
+            onClick={() => applyResultFilter('session')}
+          />
+          {!error
+            ? availableKinds.map((kind) => (
                 <ResultFilterPill
-                  label="All"
-                  count={results.length}
-                  selected={resultFilter === 'all'}
-                  onClick={() => applyResultFilter('all')}
+                  key={kind}
+                  label={resultKindFilterLabel(kind)}
+                  count={counts[kind] ?? 0}
+                  selected={resultFilter === kind}
+                  onClick={() => applyResultFilter(kind)}
                 />
-                {availableKinds.map((kind) => (
-                  <ResultFilterPill
-                    key={kind}
-                    label={resultKindFilterLabel(kind)}
-                    count={counts[kind] ?? 0}
-                    selected={resultFilter === kind}
-                    onClick={() => applyResultFilter(kind)}
-                  />
-                ))}
-              </div>
-            ) : null}
+              ))
+            : null}
+        </div>
+
+        {expanded ? (
+          <div className="max-h-[calc(70vh-6.75rem)] border-t border-border/70">
             <div
               id="spotlight-search-results"
               role="listbox"
-              className="subtle-scrollbar max-h-[calc(70vh-7.25rem)] overflow-y-auto p-2"
+              className="subtle-scrollbar max-h-[calc(70vh-6.75rem)] overflow-y-auto p-2"
             >
             {error ? (
               <p role="alert" className="px-3 py-6 text-center text-sm text-destructive">
@@ -211,7 +218,9 @@ export function SpotlightSearch({
               </p>
             ) : null}
             {!error && results.length === 0 ? (
-              <p className="px-3 py-6 text-center text-sm text-muted-foreground">No results for “{query.trim()}”</p>
+              <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                {sessionNameSearch ? 'No session names' : 'No results'} for “{query.trim()}”
+              </p>
             ) : null}
             {!error
               ? visibleResults.map((result, index) => {
@@ -278,14 +287,14 @@ function ResultFilterPill({
   onClick,
 }: {
   label: string
-  count: number
+  count?: number
   selected: boolean
   onClick: () => void
 }) {
   return (
     <button
       type="button"
-      aria-label={`${label} ${count}`}
+      aria-label={count === undefined ? label : `${label} ${count}`}
       aria-pressed={selected}
       onClick={onClick}
       className={cn(
@@ -296,7 +305,7 @@ function ResultFilterPill({
       )}
     >
       <span>{label}</span>
-      <span className="tabular-nums text-[10px] opacity-70">{count}</span>
+      {count === undefined ? null : <span className="tabular-nums text-[10px] opacity-70">{count}</span>}
     </button>
   )
 }

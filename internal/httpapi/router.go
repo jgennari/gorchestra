@@ -95,6 +95,7 @@ type DashboardStore interface {
 
 type SearchStore interface {
 	Search(context.Context, string, int) ([]store.SearchResult, error)
+	SearchSessions(context.Context, string, int) ([]store.SearchResult, error)
 }
 
 type EventBlobStore interface {

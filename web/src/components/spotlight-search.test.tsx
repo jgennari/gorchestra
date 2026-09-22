@@ -53,18 +53,58 @@ test('searches globally and locally, labels result kinds, and selects with the k
   await user.type(input, 'deploy')
   expect(await screen.findByText('Tool call')).toBeInTheDocument()
   expect(screen.getByText('Agent instruction')).toBeInTheDocument()
-  await waitFor(() => expect(apiMocks.searchSpotlight).toHaveBeenCalledWith('deploy', 'sess-1', expect.any(AbortSignal)))
+  await waitFor(() =>
+    expect(apiMocks.searchSpotlight).toHaveBeenCalledWith('deploy', 'sess-1', expect.any(AbortSignal), undefined),
+  )
 
-  expect(screen.getByRole('button', { name: 'All 2' })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('button', { name: 'Session names' })).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Tools 1' })).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Instructions 1' })).toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Tools 1' }))
   expect(screen.getByRole('option', { name: /exec_command/ })).toBeInTheDocument()
   expect(screen.queryByRole('option', { name: /docs\/AGENTS.md/ })).not.toBeInTheDocument()
-  await user.click(screen.getByRole('button', { name: 'All 2' }))
+  await user.click(screen.getByRole('button', { name: 'All' }))
 
   await user.keyboard('{ArrowDown}{Enter}')
   expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ kind: 'agent_instruction', line_number: 8 }))
+})
+
+test('searches session names through the dedicated scope chip', async () => {
+  const user = userEvent.setup()
+  const onSelect = vi.fn()
+  apiMocks.searchSpotlight.mockResolvedValue({
+    query: 'release',
+    results: [
+      {
+        id: 'session:sess-1:0',
+        kind: 'session',
+        scope: 'global',
+        title: 'Release work',
+        session_id: 'sess-1',
+        session_title: 'Release work',
+      },
+    ],
+  })
+
+  render(<SpotlightSearch open sessionID="current" onOpenChange={() => undefined} onSelect={onSelect} />)
+
+  await user.click(screen.getByRole('button', { name: 'Session names' }))
+  const input = screen.getByRole('textbox', { name: 'Search Gorchestra' })
+  expect(input).toHaveAttribute('placeholder', 'Search session names…')
+  await user.type(input, 'release')
+
+  expect(await screen.findByRole('option', { name: /Release work/ })).toBeInTheDocument()
+  await waitFor(() =>
+    expect(apiMocks.searchSpotlight).toHaveBeenCalledWith(
+      'release',
+      'current',
+      expect.any(AbortSignal),
+      'session',
+    ),
+  )
+  await user.keyboard('{Enter}')
+  expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ kind: 'session', session_id: 'sess-1' }))
 })
 
 test('stays compact before a query and reports empty results after search', async () => {

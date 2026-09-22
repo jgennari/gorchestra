@@ -452,6 +452,7 @@ export function SessionDetail({
             headerActions={headerActions}
             leadingAction={mobileLeadingAction}
             onSelectParent={onSelectParent}
+            showParentSession={false}
           />
         </div>
         <div

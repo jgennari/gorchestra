@@ -26,6 +26,7 @@ import {
   listHostLogs,
   listWorkspaceRoots,
   restoreSession,
+  searchSpotlight,
 	updateSessionPin,
   updateSessionParent,
   searchSessionFiles,
@@ -168,6 +169,16 @@ test('session list helper includes archived toggle', async () => {
   vi.stubGlobal('fetch', fetchMock)
 
   await listSessions({ limit: 25, include_archived: true })
+})
+
+test('spotlight search can scope results to session names', async () => {
+  const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+    expect(String(url)).toBe('/api/search?q=Release&session_id=sess_1&kind=session')
+    return jsonResponse({ query: 'Release', results: [] })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await searchSpotlight('Release', 'sess_1', undefined, 'session')
 })
 
 test('title update helper patches the session title', async () => {

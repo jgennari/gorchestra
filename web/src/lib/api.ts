@@ -808,9 +808,15 @@ export async function getSession(sessionID: string) {
   return requestJSON<Session>(`/api/sessions/${encodeURIComponent(sessionID)}`)
 }
 
-export async function searchSpotlight(query: string, sessionID?: string | null, signal?: AbortSignal) {
+export async function searchSpotlight(
+  query: string,
+  sessionID?: string | null,
+  signal?: AbortSignal,
+  kind?: 'session',
+) {
   const params = new URLSearchParams({ q: query })
   if (sessionID) params.set('session_id', sessionID)
+  if (kind) params.set('kind', kind)
   return requestJSON<SpotlightSearchResponse>(withQuery('/api/search', params), { signal })
 }
 

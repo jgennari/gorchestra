@@ -31,6 +31,22 @@ func TestSearchIndexesSessionHistoryAndToolInputOutput(t *testing.T) {
 		t.Fatalf("unexpected message results: %#v", results)
 	}
 
+	results, err = database.SearchSessions(ctx, "deploy", 10)
+	if err != nil {
+		t.Fatalf("search session titles: %v", err)
+	}
+	if len(results) != 1 || results[0].Kind != "session" || results[0].SessionID != session.ID {
+		t.Fatalf("expected matching session title, got %#v", results)
+	}
+
+	results, err = database.SearchSessions(ctx, "nebula", 10)
+	if err != nil {
+		t.Fatalf("search session titles without match: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected message content to be excluded from session title search, got %#v", results)
+	}
+
 	results, err = database.Search(ctx, "deploy healthy", 10)
 	if err != nil {
 		t.Fatalf("search tool input and output: %v", err)
