@@ -11,39 +11,38 @@ class Threave < Formula
   def install
     system "go", "build",
       *std_go_args(
-        output: bin/"threave",
+        output:  bin/"threave",
         ldflags: "-s -w -X main.version=#{version}",
       ),
       "./cmd/app"
     (bin/"gorchestra").make_symlink(bin/"threave")
   end
 
-  def post_install
-    (var/"threave").mkpath
-    config = etc/"threave/threave.env"
-    return if config.exist?
+  post_install_steps do
+    mkdir_p "threave", base: :var
+    mkdir_p "threave", base: :etc
+    unless_path_exists "threave/threave.env", base: :etc do
+      if_path_exists "gorchestra/gorchestra.env", base: :etc do
+        copy "gorchestra/gorchestra.env", "threave/threave.env", source_base: :etc, target_base: :etc
+      end
+      unless_path_exists "gorchestra/gorchestra.env", base: :etc do
+        write_file "threave/threave.env", <<~EOS, base: :etc
+          # Threave Homebrew service configuration.
+          THREAVE_HOST=127.0.0.1
+          THREAVE_PORT=15173
+          THREAVE_DATA_DIR={{var}}/threave
+          THREAVE_WORKSPACE=~
+          THREAVE_WORKSPACE_ROOTS=~
+          THREAVE_OPEN=false
 
-    config.dirname.mkpath
-    legacy = etc/"gorchestra/gorchestra.env"
-    if legacy.exist?
-      cp legacy, config
-    else
-      config.write <<~EOS
-        # Threave Homebrew service configuration.
-        THREAVE_HOST=127.0.0.1
-        THREAVE_PORT=15173
-        THREAVE_DATA_DIR=#{var}/threave
-        THREAVE_WORKSPACE=~
-        THREAVE_WORKSPACE_ROOTS=~
-        THREAVE_OPEN=false
-
-        # Uncomment and edit these if your agent CLI or defaults differ.
-        # THREAVE_CODEX_BIN=codex
-        # THREAVE_CODEX_MODEL=gpt-5
-        # THREAVE_CODEX_SANDBOX=workspace-write
-        # THREAVE_CODEX_NETWORK_ACCESS=true
-        # THREAVE_CODEX_WEB_SEARCH=live
-      EOS
+          # Uncomment and edit these if your agent CLI or defaults differ.
+          # THREAVE_CODEX_BIN=codex
+          # THREAVE_CODEX_MODEL=gpt-5
+          # THREAVE_CODEX_SANDBOX=workspace-write
+          # THREAVE_CODEX_NETWORK_ACCESS=true
+          # THREAVE_CODEX_WEB_SEARCH=live
+        EOS
+      end
     end
   end
 
