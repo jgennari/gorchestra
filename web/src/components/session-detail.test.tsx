@@ -337,15 +337,17 @@ test('session detail uses matching floating headers on mobile and desktop', () =
   expect(screen.queryByText(/Last event:/)).not.toBeInTheDocument()
 })
 
-test('mobile session header omits the parent label and icon', () => {
+test('session headers omit the parent label and icon', () => {
   renderDetail({
     session: { ...baseSession, parent_session_id: 'sess_parent', lineage_depth: 1 },
     onSelectParent: () => undefined,
   })
 
-  const mobileHeader = screen.getByTestId('mobile-floating-session-header')
-  expect(within(mobileHeader).queryByText('Parent session')).not.toBeInTheDocument()
-  expect(mobileHeader.querySelector('.lucide-git-branch')).not.toBeInTheDocument()
+  for (const headerTestID of ['mobile-floating-session-header', 'floating-session-header']) {
+    const header = screen.getByTestId(headerTestID)
+    expect(within(header).queryByText('Parent session')).not.toBeInTheDocument()
+    expect(header.querySelector('.lucide-git-branch')).not.toBeInTheDocument()
+  }
 })
 
 test('session header gives the title priority without inline settings controls', () => {

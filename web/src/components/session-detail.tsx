@@ -463,6 +463,7 @@ export function SessionDetail({
             session={session}
             headerActions={headerActions}
             onSelectParent={onSelectParent}
+            showParentSession={false}
           />
         </div>
       </div>
