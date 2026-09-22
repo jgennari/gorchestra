@@ -190,7 +190,7 @@ func (api API) searchSessionWorkspace(ctx context.Context, sessionID string, que
 	if err != nil || workspacePath == "" {
 		return nil, fmt.Errorf("current session workspace is unavailable")
 	}
-	entries, err := searchWorkspace(workspacePath, workspacePath, query)
+	entries, err := searchWorkspace(ctx, workspacePath, workspacePath, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search current session files")
 	}

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +32,6 @@ const (
 	maxWorkspaceUploadBytes   = 100 * 1024 * 1024
 	maxWorkspaceUploadMemory  = 8 * 1024 * 1024
 	maxSearchResults          = 50
-	maxSearchWalkItems        = 5000
 	maxSearchLineSnippetRunes = 180
 )
 
@@ -543,7 +543,7 @@ func (api API) sessionFileSearchHandler(w http.ResponseWriter, r *http.Request) 
 		writeWorkspacePathError(w, err)
 		return
 	}
-	results, err := searchWorkspace(workspacePath, startPath, query)
+	results, err := searchWorkspace(r.Context(), workspacePath, startPath, query)
 	if err != nil {
 		writeWorkspacePathError(w, err)
 		return
@@ -1018,7 +1018,7 @@ func shouldServeWorkspaceRawAsText(mediaType string, data []byte) bool {
 	}
 }
 
-func searchWorkspace(rootPath string, startPath string, query string) ([]workspaceSearchResultResponse, error) {
+func searchWorkspace(ctx context.Context, rootPath string, startPath string, query string) ([]workspaceSearchResultResponse, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
 		return nil, nil
@@ -1031,20 +1031,23 @@ func searchWorkspace(rootPath string, startPath string, query string) ([]workspa
 		return nil, errors.New("path must be a directory")
 	}
 
-	results := make([]workspaceSearchResultResponse, 0)
-	walked := 0
+	nameResults := make([]workspaceSearchResultResponse, 0)
+	contentResults := make([]workspaceSearchResultResponse, 0)
 	err = filepath.WalkDir(startPath, func(fullPath string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return nil
 		}
 		if fullPath != startPath && entry.IsDir() && shouldSkipSearchDirectory(entry.Name()) {
 			return filepath.SkipDir
 		}
-		walked++
-		if walked > maxSearchWalkItems || len(results) >= maxSearchResults {
-			return fs.SkipAll
-		}
 		if fullPath == startPath {
+			return nil
+		}
+		nameMatches := strings.Contains(strings.ToLower(entry.Name()), query)
+		if !nameMatches && len(contentResults) >= maxSearchResults {
 			return nil
 		}
 		info, err := entry.Info()
@@ -1052,28 +1055,43 @@ func searchWorkspace(rootPath string, startPath string, query string) ([]workspa
 			return nil
 		}
 
-		nameMatches := strings.Contains(strings.ToLower(entry.Name()), query)
+		if nameMatches {
+			if len(nameResults) < maxSearchResults {
+				nameResults = append(nameResults, workspaceSearchResultResponse{
+					workspaceEntryResponse: workspaceEntry(rootPath, fullPath, info),
+					MatchType:              "name",
+				})
+			}
+			return nil
+		}
+
+		if len(contentResults) >= maxSearchResults {
+			return nil
+		}
 		lineNumber, lineText, contentMatches := searchFileContent(fullPath, info, query)
-		if nameMatches || contentMatches {
-			result := workspaceSearchResultResponse{
+		if contentMatches {
+			contentResults = append(contentResults, workspaceSearchResultResponse{
 				workspaceEntryResponse: workspaceEntry(rootPath, fullPath, info),
-				MatchType:              "name",
+				MatchType:              "content",
 				LineNumber:             lineNumber,
 				LineText:               lineText,
-			}
-			if !nameMatches && contentMatches {
-				result.MatchType = "content"
-			}
-			results = append(results, result)
+			})
 		}
 		return nil
 	})
-	if err != nil && !errors.Is(err, fs.SkipAll) {
+	if err != nil {
 		return nil, fmt.Errorf("search workspace: %w", err)
 	}
-	sort.Slice(results, func(i, j int) bool {
-		return strings.ToLower(results[i].Path) < strings.ToLower(results[j].Path)
+	sort.Slice(nameResults, func(i, j int) bool {
+		return strings.ToLower(nameResults[i].Path) < strings.ToLower(nameResults[j].Path)
 	})
+	sort.Slice(contentResults, func(i, j int) bool {
+		return strings.ToLower(contentResults[i].Path) < strings.ToLower(contentResults[j].Path)
+	})
+	results := append(nameResults, contentResults...)
+	if len(results) > maxSearchResults {
+		results = results[:maxSearchResults]
+	}
 	return results, nil
 }
 

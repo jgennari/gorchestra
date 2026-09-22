@@ -279,6 +279,51 @@ func TestSessionFileAPIsListSearchAndReadWorkspaceFiles(t *testing.T) {
 	assertErrorResponse(t, binaryUpdateRec, "file must be UTF-8 text")
 }
 
+func TestSearchWorkspacePrioritizesNamesWithoutSkippingTemporaryPaths(t *testing.T) {
+	workspace := canonicalPath(t, t.TempDir())
+	for _, directory := range []string{".tmp", "a-content", "projects"} {
+		if err := os.MkdirAll(filepath.Join(workspace, directory), 0o755); err != nil {
+			t.Fatalf("create %s: %v", directory, err)
+		}
+	}
+	for index := 0; index < maxSearchResults; index++ {
+		path := filepath.Join(workspace, "a-content", fmt.Sprintf("%03d.txt", index))
+		if err := os.WriteFile(path, []byte("insurance appears in content\n"), 0o644); err != nil {
+			t.Fatalf("write content match: %v", err)
+		}
+	}
+	for _, path := range []string{".tmp/insurance-cache.txt", "projects/insurance-medical.md"} {
+		if err := os.WriteFile(filepath.Join(workspace, path), []byte("no matching body\n"), 0o644); err != nil {
+			t.Fatalf("write name match: %v", err)
+		}
+	}
+
+	results, err := searchWorkspace(context.Background(), workspace, workspace, "insurance")
+	if err != nil {
+		t.Fatalf("search workspace: %v", err)
+	}
+	if len(results) != maxSearchResults {
+		t.Fatalf("expected %d results, got %d", maxSearchResults, len(results))
+	}
+	if results[0].Path != ".tmp/insurance-cache.txt" || results[0].MatchType != "name" {
+		t.Fatalf("expected temporary filename match first, got %#v", results[0])
+	}
+	if results[1].Path != "projects/insurance-medical.md" || results[1].MatchType != "name" {
+		t.Fatalf("expected project filename match second, got %#v", results[1])
+	}
+}
+
+func TestSearchWorkspaceStopsWhenContextIsCanceled(t *testing.T) {
+	workspace := canonicalPath(t, t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := searchWorkspace(ctx, workspace, workspace, "insurance")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
 func TestSessionFileRawStreamsMediaAndDownloads(t *testing.T) {
 	ctx := context.Background()
 	workspace := canonicalPath(t, t.TempDir())
