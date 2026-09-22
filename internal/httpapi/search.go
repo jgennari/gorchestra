@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/jgennari/gorchestra/internal/store"
 )
 
 const maxSpotlightSearchResults = 50
@@ -42,19 +40,7 @@ func (api API) searchHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "q is required")
 		return
 	}
-	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
-	if kind != "" && kind != "session" {
-		writeError(w, http.StatusBadRequest, "kind must be session")
-		return
-	}
-
-	var history []store.SearchResult
-	var err error
-	if kind == "session" {
-		history, err = api.search.SearchSessions(r.Context(), query, maxSpotlightSearchResults)
-	} else {
-		history, err = api.search.Search(r.Context(), query, maxSpotlightSearchResults)
-	}
+	history, err := api.search.Search(r.Context(), query, maxSpotlightSearchResults)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to search session history")
 		return
@@ -78,7 +64,7 @@ func (api API) searchHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	localError := ""
-	if sessionID := strings.TrimSpace(r.URL.Query().Get("session_id")); kind == "" && sessionID != "" {
+	if sessionID := strings.TrimSpace(r.URL.Query().Get("session_id")); sessionID != "" {
 		localResults, localSearchError := api.searchSessionWorkspace(r, sessionID, query)
 		if localSearchError != nil {
 			localError = localSearchError.Error()
