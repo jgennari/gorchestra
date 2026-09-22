@@ -34,6 +34,17 @@ open http://127.0.0.1:15173
 
 The service reads `$(brew --prefix)/etc/threave/threave.env`. Edit it and restart the service to change the port, data directory, workspace roots, or provider binaries.
 
+If you already run Gorchestra through Homebrew, wait for active runs to finish before stopping its service. Then unlink the old formula so its `gorchestra` command does not conflict with Threave's compatibility alias:
+
+```sh
+brew services stop jgennari/tap/gorchestra
+brew unlink jgennari/tap/gorchestra
+brew install threave-io/tap/threave
+brew services start threave-io/tap/threave
+```
+
+The new formula copies your old service config if it exists. Check `$(brew --prefix)/etc/threave/threave.env` before starting the new service, especially its data directory and workspace roots.
+
 On macOS, Linux, or Windows, download the matching archive from [GitHub Releases](https://github.com/threave-io/threave/releases/latest). Archives contain the `threave` executable with the frontend embedded. For example:
 
 ```sh
