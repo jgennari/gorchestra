@@ -1,13 +1,14 @@
 # Threave Tailscale Services
 
-Joey's persistent human-test stack has two private HTTPS entry points. They share one Go backend and SQLite database, but intentionally serve different frontend modes:
+Joey's persistent human-test stack has three private HTTPS entry points. They share one Go backend and SQLite database, but the development URL serves a different frontend mode:
 
 | Use | URL | Local upstream |
 |---|---|---|
-| Daily/built frontend | `https://gorchestra.coin-triceratops.ts.net` | `http://127.0.0.1:18080` |
+| Daily/built frontend | `https://threave.coin-triceratops.ts.net` | `http://127.0.0.1:18080` |
+| Legacy built-frontend alias | `https://gorchestra.coin-triceratops.ts.net` | `http://127.0.0.1:18080` |
 | Development/Vite HMR | `https://gorchestra-dev.coin-triceratops.ts.net` | `http://127.0.0.1:15173`, with `/api/*` sent to `http://127.0.0.1:18080` |
 
-Both names are Tailscale Services and are only reachable from authorized devices in the `coin-triceratops.ts.net` tailnet. They are not public Funnel endpoints.
+All three names are Tailscale Services and are only reachable from authorized devices in the `coin-triceratops.ts.net` tailnet. They are not public Funnel endpoints.
 
 YourAPI remains independent and public at `https://joeys-mbp.coin-triceratops.ts.net/mcp`. Its Tailscale Funnel owns the Mac node's port 443 and proxies to `127.0.0.1:8766`. The Gorchestra sidecar does not change or share that node configuration.
 
@@ -15,16 +16,17 @@ YourAPI remains independent and public at `https://joeys-mbp.coin-triceratops.ts
 
 Tailscale requires Service hosts to use a tag-based identity. Joey's Mac is a normal user-owned Tailscale node, and tagging it would replace its user identity with tag-based access semantics. The sidecar embeds a second Tailscale node with `tsnet`, so the Mac keeps its existing identity, access, Funnel, and MagicDNS name.
 
-The sidecar source is an isolated Go module in `tools/tailscale-sidecar`. Keeping it separate prevents Tailscale's networking dependencies from entering Gorchestra's main `go.mod` or release binary.
+The sidecar source is an isolated Go module in `tools/tailscale-sidecar`. Keeping it separate prevents Tailscale's networking dependencies from entering Threave's main `go.mod` or release binary.
 
 ## Tailnet configuration
 
 The tailnet must contain:
 
 - Host identity tag: `tag:gorchestra-services`
+- Service: `svc:threave`, endpoint `tcp:443`
 - Service: `svc:gorchestra`, endpoint `tcp:443`
 - Service: `svc:gorchestra-dev`, endpoint `tcp:443`
-- An access grant allowing only `jgennari@gmail.com` to reach both services on TCP 443
+- An access grant allowing only `jgennari@gmail.com` to reach all three services on TCP 443
 - Automatic approval for advertisements from the dedicated tagged sidecar
 
 The intended policy additions are:
@@ -36,6 +38,7 @@ The intended policy additions are:
   },
   "autoApprovers": {
     "services": {
+      "svc:threave": ["tag:gorchestra-services"],
       "svc:gorchestra": ["tag:gorchestra-services"],
       "svc:gorchestra-dev": ["tag:gorchestra-services"]
     }
@@ -43,7 +46,7 @@ The intended policy additions are:
   "grants": [
     {
       "src": ["jgennari@gmail.com"],
-      "dst": ["svc:gorchestra", "svc:gorchestra-dev"],
+      "dst": ["svc:threave", "svc:gorchestra", "svc:gorchestra-dev"],
       "ip": ["443"]
     }
   ]
@@ -53,9 +56,9 @@ The intended policy additions are:
 Merge these entries into the existing policy rather than replacing existing
 `tagOwners`, `autoApprovers`, or `grants` collections.
 
-The sidecar advertises both services and terminates HTTPS using Tailscale-provisioned certificates. Its identity state is persistent; no reusable auth key is stored in the repository or LaunchAgent.
+The sidecar advertises all three services and terminates HTTPS using Tailscale-provisioned certificates. Its identity state is persistent; no reusable auth key is stored in the repository or LaunchAgent.
 
-On first start, inspect the logs for a one-time Tailscale authentication URL. Authenticate the new node as `tag:gorchestra-services`. With the policy above, both service advertisements are approved automatically. Confirm that each service shows one online host in the Tailscale Services admin page.
+On first start, inspect the logs for a one-time Tailscale authentication URL. Authenticate the new node as `tag:gorchestra-services`. With the policy above, all service advertisements are approved automatically. Confirm that each service shows one online host in the Tailscale Services admin page.
 
 ## Local installation and operation
 
@@ -97,12 +100,12 @@ This split also keeps API streaming and console WebSockets away from Vite's prox
 
 ## Frontend caching
 
-The two origins are deliberately separate:
+The built and development frontend modes use separate origins:
 
-- The built URL is a secure context, can register the service worker, and serves hashed embedded assets with production cache headers.
+- The built URLs are secure contexts, can register the service worker, and serve hashed embedded assets with production cache headers.
 - The dev URL is also a secure context, but Vite still serves development modules with HMR and `no-cache` behavior. The service worker declines to cache a Vite app shell.
 
-Browser storage, service-worker registrations, and push subscriptions are origin-scoped, so the two URLs maintain independent client state.
+Browser storage, service-worker registrations, and push subscriptions are origin-scoped, so each URL maintains independent client state. Moving to the Threave URL requires a new push subscription.
 
 ## Promoting the built frontend
 
@@ -118,7 +121,7 @@ signals the persistent backend's existing source watcher. If any Gorchestra
 session is running, the watcher defers its rebuild until all active sessions
 finish; the command never force-restarts the human stack. When no session is
 active, it waits for the rebuilt backend and verifies that the production
-Tailscale Service serves the exact staged `index.html`.
+Tailscale Service serves the staged app shell and standalone assets.
 
 Agents should run this command only when the user explicitly asks to promote or
 reload production. Normal frontend implementation and verification should use
@@ -129,6 +132,7 @@ the development URL and require no reload command.
 ```bash
 bun run dev:human:status
 bun run tailscale:sidecar
+curl -fsS https://threave.coin-triceratops.ts.net/api/health
 curl -fsS https://gorchestra.coin-triceratops.ts.net/api/health
 curl -fsS https://gorchestra-dev.coin-triceratops.ts.net/api/health
 tailscale funnel status --json
@@ -143,6 +147,10 @@ Until that local split-DNS conflict is corrected, validate each Service against
 the VIP returned by `tailscale dns query`:
 
 ```bash
+tailscale dns query threave.coin-triceratops.ts.net
+curl --resolve threave.coin-triceratops.ts.net:443:<VIP_FROM_QUERY> \
+  https://threave.coin-triceratops.ts.net/api/health
+
 tailscale dns query gorchestra.coin-triceratops.ts.net
 curl --resolve gorchestra.coin-triceratops.ts.net:443:100.70.22.215 \
   https://gorchestra.coin-triceratops.ts.net/api/health
@@ -158,6 +166,6 @@ macOS resolver has not learned the record yet.
 
 ## Rollback
 
-Stop the sidecar with `bun run tailscale:sidecar:stop`. In the Tailscale Services admin page, drain or remove the two `gorchestra-services-host` advertisements before deleting either service definition. Do not run `tailscale serve reset` on the Mac's primary node; that would affect the unrelated YourAPI Funnel configuration.
+Stop the sidecar with `bun run tailscale:sidecar:stop`. In the Tailscale Services admin page, drain or remove the `gorchestra-services-host` advertisements before deleting any service definition. Do not run `tailscale serve reset` on the Mac's primary node; that would affect the unrelated YourAPI Funnel configuration.
 
-The legacy `http://gorchestra.dev.gennari.industries` route can remain during migration and can be checked with `devproxy check gorchestra`. Remove it only after clients have moved to the two HTTPS service names.
+The legacy `http://gorchestra.dev.gennari.industries` route can remain during migration and can be checked with `devproxy check gorchestra`. Remove it only after clients have moved to the Threave HTTPS URL or the development URL.

@@ -31,7 +31,7 @@ Suggested cadence: a short smoke on every promotion, the automated regression la
 1. Read `AGENTS.md`. Run `bun run dev:human:status`; use the healthy existing stack.
 2. Record source commit, deployed HTML hash, browser-loaded entry asset, service-worker control, browser engine, viewport, and cache state. The release tag alone does not prove which code a cached client is executing.
    On touch-only mobile/PWA clients, use the session header's **⋯ → Debug** toggle, then expand **Viewport & bundle** to read `entry`. This toggles the existing overlay in place without reloading or opening Safari, preserving the client being diagnosed. The toggle also reflects URL/keyboard changes; the mini context meter remains in the menu without a separate Workspace details dialog.
-3. Use `https://gorchestra.coin-triceratops.ts.net` for embedded-asset and PWA checks. Vite/HMR is not a substitute for the production caching path.
+3. Use `https://threave.coin-triceratops.ts.net` for embedded-asset and PWA checks. Vite/HMR is not a substitute for the production caching path.
 4. Open a separate QA tab. Record the original DevTools network/device settings and whether the selected session has a draft. Preserve pre-existing user drafts.
 5. Production allows browsing and temporary unsaved markers. Avoid sending prompts, cancelling real runs, changing settings/pins, saving files, altering schedules, triggering notifications, clearing site data, or restarting the human stack. Ordinary navigation may update the application's read/attention state.
 6. Inject failures at the QA browser/isolated-server boundary. Do not disconnect the host network or stop production. For physical device network changes, keep the device and test scope explicit.

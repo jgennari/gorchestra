@@ -44,7 +44,7 @@ Its guiding principle is: agents perform work; Threave keeps their work connecte
 - The LaunchAgent runs one `dev:tailnet` stack: Vite listens on `0.0.0.0:15173` and is reachable locally at `127.0.0.1:15173`, the Go API listens on `127.0.0.1:18080`, and SQLite lives at `.tmp/human/sessions.db`.
 - Local URL: `http://127.0.0.1:15173`.
 - Tailnet development URL: `https://gorchestra-dev.coin-triceratops.ts.net`. A tagged `tsnet` sidecar forwards the frontend to `127.0.0.1:15173` and `/api/*` directly to `127.0.0.1:18080`.
-- Tailnet built-frontend URL: `https://gorchestra.coin-triceratops.ts.net`. The same sidecar forwards all traffic to `127.0.0.1:18080`, where the Go process serves its embedded frontend assets.
+- Tailnet built-frontend URL: `https://threave.coin-triceratops.ts.net`. The same sidecar forwards all traffic to `127.0.0.1:18080`, where the Go process serves its embedded frontend assets. `https://gorchestra.coin-triceratops.ts.net` remains a working legacy alias.
 - The sidecar is the LaunchAgent `com.joey.gorchestra-tailscale-sidecar`. Manage it with `bun run tailscale:sidecar`, `bun run tailscale:sidecar:logs`, `bun run tailscale:sidecar:restart`, and the other `tailscale:sidecar:*` scripts. See `docs/tailscale-services.md`.
 - The legacy `http://gorchestra.dev.gennari.industries` `devproxy` route may remain temporarily during migration; it points at this same human stack and is not a second server.
 - Development normally happens against this already-running LaunchAgent stack. Assume backend source changes will rebuild automatically and frontend changes will arrive through Vite HMR; do not start or restart a server merely to pick up edits.

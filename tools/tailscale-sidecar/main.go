@@ -20,14 +20,15 @@ import (
 )
 
 type config struct {
-	stateDir   string
-	hostname   string
-	tag        string
-	prodName   string
-	devName    string
-	prodTarget string
-	devTarget  string
-	apiTarget  string
+	stateDir    string
+	hostname    string
+	tag         string
+	primaryName string
+	prodName    string
+	devName     string
+	prodTarget  string
+	devTarget   string
+	apiTarget   string
 }
 
 func main() {
@@ -52,7 +53,8 @@ func parseConfig() (config, error) {
 	flag.StringVar(&cfg.stateDir, "state-dir", defaultStateDir, "directory for the sidecar Tailscale identity")
 	flag.StringVar(&cfg.hostname, "hostname", "gorchestra-services-host", "tailnet device hostname")
 	flag.StringVar(&cfg.tag, "tag", "tag:gorchestra-services", "tag-based Tailscale identity")
-	flag.StringVar(&cfg.prodName, "prod-service", "svc:gorchestra", "built frontend Tailscale Service")
+	flag.StringVar(&cfg.primaryName, "primary-service", "svc:threave", "primary built frontend Tailscale Service")
+	flag.StringVar(&cfg.prodName, "prod-service", "svc:gorchestra", "legacy built frontend Tailscale Service")
 	flag.StringVar(&cfg.devName, "dev-service", "svc:gorchestra-dev", "Vite frontend Tailscale Service")
 	flag.StringVar(&cfg.prodTarget, "prod-target", "http://127.0.0.1:18080", "built frontend and API upstream")
 	flag.StringVar(&cfg.devTarget, "dev-target", "http://127.0.0.1:15173", "Vite upstream")
@@ -60,11 +62,12 @@ func parseConfig() (config, error) {
 	flag.Parse()
 
 	for name, value := range map[string]string{
-		"state-dir":    cfg.stateDir,
-		"hostname":     cfg.hostname,
-		"tag":          cfg.tag,
-		"prod-service": cfg.prodName,
-		"dev-service":  cfg.devName,
+		"state-dir":       cfg.stateDir,
+		"hostname":        cfg.hostname,
+		"tag":             cfg.tag,
+		"primary-service": cfg.primaryName,
+		"prod-service":    cfg.prodName,
+		"dev-service":     cfg.devName,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return config{}, fmt.Errorf("-%s cannot be empty", name)
@@ -73,7 +76,7 @@ func parseConfig() (config, error) {
 	if !strings.HasPrefix(cfg.tag, "tag:") {
 		return config{}, fmt.Errorf("-tag must begin with tag:")
 	}
-	if !strings.HasPrefix(cfg.prodName, "svc:") || !strings.HasPrefix(cfg.devName, "svc:") {
+	if !strings.HasPrefix(cfg.primaryName, "svc:") || !strings.HasPrefix(cfg.prodName, "svc:") || !strings.HasPrefix(cfg.devName, "svc:") {
 		return config{}, fmt.Errorf("service names must begin with svc:")
 	}
 	for name, value := range map[string]string{
@@ -131,6 +134,7 @@ func run(cfg config) error {
 		handler http.Handler
 	}
 	services := []service{
+		{name: cfg.primaryName, handler: prodHandler},
 		{name: cfg.prodName, handler: prodHandler},
 		{name: cfg.devName, handler: devHandler},
 	}

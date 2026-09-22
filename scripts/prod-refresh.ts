@@ -7,7 +7,7 @@ const webDir = join(repoRoot, 'web')
 const embeddedDist = join(repoRoot, 'internal', 'webassets', 'dist')
 const watcherNudge = join(repoRoot, 'internal', 'webassets', 'assets.go')
 const backendURL = process.env.THREAVE_HUMAN_BACKEND_URL ?? process.env.GORCHESTRA_HUMAN_BACKEND_URL ?? 'http://127.0.0.1:18080'
-const productionURL = process.env.THREAVE_PRODUCTION_URL ?? process.env.GORCHESTRA_PRODUCTION_URL ?? 'https://gorchestra.coin-triceratops.ts.net'
+const productionURL = process.env.THREAVE_PRODUCTION_URL ?? process.env.GORCHESTRA_PRODUCTION_URL ?? 'https://threave.coin-triceratops.ts.net'
 const launchAgentLabel = process.env.THREAVE_HUMAN_LAUNCH_AGENT ?? process.env.GORCHESTRA_HUMAN_LAUNCH_AGENT ?? 'com.joey.gorchestra-human'
 const launchDomain = `gui/${typeof process.getuid === 'function' ? process.getuid() : 501}`
 const promotionTimeoutMs = parseTimeout(process.env.THREAVE_PROD_REFRESH_TIMEOUT_MS ?? process.env.GORCHESTRA_PROD_REFRESH_TIMEOUT_MS)

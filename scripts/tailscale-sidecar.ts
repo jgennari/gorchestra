@@ -116,13 +116,15 @@ async function restart() {
 
 async function status() {
   const state = launchAgentState()
-  const [productionStatus, developmentStatus] = await Promise.all([
+  const [productionStatus, legacyStatus, developmentStatus] = await Promise.all([
+    probe('https://threave.coin-triceratops.ts.net/api/health'),
     probe('https://gorchestra.coin-triceratops.ts.net/api/health'),
     probe('https://gorchestra-dev.coin-triceratops.ts.net/api/health'),
   ])
   console.log(`[tailscale-sidecar] service: ${label}`)
   console.log(`[tailscale-sidecar] state: ${state.loaded ? state.state || 'loaded' : 'stopped'}${state.pid ? ` (pid ${state.pid})` : ''}`)
-  console.log(`[tailscale-sidecar] production: https://gorchestra.coin-triceratops.ts.net (${productionStatus})`)
+  console.log(`[tailscale-sidecar] production: https://threave.coin-triceratops.ts.net (${productionStatus})`)
+  console.log(`[tailscale-sidecar] legacy: https://gorchestra.coin-triceratops.ts.net (${legacyStatus})`)
   console.log(`[tailscale-sidecar] development: https://gorchestra-dev.coin-triceratops.ts.net (${developmentStatus})`)
   console.log(`[tailscale-sidecar] state directory: ${stateDir}`)
   console.log(`[tailscale-sidecar] logs: ${stdoutPath}, ${stderrPath}`)
@@ -204,6 +206,7 @@ function launchAgentPlist() {
     '-state-dir', stateDir,
     '-hostname', 'gorchestra-services-host',
     '-tag', 'tag:gorchestra-services',
+    '-primary-service', 'svc:threave',
     '-prod-service', 'svc:gorchestra',
     '-dev-service', 'svc:gorchestra-dev',
     '-prod-target', 'http://127.0.0.1:18080',
