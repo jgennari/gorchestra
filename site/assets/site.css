@@ -7,6 +7,8 @@ button,input{font:inherit}
 a{color:inherit;text-decoration:none}
 img{display:block;max-width:100%}
 svg{display:block}
+.icon-arrow-up-right{display:inline-block;width:1em;height:1em;flex:none;vertical-align:-.12em;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.button .icon-arrow-up-right{width:20px;height:20px}.button-small .icon-arrow-up-right{width:16px;height:16px}.text-link .icon-arrow-up-right{width:18px;height:18px}
 ::selection{background:#9be4d7;color:#13242d}
 :focus-visible{outline:3px solid #009c88;outline-offset:4px}
 .container{width:min(1232px,calc(100% - 56px));margin-inline:auto}
