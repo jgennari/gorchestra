@@ -40,6 +40,8 @@ Its guiding principle is: agents perform work; Threave keeps their work connecte
 
 ## Local Human Testing
 
+- For synthetic marketing and blog screenshots, use `docs/showcase.md` and `bun run showcase:photos`. That one-shot command writes images to `.tmp/showcase/screenshots/` and shuts down its isolated local server when capture finishes. Never use the human-test database for public screenshots.
+
 - The canonical persistent human-test stack is the macOS LaunchAgent `com.joey.gorchestra-human`.
 - The LaunchAgent runs one `dev:tailnet` stack: Vite listens on `0.0.0.0:15173` and is reachable locally at `127.0.0.1:15173`, the Go API listens on `127.0.0.1:18080`, and SQLite lives at `.tmp/human/sessions.db`.
 - Local URL: `http://127.0.0.1:15173`.

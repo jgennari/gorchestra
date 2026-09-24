@@ -22,6 +22,15 @@ type Store struct {
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
+	return OpenWithClock(ctx, path, func() time.Time { return time.Now().UTC() })
+}
+
+// OpenWithClock opens a store with a caller-supplied clock. It is useful for
+// constructing reproducible event histories and time-sensitive tests.
+func OpenWithClock(ctx context.Context, path string, now func() time.Time) (*Store, error) {
+	if now == nil {
+		return nil, fmt.Errorf("open sqlite database: clock is required")
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
@@ -31,10 +40,8 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	db.SetMaxIdleConns(1)
 
 	store := &Store{
-		db: db,
-		now: func() time.Time {
-			return time.Now().UTC()
-		},
+		db:  db,
+		now: now,
 	}
 
 	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {

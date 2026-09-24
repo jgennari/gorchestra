@@ -2,12 +2,16 @@ import { fetchWithServerConnectivity, serverConnectivityEventName, withServerReq
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
-test('gateway errors report unavailability, and unrelated successes do not declare recovery', async () => {
+test('gateway errors report unavailability, but unavailable agent options do not', async () => {
   const events: boolean[] = []
   const listener = (event: Event) => events.push((event as CustomEvent<{reachable:boolean}>).detail.reachable)
   window.addEventListener(serverConnectivityEventName, listener)
   try {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response('gateway', { status: 502 })).mockResolvedValueOnce(Response.json({})))
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response('agent unavailable', { status: 503 }))
+      .mockResolvedValueOnce(new Response('gateway', { status: 502 }))
+      .mockResolvedValueOnce(Response.json({})))
+    await fetchWithServerConnectivity('/api/agents/codex/options')
     await fetchWithServerConnectivity('/api/sessions')
     await fetchWithServerConnectivity('/api/unrelated')
     expect(events).toEqual([false])

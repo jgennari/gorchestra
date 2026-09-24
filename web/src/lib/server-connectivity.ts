@@ -27,7 +27,10 @@ export async function fetchWithServerConnectivity(input: RequestInfo | URL, init
     const response = await fetch(input, init)
     // Recovery is established by a successful session snapshot/stream, not an
     // unrelated response (which might even be a gateway's error page).
-    if (response.status >= 500) reportServerConnectivity(false)
+    // An unavailable agent's options endpoint can return 503 while the server
+    // and session history are healthy. Gateway failures are the connectivity
+    // signal; application-level 5xx errors belong to the individual request.
+    if (response.status === 502 || response.status === 504) reportServerConnectivity(false)
     return response
   } catch (error) {
     if (isNetworkRequestError(error)) reportServerConnectivity(false)

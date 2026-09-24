@@ -4,6 +4,10 @@
 
 [Website](https://threave.io) · [Install](https://threave.io/get/) · [Mobile access](https://threave.io/mobile/) · [Releases](https://github.com/threave-io/threave/releases)
 
+![Threave showing a parent coding session with two child sessions, tool activity, and workspace files](site/assets/showcase-harbor-ui.png)
+
+_The Threave interface, captured with synthetic project data. [Watch the nine-second product tour](https://threave.io/assets/showcase-tour.mp4)._
+
 Threave is a self-hosted orchestration service for Codex, Claude, OpenCode, and Pi. A parent session can delegate work to child sessions, including across providers. Each child has its own durable run and report, while the work remains linked in the UI. You can tune models, reasoning levels, fast mode, and planning mode per run. The event stream records messages, tool calls, output, errors, and completion in SQLite, so reconnecting does not erase the story.
 
 ## What you can do
@@ -112,3 +116,5 @@ cd web && bun run test && bun run build
 ```
 
 The architecture keeps orchestration provider-agnostic: provider adapters implement a shared interface, server-owned events are persisted before broadcast, and reconnecting clients replay ordered events from SQLite. See [distribution](docs/distribution.md) for release packaging and [hosted previews](docs/hosted-previews.md) for workspace development stacks.
+
+For safe product screenshots, run the isolated [synthetic showcase](docs/showcase.md).
